@@ -1,0 +1,34 @@
+I'm building a larger application called The Issue Observatory. It's main purpose is to collect and track mediated content around specific issues for media and communications research. It should be built to handle a great variety of sources that can be added incrementally. I have already build the first part which tracks Google Searches in order to discover which actors connect to different search terms. Ideally the same search terms could then be tracked  among content from other arenas. In the first iteration of the application focus will be on data collection in a Danish context, but everything should be developed with the goal of potentially adding more contexts. Each arena might correspond to a single platform or contain multiple. Currently I'm considering the following arenas:
+
+Google Search
+Google Autocomplete
+Social Media, including (but potentially with more):
+*  Facebook
+*  X
+*  Telegram
+*  Instagram
+*  Youtube
+*  TikTok
+* Gab
+* Bluesky
+* Reddit
+News Media Sites
+Other Websites
+
+Here are a number of considerations, some are concrete specifications and some are simply observations based on my experience working on social media research:
+
+- Please consider the two reports that have been generated to guide the implementation of the data collection functions, found in /reports
+- Each arena and each standalone platform (e.g. Telegram) should have a dedicated backend API that is easy to use without firing up the entire module.
+- I have previously implemented the Google Search part of the platform named Issue Observatory Search (https://github.com/dimelab/issue_observatory_search). The library should be closely inspected and used for inspiration. Some code might be reused, but I deem it necessary to build the full Issue Observatory Application from the ground up.
+- The issue observatory search uses Celery workers for various tasks that require smooth handling. This worked well and should be worth considering again.
+- I imagine a postgresql database will work well for this application, but it could be possible that a different approach is more ideal.
+- The application should be build around the idea of a query design, a selection of key phrases, images or other media tokens that are supposed to be tracked across the various platforms. However, some platforms (e.g. Telegram) might not have an ideal way to access content based on a key phrase search. As such, all arenas should also be able to carry out seaches based on a list of manually curated accounts, actors or other types of agentic entities that are publishing content. There also needs to be a submodule that makes it easy to add new actors to the lists using networked based sampling or by finding similar actors.
+- The full application should have two main usages, either 1) a standalone instance of data collection that specifies a time range, 2) a live tracking that collects data from a specified query design daily.
+- In terms of data collection finding a way to flexibly navigate the different types of data to be collected including the various limitations is paramount. Some data collection will require subscriptions and paid services for optimal quality. See the reports in /reports Ideally all arenas should should be able to work on three tiers: 1) completely free (if free is not possible for the given platform or source, then that source is ignored), 2) medium price which should try to only include from services that are generally cheap, 3) as much as possible which assumes money is available to pay for the best possible option.
+- What I currently have is access to the TikTok research API and Google Search and Autocomplete APIs. I have a standing application for the meta content library so it is worth considering a pipeline that implements this option as well. It will not be possible to use infomedia although it is ideal in a Danish context.
+- For the first iteration data analysis and export should be limited to simple descriptive statistics and network analysis (see issue_obervatory_search for inspiration here).
+ 
+
+
+Create a team to plan and build the application proposed in init_prompt.txt.
+I need one agent to research, manage knowledge and plan development based on use cases. I need one agent engineer for core application code. I need one agent engineer for database and data processing. I need one for review, quality assurance and testing.
