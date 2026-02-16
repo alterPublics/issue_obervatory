@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Annotated, Optional
+from typing import Annotated, AsyncGenerator, Optional
 
+import redis.asyncio as aioredis
 from fastapi import Depends, HTTPException, status
 
+from issue_observatory.config.settings import get_settings
 from issue_observatory.core.models.users import User
 
 
@@ -143,6 +145,39 @@ async def require_admin(
             detail="Admin role required.",
         )
     return user
+
+
+# ---------------------------------------------------------------------------
+# Redis async client
+# ---------------------------------------------------------------------------
+
+
+async def get_redis() -> AsyncGenerator[aioredis.Redis, None]:
+    """Yield a per-request async Redis client and close it on teardown.
+
+    Uses ``REDIS_URL`` from application settings.  The connection is opened
+    lazily on first I/O and closed after the request completes.
+
+    Yields:
+        An ``aioredis.Redis`` (``redis.asyncio.Redis``) instance configured
+        to decode responses as strings.
+
+    Example::
+
+        @router.get("/stream")
+        async def stream(redis: Annotated[aioredis.Redis, Depends(get_redis)]):
+            pubsub = redis.pubsub()
+            ...
+    """
+    settings = get_settings()
+    client: aioredis.Redis = aioredis.from_url(
+        settings.redis_url,
+        decode_responses=True,
+    )
+    try:
+        yield client
+    finally:
+        await client.aclose()
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 ## Arena Briefs -- Phase 1
 | Arena | Brief Status | Path | Priority |
 |-------|-------------|------|----------|
-| Google Search | Not started | `/docs/arenas/google_search.md` | Phase 0 |
+| Google Search | **Implemented (retroactive)** | `/docs/arenas/google_search.md` | Phase 0 |
 | Google Autocomplete | **Ready for implementation** | `/docs/arenas/google_autocomplete.md` | Critical (1.4) |
 | Bluesky | **Ready for implementation** | `/docs/arenas/bluesky.md` | Critical (1.5) |
 | Reddit | **Ready for implementation** | `/docs/arenas/reddit.md` | Critical (1.6) |
@@ -22,7 +22,7 @@
 | Majestic | **Ready for implementation** | `/docs/arenas/majestic.md` | Medium (2.7) |
 | Common Crawl / Wayback Machine | **Ready for implementation** | `/docs/arenas/common_crawl_wayback.md` | Low (2.10) |
 | X/Twitter | **Ready for implementation** | `/docs/arenas/x_twitter.md` | Critical (2.1) |
-| Google SERP | Not started | `/docs/arenas/google_serp.md` | Critical (2.2) |
+| Google SERP | **Implemented (retroactive)** | `/docs/arenas/google_search.md` | Critical (2.2) |
 | Facebook/Instagram | **Ready for implementation** | `/docs/arenas/facebook_instagram.md` | High (2.3) |
 | LinkedIn | **Ready for implementation** | `/docs/arenas/linkedin.md` | High (2.5) |
 | Threads | **Ready for implementation** | `/docs/arenas/threads.md` | High (2.6) |
@@ -40,6 +40,7 @@
 - [x] Gab (brief: `/docs/arenas/gab.md`)
 
 ## Ready for Implementation -- Phase 2
+- [x] Google SERP (brief: `/docs/arenas/google_search.md`) -- retroactive documentation of implemented arena
 - [x] Event Registry / NewsAPI.ai (brief: `/docs/arenas/event_registry.md`)
 - [x] Majestic (brief: `/docs/arenas/majestic.md`)
 - [x] Common Crawl / Wayback Machine (brief: `/docs/arenas/common_crawl_wayback.md`)
@@ -57,6 +58,7 @@
 _None yet._
 
 ## Notes
+- 2026-02-16: Completed retroactive arena research brief for Google Search (SERP), the final missing Phase 2 brief. This arena was already implemented at `src/issue_observatory/arenas/google_search/`. The brief documents the existing collector: Serper.dev (MEDIUM) and SerpAPI (PREMIUM) providers, Danish locale params (`gl=dk`, `hl=da`), `content_type="search_result"`, `collect_by_actors()` via `site:` queries, shared credentials with Google Autocomplete. All Phase 2 arena briefs are now complete.
 - 2026-02-16: Completed 4 additional Phase 2 arena research briefs: X/Twitter (Critical, 2.1), Facebook/Instagram (High, 2.3), LinkedIn (High, 2.5), Threads (High, 2.6). All Phase 2 social media arenas now have completed briefs. Engineering agents are unblocked for implementation. Key observations:
   - X/Twitter: No viable free tier (100 reads/month is unusable). Medium tier (TwitterAPI.io at $0.15/1K tweets) is the recommended starting point -- dramatically cheaper than the official Pro tier ($5K/month). Dual normalizer required (TwitterAPI.io JSON vs. official v2 API JSON). Cost control is the primary constraint, not rate limits. `lang:da` search operator works on both tiers. Credential pool holds multiple TwitterAPI.io keys for parallelism/fault tolerance.
   - Facebook/Instagram: Critical decision point at Phase 2 start -- Meta Content Library (if approved) vs. Bright Data fallback. MCL provides engagement metrics, post view counts, and global search. Bright Data provides immediate access without application process. Two separate ArenaCollectors (FacebookCollector, InstagramCollector) share Bright Data and MCL client components. Instagram has no native language filter -- Danish content identified via hashtag targeting and client-side detection. Bright Data Facebook uses asynchronous dataset delivery (hours); Instagram uses real-time API.

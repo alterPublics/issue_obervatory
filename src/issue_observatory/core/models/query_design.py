@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import TIMESTAMP, UUID
+from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from issue_observatory.core.models.base import Base
@@ -102,6 +102,11 @@ class QueryDesign(Base):
         sa.String(5),
         nullable=False,
         server_default=sa.text("'dk'"),
+    )
+    arenas_config: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=sa.text("'{}'::jsonb"),
     )
 
     # Relationships

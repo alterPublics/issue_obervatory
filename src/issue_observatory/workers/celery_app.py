@@ -67,6 +67,8 @@ celery_app = Celery(
         "issue_observatory.arenas.instagram.tasks",
         # Phase 2 — not yet implemented
         # "issue_observatory.arenas.linkedin.tasks",
+        # Phase 3 — export tasks
+        "issue_observatory.workers.export_tasks",
     ],
 )
 

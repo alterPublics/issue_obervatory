@@ -10,17 +10,21 @@ Routes:
     POST /collections/              — create and start a collection run
     GET  /collections/{run_id}      — run detail with per-task statuses
     POST /collections/{run_id}/cancel — cancel a running collection
-    GET  /collections/{run_id}/stream — SSE live status (stub, returns 501)
+    GET  /collections/{run_id}/stream — SSE live status
     POST /collections/estimate      — pre-flight credit estimate (non-destructive)
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import uuid
-from typing import Annotated, Optional
+from typing import Annotated, AsyncGenerator, Optional
 
+import redis.asyncio as aioredis
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -29,10 +33,12 @@ from issue_observatory.api.dependencies import (
     PaginationParams,
     get_current_active_user,
     get_pagination,
+    get_redis,
     ownership_guard,
 )
 from issue_observatory.core.database import get_db
-from issue_observatory.core.models.collection import CollectionRun
+from issue_observatory.core.email_service import EmailService, get_email_service
+from issue_observatory.core.models.collection import CollectionRun, CollectionTask
 from issue_observatory.core.models.query_design import QueryDesign
 from issue_observatory.core.models.users import User
 from issue_observatory.core.schemas.collection import (
@@ -307,6 +313,7 @@ async def cancel_collection_run(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
+    email_svc: Annotated[EmailService, Depends(get_email_service)],
 ) -> CollectionRun:
     """Cancel a pending or running collection run.
 
@@ -315,10 +322,14 @@ async def cancel_collection_run(
     layer (Task 0.8).  Runs already in ``'completed'`` or ``'failed'`` state
     are rejected with HTTP 409.
 
+    Sends a ``collection_failure`` notification email to the user as a
+    fire-and-forget task so the HTTP response is never delayed.
+
     Args:
         run_id: UUID of the collection run to cancel.
         db: Injected async database session.
         current_user: The authenticated, active user making the request.
+        email_svc: Injected email notification service.
 
     Returns:
         The updated ``CollectionRunRead`` with status ``'failed'``.
@@ -350,37 +361,174 @@ async def cancel_collection_run(
         run_id=str(run_id),
         user_id=str(current_user.id),
     )
+
+    # Fire-and-forget: notify the user that the run was cancelled/failed.
+    asyncio.create_task(
+        email_svc.send_collection_failure(
+            user_email=str(current_user.email),
+            run_id=run_id,
+            arena="all",
+            error="Collection run cancelled by user.",
+        )
+    )
+
     return run
 
 
 # ---------------------------------------------------------------------------
-# SSE stream (stub)
+# SSE stream
 # ---------------------------------------------------------------------------
+
+#: Terminal states after which no further updates will arrive.
+_TERMINAL_STATUSES: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
 
 
 @router.get("/{run_id}/stream")
 async def stream_collection_run(
     run_id: uuid.UUID,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-) -> None:
+    redis: Annotated[aioredis.Redis, Depends(get_redis)],
+) -> StreamingResponse:
     """Stream live collection run status via Server-Sent Events.
 
-    This endpoint is a stub.  The full SSE implementation (Task 1.15) will
-    emit per-arena task row updates using ``hx-swap-oob`` and close the
-    connection with a ``run_complete`` event when the run reaches a terminal
-    state.
+    Opens a ``text/event-stream`` response and pushes updates as the run
+    progresses:
+
+    1. Immediately emits the current state of every ``CollectionTask`` row
+       associated with this run so the client can render an initial snapshot
+       without waiting for the first live event.
+
+    2. If the run is already in a terminal state (``completed``, ``failed``,
+       or ``cancelled``), emits a ``run_complete`` event and closes the
+       connection.
+
+    3. Otherwise, subscribes to the Redis pub/sub channel
+       ``collection:{run_id}`` and forwards messages as SSE events until:
+
+       - A ``run_complete`` event is received, or
+       - The client disconnects (``request.is_disconnected()``), or
+       - No message arrives within 30 seconds, in which case a keepalive
+         comment (``": keepalive"``) is emitted and the loop continues.
+
+    **Event types**:
+
+    ``task_update``::
+
+        event: task_update
+        data: {"arena":"bluesky","platform":"bluesky","status":"running",
+                "records_collected":47,"error_message":null,"elapsed_seconds":12.4}
+
+    ``run_complete``::
+
+        event: run_complete
+        data: {"status":"completed","records_collected":312,"credits_spent":0}
 
     Args:
         run_id: UUID of the collection run to stream.
+        request: The incoming HTTP request (used for disconnect detection).
         db: Injected async database session.
         current_user: The authenticated, active user making the request.
+        redis: Injected async Redis client.
+
+    Returns:
+        A ``StreamingResponse`` with ``Content-Type: text/event-stream``.
 
     Raises:
-        HTTPException 501: Always — endpoint not yet implemented.
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the caller did not initiate the run (and is
+            not an admin).
     """
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="SSE streaming is not yet implemented. See Task 1.15.",
+    run = await _get_run_or_404(run_id, db, load_tasks=True)
+    ownership_guard(run.initiated_by, current_user)
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        """Generate SSE frames for the collection run."""
+        # --- 1. Emit current task snapshot ---------------------------------
+        task_result = await db.execute(
+            select(CollectionTask).where(
+                CollectionTask.collection_run_id == run_id
+            )
+        )
+        for task in task_result.scalars():
+            payload = {
+                "arena": task.arena,
+                "platform": task.platform,
+                "status": task.status,
+                "records_collected": task.records_collected,
+                "error_message": task.error_message,
+                "elapsed_seconds": None,
+            }
+            yield f"event: task_update\ndata: {json.dumps(payload)}\n\n"
+
+        # --- 2. If already terminal, emit run_complete and stop ------------
+        if run.status in _TERMINAL_STATUSES:
+            complete_payload = {
+                "status": run.status,
+                "records_collected": run.records_collected,
+                "credits_spent": run.credits_spent,
+            }
+            yield f"event: run_complete\ndata: {json.dumps(complete_payload)}\n\n"
+            return
+
+        # --- 3. Subscribe to Redis pub/sub and forward messages ------------
+        channel = f"collection:{run_id}"
+        pubsub = redis.pubsub()
+        await pubsub.subscribe(channel)
+        logger.debug("sse: subscribed to channel=%s user=%s", channel, current_user.id)
+
+        try:
+            while True:
+                if await request.is_disconnected():
+                    logger.debug(
+                        "sse: client disconnected channel=%s", channel
+                    )
+                    break
+
+                try:
+                    message = await asyncio.wait_for(
+                        pubsub.get_message(ignore_subscribe_messages=True),
+                        timeout=30.0,
+                    )
+                except asyncio.TimeoutError:
+                    # No message in 30 s — send a keepalive comment to
+                    # prevent proxies from closing an idle connection.
+                    yield ": keepalive\n\n"
+                    continue
+
+                if message is None:
+                    # get_message returned None (no message ready yet).
+                    await asyncio.sleep(0.05)
+                    continue
+
+                raw_data = message.get("data")
+                if not isinstance(raw_data, str):
+                    continue
+
+                try:
+                    data = json.loads(raw_data)
+                except json.JSONDecodeError:
+                    logger.warning("sse: non-JSON message on channel=%s", channel)
+                    continue
+
+                event_type = data.pop("event", "task_update")
+                yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+                if event_type == "run_complete":
+                    break
+        finally:
+            await pubsub.unsubscribe(channel)
+            await pubsub.aclose()
+            logger.debug("sse: unsubscribed from channel=%s", channel)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )
 

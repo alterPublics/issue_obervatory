@@ -21,7 +21,9 @@
 - [x] Admin bootstrap script (scripts/bootstrap_admin.py) — Task 0.7 complete (2026-02-15)
 - [x] API key generation script (scripts/generate_api_key.py) — Task 0.7 complete (2026-02-15)
 - [x] Core API routes: query_designs.py, collections.py — Task 1.3 confirmed (2026-02-16): ownership_guard applied on all routes
-- [ ] Content and actors routes — Task 0.4 / 0.9b still pending
+- [x] Actors routes (`api/routes/actors.py`) — Task 0.9b complete (2026-02-16): full CRUD + presences + HTMX support
+- [x] Arena-config endpoints on query_designs — Task 0.4 partial complete (2026-02-16): GET/POST /query-designs/{id}/arena-config implemented
+- [ ] Content routes — Task 0.4 still pending
 
 ### Task 0.3 — Delivered files
 | File | Status |
@@ -113,6 +115,50 @@ with full `ownership_guard` coverage on all read/write routes.  No changes neede
 - `workers/tasks.py` (orchestration tasks) needs to be created in Task 0.4.
 - Entity resolver's `create_or_update_presence()` imports `core/models/actors.py` — DB Engineer must ensure `Actor` and `ActorPlatformPresence` models are available.
 - `credential_pool.py` uses `AsyncSessionLocal` from `core/database.py` — requires DB to be initialised before credential pool operations can reach the database layer.  Env-var fallback remains available when DB is not yet running.
+
+## Task 1.15 — SSE Collection Stream (2026-02-16) — Complete
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/core/event_bus.py` | Done — sync `publish_task_update` + `publish_run_complete` + `elapsed_since` helper |
+| `src/issue_observatory/api/dependencies.py` | Updated — added `get_redis()` async dependency |
+| `src/issue_observatory/api/routes/collections.py` | Updated — `GET /{run_id}/stream` is now a working SSE endpoint |
+| `src/issue_observatory/arenas/google_search/tasks.py` | Updated — `publish_task_update` called at running/completed/failed transitions (reference pattern for all arenas) |
+
+**Design notes**:
+- `GET /collections/{run_id}/stream` returns `text/event-stream` with headers `Cache-Control: no-cache`, `X-Accel-Buffering: no`, `Connection: keep-alive`.
+- On connection the endpoint immediately emits the current state of all `CollectionTask` rows (snapshot), then subscribes to `collection:{run_id}` Redis pub/sub.
+- If the run is already terminal, the snapshot is followed by a `run_complete` event and the generator closes.
+- Live messages are forwarded verbatim as `event: <type>\ndata: <json>\n\n` frames.
+- Keepalive comment (`": keepalive\n\n"`) sent every 30 s of inactivity to prevent proxy timeout.
+- Generator unsubscribes and closes the pubsub handle in a `finally` block regardless of how the loop exits.
+- `get_redis()` in `api/dependencies.py`: per-request `redis.asyncio.Redis` instance, `decode_responses=True`, closed in `finally` via `await client.aclose()`. Uses `settings.redis_url`. No new dependency needed — `redis>=5.2` (already in `pyproject.toml`) ships `redis.asyncio`.
+- `event_bus.py` uses synchronous `redis.from_url()` (not `redis.asyncio`) so it can be called from Celery worker threads without an event loop. Fire-and-forget: publish failures are logged at WARNING, never propagate.
+- **Pattern for other arenas**: import `publish_task_update` and `elapsed_since` from `issue_observatory.core.event_bus`. Record `_task_start = time.monotonic()` at the top of the task, then call `publish_task_update(redis_url=_settings.redis_url, run_id=..., arena=..., platform=..., status=..., ...)` at the three transition points: initial "running", final "completed", and each "failed" branch.
+
+---
+
+## Task 1.19 — Email Notifications (2026-02-16) — Complete
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/core/email_service.py` | Done — `EmailService` class + `get_email_service()` dependency |
+| `src/issue_observatory/config/settings.py` | Updated — SMTP settings + `low_credit_warning_threshold` added |
+| `pyproject.toml` | Updated — `fastapi-mail>=1.4,<2.0` added |
+| `src/issue_observatory/api/routes/collections.py` | Updated — cancel route fires `send_collection_failure` fire-and-forget |
+
+**Design notes**:
+- `EmailService` silently no-ops (DEBUG log) when `smtp_host` is `None` (the default). Never raises on send failure — SMTP errors are logged at WARNING and swallowed.
+- Three public methods: `send_collection_failure`, `send_low_credit_warning`, `send_collection_complete`.
+- All sends are plain-text (`MessageType.plain`) — no HTML templates required.
+- `get_email_service()` returns an `lru_cache`-backed singleton — safe because `EmailService` has no per-request mutable state.
+- `fastapi-mail` is imported lazily inside `__init__` to avoid `ImportError` breaking the service when the package is not yet installed (logs WARNING instead).
+- **Wiring status**:
+  - `failed` (cancel): `cancel_collection_run` fires `send_collection_failure` via `asyncio.create_task()`.
+  - `completed` and credit settlement (`send_collection_complete`, `send_low_credit_warning`): These transitions happen in the Celery orchestration layer (`workers/tasks.py`) which is pending Task 0.4. The `EmailService` is ready to be imported there; call pattern from a sync Celery context: create a local event loop with `asyncio.run(email_svc.send_collection_complete(...))`, or use `asyncio.get_event_loop().create_task()` if already inside an async context.
+- New settings fields in `config/settings.py`: `smtp_host`, `smtp_port`, `smtp_username`, `smtp_password`, `smtp_from_address`, `smtp_starttls`, `smtp_ssl`, `low_credit_warning_threshold`.
+
+---
 
 ## Integration Wiring (2026-02-16)
 
@@ -853,6 +899,54 @@ institutional approval is granted.
   and do not mask collection outcomes.
 - `health_check()` acquires MEDIUM credential, fires a 1-result test query to
   Serper.dev, and always releases the credential in a `finally` block.
+
+---
+
+### Task 0.9b — Actors Routes (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/api/routes/actors.py` | Done — full implementation replacing stub |
+| `src/issue_observatory/core/schemas/actors.py` | Done — ActorCreate, ActorUpdate, ActorResponse, PresenceResponse, ActorPresenceCreate |
+
+**Design notes**:
+- `GET /actors/` and `GET /actors/search`: filter on `created_by = current_user.id OR is_shared = true`. Cursor pagination by UUID on list; fixed 20-result cap on search.
+- `POST /actors/`: creates `Actor` with `created_by = current_user.id`. Optional inline `presence` field creates an `ActorPlatformPresence` in the same transaction (flush → commit pattern).
+- `GET /actors/{id}`: read-accessible when `is_shared=True` or owner/admin. Uses `_check_actor_readable()` helper (calls `ownership_guard` only for private actors).
+- `PATCH /actors/{id}`: partial update via `model_dump(exclude_unset=True)`. Ownership required.
+- `DELETE /actors/{id}`: hard delete with cascade (aliases, presences, list memberships). Ownership required.
+- `GET /actors/{id}/content`: queries `content_records WHERE author_id = actor.id`. Keyset cursor on `(published_at DESC, id DESC)`. Returns HTML `<ul>` fragment when `HX-Request` header is present, JSON list otherwise.
+- `POST /actors/{id}/presences`: creates `ActorPlatformPresence`. HTTP 409 on unique constraint violation (platform + platform_user_id pair).
+- `DELETE /actors/{id}/presences/{pid}`: hard delete of presence record.
+- HTMX detection: `HX-Request` header (alias in `Header(alias="HX-Request")`). HTML fragments use `HTMLResponse` from `fastapi.responses`.
+- All write routes use `ownership_guard(actor.created_by or uuid.UUID(int=0), current_user)` — the fallback `uuid.UUID(int=0)` means an actor with no creator is only modifiable by admins.
+
+**Blockers / Notes for QA**:
+- `content_records.author_id` FK must be populated for `GET /actors/{id}/content` to return results. Normaliser sets this field when the actor is known at collection time.
+- `HX-Request` header may be blocked by some CORS configurations; ensure it is listed in `allow_headers` in CORS middleware (currently `["*"]` — safe).
+- Integration tests: mock `get_db` session with SQLAlchemy in-memory or test DB.
+
+---
+
+### Task 0.4 — Arena Config Endpoints (2026-02-16) — Partial, DB blocker
+
+**Added to `api/routes/query_designs.py`**:
+- `GET  /query-designs/{id}/arena-config` — returns per-arena tier config
+- `POST /query-designs/{id}/arena-config` — validates and saves per-arena tier config
+
+**Design notes**:
+- Ownership guard applied via `ownership_guard(design.owner_id, current_user)` on both endpoints.
+- `GET`: reads `arenas_config` JSONB from the most recent `CollectionRun` for the design. Returns `{"arenas": []}` when no run exists.
+- `POST`: validates all `tier` values against `Tier` enum. Persists as `{"arenas": [...]}` on the most recent run. If no run exists, creates a `CollectionRun(mode="batch", status="pending")` placeholder.
+- Tier validation: unknown values return HTTP 422 with list of invalid values and acceptable set.
+- `_raw_config_to_response()` supports both legacy dict format (`{"arena_id": "tier"}`) and the list format written by POST.
+
+**DB Schema Blocker**:
+- The spec requested storage on `query_designs.arenas_config` JSONB, but that column does not exist on the `QueryDesign` ORM model (DB Engineer owned).
+- Current workaround: config is stored on `collection_runs.arenas_config` via the most recent run.
+- **Action required from DB Engineer**: add `arenas_config JSONB NOT NULL DEFAULT '{}'` to `query_designs` table and update `QueryDesign` model, then migrate these endpoints to read/write from `QueryDesign` directly.
+
+---
 
 ### Task 0.12 — Blockers / Notes
 - `/docs/arenas/google_search.md` brief does not exist on disk.  Task was

@@ -15,6 +15,7 @@ Usage::
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Optional
 
 from pydantic import EmailStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -174,6 +175,42 @@ class Settings(BaseSettings):
 
     allowed_origins: list[str] = ["http://localhost:8000"]
     """Origins permitted by the CORS middleware.  Extend for production domains."""
+
+    # ------------------------------------------------------------------
+    # SMTP / email notifications
+    # ------------------------------------------------------------------
+
+    smtp_host: Optional[str] = None
+    """SMTP server hostname.  When ``None``, email notifications are disabled
+    and all ``EmailService`` send methods silently no-op."""
+
+    smtp_port: int = 587
+    """SMTP server port.  587 is the standard submission port for STARTTLS."""
+
+    smtp_username: Optional[str] = None
+    """SMTP authentication username.  Leave ``None`` for open relays."""
+
+    smtp_password: Optional[str] = None
+    """SMTP authentication password.  Leave ``None`` for open relays."""
+
+    smtp_from_address: str = "noreply@observatory.local"
+    """The ``From:`` address used for all outgoing notification emails."""
+
+    smtp_starttls: bool = True
+    """Upgrade the connection to TLS via STARTTLS after connecting.
+    Standard for port 587.  Set to ``False`` for localhost dev relays."""
+
+    smtp_ssl: bool = False
+    """Use implicit TLS from the start (e.g. port 465).  Mutually exclusive
+    with ``smtp_starttls``."""
+
+    # ------------------------------------------------------------------
+    # Credit warning threshold
+    # ------------------------------------------------------------------
+
+    low_credit_warning_threshold: int = 100
+    """Send a low-credit warning email when the user's remaining credit
+    balance drops below this value after a collection run settles."""
 
 
 @lru_cache

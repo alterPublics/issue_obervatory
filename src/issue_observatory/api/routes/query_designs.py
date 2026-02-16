@@ -8,13 +8,21 @@ own query designs.  Admin users can access all designs via the ownership
 guard bypass.
 
 Routes:
-    GET    /query-designs/                     — list owned query designs (paginated)
-    POST   /query-designs/                     — create a new query design
-    GET    /query-designs/{design_id}          — detail with search terms
-    PUT    /query-designs/{design_id}          — partial update
-    DELETE /query-designs/{design_id}          — soft-delete (is_active=False)
-    POST   /query-designs/{design_id}/terms    — add a search term
-    DELETE /query-designs/{design_id}/terms/{term_id} — remove a search term
+    GET    /query-designs/                              — list owned query designs (paginated)
+    POST   /query-designs/                              — create a new query design
+    GET    /query-designs/{design_id}                   — detail with search terms
+    PUT    /query-designs/{design_id}                   — partial update
+    DELETE /query-designs/{design_id}                   — soft-delete (is_active=False)
+    POST   /query-designs/{design_id}/terms             — add a search term
+    DELETE /query-designs/{design_id}/terms/{term_id}   — remove a search term
+    GET    /query-designs/{design_id}/arena-config      — read per-arena tier config
+    POST   /query-designs/{design_id}/arena-config      — write per-arena tier config
+
+Note on arena-config storage:
+    The arena config is stored directly on ``query_designs.arenas_config`` (JSONB),
+    added by migration 002.  This is the authoritative location for the researcher's
+    arena tier preferences.  ``collection_runs.arenas_config`` retains its own copy
+    as an immutable snapshot of the config that was active when a run was launched.
 """
 
 from __future__ import annotations
@@ -24,6 +32,7 @@ from typing import Annotated, Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -37,6 +46,7 @@ from issue_observatory.api.dependencies import (
 from issue_observatory.core.database import get_db
 from issue_observatory.core.models.query_design import QueryDesign, SearchTerm
 from issue_observatory.core.models.users import User
+from issue_observatory.config.tiers import Tier
 from issue_observatory.core.schemas.query_design import (
     QueryDesignCreate,
     QueryDesignRead,
@@ -391,3 +401,162 @@ async def remove_search_term(
     await db.delete(term)
     await db.commit()
     logger.info("search_term_removed", design_id=str(design_id), term_id=str(term_id))
+
+
+# ---------------------------------------------------------------------------
+# Arena configuration
+# ---------------------------------------------------------------------------
+#
+# Arena config is stored on ``query_designs.arenas_config`` (JSONB), added by
+# migration 002.  The column on ``collection_runs.arenas_config`` remains as an
+# immutable snapshot of the config that was active when a run was launched and
+# is written by the collection orchestrator, not by these endpoints.
+#
+# ---------------------------------------------------------------------------
+
+
+class ArenaConfigEntry(BaseModel):
+    """A single per-arena tier configuration entry.
+
+    Attributes:
+        id: Arena identifier string (e.g. ``'bluesky'``, ``'youtube'``).
+        enabled: Whether this arena is enabled for collection.
+        tier: Tier value; must be one of the ``Tier`` enum values.
+    """
+
+    id: str
+    enabled: bool
+    tier: str
+
+
+class ArenaConfigPayload(BaseModel):
+    """Request body for ``POST /query-designs/{id}/arena-config``.
+
+    Attributes:
+        arenas: List of per-arena configuration entries.
+    """
+
+    arenas: list[ArenaConfigEntry]
+
+
+class ArenaConfigResponse(BaseModel):
+    """Response body for arena config endpoints.
+
+    Attributes:
+        arenas: List of per-arena configuration entries.
+    """
+
+    arenas: list[ArenaConfigEntry]
+
+
+def _raw_config_to_response(raw: Optional[dict]) -> ArenaConfigResponse:
+    """Convert a raw ``arenas_config`` JSONB dict to ``ArenaConfigResponse``.
+
+    The stored format written by POST is ``{"arenas": [...]}`` — a list of
+    ``ArenaConfigEntry`` dicts.  A legacy dict format
+    ``{"arena_id": "tier_string", ...}`` is also handled for any rows that
+    predate this endpoint.
+
+    Args:
+        raw: The raw ``arenas_config`` dict from the database, or ``None``.
+
+    Returns:
+        An ``ArenaConfigResponse`` with a normalised list of entries.
+    """
+    if not raw:
+        return ArenaConfigResponse(arenas=[])
+
+    if "arenas" in raw and isinstance(raw["arenas"], list):
+        entries = [ArenaConfigEntry(**item) for item in raw["arenas"]]
+    else:
+        # Legacy: {"arena_id": "tier_string", ...}
+        entries = [
+            ArenaConfigEntry(id=arena_id, enabled=True, tier=tier_str)
+            for arena_id, tier_str in raw.items()
+        ]
+    return ArenaConfigResponse(arenas=entries)
+
+
+@router.get("/{design_id}/arena-config", response_model=ArenaConfigResponse)
+async def get_arena_config(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> ArenaConfigResponse:
+    """Return the per-arena tier configuration for a query design.
+
+    Reads ``arenas_config`` directly from the ``QueryDesign`` row.  Returns an
+    empty arena list when the column holds an empty object (the column default).
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        ``ArenaConfigResponse`` with a list of per-arena entries.
+
+    Raises:
+        HTTPException 404: If the design does not exist.
+        HTTPException 403: If the caller is not the owner or an admin.
+    """
+    design = await _get_design_or_404(design_id, db)
+    ownership_guard(design.owner_id, current_user)
+    return _raw_config_to_response(design.arenas_config)
+
+
+@router.post("/{design_id}/arena-config", response_model=ArenaConfigResponse)
+async def set_arena_config(
+    design_id: uuid.UUID,
+    payload: ArenaConfigPayload,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> ArenaConfigResponse:
+    """Update the per-arena tier configuration for a query design.
+
+    Validates that every ``tier`` value in the payload is a valid ``Tier``
+    enum member, then persists the config directly on ``query_designs.arenas_config``.
+
+    Args:
+        design_id: UUID of the query design.
+        payload: Validated ``ArenaConfigPayload`` request body.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        The updated ``ArenaConfigResponse``.
+
+    Raises:
+        HTTPException 404: If the design does not exist.
+        HTTPException 403: If the caller is not the owner or an admin.
+        HTTPException 422: If any tier value is not a valid ``Tier`` member.
+    """
+    design = await _get_design_or_404(design_id, db)
+    ownership_guard(design.owner_id, current_user)
+
+    # Validate all tier values against the Tier enum.
+    valid_tier_values = {t.value for t in Tier}
+    invalid = [
+        entry.tier
+        for entry in payload.arenas
+        if entry.tier not in valid_tier_values
+    ]
+    if invalid:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Invalid tier value(s): {invalid}. "
+                f"Must be one of: {sorted(valid_tier_values)}."
+            ),
+        )
+
+    raw_config = {"arenas": [entry.model_dump() for entry in payload.arenas]}
+    design.arenas_config = raw_config
+
+    await db.commit()
+    logger.info(
+        "arena_config_updated",
+        design_id=str(design_id),
+        arena_count=len(payload.arenas),
+    )
+    return _raw_config_to_response(raw_config)
