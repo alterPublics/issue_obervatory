@@ -203,6 +203,251 @@ window.initEngagementChart = function initEngagementChart(canvasId, data, option
  * @param {Object}  [options]        - Additional Chart.js options (merged in).
  * @returns {Chart|null}
  */
+// ---------------------------------------------------------------------------
+// 4. Top actors — horizontal bar chart
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a horizontal bar chart of top actors by post count.
+ *
+ * @param {string} canvasId - Target canvas element ID.
+ * @param {Object} data - Chart data.
+ * @param {string[]} data.labels  - Actor display names.
+ * @param {number[]} data.values  - Post counts per actor.
+ * @param {Object}  [options]     - Additional Chart.js options (merged in).
+ * @returns {Chart|null}
+ */
+window.initActorsChart = function initActorsChart(canvasId, data, options = {}) {
+  const canvas = _getCanvas(canvasId);
+  if (!canvas) return null;
+  _destroyExisting(canvas);
+
+  return new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: data.labels || [],
+      datasets: [{
+        label: 'Posts',
+        data: data.values || [],
+        backgroundColor: 'rgba(37, 99, 235, 0.7)',
+        borderColor: '#2563eb',
+        borderWidth: 0,
+        borderRadius: 3,
+      }],
+    },
+    options: {
+      ..._CHART_DEFAULTS,
+      indexAxis: 'y',
+      scales: {
+        x: {
+          beginAtZero: true,
+          ticks: { color: '#6b7280', font: { size: 11 }, precision: 0 },
+          grid: { color: 'rgba(0,0,0,0.05)' },
+        },
+        y: {
+          ticks: { color: '#374151', font: { size: 11 } },
+          grid: { display: false },
+        },
+      },
+      ...options,
+    },
+  });
+};
+
+// ---------------------------------------------------------------------------
+// 5. Top terms — horizontal bar chart
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a horizontal bar chart of top search terms by frequency.
+ *
+ * @param {string} canvasId - Target canvas element ID.
+ * @param {Object} data - Chart data.
+ * @param {string[]} data.labels  - Term strings.
+ * @param {number[]} data.values  - Match counts per term.
+ * @param {Object}  [options]     - Additional Chart.js options (merged in).
+ * @returns {Chart|null}
+ */
+window.initTermsChart = function initTermsChart(canvasId, data, options = {}) {
+  const canvas = _getCanvas(canvasId);
+  if (!canvas) return null;
+  _destroyExisting(canvas);
+
+  return new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: data.labels || [],
+      datasets: [{
+        label: 'Matches',
+        data: data.values || [],
+        backgroundColor: 'rgba(217, 119, 6, 0.7)',  // amber-600
+        borderColor: '#d97706',
+        borderWidth: 0,
+        borderRadius: 3,
+      }],
+    },
+    options: {
+      ..._CHART_DEFAULTS,
+      indexAxis: 'y',
+      scales: {
+        x: {
+          beginAtZero: true,
+          ticks: { color: '#6b7280', font: { size: 11 }, precision: 0 },
+          grid: { color: 'rgba(0,0,0,0.05)' },
+        },
+        y: {
+          ticks: { color: '#374151', font: { size: 11 } },
+          grid: { display: false },
+        },
+      },
+      ...options,
+    },
+  });
+};
+
+// ---------------------------------------------------------------------------
+// 6. Engagement statistics — grouped bar chart (mean / median / p95)
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a grouped bar chart showing engagement statistics per metric.
+ *
+ * Expects the shape returned by GET /analysis/{run_id}/engagement:
+ *   { likes: {mean, median, p95, max}, shares: {...}, comments: {...}, views: {...} }
+ *
+ * Renders three datasets: mean, median, p95.
+ *
+ * @param {string} canvasId - Target canvas element ID.
+ * @param {Object} data - Engagement distribution dict from the API.
+ * @param {Object} [options] - Additional Chart.js options (merged in).
+ * @returns {Chart|null}
+ */
+window.initEngagementStatsChart = function initEngagementStatsChart(canvasId, data, options = {}) {
+  const canvas = _getCanvas(canvasId);
+  if (!canvas) return null;
+  _destroyExisting(canvas);
+
+  const metrics = Object.keys(data);
+  if (metrics.length === 0) return null;
+
+  return new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: metrics,
+      datasets: [
+        {
+          label: 'Mean',
+          data: metrics.map(m => data[m] ? (data[m].mean ?? 0) : 0),
+          backgroundColor: 'rgba(37, 99, 235, 0.7)',
+          borderColor: '#2563eb',
+          borderWidth: 0,
+          borderRadius: 3,
+        },
+        {
+          label: 'Median',
+          data: metrics.map(m => data[m] ? (data[m].median ?? 0) : 0),
+          backgroundColor: 'rgba(22, 163, 74, 0.7)',
+          borderColor: '#16a34a',
+          borderWidth: 0,
+          borderRadius: 3,
+        },
+        {
+          label: 'p95',
+          data: metrics.map(m => data[m] ? (data[m].p95 ?? 0) : 0),
+          backgroundColor: 'rgba(217, 119, 6, 0.7)',
+          borderColor: '#d97706',
+          borderWidth: 0,
+          borderRadius: 3,
+        },
+      ],
+    },
+    options: {
+      ..._CHART_DEFAULTS,
+      scales: {
+        x: {
+          ticks: { color: '#374151', font: { size: 12 } },
+          grid: { display: false },
+        },
+        y: {
+          beginAtZero: true,
+          ticks: { color: '#6b7280', font: { size: 11 }, precision: 1 },
+          grid: { color: 'rgba(0,0,0,0.05)' },
+        },
+      },
+      ...options,
+    },
+  });
+};
+
+// ---------------------------------------------------------------------------
+// 7. Multi-arena volume chart — line chart with one dataset per arena
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a multi-arena volume-over-time line chart.
+ *
+ * @param {string} canvasId - Target canvas element ID.
+ * @param {Object} data - Processed data from the volume endpoint.
+ * @param {string[]} data.labels     - Period labels (ISO date strings, sliced to 10 chars).
+ * @param {Object[]} data.rows       - Raw API rows [{period, count, arenas: {...}}].
+ * @param {string[]} data.arenaNames - Sorted list of arena names.
+ * @param {Object}  [options]        - Additional Chart.js options (merged in).
+ * @returns {Chart|null}
+ */
+window.initMultiArenaVolumeChart = function initMultiArenaVolumeChart(canvasId, data, options = {}) {
+  const canvas = _getCanvas(canvasId);
+  if (!canvas) return null;
+  _destroyExisting(canvas);
+
+  const { labels, rows, arenaNames } = data;
+
+  const datasets = arenaNames.length > 0
+    ? arenaNames.map((arena, i) => ({
+        label: arena,
+        data: rows.map(r => (r.arenas && r.arenas[arena]) ? r.arenas[arena] : 0),
+        borderColor: _PALETTE[i % _PALETTE.length],
+        backgroundColor: _PALETTE[i % _PALETTE.length] + '26',  // 15% opacity
+        borderWidth: 2,
+        fill: false,
+        tension: 0.3,
+        pointRadius: 3,
+      }))
+    : [{
+        label: 'Total records',
+        data: rows.map(r => r.count),
+        borderColor: '#2563eb',
+        backgroundColor: 'rgba(37,99,235,0.1)',
+        borderWidth: 2,
+        fill: true,
+        tension: 0.3,
+        pointRadius: 3,
+      }];
+
+  return new Chart(canvas, {
+    type: 'line',
+    data: { labels: labels || [], datasets },
+    options: {
+      ..._CHART_DEFAULTS,
+      scales: {
+        x: {
+          ticks: { color: '#6b7280', font: { size: 11 }, maxRotation: 45 },
+          grid: { display: false },
+        },
+        y: {
+          beginAtZero: true,
+          ticks: { color: '#6b7280', font: { size: 11 }, precision: 0 },
+          grid: { color: 'rgba(0,0,0,0.05)' },
+        },
+      },
+      ...options,
+    },
+  });
+};
+
+// ---------------------------------------------------------------------------
+// 8. Arena breakdown — doughnut chart
+// ---------------------------------------------------------------------------
+
 window.initArenaBreakdownChart = function initArenaBreakdownChart(canvasId, data, options = {}) {
   const canvas = _getCanvas(canvasId);
   if (!canvas) return null;

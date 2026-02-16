@@ -212,6 +212,18 @@ class Settings(BaseSettings):
     """Send a low-credit warning email when the user's remaining credit
     balance drops below this value after a collection run settles."""
 
+    # ------------------------------------------------------------------
+    # Observability
+    # ------------------------------------------------------------------
+
+    metrics_enabled: bool = True
+    """Expose Prometheus metrics at ``GET /metrics``.
+
+    Set to ``False`` to disable the endpoint entirely (e.g. in environments
+    where the metrics path must not be publicly reachable and a network-level
+    restriction is not practical).
+    """
+
 
 @lru_cache
 def get_settings() -> Settings:

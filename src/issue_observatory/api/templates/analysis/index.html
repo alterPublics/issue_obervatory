@@ -1,4 +1,827 @@
-{# Analysis overview. TODO: implement charts and export UI. #}
 {% extends "base.html" %}
-{% block title %}Analysis — Issue Observatory{% endblock %}
-{% block content %}<!-- TODO -->{% endblock %}
+{% block title %}Analysis — {{ run.id | default(run_id) | truncate(8, true, '') }}{% endblock %}
+
+{% block content %}
+{#
+    Analysis dashboard for a completed collection run.
+
+    Context variables injected by the route handler:
+        run_id  (str)  — UUID of the collection run
+        run     (dict) — {id, status, mode, query_design_id, started_at,
+                          completed_at, credits_spent, tier}
+
+    All chart data is fetched client-side via Alpine fetch() inside each
+    component's x-init block.  Filters are managed by the top-level
+    analysisDashboard() Alpine component and broadcast via a custom
+    'filter-applied' CustomEvent so sibling components can reload.
+
+    Chart.js 4 helpers used (all defined in static/js/charts.js):
+        initVolumeChart(canvasId, data)          — single-series line/bar chart
+        initMultiArenaVolumeChart(id, data)      — multi-arena line chart (added below)
+        initActorsChart(canvasId, data)          — horizontal bar (top actors)
+        initTermsChart(canvasId, data)           — horizontal bar (top terms)
+        initEngagementStatsChart(canvasId, data) — grouped bar (engagement stats)
+#}
+
+{# ------------------------------------------------------------------ #}
+{# Top-level Alpine component                                          #}
+{# ------------------------------------------------------------------ #}
+<div
+    class="max-w-7xl mx-auto space-y-6"
+    x-data="analysisDashboard('{{ run_id }}')"
+    x-init="init()"
+>
+
+    {# ---- Page header ------------------------------------------------ #}
+    <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-3">
+            <a href="/collections"
+               class="text-gray-400 hover:text-gray-600 transition-colors"
+               aria-label="Back to collections">
+                <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                     viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
+                </svg>
+            </a>
+            <div>
+                <h1 class="text-xl font-bold text-gray-900">Analysis Dashboard</h1>
+                <p class="text-xs text-gray-400 font-mono mt-0.5">{{ run_id }}</p>
+            </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+            {# Status badge #}
+            {% set _sc = {
+                'completed': 'bg-green-100 text-green-800',
+                'running':   'bg-blue-100  text-blue-800',
+                'failed':    'bg-red-100   text-red-800',
+                'cancelled': 'bg-gray-100  text-gray-600',
+                'pending':   'bg-yellow-100 text-yellow-800',
+            } %}
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+                         {{ _sc.get(run.status, 'bg-gray-100 text-gray-600') }}">
+                {{ run.status | default('unknown') | capitalize }}
+            </span>
+            {% if run.tier %}
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
+                {{ run.tier | capitalize }}
+            </span>
+            {% endif %}
+            {% if run.mode %}
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
+                {{ run.mode | capitalize }}
+            </span>
+            {% endif %}
+        </div>
+    </div>
+
+    {# ---- Summary stats cards ---------------------------------------- #}
+    <div
+        class="grid grid-cols-2 gap-4 sm:grid-cols-4"
+        x-data="summaryCards('{{ run_id }}')"
+        x-init="load()"
+    >
+        {# Loading skeleton — rendered with a simple loop via JS #}
+        <template x-if="loading">
+            <template x-for="i in [0,1,2,3]" :key="i">
+                <div class="bg-white rounded-lg shadow px-5 py-4 animate-pulse">
+                    <div class="h-3 bg-gray-200 rounded w-2/3 mb-2"></div>
+                    <div class="h-7 bg-gray-200 rounded w-1/2"></div>
+                </div>
+            </template>
+        </template>
+
+        {# Error state #}
+        <template x-if="!loading && error">
+            <div class="col-span-4 bg-red-50 border border-red-200 rounded-lg px-5 py-4 text-sm text-red-700"
+                 x-text="'Could not load summary: ' + error"></div>
+        </template>
+
+        {# Loaded cards #}
+        <template x-if="!loading && !error && summary">
+            <div class="contents">
+                <div class="bg-white rounded-lg shadow px-5 py-4">
+                    <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Total records</p>
+                    <p class="mt-1 text-2xl font-semibold text-gray-900"
+                       x-text="summary.total_records !== undefined ? summary.total_records.toLocaleString() : '—'"></p>
+                </div>
+                <div class="bg-white rounded-lg shadow px-5 py-4">
+                    <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Arenas</p>
+                    <p class="mt-1 text-2xl font-semibold text-gray-900"
+                       x-text="summary.by_arena ? summary.by_arena.length : '—'"></p>
+                </div>
+                <div class="bg-white rounded-lg shadow px-5 py-4">
+                    <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Date range</p>
+                    <p class="mt-1 text-sm font-medium text-gray-700 leading-snug">
+                        <span x-text="summary.published_at_min ? summary.published_at_min.slice(0,10) : '—'"></span>
+                        <span class="text-gray-400"> – </span>
+                        <span x-text="summary.published_at_max ? summary.published_at_max.slice(0,10) : '—'"></span>
+                    </p>
+                </div>
+                <div class="bg-white rounded-lg shadow px-5 py-4">
+                    <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Credits spent</p>
+                    <p class="mt-1 text-2xl font-semibold text-gray-900"
+                       x-text="summary.credits_spent !== undefined ? summary.credits_spent.toLocaleString() : '—'"></p>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    {# ---- Filter bar ------------------------------------------------- #}
+    <div class="bg-white rounded-lg shadow px-5 py-4">
+        <div class="flex flex-wrap items-end gap-4">
+            <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">Platform</label>
+                <input
+                    type="text"
+                    placeholder="e.g. reddit"
+                    x-model="filters.platform"
+                    class="block w-36 rounded-md border border-gray-300 shadow-sm text-sm px-2 py-1.5
+                           focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                />
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">Arena</label>
+                <input
+                    type="text"
+                    placeholder="e.g. social"
+                    x-model="filters.arena"
+                    class="block w-36 rounded-md border border-gray-300 shadow-sm text-sm px-2 py-1.5
+                           focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                />
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">From</label>
+                <input
+                    type="date"
+                    x-model="filters.date_from"
+                    class="block rounded-md border border-gray-300 shadow-sm text-sm px-2 py-1.5
+                           focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                />
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">To</label>
+                <input
+                    type="date"
+                    x-model="filters.date_to"
+                    class="block rounded-md border border-gray-300 shadow-sm text-sm px-2 py-1.5
+                           focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                />
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">Granularity</label>
+                <div class="flex rounded-md border border-gray-300 overflow-hidden text-xs font-medium">
+                    <template x-for="g in ['hour','day','week','month']" :key="g">
+                        <button
+                            type="button"
+                            :class="filters.granularity === g
+                                ? 'bg-blue-600 text-white px-3 py-1.5'
+                                : 'bg-white text-gray-700 px-3 py-1.5 hover:bg-gray-50'"
+                            @click="filters.granularity = g"
+                            x-text="g"
+                        ></button>
+                    </template>
+                </div>
+            </div>
+            <div class="flex gap-2">
+                <button
+                    type="button"
+                    @click="applyFilters()"
+                    class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md
+                           hover:bg-blue-700 transition-colors"
+                >
+                    Apply
+                </button>
+                <button
+                    type="button"
+                    @click="resetFilters()"
+                    class="px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm
+                           font-medium rounded-md hover:bg-gray-50 transition-colors"
+                >
+                    Reset
+                </button>
+            </div>
+        </div>
+    </div>
+
+    {# ---- Chart grid ------------------------------------------------- #}
+    <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+
+        {# Volume over time — spans full width #}
+        <div
+            class="bg-white rounded-lg shadow p-5 lg:col-span-2"
+            x-data="volumeChart('{{ run_id }}')"
+            x-init="load()"
+            @filter-applied.window="load()"
+        >
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-sm font-semibold text-gray-900">Volume over time</h2>
+                <span x-show="loading" class="text-xs text-gray-400 animate-pulse">Loading...</span>
+            </div>
+            <p x-show="error" class="text-sm text-red-600" x-text="error"></p>
+            <div x-show="!error">
+                <canvas id="volumeChart" height="80"></canvas>
+            </div>
+        </div>
+
+        {# Top actors #}
+        <div
+            class="bg-white rounded-lg shadow p-5"
+            x-data="actorsChart('{{ run_id }}')"
+            x-init="load()"
+            @filter-applied.window="load()"
+        >
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-sm font-semibold text-gray-900">Top actors</h2>
+                <span x-show="loading" class="text-xs text-gray-400 animate-pulse">Loading...</span>
+            </div>
+            <p x-show="error" class="text-sm text-red-600" x-text="error"></p>
+            <div x-show="!error">
+                <canvas id="actorsChart" height="200"></canvas>
+            </div>
+        </div>
+
+        {# Top terms #}
+        <div
+            class="bg-white rounded-lg shadow p-5"
+            x-data="termsChart('{{ run_id }}')"
+            x-init="load()"
+            @filter-applied.window="load()"
+        >
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-sm font-semibold text-gray-900">Top terms</h2>
+                <span x-show="loading" class="text-xs text-gray-400 animate-pulse">Loading...</span>
+            </div>
+            <p x-show="error" class="text-sm text-red-600" x-text="error"></p>
+            <div x-show="!error">
+                <canvas id="termsChart" height="200"></canvas>
+            </div>
+        </div>
+
+        {# Engagement distribution — spans full width #}
+        <div
+            class="bg-white rounded-lg shadow p-5 lg:col-span-2"
+            x-data="engagementChart('{{ run_id }}')"
+            x-init="load()"
+            @filter-applied.window="load()"
+        >
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-sm font-semibold text-gray-900">Engagement distribution</h2>
+                <span x-show="loading" class="text-xs text-gray-400 animate-pulse">Loading...</span>
+            </div>
+            <p x-show="error" class="text-sm text-red-600" x-text="error"></p>
+            <div x-show="!error">
+                <canvas id="engagementChart" height="60"></canvas>
+            </div>
+        </div>
+
+    </div>{# /chart grid #}
+
+    {# ---- Network section -------------------------------------------- #}
+    <div
+        class="bg-white rounded-lg shadow p-5"
+        x-data="networkTabs('{{ run_id }}')"
+        x-init="loadCrossplatform()"
+    >
+        <h2 class="text-sm font-semibold text-gray-900 mb-4">Network analysis</h2>
+
+        {# Tab switcher #}
+        <div class="flex border-b border-gray-200 mb-5 gap-1 overflow-x-auto">
+            <template x-for="tab in tabs" :key="tab.id">
+                <button
+                    type="button"
+                    :class="activeTab === tab.id
+                        ? 'border-b-2 border-blue-600 text-blue-600 font-medium whitespace-nowrap pb-2 px-4 text-sm'
+                        : 'text-gray-500 hover:text-gray-700 whitespace-nowrap pb-2 px-4 text-sm transition-colors'"
+                    @click="activeTab = tab.id"
+                    x-text="tab.label"
+                ></button>
+            </template>
+        </div>
+
+        {# Actor co-occurrence network #}
+        <div x-show="activeTab === 'actor'">
+            <p class="text-sm text-gray-600 mb-3">
+                Actor co-occurrence graph — two authors are linked when they both posted
+                content matching at least one shared search term. Edge weight is the
+                number of distinct record pairs. Export to GEXF for visualisation in Gephi.
+            </p>
+            <a
+                href="/content/export?format=gexf&run_id={{ run_id }}"
+                class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300
+                       text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 transition-colors"
+            >
+                <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none"
+                     viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                </svg>
+                Download actor network (GEXF)
+            </a>
+        </div>
+
+        {# Term co-occurrence network #}
+        <div x-show="activeTab === 'term'">
+            <p class="text-sm text-gray-600 mb-3">
+                Term co-occurrence graph — two search terms are linked when they appear
+                together in the <code class="text-xs bg-gray-100 px-1 rounded">search_terms_matched</code>
+                array of the same record.
+                Export to GEXF format for network visualisation in Gephi.
+            </p>
+            <a
+                href="/content/export?format=gexf&run_id={{ run_id }}"
+                class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300
+                       text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 transition-colors"
+            >
+                <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none"
+                     viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                </svg>
+                Download term network (GEXF)
+            </a>
+        </div>
+
+        {# Bipartite actor-term network #}
+        <div x-show="activeTab === 'bipartite'">
+            <p class="text-sm text-gray-600 mb-3">
+                Bipartite actor-term graph — links each pseudonymised author to the search
+                terms their posts matched.  Edge weight is the record count per pair.
+                Export to GEXF format for analysis in Gephi.
+            </p>
+            <a
+                href="/content/export?format=gexf&run_id={{ run_id }}"
+                class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300
+                       text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 transition-colors"
+            >
+                <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none"
+                     viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                </svg>
+                Download bipartite network (GEXF)
+            </a>
+        </div>
+
+        {# Cross-platform actors table #}
+        <div x-show="activeTab === 'crossplatform'">
+            <p class="text-sm text-gray-500 mb-3">
+                Actors resolved across multiple platforms via entity resolution.
+                Only actors where <code class="text-xs bg-gray-100 px-1 rounded">author_id</code>
+                is non-null are shown.
+            </p>
+            <div x-show="crossplatformLoading" class="text-sm text-gray-400 animate-pulse">Loading...</div>
+            <p x-show="crossplatformError" class="text-sm text-red-600" x-text="crossplatformError"></p>
+            <div x-show="!crossplatformLoading && !crossplatformError">
+                <p x-show="crossplatformActors.length === 0" class="text-sm text-gray-500 italic">
+                    No cross-platform actors found. Entity resolution may not have been performed
+                    for this collection run.
+                </p>
+                <div x-show="crossplatformActors.length > 0" class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200 text-sm">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                                <th class="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Platforms</th>
+                                <th class="text-right px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Count</th>
+                                <th class="text-right px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Records</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-100">
+                            <template x-for="actor in crossplatformActors" :key="actor.actor_id">
+                                <tr class="hover:bg-gray-50">
+                                    <td class="px-4 py-2 font-medium text-gray-900"
+                                        x-text="actor.canonical_name || actor.actor_id"></td>
+                                    <td class="px-4 py-2 text-gray-600">
+                                        <div class="flex flex-wrap gap-1">
+                                            <template x-for="p in actor.platforms" :key="p">
+                                                <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-700"
+                                                      x-text="p"></span>
+                                            </template>
+                                        </div>
+                                    </td>
+                                    <td class="px-4 py-2 text-right text-gray-900"
+                                        x-text="actor.platform_count"></td>
+                                    <td class="px-4 py-2 text-right text-gray-900"
+                                        x-text="actor.total_records !== undefined ? actor.total_records.toLocaleString() : '—'"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+    </div>{# /network section #}
+
+    {# ---- Export section --------------------------------------------- #}
+    <div
+        class="bg-white rounded-lg shadow p-5"
+        x-data="exportPanel('{{ run_id }}')"
+    >
+        <h2 class="text-sm font-semibold text-gray-900 mb-4">Export data</h2>
+
+        {# Format selector #}
+        <fieldset class="mb-4">
+            <legend class="text-xs font-medium text-gray-700 mb-2">Format</legend>
+            <div class="flex flex-wrap gap-4">
+                <template x-for="fmt in ['csv','xlsx','json','parquet','gexf']" :key="fmt">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input
+                            type="radio"
+                            :value="fmt"
+                            x-model="exportFormat"
+                            class="text-blue-600 focus:ring-blue-500"
+                        />
+                        <span class="text-sm font-medium text-gray-700 uppercase" x-text="fmt"></span>
+                    </label>
+                </template>
+            </div>
+        </fieldset>
+
+        {# Export buttons #}
+        <div class="flex flex-wrap gap-3">
+            <a
+                :href="`/content/export?format=${exportFormat}&run_id={{ run_id }}`"
+                class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white
+                       text-sm font-medium rounded-md hover:bg-blue-700 transition-colors"
+            >
+                <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none"
+                     viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                </svg>
+                Export (up to 10 k records)
+            </a>
+            <button
+                type="button"
+                @click="startAsyncExport()"
+                :disabled="exportJobId !== null && exportStatus !== 'complete' && exportStatus !== 'failed'"
+                class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300
+                       text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50
+                       transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+                <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none"
+                     viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                Export async (large dataset)
+            </button>
+        </div>
+
+        {# Async job status panel #}
+        <div x-show="exportJobId !== null" class="mt-4 space-y-2">
+            <div class="flex flex-wrap items-center gap-2 text-sm">
+                <span class="text-gray-500">Job:</span>
+                <code class="text-xs font-mono text-gray-700 bg-gray-100 px-1 rounded" x-text="exportJobId"></code>
+                <span
+                    :class="{
+                        'text-yellow-600': exportStatus === 'pending',
+                        'text-blue-600':   exportStatus === 'running',
+                        'text-green-600':  exportStatus === 'complete',
+                        'text-red-600':    exportStatus === 'failed',
+                    }"
+                    class="font-medium capitalize"
+                    x-text="exportStatus ?? ''"
+                ></span>
+                <span x-show="exportPct !== null" class="text-gray-400"
+                      x-text="`(${exportPct}%)`"></span>
+            </div>
+            <div x-show="exportStatus === 'complete'">
+                <a
+                    :href="`/content/export/${exportJobId}/download`"
+                    class="inline-flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white
+                           text-sm font-medium rounded-md hover:bg-green-700 transition-colors"
+                >
+                    <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none"
+                         viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                    </svg>
+                    Download file
+                </a>
+            </div>
+            <p x-show="exportError" class="text-sm text-red-600" x-text="exportError"></p>
+        </div>
+
+    </div>{# /export section #}
+
+</div>{# /analysisDashboard #}
+
+{# ------------------------------------------------------------------ #}
+{# Alpine component definitions                                        #}
+{# ------------------------------------------------------------------ #}
+<script>
+'use strict';
+
+// ---- Utility: build a query-string from the current filter state ----
+function _analysisFilterQs(extra) {
+    const f = window.__analysisFilters || {};
+    const p = new URLSearchParams();
+    if (f.platform)    p.set('platform',    f.platform);
+    if (f.arena)       p.set('arena',       f.arena);
+    if (f.date_from)   p.set('date_from',   f.date_from);
+    if (f.date_to)     p.set('date_to',     f.date_to);
+    if (f.granularity) p.set('granularity', f.granularity);
+    if (extra) Object.entries(extra).forEach(([k, v]) => p.set(k, v));
+    const s = p.toString();
+    return s ? '?' + s : '';
+}
+
+// ---- Top-level dashboard component ----------------------------------------
+function analysisDashboard(runId) {
+    return {
+        runId,
+        filters: {
+            platform: '',
+            arena: '',
+            date_from: '',
+            date_to: '',
+            granularity: 'day',
+        },
+        init() {
+            // Expose a live reference so chart sub-components can read filters.
+            window.__analysisFilters = this.filters;
+        },
+        applyFilters() {
+            window.dispatchEvent(new CustomEvent('filter-applied', { detail: { ...this.filters } }));
+        },
+        resetFilters() {
+            this.filters.platform    = '';
+            this.filters.arena       = '';
+            this.filters.date_from   = '';
+            this.filters.date_to     = '';
+            this.filters.granularity = 'day';
+            this.applyFilters();
+        },
+    };
+}
+
+// ---- Summary cards --------------------------------------------------------
+function summaryCards(runId) {
+    return {
+        runId,
+        loading: true,
+        error: null,
+        summary: null,
+        async load() {
+            this.loading = true;
+            this.error = null;
+            try {
+                const res = await fetch(`/analysis/${runId}/summary`, { credentials: 'include' });
+                if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                this.summary = await res.json();
+            } catch (e) {
+                this.error = e.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+    };
+}
+
+// ---- Volume-over-time chart -----------------------------------------------
+function volumeChart(runId) {
+    return {
+        runId,
+        loading: false,
+        error: null,
+        async load() {
+            this.loading = true;
+            this.error = null;
+            try {
+                const qs = _analysisFilterQs();
+                const res = await fetch(`/analysis/${runId}/volume${qs}`, { credentials: 'include' });
+                if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                const rows = await res.json();
+
+                // Collect all unique arena names from the result set.
+                const arenaSet = new Set();
+                rows.forEach(r => Object.keys(r.arenas || {}).forEach(a => arenaSet.add(a)));
+                const arenaNames = [...arenaSet].sort();
+                const labels = rows.map(r => r.period ? r.period.slice(0, 10) : r.period);
+
+                if (typeof window.initMultiArenaVolumeChart === 'function') {
+                    window.initMultiArenaVolumeChart('volumeChart', { labels, rows, arenaNames });
+                } else if (typeof window.initVolumeChart === 'function') {
+                    // Fallback to the existing single-series helper.
+                    window.initVolumeChart('volumeChart', {
+                        labels,
+                        values: rows.map(r => r.count),
+                        type: 'line',
+                        label: 'Total records',
+                    });
+                }
+            } catch (e) {
+                this.error = e.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+    };
+}
+
+// ---- Top-actors horizontal bar chart -------------------------------------
+function actorsChart(runId) {
+    return {
+        runId,
+        loading: false,
+        error: null,
+        async load() {
+            this.loading = true;
+            this.error = null;
+            try {
+                const f = window.__analysisFilters || {};
+                const p = new URLSearchParams({ limit: 20 });
+                if (f.platform)  p.set('platform',  f.platform);
+                if (f.date_from) p.set('date_from',  f.date_from);
+                if (f.date_to)   p.set('date_to',    f.date_to);
+                const res = await fetch(`/analysis/${runId}/actors?${p}`, { credentials: 'include' });
+                if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                const rows = await res.json();
+                if (typeof window.initActorsChart === 'function') {
+                    window.initActorsChart('actorsChart', {
+                        labels: rows.map(r => r.author_display_name || r.pseudonymized_author_id || '?'),
+                        values: rows.map(r => r.count),
+                    });
+                }
+            } catch (e) {
+                this.error = e.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+    };
+}
+
+// ---- Top-terms horizontal bar chart --------------------------------------
+function termsChart(runId) {
+    return {
+        runId,
+        loading: false,
+        error: null,
+        async load() {
+            this.loading = true;
+            this.error = null;
+            try {
+                const f = window.__analysisFilters || {};
+                const p = new URLSearchParams({ limit: 20 });
+                if (f.date_from) p.set('date_from', f.date_from);
+                if (f.date_to)   p.set('date_to',   f.date_to);
+                const res = await fetch(`/analysis/${runId}/terms?${p}`, { credentials: 'include' });
+                if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                const rows = await res.json();
+                if (typeof window.initTermsChart === 'function') {
+                    window.initTermsChart('termsChart', {
+                        labels: rows.map(r => r.term),
+                        values: rows.map(r => r.count),
+                    });
+                }
+            } catch (e) {
+                this.error = e.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+    };
+}
+
+// ---- Engagement distribution grouped bar chart ---------------------------
+function engagementChart(runId) {
+    return {
+        runId,
+        loading: false,
+        error: null,
+        async load() {
+            this.loading = true;
+            this.error = null;
+            try {
+                const f = window.__analysisFilters || {};
+                const p = new URLSearchParams();
+                if (f.platform)  p.set('platform', f.platform);
+                if (f.arena)     p.set('arena',    f.arena);
+                if (f.date_from) p.set('date_from', f.date_from);
+                if (f.date_to)   p.set('date_to',   f.date_to);
+                const qs = p.toString() ? '?' + p.toString() : '';
+                const res = await fetch(`/analysis/${runId}/engagement${qs}`, { credentials: 'include' });
+                if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                const data = await res.json();
+                if (typeof window.initEngagementStatsChart === 'function') {
+                    window.initEngagementStatsChart('engagementChart', data);
+                } else if (typeof window.initEngagementChart === 'function') {
+                    // Fallback: render mean values only via the existing helper.
+                    const metrics = Object.keys(data);
+                    window.initEngagementChart('engagementChart', {
+                        labels: metrics,
+                        values: metrics.map(m => data[m] ? (data[m].mean ?? 0) : 0),
+                        label: 'Mean',
+                    });
+                }
+            } catch (e) {
+                this.error = e.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+    };
+}
+
+// ---- Network tabs component ----------------------------------------------
+function networkTabs(runId) {
+    return {
+        runId,
+        activeTab: 'actor',
+        tabs: [
+            { id: 'actor',         label: 'Actor network' },
+            { id: 'term',          label: 'Term network' },
+            { id: 'bipartite',     label: 'Bipartite' },
+            { id: 'crossplatform', label: 'Cross-platform actors' },
+        ],
+        crossplatformActors: [],
+        crossplatformLoading: false,
+        crossplatformError: null,
+        async loadCrossplatform() {
+            this.crossplatformLoading = true;
+            this.crossplatformError = null;
+            try {
+                const res = await fetch(`/analysis/${runId}/network/cross-platform`, { credentials: 'include' });
+                if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                this.crossplatformActors = await res.json();
+            } catch (e) {
+                this.crossplatformError = e.message;
+            } finally {
+                this.crossplatformLoading = false;
+            }
+        },
+    };
+}
+
+// ---- Export panel component -----------------------------------------------
+function exportPanel(runId) {
+    return {
+        runId,
+        exportFormat: 'csv',
+        exportJobId: null,
+        exportStatus: null,
+        exportPct: null,
+        exportDownloadUrl: null,
+        exportError: null,
+        _pollTimer: null,
+        async startAsyncExport() {
+            // Clear previous job state.
+            if (this._pollTimer) clearInterval(this._pollTimer);
+            this.exportJobId = null;
+            this.exportStatus = null;
+            this.exportPct = null;
+            this.exportDownloadUrl = null;
+            this.exportError = null;
+
+            try {
+                const p = new URLSearchParams({
+                    format: this.exportFormat,
+                    run_id: this.runId,
+                });
+                const res = await fetch(`/content/export/async?${p}`, {
+                    method: 'POST',
+                    credentials: 'include',
+                });
+                if (!res.ok) {
+                    const body = await res.json().catch(() => ({}));
+                    throw new Error(body.detail || `HTTP ${res.status}`);
+                }
+                const body = await res.json();
+                this.exportJobId = body.job_id;
+                this.exportStatus = body.status;
+                // Poll every 3 s until the job completes or fails.
+                this._pollTimer = setInterval(() => this._pollStatus(), 3000);
+            } catch (e) {
+                this.exportError = e.message;
+            }
+        },
+        async _pollStatus() {
+            if (!this.exportJobId) return;
+            try {
+                const res = await fetch(
+                    `/content/export/${this.exportJobId}/status`,
+                    { credentials: 'include' }
+                );
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const body = await res.json();
+                this.exportStatus = body.status;
+                this.exportPct    = body.pct_complete ?? null;
+                if (body.status === 'complete') {
+                    this.exportDownloadUrl = body.download_url ?? null;
+                    clearInterval(this._pollTimer);
+                } else if (body.status === 'failed') {
+                    this.exportError = body.error || 'Export job failed.';
+                    clearInterval(this._pollTimer);
+                }
+            } catch (e) {
+                this.exportError = e.message;
+                clearInterval(this._pollTimer);
+            }
+        },
+    };
+}
+</script>
+{% endblock %}

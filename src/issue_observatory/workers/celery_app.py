@@ -69,6 +69,10 @@ celery_app = Celery(
         # "issue_observatory.arenas.linkedin.tasks",
         # Phase 3 — export tasks
         "issue_observatory.workers.export_tasks",
+        # Phase 3 — maintenance tasks (dedup, Task 3.8)
+        "issue_observatory.workers.maintenance_tasks",
+        # Core orchestration tasks (beat schedule targets)
+        "issue_observatory.workers.tasks",
     ],
 )
 

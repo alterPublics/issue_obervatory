@@ -48,6 +48,8 @@ from issue_observatory.core.schemas.collection import (
     CreditEstimateResponse,
 )
 
+from issue_observatory.api.limiter import limiter
+
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
@@ -154,7 +156,9 @@ async def list_collection_runs(
 
 
 @router.post("/", response_model=CollectionRunRead, status_code=status.HTTP_201_CREATED)
-async def create_collection_run(
+@limiter.limit("20/minute")
+async def create_collection_run(  # type: ignore[misc]
+    request: Request,
     payload: CollectionRunCreate,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],

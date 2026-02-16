@@ -23,7 +23,21 @@
 - [x] Core API routes: query_designs.py, collections.py — Task 1.3 confirmed (2026-02-16): ownership_guard applied on all routes
 - [x] Actors routes (`api/routes/actors.py`) — Task 0.9b complete (2026-02-16): full CRUD + presences + HTMX support
 - [x] Arena-config endpoints on query_designs — Task 0.4 partial complete (2026-02-16): GET/POST /query-designs/{id}/arena-config implemented
+- [x] Celery orchestration tasks (workers/tasks.py) — Task 0.4 / 3.5 complete (2026-02-16): trigger_daily_collection (credit-gated, retries×3), health_check_all_arenas (Redis TTL cache), settle_pending_credits (reservation→settlement, completion email), cleanup_stale_runs (24h threshold, cascade to CollectionTask), enforce_retention_policy (RetentionService bridge)
 - [ ] Content routes — Task 0.4 still pending
+
+### Task 0.4 / 3.5 — Delivered files
+| File | Status |
+|------|--------|
+| `src/issue_observatory/workers/tasks.py` | Done — 5 orchestration tasks, async DB bridge via asyncio.run(), structlog throughout |
+| `src/issue_observatory/workers/celery_app.py` | Updated — added `issue_observatory.workers.tasks` to include list |
+
+**Design notes:**
+- `trigger_daily_collection`: joins `QueryDesign` (is_active=True) to `CollectionRun` (mode='live', status='active'); credit check via `CreditService.get_available_credits()`; on zero balance suspends the run, emails the owner (using `settings.low_credit_warning_threshold`), skips dispatch. Dispatches `collect_by_terms` per arena with `max_retries=3, countdown=60`.
+- `health_check_all_arenas`: calls `autodiscover()` then `list_arenas()`; derives task name from `collector_class` module path; writes `arena:health:{name}` Redis keys with 360s TTL using synchronous `redis.from_url()`.
+- `settle_pending_credits`: finds reservation transactions whose run has `completed_at != NULL` but no settlement for the same (run, arena, platform) triple; calls `CreditService.settle()` with reserved amount as actual (conservative); sends one `send_collection_complete` email per run (deduped by run_id).
+- `cleanup_stale_runs`: targets status in ('pending','running') with started_at older than 24h (or NULL for pending); bulk-updates run + cascades to CollectionTask non-terminal rows.
+- `enforce_retention_policy`: calls `RetentionService.enforce_retention(db, settings.data_retention_days)`. All tasks catch-all exceptions and log ERROR without re-raising.
 
 ### Task 0.3 — Delivered files
 | File | Status |
@@ -960,3 +974,146 @@ institutional approval is granted.
   schema is not yet migrated, the import will fail gracefully (logged at
   WARNING).  This is acceptable in Phase 0 where the DB migration may lag
   arena implementation.
+
+---
+
+### Task 0.4 (remaining) — Content Browser Routes (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/api/routes/content.py` | Done — browse page, records fragment, detail endpoints |
+| `src/issue_observatory/api/templates/_fragments/content_table_body.html` | Done — full `<tr>` row rendering with chips, badges, detail link |
+
+**New routes added to `content.py`**:
+
+- `GET /content/` — renders `content/browser.html` full page.  Passes `records` (first 50), `total_count`, `recent_runs`, `filter`, `cursor` to template.
+- `GET /content/records` — HTMX HTML fragment endpoint.  Returns `<tr>` rows via `_fragments/content_table_body.html`.  Keyset pagination on `(published_at DESC NULLS LAST, id DESC)`.  Hard cap at 2000 rows via `offset` query param.  Supports multi-value `arenas` checkbox group. Full-text search via `to_tsvector('danish', ...)` + `plainto_tsquery`.
+- `GET /content/{record_id}` — renders `content/record_detail.html`.  Panel partial when `HX-Request` header present; standalone full page otherwise.
+
+**Helper functions added**:
+- `_build_browse_stmt()` — keyset-paginated SELECT with full-text search and all filters.
+- `_encode_cursor()` / `_decode_cursor()` — opaque `published_at|id` cursor format.
+- `_parse_date_param()` — YYYY-MM-DD → UTC datetime.
+- `_orm_row_to_template_dict()` / `_orm_to_detail_dict()` — ORM → template context dicts.
+- `_fetch_recent_runs()` — last 20 runs for sidebar selector.
+- `_count_matching()` — approximate total count for the record-count badge.
+
+**Ownership scoping**: non-admin users restricted to records in their own collection runs via `CollectionRun.initiated_by` subquery.
+
+**Blockers / Notes for QA**:
+- `_count_matching()` runs a `COUNT(*)` over a subquery — may be slow on large partitioned tables.  Consider `EXPLAIN ANALYZE` and caching if this becomes a bottleneck.
+- `to_tsvector` FTS relies on the GIN index created in migration `001_initial_schema.py`.  Ensure migration has run before testing the `q` parameter.
+- The `arenas` multi-value param (checkbox group) works when the browser sends `arenas=foo&arenas=bar`.  FastAPI decodes this as `list[str]` via `Query(default=None)`.
+
+---
+
+### Task 3.10 — Inbound API Rate Limiting (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/api/limiter.py` | Done — new module holding the `Limiter` singleton |
+| `src/issue_observatory/api/main.py` | Done — `SlowAPIMiddleware` + exception handler wired into `create_app()` |
+| `src/issue_observatory/api/routes/content.py` | Done — `@limiter.limit("10/minute")` on `GET /content/export` |
+| `src/issue_observatory/api/routes/collections.py` | Done — `@limiter.limit("20/minute")` on `POST /collections/` |
+| `pyproject.toml` | Done — `slowapi>=0.1.9,<1.0` added to `[project.dependencies]` |
+
+**Design**:
+- Global limit: 100 requests/minute per IP, applied via `SlowAPIMiddleware` (middleware-level, no per-route annotation needed).
+- `GET /content/export` → 10/minute per IP (heavy: DB query + in-memory file assembly).
+- `POST /collections/` → 20/minute per IP (heavy: spawns Celery tasks, credits check).
+- Limiter singleton lives in `api/limiter.py` to avoid circular imports (`main.py` imports route modules; route modules needed the limiter before `main.py` fully loaded).
+- `request: Request` parameter added to both rate-limited route functions (required by slowapi to resolve the key function).
+
+**Notes for QA**:
+- Test 429 responses by hitting `/content/export` 11 times within a minute from the same IP.
+- `SlowAPIMiddleware` is added before `CORSMiddleware` in the middleware stack so that 429 responses are returned before CORS headers are appended.
+- The `_rate_limit_exceeded_handler` returns JSON `{"error": "Rate limit exceeded: ..."}` with `Retry-After` header.
+
+---
+
+### Task 3.7 — Analysis API Routes (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/api/routes/analysis.py` | Done — full implementation replacing stub |
+
+**Endpoints implemented**:
+- `GET /analysis/` → 302 redirect to `/collections` (select-a-run prompt)
+- `GET /analysis/{run_id}` → HTML dashboard (`analysis/index.html` Jinja2 TemplateResponse)
+- `GET /analysis/{run_id}/summary` → JSON run summary via `get_run_summary()`
+- `GET /analysis/{run_id}/volume` → JSON volume over time via `get_volume_over_time()`, params: `platform`, `arena`, `date_from`, `date_to`, `granularity`
+- `GET /analysis/{run_id}/actors` → JSON top actors via `get_top_actors()`, params: `platform`, `date_from`, `date_to`, `limit`
+- `GET /analysis/{run_id}/terms` → JSON top terms via `get_top_terms()`, params: `date_from`, `date_to`, `limit`
+- `GET /analysis/{run_id}/engagement` → JSON engagement distribution via `get_engagement_distribution()`, params: `platform`, `arena`, `date_from`, `date_to`
+- `GET /analysis/{run_id}/network/actors` → JSON actor co-occurrence graph
+- `GET /analysis/{run_id}/network/terms` → JSON term co-occurrence graph
+- `GET /analysis/{run_id}/network/cross-platform` → JSON cross-platform actor list
+- `GET /analysis/{run_id}/network/bipartite` → JSON bipartite actor-term graph
+
+**Auth + ownership**: all endpoints require `get_current_active_user`. `_get_run_or_raise()` helper fetches the `CollectionRun`, raises HTTP 404 if not found, calls `ownership_guard()` to raise HTTP 403 if the user is not the owner or admin.
+
+**Router mounting**: already mounted in `api/main.py` with `prefix="/analysis", tags=["analysis"]` — no change needed.
+
+---
+
+### Task 3.4 — Analysis UI Template (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/api/templates/analysis/index.html` | Done — full implementation |
+| `src/issue_observatory/api/static/js/charts.js` | Done — four new helper functions added |
+
+**Template sections**:
+- Page header with run UUID, status badge, tier badge, mode badge (server-rendered from `run` context dict)
+- Summary cards (4): total records, arena count, date range, credits spent — fetched via Alpine `summaryCards()` component calling `GET /analysis/{run_id}/summary`
+- Filter bar: platform, arena, date from/to, granularity toggle (hour/day/week/month), Apply and Reset buttons — managed by top-level `analysisDashboard()` Alpine component; filter state shared via `window.__analysisFilters`; Apply broadcasts `filter-applied` CustomEvent; chart panels reload on `@filter-applied.window`
+- Volume-over-time chart (multi-arena line): canvas `#volumeChart`, uses `initMultiArenaVolumeChart()`
+- Top actors horizontal bar chart: canvas `#actorsChart`, uses `initActorsChart()`
+- Top terms horizontal bar chart: canvas `#termsChart`, uses `initTermsChart()`
+- Engagement distribution grouped bar chart (mean/median/p95): canvas `#engagementChart`, uses `initEngagementStatsChart()`
+- Network section: 4-tab switcher (actor/term/bipartite/cross-platform); first three tabs show GEXF download link; cross-platform tab renders live table loaded via `networkTabs()` Alpine component
+- Export section: format radio buttons (csv/xlsx/json/parquet/gexf); sync export anchor; async export button with 3s polling via `exportPanel()` Alpine component; job status display with progress percentage
+
+**New `charts.js` helpers**:
+- `initActorsChart(canvasId, data)` — horizontal bar, blue palette
+- `initTermsChart(canvasId, data)` — horizontal bar, amber palette
+- `initEngagementStatsChart(canvasId, data)` — grouped bar with mean/median/p95 datasets
+- `initMultiArenaVolumeChart(canvasId, data)` — multi-dataset line chart, one series per arena
+
+**Notes for QA**:
+- Chart panels gracefully show an error message if the fetch fails (network issue, 403, 404).
+- If entity resolution has not been run for a collection, the cross-platform actors table shows an empty-state message.
+- The async export polling stops automatically on `complete` or `failed` status.
+- Alpine `window.__analysisFilters` is a live proxy object so chart sub-components always read the latest filter state without re-parsing query parameters.
+
+---
+
+## Task 3.11 — Documentation (2026-02-16) — Complete
+
+Four operations documentation files written:
+
+| File | Status |
+|------|--------|
+| `docs/operations/deployment.md` | Done — prerequisites, env var reference table, production Docker Compose, Tailwind rebuild, first-run checklist, Nginx/Caddy reverse proxy snippets, Celery startup commands, Prometheus scrape config |
+| `docs/operations/secrets_management.md` | Done — SECRET_KEY and CREDENTIAL_ENCRYPTION_KEY generation, Docker Secrets approach, backup procedure, rotation procedures, consequence-of-loss guidance |
+| `docs/operations/arena_config.md` | Done — three-tier pricing summary, per-arena credential setup for all 19 arenas (credential_key, tier, JSONB fields, env-var fallbacks), admin UI vs script vs direct DB insert, credit cost table, beat schedule summary |
+| `docs/operations/api_reference.md` | Done — auth (cookie/bearer/API key), pagination, ownership scoping, HTMX vs JSON, all endpoint groups with paths, rate limits (100/min global, 20/min collection launch, 10/min export), error format, Prometheus metrics table |
+
+---
+
+## Task 3.12 — Prometheus Metrics (2026-02-16) — Complete
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/api/metrics.py` | Done — 8 metrics: collection_runs_total, collection_records_total, arena_health_status, credit_transactions_total, http_requests_total, http_request_duration_seconds, celery_tasks_total, celery_task_duration_seconds; get_metrics_response() helper |
+| `src/issue_observatory/config/settings.py` | Updated — added `metrics_enabled: bool = True` field |
+| `src/issue_observatory/api/main.py` | Updated — `GET /metrics` route (gated by settings.metrics_enabled); Prometheus HTTP middleware recording http_requests_total and http_request_duration_seconds, skipping /metrics and /static paths |
+| `src/issue_observatory/workers/tasks.py` | Updated — all 5 orchestration tasks record celery_tasks_total and celery_task_duration_seconds at completion; metrics import wrapped in try/except so failures never crash tasks |
+| `pyproject.toml` | Updated — added `prometheus-client>=0.20,<1.0` to [project.dependencies] |
+
+**Design notes**:
+- All metric objects are module-level singletons in `api/metrics.py`. Prometheus deduplicates by name so safe to import from multiple modules.
+- HTTP middleware skips `/metrics` self-scrape and `/static` asset paths to avoid noise.
+- Celery tasks use lazy imports (`from issue_observatory.api.metrics import ...` inside the task body) wrapped in `try/except Exception` — metrics recording failures are logged at DEBUG and never propagate to the task return value.
+- `arena_health_status` Gauge is defined here for arena tasks to set directly; the `health_check_all_arenas` task should be extended to call `arena_health_status.labels(arena=name).set(1 or 0)` based on actual health check results.
+- Prometheus scrape config snippet documented in `docs/operations/deployment.md`.

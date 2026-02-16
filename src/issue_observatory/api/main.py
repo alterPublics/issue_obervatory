@@ -26,6 +26,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+
+from issue_observatory.api.limiter import limiter
+from issue_observatory.api.metrics import (
+    get_metrics_response,
+    http_request_duration_seconds,
+    http_requests_total,
+)
 
 from issue_observatory.config.settings import get_settings
 from issue_observatory.core.logging_config import configure_logging, request_id_var
@@ -80,7 +90,22 @@ def create_app() -> FastAPI:
         redirect_slashes=False,
     )
 
+    # ---- Rate limiter state -----------------------------------------------
+    # Attach the module-level Limiter instance to app.state so that slowapi
+    # middleware can resolve it, and register the 429 exception handler.
+
+    application.state.limiter = limiter
+    application.add_exception_handler(
+        RateLimitExceeded,  # type: ignore[arg-type]
+        _rate_limit_exceeded_handler,  # type: ignore[arg-type]
+    )
+
     # ---- Middleware --------------------------------------------------------
+
+    # SlowAPIMiddleware must be added BEFORE CORSMiddleware so that rate-limit
+    # rejections are returned without reaching the CORS middleware (which would
+    # otherwise add headers to 429 responses).
+    application.add_middleware(SlowAPIMiddleware)
 
     application.add_middleware(
         CORSMiddleware,
@@ -135,6 +160,42 @@ def create_app() -> FastAPI:
             )
 
         response.headers["X-Request-ID"] = request_id
+        return response
+
+    # ---- Prometheus metrics middleware ------------------------------------
+
+    _SKIP_METRICS_PATHS = frozenset({"/metrics", "/static", "/favicon.ico"})
+
+    @application.middleware("http")
+    async def prometheus_middleware(
+        request: Request, call_next: Callable
+    ) -> Response:
+        """Record HTTP request counts and latency for Prometheus.
+
+        Skips the ``/metrics`` endpoint itself and static file paths to avoid
+        polluting metrics with instrumentation noise.
+
+        Args:
+            request: The incoming HTTP request.
+            call_next: The next middleware or route handler in the chain.
+
+        Returns:
+            The HTTP response from the handler.
+        """
+        path = request.url.path
+        # Skip metrics self-scrape and static assets.
+        if path == "/metrics" or path.startswith("/static"):
+            return await call_next(request)
+
+        method = request.method
+        start = time.perf_counter()
+        response = await call_next(request)
+        duration = time.perf_counter() - start
+
+        status = str(response.status_code)
+        http_requests_total.labels(method=method, path=path, status=status).inc()
+        http_request_duration_seconds.labels(method=method, path=path).observe(duration)
+
         return response
 
     # ---- Static files & templates -----------------------------------------
@@ -287,6 +348,29 @@ def create_app() -> FastAPI:
     async def on_shutdown() -> None:
         """Log clean shutdown."""
         logger.info("application_shutdown")
+
+    # ---- Metrics endpoint -------------------------------------------------
+
+    if settings.metrics_enabled:
+
+        @application.get(
+            "/metrics",
+            tags=["system"],
+            include_in_schema=False,
+            response_class=Response,
+        )
+        async def metrics_endpoint() -> Response:
+            """Expose Prometheus metrics in text format.
+
+            Gated by ``settings.metrics_enabled`` (env var ``METRICS_ENABLED``).
+            Returns standard Prometheus text format with content type
+            ``text/plain; version=0.0.4; charset=utf-8``.
+
+            Returns:
+                A ``Response`` with Prometheus text-format body.
+            """
+            body, content_type = get_metrics_response()
+            return Response(content=body, media_type=content_type)
 
     # ---- Health endpoint --------------------------------------------------
 

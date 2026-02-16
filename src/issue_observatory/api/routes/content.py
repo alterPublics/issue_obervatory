@@ -8,8 +8,9 @@ Records from shared or public query designs are not exposed here unless
 the current user's run collected them.
 
 Routes:
-    GET /content/              — browse collected content with cursor pagination
-    GET /content/{id}          — get a single content record detail
+    GET /content/              — HTML: render content/browser.html (full page)
+    GET /content/records       — HTML fragment: HTMX cursor-paginated tbody rows
+    GET /content/{id}          — HTML: record detail panel or standalone page
 
     GET  /content/export                    — synchronous export (up to 10 K records)
     POST /content/export/async              — async export via Celery (unlimited records)
@@ -21,26 +22,22 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Any, Optional
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import RedirectResponse, Response
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from issue_observatory.analysis.export import ContentExporter
-from issue_observatory.api.dependencies import (
-    PaginationParams,
-    get_current_active_user,
-    get_pagination,
-)
+from issue_observatory.api.dependencies import get_current_active_user
 from issue_observatory.core.database import get_db
 from issue_observatory.core.models.collection import CollectionRun
 from issue_observatory.core.models.content import UniversalContentRecord
 from issue_observatory.core.models.users import User
-from issue_observatory.core.schemas.content import ContentRecordRead
+from issue_observatory.api.limiter import limiter
 
 logger = structlog.get_logger(__name__)
 
@@ -186,121 +183,611 @@ def _record_to_dict(record: UniversalContentRecord) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# List / browse
+# Cursor helpers
 # ---------------------------------------------------------------------------
 
 
-@router.get("/", response_model=list[ContentRecordRead])
-async def browse_content(
-    db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(get_current_active_user)],
-    pagination: Annotated[PaginationParams, Depends(get_pagination)],
-    platform: Optional[str] = Query(default=None, description="Filter by platform name."),
-    arena: Optional[str] = Query(default=None, description="Filter by arena name."),
-    query_design_id: Optional[uuid.UUID] = Query(
-        default=None, description="Filter by query design UUID."
-    ),
-    date_from: Optional[datetime] = Query(
-        default=None, description="Filter content published on or after this timestamp."
-    ),
-    date_to: Optional[datetime] = Query(
-        default=None, description="Filter content published on or before this timestamp."
-    ),
-    search_term: Optional[str] = Query(
-        default=None,
-        description="Filter records where search_terms_matched contains this term.",
-    ),
-    language: Optional[str] = Query(
-        default=None, description="Filter by ISO 639-1 language code."
-    ),
-    limit: int = Query(
-        default=50,
-        ge=1,
-        le=_MAX_LIMIT,
-        description="Number of records to return (max 200).",
-    ),
-) -> list[UniversalContentRecord]:
-    """Browse collected content with optional filters and cursor pagination.
+def _encode_cursor(published_at: Optional[datetime], record_id: uuid.UUID) -> str:
+    """Encode a keyset cursor as a URL-safe string.
 
-    Results are scoped to content collected by the current user's own
-    collection runs.  Records are ordered by ``collected_at`` descending
-    (most recently ingested first).
-
-    Query parameters allow narrowing by platform, arena, date range, matched
-    search term, and language.  All filters are additive (AND logic).
+    Format: ``{published_at_iso}|{record_id_hex}``.  When ``published_at`` is
+    None we use the sentinel string ``"null"``.
 
     Args:
-        db: Injected async database session.
-        current_user: The authenticated, active user making the request.
-        pagination: Cursor and page-size parameters from query string.
-        platform: Optional platform filter (e.g. ``'youtube'``).
-        arena: Optional arena filter (e.g. ``'social_media'``).
-        query_design_id: Optional filter to content from a specific design.
+        published_at: The ``published_at`` timestamp of the last returned row.
+        record_id: The UUID of the last returned row.
+
+    Returns:
+        A ``|``-separated string suitable for inclusion in a query parameter.
+    """
+    ts = published_at.isoformat() if published_at is not None else "null"
+    return f"{ts}|{record_id}"
+
+
+def _decode_cursor(cursor: str) -> tuple[Optional[datetime], Optional[uuid.UUID]]:
+    """Decode a keyset cursor produced by ``_encode_cursor``.
+
+    Args:
+        cursor: The raw cursor string from the query parameter.
+
+    Returns:
+        A tuple of ``(published_at, record_id)``.  Either may be ``None`` if
+        the cursor is malformed or uses the ``"null"`` sentinel.
+    """
+    try:
+        ts_part, id_part = cursor.rsplit("|", 1)
+        pub = None if ts_part == "null" else datetime.fromisoformat(ts_part)
+        rid = uuid.UUID(id_part)
+        return pub, rid
+    except (ValueError, AttributeError):
+        return None, None
+
+
+def _parse_date_param(value: Optional[str]) -> Optional[datetime]:
+    """Parse a YYYY-MM-DD date string into a timezone-aware ``datetime``.
+
+    Returns ``None`` if the value is missing or cannot be parsed.
+
+    Args:
+        value: A date string in ISO format (e.g. ``"2024-01-15"``).
+
+    Returns:
+        A UTC-midnight ``datetime`` or ``None``.
+    """
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Browse query builder (keyset pagination with full-text search)
+# ---------------------------------------------------------------------------
+
+
+def _build_browse_stmt(
+    current_user: User,
+    q: Optional[str],
+    platform: Optional[str],
+    arena: Optional[str],
+    date_from: Optional[datetime],
+    date_to: Optional[datetime],
+    language: Optional[str],
+    search_term: Optional[str],
+    run_id: Optional[uuid.UUID],
+    cursor_published_at: Optional[datetime],
+    cursor_id: Optional[uuid.UUID],
+    limit: int,
+) -> Any:  # noqa: ANN401
+    """Build a keyset-paginated SELECT for the content browser.
+
+    Ordering is ``(published_at DESC NULLS LAST, id DESC)`` to support stable
+    cursor pagination on the partitioned table.  Full-text search uses
+    ``to_tsvector('danish', ...)`` with ``plainto_tsquery``.
+
+    Args:
+        current_user: Authenticated user — used for ownership scoping.
+        q: Optional full-text search string.
+        platform: Optional platform equality filter.
+        arena: Optional arena equality filter.
         date_from: Optional lower bound on ``published_at``.
         date_to: Optional upper bound on ``published_at``.
-        search_term: Optional filter on ``search_terms_matched`` array membership.
-        language: Optional ISO 639-1 language code filter.
-        limit: Maximum records to return (1–200, overrides ``page_size`` from
-            the shared pagination params for this endpoint).
+        language: Optional ISO 639-1 language code.
+        search_term: Optional member-of-array filter on ``search_terms_matched``.
+        run_id: Optional collection run UUID filter.
+        cursor_published_at: ``published_at`` value of the last row on the
+            previous page (keyset lower bound).
+        cursor_id: ``id`` value of the last row on the previous page.
+        limit: Maximum rows to return.
 
     Returns:
-        A list of ``ContentRecordRead`` dicts matching the applied filters.
+        A SQLAlchemy ``Select`` statement.
     """
-    stmt = _build_content_stmt(
-        current_user=current_user,
-        platform=platform,
-        arena=arena,
-        query_design_id=query_design_id,
-        date_from=date_from,
-        date_to=date_to,
-        search_term=search_term,
-        language=language,
-        run_id=None,
-        limit=limit,
+    ucr = UniversalContentRecord
+
+    if current_user.role == "admin":
+        stmt = select(ucr)
+    else:
+        user_run_ids_subq = (
+            select(CollectionRun.id)
+            .where(CollectionRun.initiated_by == current_user.id)
+            .scalar_subquery()
+        )
+        stmt = select(ucr).where(ucr.collection_run_id.in_(user_run_ids_subq))
+
+    # Optional filters
+    if platform is not None:
+        stmt = stmt.where(ucr.platform == platform)
+    if arena is not None:
+        stmt = stmt.where(ucr.arena == arena)
+    if date_from is not None:
+        stmt = stmt.where(ucr.published_at >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(ucr.published_at <= date_to)
+    if language is not None:
+        stmt = stmt.where(ucr.language == language)
+    if run_id is not None:
+        stmt = stmt.where(ucr.collection_run_id == run_id)
+    if search_term is not None:
+        stmt = stmt.where(ucr.search_terms_matched.contains([search_term]))
+
+    # Full-text search using the GIN index created in migration 001.
+    if q:
+        tsvector_expr = text(
+            "to_tsvector('danish', coalesce(content_records.text_content, '')"
+            " || ' ' || coalesce(content_records.title, ''))"
+        )
+        tsquery_expr = text("plainto_tsquery('danish', :q)")
+        stmt = stmt.where(tsvector_expr.op("@@")(tsquery_expr)).params(q=q)
+
+    # Keyset cursor: rows strictly before (published_at, id) in DESC order.
+    if cursor_published_at is not None and cursor_id is not None:
+        stmt = stmt.where(
+            (ucr.published_at < cursor_published_at)
+            | (
+                (ucr.published_at == cursor_published_at)
+                & (ucr.id < cursor_id)
+            )
+        )
+    elif cursor_id is not None:
+        # Cursor with null published_at — both null rows come last already.
+        stmt = stmt.where(ucr.id < cursor_id)
+
+    stmt = (
+        stmt.order_by(
+            ucr.published_at.desc().nullslast(),
+            ucr.id.desc(),
+        )
+        .limit(limit)
     )
 
-    if pagination.cursor:
-        try:
-            cursor_id = uuid.UUID(pagination.cursor)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="cursor must be a valid UUID.",
-            ) from exc
-        stmt = stmt.where(UniversalContentRecord.id < cursor_id)
-
-    result = await db.execute(stmt)
-    return list(result.scalars().all())
+    return stmt
 
 
-# ---------------------------------------------------------------------------
-# Detail
-# ---------------------------------------------------------------------------
-
-
-@router.get("/{record_id}", response_model=ContentRecordRead)
-async def get_content_record(
-    record_id: uuid.UUID,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(get_current_active_user)],
-) -> UniversalContentRecord:
-    """Retrieve a single content record by ID.
-
-    The record must belong to a collection run initiated by the current user.
-    Admin users can access any record.
+async def _fetch_recent_runs(
+    db: AsyncSession,
+    current_user: User,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Return recent collection runs for the browser sidebar selector.
 
     Args:
-        record_id: UUID of the content record.
-        db: Injected async database session.
-        current_user: The authenticated, active user making the request.
+        db: Async database session.
+        current_user: Authenticated user — scopes to their own runs unless admin.
+        limit: Maximum number of runs to return.
 
     Returns:
-        The ``ContentRecordRead`` for the requested record.
+        A list of dicts with keys ``id``, ``status``, ``query_design_name``,
+        ``created_at``.
+    """
+    if current_user.role == "admin":
+        stmt = select(CollectionRun).order_by(CollectionRun.created_at.desc()).limit(limit)
+    else:
+        stmt = (
+            select(CollectionRun)
+            .where(CollectionRun.initiated_by == current_user.id)
+            .order_by(CollectionRun.created_at.desc())
+            .limit(limit)
+        )
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    return [
+        {
+            "id": str(r.id),
+            "status": r.status,
+            "query_design_name": getattr(r, "query_design_name", None),
+            "created_at": r.created_at.isoformat() if r.created_at else "",
+        }
+        for r in rows
+    ]
+
+
+async def _count_matching(
+    db: AsyncSession,
+    current_user: User,
+    q: Optional[str],
+    platform: Optional[str],
+    arena: Optional[str],
+    date_from: Optional[datetime],
+    date_to: Optional[datetime],
+    language: Optional[str],
+    search_term: Optional[str],
+    run_id: Optional[uuid.UUID],
+) -> int:
+    """Return the total number of records matching the current browser filters.
+
+    Used to populate the record-count badge in the browser page header.
+
+    Args:
+        db: Async database session.
+        current_user: Authenticated user.
+        q: Full-text search string.
+        platform: Platform filter.
+        arena: Arena filter.
+        date_from: Lower bound on ``published_at``.
+        date_to: Upper bound on ``published_at``.
+        language: Language filter.
+        search_term: ``search_terms_matched`` array membership filter.
+        run_id: Collection run UUID filter.
+
+    Returns:
+        Integer row count (may be approximate on very large datasets).
+    """
+    from sqlalchemy import func  # noqa: PLC0415
+
+    stmt = _build_browse_stmt(
+        current_user=current_user,
+        q=q,
+        platform=platform,
+        arena=arena,
+        date_from=date_from,
+        date_to=date_to,
+        language=language,
+        search_term=search_term,
+        run_id=run_id,
+        cursor_published_at=None,
+        cursor_id=None,
+        limit=_BROWSE_CAP + 1,  # count up to cap+1 to detect overflow
+    )
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    result = await db.execute(count_stmt)
+    return result.scalar_one() or 0
+
+
+# ---------------------------------------------------------------------------
+# Template context helpers
+# ---------------------------------------------------------------------------
+
+
+def _orm_row_to_template_dict(row: Any) -> dict[str, Any]:  # noqa: ANN401
+    """Convert a SQLAlchemy mapping row or ORM instance to a template-safe dict.
+
+    Args:
+        row: A SQLAlchemy ``RowMapping`` (from ``.mappings()``) or an ORM instance.
+
+    Returns:
+        Dict with string keys matching what the browser and detail templates
+        expect.
+    """
+    # Supports both RowMapping (dict-like) and ORM instances.
+    def _get(key: str) -> Any:  # noqa: ANN401
+        try:
+            return row[key]
+        except (TypeError, KeyError):
+            return getattr(row, key, None)
+
+    pub = _get("published_at")
+    col = _get("collected_at")
+    terms = _get("search_terms_matched") or []
+
+    return {
+        "id": str(_get("id") or ""),
+        "platform": _get("platform") or "",
+        "arena": _get("arena") or "",
+        "content_type": _get("content_type") or "",
+        "title": _get("title") or "",
+        "text": _get("text_content") or "",
+        "author": _get("author_display_name") or "",
+        "author_id": str(_get("author_platform_id") or ""),
+        "url": _get("url") or "",
+        "published_at": pub.isoformat() if pub else "",
+        "collected_at": col.isoformat() if col else "",
+        "language": _get("language") or "",
+        "engagement_score": _get("engagement_score") or 0,
+        "search_terms_matched": terms if isinstance(terms, list) else [],
+        "run_id": str(_get("collection_run_id") or ""),
+        "metadata": _get("raw_metadata") or {},
+    }
+
+
+def _orm_to_detail_dict(record: UniversalContentRecord) -> dict[str, Any]:
+    """Convert an ORM ``UniversalContentRecord`` to the detail template context dict.
+
+    Args:
+        record: An ORM instance loaded from the database.
+
+    Returns:
+        Dict with keys expected by ``content/record_detail.html``.
+    """
+    pub = record.published_at
+    col = record.collected_at
+    terms = record.search_terms_matched or []
+
+    return {
+        "id": str(record.id),
+        "platform": record.platform or "",
+        "arena": record.arena or "",
+        "content_type": record.content_type or "",
+        "title": record.title or "",
+        "text": record.text_content or "",
+        "author": record.author_display_name or "",
+        "author_id": str(record.author_platform_id or ""),
+        "url": record.url or "",
+        "published_at": pub.isoformat() if pub else "",
+        "collected_at": col.isoformat() if col else "",
+        "language": record.language or "",
+        "engagement_score": record.engagement_score or 0,
+        "search_terms_matched": terms if isinstance(terms, list) else [],
+        "run_id": str(record.collection_run_id or ""),
+        "metadata": record.raw_metadata or {},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Browse page (HTML full page)
+# ---------------------------------------------------------------------------
+
+_BROWSE_LIMIT = 50
+_BROWSE_CAP = 2000
+
+
+@router.get("/")
+async def content_browser_page(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    q: Optional[str] = Query(default=None, description="Full-text search query."),
+    platform: Optional[str] = Query(default=None),
+    arena: Optional[str] = Query(default=None),
+    date_from: Optional[str] = Query(default=None),
+    date_to: Optional[str] = Query(default=None),
+    language: Optional[str] = Query(default=None),
+    search_term: Optional[str] = Query(default=None),
+    run_id: Optional[uuid.UUID] = Query(default=None),
+) -> Response:
+    """Render the full content browser HTML page.
+
+    Fetches the first page of matching records and passes them, along with
+    filter context and a list of recent collection runs for the sidebar
+    selector, to the ``content/browser.html`` Jinja2 template.
+
+    Args:
+        request: The incoming HTTP request (required by Jinja2 templates).
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        q: Optional full-text search string (Danish tsvector).
+        platform: Optional platform filter.
+        arena: Optional arena filter.
+        date_from: Optional lower date bound (YYYY-MM-DD string from form).
+        date_to: Optional upper date bound (YYYY-MM-DD string from form).
+        language: Optional ISO 639-1 language code.
+        search_term: Optional filter on ``search_terms_matched`` array.
+        run_id: Optional collection run UUID filter.
+
+    Returns:
+        ``TemplateResponse`` rendering ``content/browser.html``.
+    """
+    from issue_observatory.api.main import templates  # noqa: PLC0415
+
+    if templates is None:
+        raise HTTPException(status_code=500, detail="Template engine not initialised.")
+
+    date_from_dt = _parse_date_param(date_from)
+    date_to_dt = _parse_date_param(date_to)
+
+    stmt = _build_browse_stmt(
+        current_user=current_user,
+        q=q,
+        platform=platform,
+        arena=arena,
+        date_from=date_from_dt,
+        date_to=date_to_dt,
+        language=language,
+        search_term=search_term,
+        run_id=run_id,
+        cursor_published_at=None,
+        cursor_id=None,
+        limit=_BROWSE_LIMIT,
+    )
+    result = await db.execute(stmt)
+    records = list(result.mappings().all())
+
+    cursor: Optional[str] = None
+    if len(records) == _BROWSE_LIMIT:
+        last = records[-1]
+        cursor = _encode_cursor(last["published_at"], last["id"])
+
+    # Fetch recent collection runs for the sidebar run selector (last 20).
+    recent_runs = await _fetch_recent_runs(db, current_user)
+
+    # Total count (approximate — count without cursor/limit for display).
+    total_count = await _count_matching(
+        db=db,
+        current_user=current_user,
+        q=q,
+        platform=platform,
+        arena=arena,
+        date_from=date_from_dt,
+        date_to=date_to_dt,
+        language=language,
+        search_term=search_term,
+        run_id=run_id,
+    )
+
+    filter_ctx = {
+        "q": q or "",
+        "platform": platform or "",
+        "arenas": [arena] if arena else [],
+        "date_from": date_from or "",
+        "date_to": date_to or "",
+        "language": language or "",
+        "search_term": search_term or "",
+        "run_id": str(run_id) if run_id else "",
+    }
+
+    return templates.TemplateResponse(
+        "content/browser.html",
+        {
+            "request": request,
+            "records": [_orm_row_to_template_dict(r) for r in records],
+            "total_count": total_count,
+            "recent_runs": recent_runs,
+            "filter": filter_ctx,
+            "cursor": cursor or "",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Records fragment (HTMX tbody rows — cursor paginated)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/records")
+async def content_records_fragment(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    cursor: Optional[str] = Query(default=None, description="Opaque keyset cursor."),
+    q: Optional[str] = Query(default=None),
+    arenas: Optional[list[str]] = Query(default=None),
+    platform: Optional[str] = Query(default=None),
+    date_from: Optional[str] = Query(default=None),
+    date_to: Optional[str] = Query(default=None),
+    language: Optional[str] = Query(default=None),
+    search_term: Optional[str] = Query(default=None),
+    run_id: Optional[uuid.UUID] = Query(default=None),
+    offset: int = Query(default=0, ge=0, description="Running total of rows already sent."),
+    limit: int = Query(default=_BROWSE_LIMIT, ge=1, le=_MAX_LIMIT),
+) -> HTMLResponse:
+    """Return an HTMX HTML fragment containing ``<tr>`` rows for the content table.
+
+    Implements keyset pagination on ``(published_at DESC, id DESC)``.  Each
+    response appends rows into ``#records-tbody`` via ``hx-swap="beforeend"``.
+    Once the cumulative ``offset`` reaches 2000, an empty sentinel is returned
+    so that HTMX stops triggering further loads.
+
+    The ``arena`` filter accepts multiple values (checkbox group named
+    ``arenas``).
+
+    Args:
+        request: The incoming HTTP request.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        cursor: Encoded ``published_at|id`` keyset cursor from the previous page.
+        q: Optional full-text search string.
+        arenas: Optional list of arena slugs (multi-value checkbox).
+        platform: Optional platform filter.
+        date_from: Optional lower date bound (YYYY-MM-DD).
+        date_to: Optional upper date bound (YYYY-MM-DD).
+        language: Optional ISO 639-1 language code filter.
+        search_term: Optional filter on ``search_terms_matched`` array.
+        run_id: Optional collection run UUID.
+        offset: Number of rows already rendered (used to enforce 2000-row cap).
+        limit: Page size (default 50, max 200).
+
+    Returns:
+        ``HTMLResponse`` containing ``<tr>`` elements plus an optional
+        sentinel ``<tr hx-trigger="revealed">`` for further loading.
+    """
+    from issue_observatory.api.main import templates  # noqa: PLC0415
+
+    if templates is None:
+        raise HTTPException(status_code=500, detail="Template engine not initialised.")
+
+    # Enforce hard cap: if caller has already received 2000 rows, return nothing.
+    if offset >= _BROWSE_CAP:
+        return HTMLResponse("", status_code=200)
+
+    remaining = min(limit, _BROWSE_CAP - offset)
+
+    cursor_published_at: Optional[datetime] = None
+    cursor_id_val: Optional[uuid.UUID] = None
+    if cursor:
+        cursor_published_at, cursor_id_val = _decode_cursor(cursor)
+
+    date_from_dt = _parse_date_param(date_from)
+    date_to_dt = _parse_date_param(date_to)
+
+    # Merge arenas multi-value list with singular platform/arena params.
+    arena_filter: Optional[str] = None
+    arenas_list: list[str] = arenas or []
+    if len(arenas_list) == 1:
+        arena_filter = arenas_list[0]
+    # When multiple arenas checked we build an IN filter below.
+
+    stmt = _build_browse_stmt(
+        current_user=current_user,
+        q=q,
+        platform=platform,
+        arena=arena_filter if len(arenas_list) <= 1 else None,
+        date_from=date_from_dt,
+        date_to=date_to_dt,
+        language=language,
+        search_term=search_term,
+        run_id=run_id,
+        cursor_published_at=cursor_published_at,
+        cursor_id=cursor_id_val,
+        limit=remaining,
+    )
+
+    # Multiple arena filter (IN clause) applied post-base when >1 selected.
+    if len(arenas_list) > 1:
+        stmt = stmt.where(UniversalContentRecord.arena.in_(arenas_list))
+
+    result = await db.execute(stmt)
+    records = list(result.mappings().all())
+
+    new_offset = offset + len(records)
+    next_cursor: Optional[str] = None
+    if len(records) == remaining and new_offset < _BROWSE_CAP:
+        last = records[-1]
+        next_cursor = _encode_cursor(last["published_at"], last["id"])
+
+    template_records = [_orm_row_to_template_dict(r) for r in records]
+
+    html = templates.get_template("_fragments/content_table_body.html").render(
+        {
+            "request": request,
+            "records": template_records,
+            "next_cursor": next_cursor or "",
+            "new_offset": new_offset,
+            "browse_cap": _BROWSE_CAP,
+        }
+    )
+    return HTMLResponse(html, status_code=200)
+
+
+# ---------------------------------------------------------------------------
+# Detail — HTML panel or standalone page
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{record_id}")
+async def get_content_record_html(
+    record_id: uuid.UUID,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
+) -> Response:
+    """Return a content record as an HTML detail panel or standalone page.
+
+    When the request includes the ``HX-Request`` header (HTMX partial load),
+    the template is rendered without ``standalone=True`` so it outputs only
+    the inner panel markup.  Otherwise the full ``base.html`` wrapper is used.
+
+    Args:
+        record_id: UUID of the target content record.
+        request: The incoming HTTP request.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        hx_request: Value of the ``HX-Request`` header (injected by FastAPI).
+
+    Returns:
+        ``TemplateResponse`` rendering ``content/record_detail.html``.
 
     Raises:
-        HTTPException 404: If the record does not exist or is not owned
+        HTTPException 404: If the record does not exist or is not accessible
             by the current user.
     """
+    from issue_observatory.api.main import templates  # noqa: PLC0415
+
+    if templates is None:
+        raise HTTPException(status_code=500, detail="Template engine not initialised.")
+
     if current_user.role == "admin":
         stmt = select(UniversalContentRecord).where(
             UniversalContentRecord.id == record_id
@@ -316,16 +803,26 @@ async def get_content_record(
             UniversalContentRecord.collection_run_id.in_(user_run_ids_subq),
         )
 
-    result = await db.execute(stmt)
-    record = result.scalar_one_or_none()
+    db_result = await db.execute(stmt)
+    orm_record = db_result.scalar_one_or_none()
 
-    if record is None:
+    if orm_record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Content record '{record_id}' not found.",
         )
 
-    return record
+    record_ctx = _orm_to_detail_dict(orm_record)
+    is_panel = hx_request is not None
+
+    return templates.TemplateResponse(
+        "content/record_detail.html",
+        {
+            "request": request,
+            "record": record_ctx,
+            "standalone": not is_panel,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +831,9 @@ async def get_content_record(
 
 
 @router.get("/export")
-async def export_content_sync(
+@limiter.limit("10/minute")
+async def export_content_sync(  # type: ignore[misc]
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     format: str = Query(
@@ -704,3 +1203,83 @@ async def download_export_file(
     )
 
     return RedirectResponse(url=presigned_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+
+# ---------------------------------------------------------------------------
+# Deduplication — Task 3.8
+# ---------------------------------------------------------------------------
+
+
+@router.post("/deduplicate", status_code=status.HTTP_202_ACCEPTED)
+async def trigger_deduplication(
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    run_id: uuid.UUID = Query(..., description="Collection run UUID to deduplicate."),
+) -> dict[str, str]:
+    """Dispatch an asynchronous near-duplicate detection pass for a collection run.
+
+    Dispatches the ``deduplicate_run`` Celery task which performs URL-normalised
+    and content-hash duplicate detection, marking duplicate records by setting
+    ``raw_metadata['duplicate_of']`` to the canonical record's UUID.
+
+    Args:
+        current_user: The authenticated, active user making the request.
+        run_id: UUID of the collection run to deduplicate.
+
+    Returns:
+        ``{"job_id": "<task-id>", "status": "pending"}``
+    """
+    from issue_observatory.workers.maintenance_tasks import deduplicate_run
+
+    task = deduplicate_run.apply_async(kwargs={"run_id": str(run_id)})
+
+    logger.info(
+        "dedup.dispatched",
+        job_id=task.id,
+        run_id=str(run_id),
+        user_id=str(current_user.id),
+    )
+
+    return {"job_id": task.id, "status": "pending"}
+
+
+@router.get("/duplicates")
+async def get_duplicates(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    run_id: uuid.UUID = Query(..., description="Collection run UUID to inspect for duplicates."),
+) -> dict[str, Any]:
+    """Return URL and hash duplicate groups for a collection run.
+
+    Runs both URL-normalisation and content-hash duplicate detection
+    synchronously and returns the groups as JSON.  Intended for inspecting
+    small runs or verifying dedup results — for large runs use the async
+    ``POST /content/deduplicate`` endpoint instead.
+
+    Args:
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        run_id: UUID of the collection run to inspect.
+
+    Returns:
+        Dict with keys ``url_groups`` and ``hash_groups``, each a list of
+        duplicate group objects.
+    """
+    from issue_observatory.core.deduplication import DeduplicationService
+
+    svc = DeduplicationService()
+    url_groups = await svc.find_url_duplicates(db, run_id=run_id)
+    hash_groups = await svc.find_hash_duplicates(db, run_id=run_id)
+
+    logger.info(
+        "dedup.inspect",
+        run_id=str(run_id),
+        url_groups=len(url_groups),
+        hash_groups=len(hash_groups),
+        user_id=str(current_user.id),
+    )
+
+    return {
+        "run_id": str(run_id),
+        "url_groups": url_groups,
+        "hash_groups": hash_groups,
+    }

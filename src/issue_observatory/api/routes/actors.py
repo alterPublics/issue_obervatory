@@ -648,3 +648,233 @@ async def remove_presence(
         actor_id=str(actor_id),
         presence_id=str(presence_id),
     )
+
+
+# ---------------------------------------------------------------------------
+# Entity Resolution — Task 3.9
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{actor_id}/candidates")
+async def find_merge_candidates(
+    actor_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    threshold: float = Query(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Minimum trigram similarity threshold (0–1).",
+    ),
+    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
+) -> list[dict] | HTMLResponse:
+    """Find actors that may be the same real-world entity as *actor_id*.
+
+    Uses three matching strategies in priority order: exact canonical name
+    match, shared platform username, and pg_trgm trigram similarity.
+
+    Args:
+        actor_id: UUID of the actor to find candidates for.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        threshold: Trigram similarity threshold (default 0.7).
+        hx_request: HTMX header; when set, returns an HTML table fragment.
+
+    Returns:
+        JSON list of candidate dicts, or an HTML fragment when HTMX.
+
+    Raises:
+        HTTPException 404: If the actor does not exist.
+        HTTPException 403: If the actor is not accessible.
+    """
+    from issue_observatory.core.entity_resolver import EntityResolver
+
+    actor = await _get_actor_or_404(actor_id, db, load_presences=True)
+    _check_actor_readable(actor, current_user)
+
+    resolver = EntityResolver()
+    candidates = await resolver.find_candidate_matches(db, actor_id, threshold=threshold)
+
+    if hx_request:
+        rows_html = ""
+        for c in candidates:
+            rows_html += (
+                f'<tr class="hover:bg-gray-50">'
+                f'<td class="px-4 py-2 text-sm text-gray-900">{c["canonical_name"]}</td>'
+                f'<td class="px-4 py-2 text-sm text-gray-500">{c["match_reason"]}</td>'
+                f'<td class="px-4 py-2 text-sm font-mono text-gray-500">{c["similarity"]:.2f}</td>'
+                f'<td class="px-4 py-2 text-sm text-gray-500">{", ".join(c["platforms"])}</td>'
+                f'<td class="px-4 py-2 text-right">'
+                f'<button type="button"'
+                f' x-data=""'
+                f' @click="if(confirm(\'Merge {c[&quot;canonical_name&quot;]} into {actor.canonical_name}? This cannot be undone.\'))'
+                f"{{ $dispatch('merge-actor', {{ duplicate_id: '{c[\"actor_id\"]}' }}) }}"
+                f'"'
+                f' class="text-xs text-red-600 hover:text-red-800 px-2 py-1 rounded hover:bg-red-50">'
+                f"Merge"
+                f"</button>"
+                f"</td>"
+                f"</tr>"
+            )
+        html = (
+            f'<table class="min-w-full divide-y divide-gray-200 text-sm" id="candidates-table">'
+            f'<thead class="bg-gray-50">'
+            f'<tr>'
+            f'<th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Name</th>'
+            f'<th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reason</th>'
+            f'<th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Score</th>'
+            f'<th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Platforms</th>'
+            f'<th class="px-4 py-3"><span class="sr-only">Actions</span></th>'
+            f'</tr></thead>'
+            f'<tbody class="divide-y divide-gray-100">{rows_html}</tbody>'
+            f"</table>"
+            if candidates
+            else '<p class="text-sm text-gray-400 px-4 py-4">No candidates found above the similarity threshold.</p>'
+        )
+        return HTMLResponse(content=html)
+
+    return candidates
+
+
+@router.post("/{actor_id}/merge")
+async def merge_actor(
+    actor_id: uuid.UUID,
+    payload: dict,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> dict:
+    """Merge one or more duplicate actors into the canonical actor.
+
+    Re-points all content records from the duplicate actors to *actor_id*,
+    moves platform presences (skipping conflicts), creates ``ActorAlias``
+    entries from the duplicates' names, then deletes the duplicate actors.
+
+    Requires ownership of *actor_id* or admin role.
+
+    Args:
+        actor_id: UUID of the canonical actor (the one to keep).
+        payload: JSON body with key ``duplicate_ids`` (list of UUID strings).
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        Dict with ``merged``, ``records_updated``, ``presences_moved`` counts.
+
+    Raises:
+        HTTPException 400: If ``duplicate_ids`` is missing or empty.
+        HTTPException 404: If the canonical actor does not exist.
+        HTTPException 403: If the caller is not the owner or an admin.
+    """
+    from issue_observatory.core.entity_resolver import EntityResolver
+
+    actor = await _get_actor_or_404(actor_id, db)
+    ownership_guard(actor.created_by or uuid.UUID(int=0), current_user)
+
+    raw_ids = payload.get("duplicate_ids", [])
+    if not raw_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="'duplicate_ids' must be a non-empty list of UUID strings.",
+        )
+
+    try:
+        duplicate_ids = [uuid.UUID(str(i)) for i in raw_ids]
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="All values in 'duplicate_ids' must be valid UUIDs.",
+        ) from exc
+
+    resolver = EntityResolver()
+    result = await resolver.merge_actors(
+        db=db,
+        canonical_id=actor_id,
+        duplicate_ids=duplicate_ids,
+        performed_by=current_user.id,
+    )
+
+    logger.info(
+        "actor_merge_complete",
+        canonical_id=str(actor_id),
+        performed_by=str(current_user.id),
+        **result,
+    )
+    return result
+
+
+@router.post("/{actor_id}/split")
+async def split_actor(
+    actor_id: uuid.UUID,
+    payload: dict,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> dict:
+    """Split selected platform presences from an actor into a new actor.
+
+    Creates a new ``Actor`` with ``new_canonical_name``, moves the specified
+    platform presences to it, re-points relevant content records, and records
+    an alias on the original actor.
+
+    Requires ownership of *actor_id* or admin role.
+
+    Args:
+        actor_id: UUID of the actor to split from.
+        payload: JSON body with keys:
+
+            - ``presence_ids`` (list[str]): UUIDs of platform presences to move.
+            - ``new_canonical_name`` (str): Canonical name for the new actor.
+
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        Dict with ``new_actor_id``, ``presences_moved``, ``records_updated``.
+
+    Raises:
+        HTTPException 400: If required fields are missing.
+        HTTPException 404: If the actor does not exist.
+        HTTPException 403: If the caller is not the owner or an admin.
+    """
+    from issue_observatory.core.entity_resolver import EntityResolver
+
+    actor = await _get_actor_or_404(actor_id, db)
+    ownership_guard(actor.created_by or uuid.UUID(int=0), current_user)
+
+    raw_presence_ids = payload.get("presence_ids", [])
+    new_canonical_name = payload.get("new_canonical_name", "").strip()
+
+    if not raw_presence_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="'presence_ids' must be a non-empty list of UUID strings.",
+        )
+    if not new_canonical_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="'new_canonical_name' must be a non-empty string.",
+        )
+
+    try:
+        presence_ids = [uuid.UUID(str(i)) for i in raw_presence_ids]
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="All values in 'presence_ids' must be valid UUIDs.",
+        ) from exc
+
+    resolver = EntityResolver()
+    result = await resolver.split_actor(
+        db=db,
+        actor_id=actor_id,
+        platform_presence_ids=presence_ids,
+        new_canonical_name=new_canonical_name,
+        performed_by=current_user.id,
+    )
+
+    logger.info(
+        "actor_split_complete",
+        original_actor_id=str(actor_id),
+        performed_by=str(current_user.id),
+        **result,
+    )
+    return result

@@ -139,9 +139,70 @@ job (`0 2 * * * docker compose --profile backup run --rm backup`) — see
 
 ## Analysis Module
 
-- [ ] Descriptive statistics (`analysis/descriptive.py`)
-- [ ] Network analysis (`analysis/network.py`)
+- [x] Descriptive statistics (`analysis/descriptive.py`) — Task 3.1 COMPLETE
+- [x] Network analysis (`analysis/network.py`) — Task 3.2 COMPLETE
 - [x] Export: CSV, XLSX, GEXF, JSON (NDJSON), Parquet (`analysis/export.py`) — Task 3.3 COMPLETE
+- [x] Cross-arena near-duplicate deduplication (`core/deduplication.py`) — Task 3.8 COMPLETE
+- [x] Entity resolution: fuzzy actor matching + merge/split (`core/entity_resolver.py`) — Task 3.9 COMPLETE
+
+## Descriptive Statistics (Task 3.1 — COMPLETE)
+
+### Deliverables
+
+- [x] `analysis/descriptive.py` — five async query functions and `DescriptiveStats` dataclass
+- [x] `analysis/__init__.py` — all public symbols exported
+
+### Functions
+
+| Function | Returns | Notes |
+|----------|---------|-------|
+| `get_volume_over_time()` | `list[dict]` | `date_trunc(granularity, published_at)` grouped by period + arena; granularity validated against allowlist before string interpolation |
+| `get_top_actors()` | `list[dict]` | Groups by `pseudonymized_author_id + author_display_name + platform`; engagement = `COALESCE(likes,0) + COALESCE(shares,0) + COALESCE(comments,0)` |
+| `get_top_terms()` | `list[dict]` | `unnest(search_terms_matched)` with GROUP BY; uses GIN index on `search_terms_matched` |
+| `get_engagement_distribution()` | `dict` | `percentile_cont(0.5)` and `percentile_cont(0.95) WITHIN GROUP` for median and p95; single-row aggregation query |
+| `get_run_summary()` | `dict` | Three queries: run metadata from `collection_runs`, totals from `content_records`, per-arena breakdown via RIGHT JOIN on `collection_tasks` |
+
+### Design decisions
+
+- `date_trunc` granularity is validated against a `frozenset` before f-string interpolation — safe against injection.
+- Bind parameters for UUID values are cast to `str` to satisfy asyncpg's strict type handling.
+- `DescriptiveStats` dataclass provides a typed container for the API layer without requiring Pydantic (avoids an import dependency from the analysis layer into the API layer).
+- All datetime values in returned dicts are ISO 8601 strings via `_dt_iso()` helper.
+- `get_volume_over_time()` returns one dict per time period (not per period×arena row) — per-arena counts are nested under an `arenas` sub-dict for convenient frontend consumption.
+
+## Network Analysis (Task 3.2 — COMPLETE)
+
+### Deliverables
+
+- [x] `analysis/network.py` — four async network construction functions
+- [x] `analysis/__init__.py` — all public symbols exported
+
+### Functions
+
+| Function | Returns | Notes |
+|----------|---------|-------|
+| `get_actor_co_occurrence()` | `dict` (graph) | Self-join on `content_records` using `&&` array overlap operator; two separate queries (nodes via CTE, edges standalone) to avoid CTE materialisation issues |
+| `get_term_co_occurrence()` | `dict` (graph) | Double `unnest` with `t1.term < t2.term` predicate to deduplicate pairs; CTE chain: `term_pairs → node_ids → term_freq` |
+| `get_cross_platform_actors()` | `list[dict]` | Joins `content_records` with `actors`; requires non-null `author_id` (entity resolution prerequisite); uses `array_agg(DISTINCT … ORDER BY …)` |
+| `build_bipartite_network()` | `dict` (graph) | Single aggregation query; term node IDs prefixed with `"term:"` to avoid collision with actor IDs; actor and term nodes distinguished by `type` attribute |
+
+### Graph dict format (shared)
+
+```json
+{
+  "nodes": [{"id": "...", "label": "...", "type": "actor|term", ...}],
+  "edges": [{"source": "...", "target": "...", "weight": N}]
+}
+```
+
+### Design decisions
+
+- **SQL-side co-occurrence**: All pair computation happens in PostgreSQL via self-joins and `unnest` — Python only assembles the final graph dict. This avoids loading O(N²) intermediate pairs into memory.
+- **Degree computation in Python**: Node degrees are computed from the edge list in Python after the SQL fetch. This is O(E) and avoids a second aggregation query.
+- **`LEAST/GREATEST` trick**: Used to canonicalize undirected pairs `(a, b)` = `(b, a)` without a self-join deduplication subquery.
+- **`&&` operator**: The GIN index on `search_terms_matched` is used by the array overlap operator in `get_actor_co_occurrence`. The query planner will use `idx_content_terms` for both sides of the self-join if `query_design_id` or `collection_run_id` filters are applied first.
+- **Empty result handling**: All functions return `{"nodes": [], "edges": []}` (or `[]`) on empty result sets without raising exceptions.
+- **b-side parameter renaming**: In `get_actor_co_occurrence`, filter parameters for the b-side of the self-join are renamed with a `_b` suffix at runtime to avoid bind-parameter name collisions.
 
 ## Export Module (Task 3.3 — COMPLETE)
 
@@ -217,3 +278,78 @@ The download endpoint regenerates a fresh pre-signed URL on every call using
 
 Both raise `ImportError` with an install hint if not available — guards exist
 but should never trigger in production since both are in main dependencies.
+
+## Cross-Arena Near-Duplicate Deduplication (Task 3.8 — COMPLETE)
+
+### Deliverables
+
+- [x] `core/deduplication.py` — `DeduplicationService` class + `normalise_url()` pure function
+- [x] `workers/maintenance_tasks.py` — `deduplicate_run` Celery task
+- [x] `workers/celery_app.py` — maintenance task module registered in `include` list
+- [x] `api/routes/content.py` — two new endpoints: `POST /content/deduplicate` and `GET /content/duplicates`
+
+### DeduplicationService (`core/deduplication.py`)
+
+| Method | Description |
+|--------|-------------|
+| `normalise_url(url)` | Pure function: lowercase, strip `www.`, strip 10 tracking params (`utm_*`, `fbclid`, `gclid`, `ref`, `source`, `_ga`), strip trailing slash, re-sort query string |
+| `find_url_duplicates(db, run_id, query_design_id)` | Group records by normalised URL; return groups with > 1 record |
+| `find_hash_duplicates(db, run_id, query_design_id)` | Group records by `content_hash`; return only groups where platform or arena differs |
+| `mark_duplicates(db, canonical_id, duplicate_ids)` | Set `raw_metadata['duplicate_of'] = str(canonical_id)` via `jsonb_set(coalesce(...))` |
+| `run_dedup_pass(db, run_id)` | Run URL pass then hash pass; elect canonical as lowest UUID; commit; return summary dict |
+
+### Design decisions
+
+- URL normalisation is a pure Python function using only `urllib.parse` — no new dependencies.
+- Grouping is performed in Python after a single SELECT to avoid pushing normalisation logic into SQL, which simplifies testing.
+- Canonical election uses `min(UUID)` (lowest UUID value) — deterministic and reproducible without consulting engagement scores on the hot path.
+- `mark_duplicates` uses `jsonb_set(coalesce(raw_metadata, '{}'), ...)` rather than `||` merge to avoid overwriting sibling keys and to work correctly when `raw_metadata` is NULL.
+- The Celery task (`maintenance_tasks.py`) re-implements the core logic with psycopg2 (synchronous) to avoid running asyncio inside a Celery worker.
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/content/deduplicate?run_id={uuid}` | POST | Dispatches `deduplicate_run` Celery task; returns `{"job_id": ..., "status": "pending"}` |
+| `/content/duplicates?run_id={uuid}` | GET | Runs sync URL + hash detection; returns both group lists as JSON |
+
+## Entity Resolution: Fuzzy Actor Matching + Merge/Split (Task 3.9 — COMPLETE)
+
+### Deliverables
+
+- [x] `core/entity_resolver.py` — Phase 3.9 methods added to `EntityResolver`
+- [x] `api/routes/actors.py` — three new endpoints: candidates, merge, split
+- [x] `api/templates/actors/detail.html` — collapsible Entity Resolution section
+
+### EntityResolver Phase 3.9 methods
+
+| Method | Description |
+|--------|-------------|
+| `find_candidate_matches(db, actor_id, threshold)` | Three-strategy matching: exact name → shared username → pg_trgm similarity. Enables `pg_trgm` via `CREATE EXTENSION IF NOT EXISTS` before similarity query. Returns candidates enriched with platform list. |
+| `merge_actors(db, canonical_id, duplicate_ids, performed_by)` | Re-points `content_records.author_id`, moves presences (skips conflicts), creates `ActorAlias` entries, deletes duplicate actors. |
+| `split_actor(db, actor_id, presence_ids, new_canonical_name, performed_by)` | Creates new `Actor`, moves presences, re-points `content_records` by `author_platform_id`, adds alias on original actor. |
+
+### pg_trgm dependency note
+
+`find_candidate_matches` executes `CREATE EXTENSION IF NOT EXISTS pg_trgm` immediately before the similarity query. This is idempotent and requires no migration. If the PostgreSQL user lacks `CREATE EXTENSION` privileges in production, a DBA must run it once manually:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+```
+
+### API Endpoints
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/actors/{id}/candidates` | GET | read access | Returns fuzzy match candidates with similarity scores; HTMX returns HTML table fragment |
+| `/actors/{id}/merge` | POST | ownership or admin | Body: `{"duplicate_ids": [...]}` |
+| `/actors/{id}/split` | POST | ownership or admin | Body: `{"presence_ids": [...], "new_canonical_name": "..."}` |
+
+### UI (actors/detail.html)
+
+A collapsible "Entity Resolution" section is appended at the bottom of the actor detail page.
+
+- "Search for duplicates" button triggers `GET /actors/{id}/candidates` via HTMX and renders a candidate table with Merge buttons per row.
+- Merge buttons use an Alpine confirm dialog before posting to `POST /actors/{id}/merge`.
+- Split section renders checkboxes for each platform presence and a new actor name input; form handled via Alpine `fetch` to `POST /actors/{id}/split`.
+- All UI interactions are handled by the `entityResolution()` Alpine component injected via inline `<script>`.

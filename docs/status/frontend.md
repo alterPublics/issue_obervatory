@@ -71,8 +71,12 @@
 - [x] `auth/login.html` — (completed Phase 0.9)
 - [x] `auth/reset_password.html` — Two-state form: request reset (email input → POST `/auth/forgot-password`) and set new password (password + confirm, Alpine strength meter, token hidden field → POST `/auth/reset-password`); success states for both flows; error banner
 
+## Phase 3 — Analysis Dashboard (Task 3.4)
+
+### Analysis
+- [x] `analysis/index.html` — Full analysis dashboard: run summary cards (Alpine fetch), filter bar (platform/arena/date/granularity), Volume-over-time multi-arena line chart, Top actors horizontal bar chart, Top terms horizontal bar chart, Engagement distribution grouped bar chart (mean/median/p95), Network tab switcher (actor co-occurrence, term co-occurrence, bipartite, cross-platform actors table), Export section (format selector, sync export link, async export with 3s polling). All data loaded client-side via Alpine `fetch()` from `/analysis/{run_id}/*` JSON endpoints. Chart.js helpers `initActorsChart`, `initTermsChart`, `initEngagementStatsChart`, `initMultiArenaVolumeChart` added to `charts.js`.
+
 ## Remaining / Future Work
-- [ ] `analysis/index.html` — charts (volume over time, engagement histogram, top actors, arena breakdown), network visualization stubs
 - [ ] Tailwind production build (`make css`) to replace CDN dev script
 - [ ] End-to-end tests for login flow and collection launcher
 - [ ] `_fragments/actor_row.html` — dedicated fragment for HTMX search results swap in actor list

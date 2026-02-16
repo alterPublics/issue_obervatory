@@ -368,6 +368,103 @@
         {% endif %}
     </div>
 
+    {# Entity Resolution — Task 3.9 #}
+    <div class="bg-white rounded-lg shadow overflow-hidden"
+         x-data="entityResolution('{{ actor_id }}', '{{ actor.name | default('') | replace("'", "\\'") }}')">
+
+        {# Collapsible header #}
+        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200 cursor-pointer select-none"
+             @click="open = !open">
+            <h2 class="text-sm font-semibold text-gray-900">Entity Resolution</h2>
+            <svg class="w-4 h-4 text-gray-400 transition-transform"
+                 :class="open ? 'rotate-180' : ''"
+                 xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+            </svg>
+        </div>
+
+        <div x-show="open" x-cloak class="p-6 space-y-6">
+
+            {# ---- Find duplicates ---- #}
+            <div>
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-xs font-semibold text-gray-700 uppercase tracking-wider">Find Possible Duplicates</h3>
+                    <button type="button"
+                            hx-get="/actors/{{ actor_id }}/candidates"
+                            hx-target="#candidates-container"
+                            hx-swap="innerHTML"
+                            hx-indicator="#candidates-spinner"
+                            class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-600 border border-blue-200 rounded-md hover:bg-blue-50 transition-colors">
+                        <span id="candidates-spinner" class="htmx-indicator">
+                            <svg class="animate-spin w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                            </svg>
+                        </span>
+                        Search for duplicates
+                    </button>
+                </div>
+                <div id="candidates-container"
+                     @merge-actor.window="mergeCandidate($event.detail.duplicate_id)"
+                     class="min-h-[40px]">
+                    <p class="text-xs text-gray-400">Click the button above to search for actors that may be the same entity.</p>
+                </div>
+            </div>
+
+            {# ---- Split section ---- #}
+            <div class="pt-4 border-t border-gray-200">
+                <h3 class="text-xs font-semibold text-gray-700 uppercase tracking-wider mb-3">Split Actor</h3>
+                <p class="text-xs text-gray-500 mb-4">
+                    Select platform presences to move to a new actor record.
+                    This is useful when one canonical actor entry was incorrectly created for two distinct real-world entities.
+                </p>
+
+                {% if presences %}
+                <form @submit.prevent="splitSelected($event)">
+                    <div class="space-y-2 mb-4">
+                        {% for pres in presences %}
+                        <label class="flex items-center gap-3 cursor-pointer hover:bg-gray-50 rounded px-2 py-1">
+                            <input type="checkbox"
+                                   name="presence_ids"
+                                   value="{{ pres.id }}"
+                                   class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                            <span class="text-sm text-gray-700">
+                                <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600 mr-1">{{ pres.platform | default('') }}</span>
+                                {{ pres.username | default('') }}
+                            </span>
+                        </label>
+                        {% endfor %}
+                    </div>
+
+                    <div class="flex items-end gap-3">
+                        <div class="flex-1">
+                            <label for="split_name" class="block text-xs font-medium text-gray-700 mb-1">New actor name</label>
+                            <input type="text"
+                                   id="split_name"
+                                   name="new_canonical_name"
+                                   placeholder="Canonical name for the new actor"
+                                   class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        </div>
+                        <button type="submit"
+                                class="inline-flex items-center gap-1.5 px-4 py-2 bg-orange-600 text-white text-sm font-medium rounded-md hover:bg-orange-700 transition-colors flex-shrink-0">
+                            Split selected
+                        </button>
+                    </div>
+                </form>
+                {% else %}
+                <p class="text-xs text-gray-400">No platform presences to split. Add presences first.</p>
+                {% endif %}
+
+                {# Split result message #}
+                <div x-show="splitResult" x-cloak class="mt-3 p-3 rounded bg-green-50 border border-green-200">
+                    <p class="text-sm text-green-800" x-text="splitResult"></p>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
 </div>
 
 <script>
@@ -375,6 +472,79 @@ function actorProfile() {
     return {
         editOpen: false,
         addPresenceOpen: false,
+    };
+}
+
+function entityResolution(actorId, actorName) {
+    return {
+        open: false,
+        splitResult: '',
+
+        async mergeCandidate(duplicateId) {
+            const candidateName = document.querySelector(
+                `[data-candidate-id="${duplicateId}"]`
+            )?.dataset?.candidateName || 'this actor';
+            if (!confirm(`Merge ${candidateName} into ${actorName}? This cannot be undone.`)) {
+                return;
+            }
+            try {
+                const resp = await fetch(`/actors/${actorId}/merge`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ duplicate_ids: [duplicateId] }),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    alert('Merge failed: ' + (err.detail || resp.statusText));
+                    return;
+                }
+                const data = await resp.json();
+                alert(`Merge complete. ${data.records_updated} content record(s) updated.`);
+                // Refresh candidates list
+                htmx.trigger('#candidates-container button[hx-get]', 'click');
+            } catch (e) {
+                alert('Merge failed: ' + e.message);
+            }
+        },
+
+        async splitSelected(event) {
+            const form = event.target;
+            const checkedBoxes = Array.from(form.querySelectorAll('input[name="presence_ids"]:checked'));
+            if (checkedBoxes.length === 0) {
+                alert('Select at least one platform presence to split.');
+                return;
+            }
+            const newName = form.querySelector('input[name="new_canonical_name"]').value.trim();
+            if (!newName) {
+                alert('Enter a canonical name for the new actor.');
+                return;
+            }
+            if (!confirm(`Split ${checkedBoxes.length} presence(s) into a new actor "${newName}"? This cannot be undone.`)) {
+                return;
+            }
+            try {
+                const resp = await fetch(`/actors/${actorId}/split`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        presence_ids: checkedBoxes.map(cb => cb.value),
+                        new_canonical_name: newName,
+                    }),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    alert('Split failed: ' + (err.detail || resp.statusText));
+                    return;
+                }
+                const data = await resp.json();
+                this.splitResult = `Split complete. New actor created (${data.new_actor_id.slice(0, 8)}…). ${data.presences_moved} presence(s) moved, ${data.records_updated} content record(s) updated.`;
+                // Uncheck all boxes
+                checkedBoxes.forEach(cb => { cb.checked = false; });
+                form.querySelector('input[name="new_canonical_name"]').value = '';
+            } catch (e) {
+                alert('Split failed: ' + e.message);
+            }
+        },
     };
 }
 </script>
