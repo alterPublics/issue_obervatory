@@ -1,0 +1,314 @@
+{% extends "base.html" %}
+{% block title %}Start Collection{% endblock %}
+
+{% block content %}
+{#
+    Collection run launcher with pre-flight credit estimate.
+    The Alpine component debounces form changes (400ms) and triggers
+    HTMX to fetch a credit estimate from GET /collections/estimate.
+
+    Context:
+        - query_designs (list): owned query designs [{id, name, default_tier}]
+        - preselected_design_id (str|None): from ?design_id= query param
+#}
+{% set query_designs = query_designs | default([]) %}
+{% set preselected = preselected_design_id | default(request.query_params.get('design_id', '')) %}
+
+<div class="max-w-4xl mx-auto space-y-6"
+     x-data="collectionLauncher({{ available_credits | default(0) }})"
+     x-init="init()">
+
+    {# Page header #}
+    <div class="flex items-center gap-3">
+        <a href="/collections"
+           class="text-gray-400 hover:text-gray-600 transition-colors"
+           aria-label="Back to collections">
+            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
+            </svg>
+        </a>
+        <h1 class="text-xl font-bold text-gray-900">Start New Collection</h1>
+    </div>
+
+    <div class="grid grid-cols-5 gap-6">
+        {# Left: Configuration form #}
+        <div class="col-span-3 space-y-5">
+
+            {# Configuration card #}
+            <div class="bg-white rounded-lg shadow p-6 space-y-5">
+                <h2 class="text-sm font-semibold text-gray-900 border-b border-gray-200 pb-3">Configuration</h2>
+
+                {#
+                    POST to /collections/ to create and start the run.
+                    On 201 Created the server sets HX-Redirect to /collections/{run_id}.
+                    On error it returns a form fragment to replace this block.
+                #}
+                <form id="launcher-form"
+                      method="POST"
+                      action="/collections/"
+                      hx-post="/collections/"
+                      hx-target="#launcher-form"
+                      hx-swap="outerHTML"
+                      @change="onFormChange()"
+                      @submit="onSubmit($event)">
+
+                    {# Query design selector #}
+                    <div class="mb-4">
+                        <label for="query_design_id" class="block text-sm font-medium text-gray-700 mb-1">
+                            Query Design <span class="text-red-500">*</span>
+                        </label>
+                        {% if query_designs %}
+                        <select id="query_design_id"
+                                name="query_design_id"
+                                required
+                                x-model="designId"
+                                @change="requestEstimate()"
+                                class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                            <option value="">Select a query design...</option>
+                            {% for design in query_designs %}
+                            <option value="{{ design.id }}"
+                                    {% if design.id == preselected %}selected{% endif %}
+                                    data-tier="{{ design.default_tier | default('free') }}">
+                                {{ design.name | default('(untitled)') }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                        {% else %}
+                        <div class="rounded-md bg-yellow-50 border border-yellow-200 px-4 py-3 text-sm text-yellow-800">
+                            No query designs yet.
+                            <a href="/query-designs/new" class="font-medium underline">Create a query design</a>
+                            to start a collection.
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    {# Mode toggle: batch vs live #}
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Collection Mode</label>
+                        <div class="flex rounded-md border border-gray-300 overflow-hidden">
+                            <label class="flex-1">
+                                <input type="radio" name="mode" value="batch"
+                                       x-model="mode" @change="requestEstimate()"
+                                       class="sr-only">
+                                <div :class="mode === 'batch' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'"
+                                     class="text-center px-4 py-2 text-sm font-medium cursor-pointer transition-colors select-none">
+                                    Batch (historical)
+                                </div>
+                            </label>
+                            <label class="flex-1 border-l border-gray-300">
+                                <input type="radio" name="mode" value="live"
+                                       x-model="mode" @change="requestEstimate()"
+                                       class="sr-only">
+                                <div :class="mode === 'live' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'"
+                                     class="text-center px-4 py-2 text-sm font-medium cursor-pointer transition-colors select-none">
+                                    Live (ongoing)
+                                </div>
+                            </label>
+                        </div>
+                        <p class="text-xs text-gray-400 mt-1"
+                           x-text="mode === 'batch'
+                               ? 'Collect data for a specific time period.'
+                               : 'Start ongoing daily collection (Celery Beat).'">
+                        </p>
+                    </div>
+
+                    {# Date range — only shown in batch mode #}
+                    <div x-show="mode === 'batch'" x-transition class="mb-4 grid grid-cols-2 gap-4">
+                        <div>
+                            <label for="date_from" class="block text-sm font-medium text-gray-700 mb-1">
+                                From date
+                            </label>
+                            <input type="date"
+                                   id="date_from"
+                                   name="date_from"
+                                   x-model="dateFrom"
+                                   @change="requestEstimate()"
+                                   class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        </div>
+                        <div>
+                            <label for="date_to" class="block text-sm font-medium text-gray-700 mb-1">
+                                To date
+                            </label>
+                            <input type="date"
+                                   id="date_to"
+                                   name="date_to"
+                                   x-model="dateTo"
+                                   @change="requestEstimate()"
+                                   class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        </div>
+                    </div>
+
+                    {# Tier selector #}
+                    <div class="mb-6">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            Collection Tier
+                        </label>
+                        <div class="grid grid-cols-3 gap-3">
+                            {% for tier_value, tier_label, tier_desc, tier_color in [
+                                ('free',    'Free',    'Free data sources only. 0 credits for most arenas.', 'green'),
+                                ('medium',  'Medium',  'Includes low-cost API services. Costs credits.', 'yellow'),
+                                ('premium', 'Premium', 'Best available data quality. Highest credit usage.', 'purple'),
+                            ] %}
+                            <label class="cursor-pointer">
+                                <input type="radio" name="tier" value="{{ tier_value }}"
+                                       x-model="tier" @change="requestEstimate()"
+                                       class="sr-only">
+                                <div :class="tier === '{{ tier_value }}'
+                                             ? 'border-{{ tier_color }}-500 bg-{{ tier_color }}-50 ring-2 ring-{{ tier_color }}-300'
+                                             : 'border-gray-200 hover:border-gray-300 bg-white'"
+                                     class="border rounded-lg p-3 transition-all">
+                                    <div class="text-sm font-medium text-gray-900 mb-0.5">{{ tier_label }}</div>
+                                    <div class="text-xs text-gray-500">{{ tier_desc }}</div>
+                                </div>
+                            </label>
+                            {% endfor %}
+                        </div>
+                    </div>
+
+                    {# Launch button — disabled when credits are insufficient #}
+                    <div class="pt-4 border-t border-gray-200 flex items-center justify-between">
+                        <a href="/collections" class="text-sm text-gray-500 hover:text-gray-700">Cancel</a>
+                        <button type="submit"
+                                :disabled="!canLaunch || launching || !designId"
+                                :title="!canLaunch ? 'Insufficient credits' : (!designId ? 'Select a query design' : '')"
+                                class="inline-flex items-center gap-2 px-5 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                            <svg x-show="launching" class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg"
+                                 fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                            </svg>
+                            <svg x-show="!launching" class="w-4 h-4" xmlns="http://www.w3.org/2000/svg"
+                                 fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                      d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            <span x-text="launching ? 'Starting...' : 'Start Collection'">Start Collection</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        {# Right: Pre-flight estimate panel #}
+        <div class="col-span-2">
+            <div class="bg-white rounded-lg shadow p-6 sticky top-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-sm font-semibold text-gray-900">Credit Estimate</h2>
+                    {# Spinner shown while HTMX fetches the estimate #}
+                    <span id="estimate-spinner" class="htmx-indicator">
+                        <svg class="animate-spin w-4 h-4 text-blue-600" xmlns="http://www.w3.org/2000/svg"
+                             fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                        </svg>
+                    </span>
+                </div>
+
+                {#
+                    Estimate panel — HTMX replaces the contents of this div.
+                    `requestEstimate()` in Alpine triggers:
+                      htmx.trigger('#estimate-trigger', 'estimate')
+                    which fires the GET with form state as query params.
+                #}
+                <div id="estimate-panel">
+                    <p class="text-sm text-gray-400 italic">
+                        Select a query design and tier to see an estimate.
+                    </p>
+                </div>
+
+                {# Hidden HTMX trigger element — decoupled from the visible form #}
+                <span id="estimate-trigger"
+                      hx-get="/collections/estimate"
+                      hx-trigger="estimate"
+                      hx-target="#estimate-panel"
+                      hx-swap="innerHTML"
+                      hx-indicator="#estimate-spinner"
+                      hx-include="#launcher-form">
+                </span>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<script>
+/**
+ * Alpine component for the collection launcher.
+ *
+ * Responsibilities:
+ *  - Track form state (designId, mode, tier, dateFrom, dateTo).
+ *  - Debounce changes and fire HTMX estimate requests via htmx.trigger().
+ *  - Receive the estimated credits from the rendered fragment via a custom
+ *    event dispatched by the fragment itself (see _fragments/credit_estimate.html).
+ *  - Gate the launch button when estimatedCredits > availableCredits.
+ */
+function collectionLauncher(availableCredits) {
+    return {
+        // Form state
+        designId: '{{ preselected }}',
+        mode: 'batch',
+        tier: 'free',
+        dateFrom: '',
+        dateTo: '',
+
+        // Credit tracking
+        availableCredits: availableCredits,
+        estimatedCredits: 0,
+        isEstimating: false,
+        launching: false,
+
+        // Debounce timer handle
+        _estimateTimer: null,
+
+        /** True when the user can safely launch. */
+        get canLaunch() {
+            return this.estimatedCredits <= this.availableCredits;
+        },
+
+        init() {
+            // Pre-select from ?design_id= query param if present
+            const params = new URLSearchParams(window.location.search);
+            const preDesign = params.get('design_id');
+            if (preDesign) {
+                this.designId = preDesign;
+                this.$nextTick(() => this.requestEstimate());
+            }
+
+            // Listen for estimated credit value from the rendered fragment.
+            // The fragment dispatches 'estimate:result' with { credits, sufficient }
+            // so Alpine can update the launch button state without parsing the DOM.
+            document.addEventListener('estimate:result', (evt) => {
+                this.estimatedCredits = evt.detail.credits || 0;
+                this.availableCredits = evt.detail.availableCredits || this.availableCredits;
+            });
+        },
+
+        onFormChange() {
+            this.requestEstimate();
+        },
+
+        /**
+         * Debounced HTMX estimate trigger.
+         * Waits 400ms after the last change before firing the request.
+         */
+        requestEstimate() {
+            if (!this.designId) return;
+            clearTimeout(this._estimateTimer);
+            this._estimateTimer = setTimeout(() => {
+                htmx.trigger(document.getElementById('estimate-trigger'), 'estimate');
+            }, 400);
+        },
+
+        onSubmit(event) {
+            if (!this.canLaunch || !this.designId) {
+                event.preventDefault();
+                return;
+            }
+            this.launching = true;
+        },
+    };
+}
+</script>
+{% endblock %}

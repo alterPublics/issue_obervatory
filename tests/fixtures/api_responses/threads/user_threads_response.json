@@ -1,0 +1,49 @@
+{
+  "data": [
+    {
+      "id": "17846368219941196",
+      "text": "Grøn omstilling er vigtig for dansk velfærd og fremtiden for Ålborg og resten af Danmark.",
+      "timestamp": "2026-02-15T10:30:00+0000",
+      "permalink": "https://www.threads.net/@drdk/post/abc123",
+      "media_type": "TEXT",
+      "is_reply": false,
+      "has_replies": true,
+      "username": "drdk",
+      "views": 12500,
+      "likes": 340,
+      "replies": 47,
+      "reposts": 89
+    },
+    {
+      "id": "17846368219941197",
+      "text": "Klimamøde i Ørsted: Vores mål er at reducere CO2 med 50% inden 2030.",
+      "timestamp": "2026-02-15T09:00:00+0000",
+      "permalink": "https://www.threads.net/@drdk/post/def456",
+      "media_type": "TEXT",
+      "is_reply": false,
+      "has_replies": false,
+      "username": "drdk",
+      "views": 8900,
+      "likes": 210,
+      "replies": 18,
+      "reposts": 44
+    },
+    {
+      "id": "17846368219941198",
+      "text": "Interessant diskussion om velfærdsstatens fremtid. Hvad tænker I?",
+      "timestamp": "2026-02-15T08:00:00+0000",
+      "permalink": "https://www.threads.net/@drdk/post/ghi789",
+      "media_type": "TEXT",
+      "is_reply": true,
+      "has_replies": false,
+      "reply_to_id": "17846368219941100",
+      "username": "drdk"
+    }
+  ],
+  "paging": {
+    "cursors": {
+      "before": "cursor_before_abc",
+      "after": null
+    }
+  }
+}

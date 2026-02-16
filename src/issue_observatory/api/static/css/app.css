@@ -1,0 +1,24 @@
+/* Compiled Tailwind CSS output — do not edit manually.
+   Regenerate with: make css
+   (npx tailwindcss -i ./src/issue_observatory/api/static/css/input.css \
+                   -o ./src/issue_observatory/api/static/css/app.css --minify)
+
+   In development, the Tailwind CDN script in base.html handles utility classes.
+   This file only needs to contain non-utility rules that the CDN script cannot
+   generate (HTMX indicators, Alpine x-cloak).
+*/
+
+/* HTMX loading indicator — hidden by default, visible during hx-request */
+.htmx-indicator {
+  display: none;
+}
+
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator {
+  display: inline-flex;
+}
+
+/* Alpine.js x-cloak — prevents flash of un-initialised content */
+[x-cloak] {
+  display: none !important;
+}

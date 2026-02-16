@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{% endblock %} — The Issue Observatory</title>
+
+    {#
+        Tailwind CSS — development fallback via CDN play script.
+        TODO: Replace with compiled app.css for production:
+              make css
+              (npx tailwindcss -i input.css -o app.css --minify)
+        The CDN script is ~350KB and does JIT compilation in the browser.
+        It is acceptable for local development but must not ship to production.
+    #}
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: { 50: '#eff6ff', 600: '#2563eb', 700: '#1d4ed8' }
+                    }
+                }
+            }
+        }
+    </script>
+
+    {# Compiled CSS — empty placeholder until `make css` is run. #}
+    <link rel="stylesheet" href="{{ url_for('static', path='css/app.css') }}">
+
+    {# HTMX 2 — core library for all server interactions. #}
+    <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"
+            integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+"
+            crossorigin="anonymous"></script>
+
+    {# HTMX SSE extension — used on collection detail pages for live run status. #}
+    <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
+
+    {# Alpine.js 3 — local browser state (forms, modals, dropdowns). defer is required. #}
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.3/dist/cdn.min.js"></script>
+
+    {# Chart.js 4 — descriptive statistics charts on the analysis page. #}
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+
+    {# Application JS — must load before Alpine initialises (no defer). #}
+    <script src="{{ url_for('static', path='js/app.js') }}"></script>
+
+    {# Chart helpers — loaded after Chart.js CDN, also without defer so initVolumeChart etc. are available in template <script> blocks. #}
+    <script src="{{ url_for('static', path='js/charts.js') }}"></script>
+
+    {% block extra_head %}{% endblock %}
+</head>
+<body class="bg-gray-50 text-gray-900 min-h-screen flex" hx-boost="true">
+    {% include '_partials/nav.html' %}
+    <main class="flex-1 p-6 overflow-auto">
+        {% include '_partials/flash.html' %}
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

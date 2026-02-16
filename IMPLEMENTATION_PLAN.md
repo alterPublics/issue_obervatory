@@ -132,7 +132,8 @@ issue_observatory/                       # Project root
 │           │   ├── collections.py       # Start/stop/status/cancel; POST /estimate (pre-flight, non-destructive); GET /{id}/stream (SSE)
 │           │   ├── content.py           # Search/browse collected content (cursor-paginated)
 │           │   ├── actors.py            # Actor management
-│           │   └── analysis.py          # Trigger and retrieve analysis results; export job status
+│           │   ├── analysis.py          # Trigger and retrieve analysis results; export job status
+│           │   └── imports.py          # (Future) NDJSON/CSV import from external tools (Zeeschuimer, 4CAT)
 │           ├── dependencies.py          # get_current_user, require_admin, ownership guards
 │           ├── middleware/
 │           ├── templates/               # Jinja2 HTML templates
@@ -553,6 +554,8 @@ The frontend is served directly from FastAPI using **Jinja2 templates + HTMX + A
 
 **Viewport target**: Desktop-first, minimum 1024px. No mobile-specific breakpoints in the initial implementation.
 
+**UI language**: English throughout. Danish appears only as data parameters (locale filter values like `gl=dk&hl=da`, language codes stored in the database, RSS feed URLs) — never as UI text in templates or JavaScript strings. The `<html lang="en">` attribute is set on all pages.
+
 **Reconsideration triggers**: Migrate to a full SPA (React + Vite) if: (a) in-browser network graph visualisation becomes a requirement, (b) multi-user real-time collaboration is needed, (c) any Alpine component exceeds ~150 lines of logic, or (d) a JavaScript engineer joins the team.
 
 ### Authentication Flow
@@ -788,6 +791,16 @@ The `config/danish_defaults.py` module provides:
 **GDPR baseline in Phase 0/1, not Phase 3**: Pseudonymisation (`pseudonymized_author_id`), retention enforcement, and per-actor deletion must be operational before any data is collected. The DPIA and privacy notice must exist before Phase 1 begins. Phase 3 adds advanced pseudonymisation (NER in text) and near-duplicate detection; the legal baseline is not deferred.
 
 **Deduplication**: Three layers — (1) `UNIQUE(platform, platform_id, published_at)` on the partitioned table prevents duplicate ingestion, (2) `content_hash` SHA-256 catches cross-platform reposts, (3) MinHash/LSH for near-duplicate detection (Phase 3).
+
+---
+
+## Future Extension Points
+
+The following capabilities are explicitly deferred but the architecture must not preclude them:
+
+**Generic data import endpoint** (`POST /api/content/import`): Accept NDJSON or CSV uploads from external tools (Zeeschuimer, 4CAT, manual exports) and run them through the normalizer pipeline into `content_records`. Records should be tagged with `collection_method` in `raw_metadata` (e.g., `"zeeschuimer"`, `"4cat"`, `"manual_csv"`). This does not require an `ArenaCollector` implementation — it is a separate import pathway. Target: Phase 2 or 3, contingent on LinkedIn data needs before DSA Article 40 access is granted. See `reports/zeeschuimer_assessment.md` for full analysis.
+
+**Browser-based collection transport**: If a future platform has no API and no third-party provider, a Playwright-based browser automation layer could be added as a shared transport adapter beneath specific arena collectors. This is architecturally distinct from the `ArenaCollector` contract (which assumes programmatic API access) and would require its own worker pool with higher resource allocation. Not recommended unless all API-based options are exhausted. See `reports/zeeschuimer_assessment.md` for the cost-benefit analysis.
 
 ---
 

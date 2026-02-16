@@ -1,0 +1,436 @@
+"""Normalizer pipeline: raw platform data -> universal content records.
+
+The ``Normalizer`` class maps platform-specific data dicts to the universal
+``content_records`` schema defined in the database. It handles missing fields
+gracefully, computes a SHA-256 ``content_hash`` for deduplication, and
+pseudonymizes author identifiers.
+
+The pseudonymization salt is loaded from the ``PSEUDONYMIZATION_SALT``
+environment variable (via ``Settings``). **Never** compute
+``pseudonymized_author_id`` using a hard-coded salt — the salt must be a
+secret so that re-identification requires knowledge of both the data and the
+application secret.
+
+Example usage::
+
+    from issue_observatory.core.normalizer import Normalizer
+
+    normalizer = Normalizer()
+    record = normalizer.normalize(
+        raw_item={"id": "abc123", "text": "Hello world"},
+        platform="bluesky",
+        arena="social_media",
+    )
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import re
+import unicodedata
+from datetime import datetime, timezone
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# Fields that every normalized record must contain.  Optional fields are
+# included with a ``None`` value when the platform does not provide them.
+_REQUIRED_FIELDS: frozenset[str] = frozenset(
+    {
+        "platform",
+        "arena",
+        "content_type",
+        "collected_at",
+        "collection_tier",
+    }
+)
+
+
+class Normalizer:
+    """Maps raw platform data dicts to the universal content record schema.
+
+    The normalizer is stateless apart from the pseudonymization salt, which
+    is loaded once from ``Settings`` on construction. A single instance can
+    be shared across threads/tasks.
+
+    Args:
+        pseudonymization_salt: Secret salt for SHA-256 author hashing.
+            If ``None``, the salt is read from
+            ``Settings().pseudonymization_salt``.
+
+    Notes:
+        When the salt is empty a WARNING is logged.  ``pseudonymize_author()``
+        will return ``None`` for all records, which means
+        ``pseudonymized_author_id`` will not be populated.  Always configure
+        ``PSEUDONYMIZATION_SALT`` in production.
+    """
+
+    def __init__(self, pseudonymization_salt: str | None = None) -> None:
+        if pseudonymization_salt is not None:
+            self._salt = pseudonymization_salt
+        else:
+            # Prefer the Settings class; fall back to direct env-var read so
+            # that the normalizer can be constructed outside a fully configured
+            # application (e.g. unit tests that set only this env var).
+            import os  # noqa: PLC0415
+
+            from issue_observatory.config.danish_defaults import (  # noqa: PLC0415
+                PSEUDONYMIZATION_SALT_ENV_VAR,
+            )
+
+            try:
+                from issue_observatory.config.settings import get_settings  # noqa: PLC0415
+
+                settings = get_settings()
+                salt = settings.pseudonymization_salt
+                # Support both plain str and SecretStr (settings may evolve).
+                self._salt = (
+                    salt.get_secret_value() if hasattr(salt, "get_secret_value") else str(salt)
+                )
+            except Exception:
+                self._salt = os.environ.get(PSEUDONYMIZATION_SALT_ENV_VAR, "")
+
+        if not self._salt:
+            logger.warning(
+                "PSEUDONYMIZATION_SALT is empty. "
+                "pseudonymized_author_id will be None for all records. "
+                "Set the %s environment variable before collecting data.",
+                "PSEUDONYMIZATION_SALT",
+            )
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    def normalize(
+        self,
+        raw_item: dict[str, Any],
+        platform: str,
+        arena: str,
+        collection_tier: str = "free",
+        collection_run_id: str | None = None,
+        query_design_id: str | None = None,
+        search_terms_matched: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Map a raw platform record to the universal ``content_records`` schema.
+
+        All fields from the raw item are preserved in ``raw_metadata`` so
+        that no upstream information is lost. Fields not provided by the
+        platform are set to ``None`` rather than being omitted, ensuring
+        downstream code can always rely on key presence.
+
+        Author identifiers are pseudonymized via SHA-256 before storage.
+        The ``content_hash`` is computed from the normalized text content for
+        cross-platform deduplication.
+
+        Args:
+            raw_item: Raw dict as returned by the upstream API / collector.
+            platform: Platform identifier (e.g. ``"bluesky"``, ``"reddit"``).
+                Stored in the ``platform`` column.
+            arena: Logical arena group (e.g. ``"social_media"``). Stored in
+                the ``arena`` column.
+            collection_tier: Tier used for this collection
+                (``"free"`` | ``"medium"`` | ``"premium"``).
+            collection_run_id: UUID string of the owning collection run.
+            query_design_id: UUID string of the owning query design.
+            search_terms_matched: Query terms that matched this record.
+
+        Returns:
+            Dict with all ``content_records`` columns populated. Optional
+            fields are ``None`` when not provided.
+        """
+        collected_at = datetime.now(tz=timezone.utc).isoformat()
+
+        # Attempt to extract common fields using well-known key names.
+        platform_id = self._extract_str(raw_item, ["id", "post_id", "item_id", "url"])
+        title = self._extract_str(raw_item, ["title", "headline", "subject"])
+        text_content = self._extract_str(
+            raw_item,
+            ["text", "body", "content", "text_content", "description", "snippet"],
+        )
+        url = self._extract_str(raw_item, ["url", "link", "permalink", "canonical_url"])
+        language = self._extract_str(raw_item, ["language", "lang", "locale"])
+        content_type = self._extract_str(
+            raw_item,
+            ["content_type", "type", "kind"],
+        ) or "post"
+
+        # Publication timestamp
+        published_at = self._extract_datetime(
+            raw_item,
+            ["published_at", "created_at", "timestamp", "date", "pub_date", "created_utc"],
+        )
+
+        # Author fields
+        author_platform_id = self._extract_str(
+            raw_item,
+            [
+                "author_id",
+                "author_platform_id",
+                "user_id",
+                "from_id",
+                "owner_id",
+                "channel_id",
+            ],
+        )
+        author_display_name = self._extract_str(
+            raw_item,
+            [
+                "author",
+                "author_name",
+                "author_display_name",
+                "username",
+                "screen_name",
+                "display_name",
+                "from_name",
+            ],
+        )
+
+        # Pseudonymize the author if we have an identifier
+        pseudonymized_author_id: str | None = None
+        if author_platform_id:
+            pseudonymized_author_id = self.pseudonymize_author(
+                platform=platform,
+                platform_user_id=author_platform_id,
+            )
+
+        # Engagement metrics
+        views_count = self._extract_int(raw_item, ["views", "view_count", "views_count"])
+        likes_count = self._extract_int(
+            raw_item, ["likes", "like_count", "likes_count", "score", "ups"]
+        )
+        shares_count = self._extract_int(
+            raw_item,
+            ["shares", "share_count", "shares_count", "retweets", "repost_count", "reposts"],
+        )
+        comments_count = self._extract_int(
+            raw_item,
+            ["comments", "comment_count", "comments_count", "num_comments", "reply_count"],
+        )
+
+        # Content hash for deduplication
+        content_hash: str | None = None
+        if text_content:
+            content_hash = self.compute_content_hash(text_content)
+        elif url:
+            content_hash = self.compute_content_hash(url)
+
+        # Media URLs (list of strings)
+        media_urls = self._extract_list(
+            raw_item,
+            ["media_urls", "media", "images", "attachments"],
+        )
+
+        return {
+            # Core identifiers
+            "platform": platform,
+            "arena": arena,
+            "platform_id": platform_id,
+            "content_type": content_type,
+            # Content
+            "text_content": text_content,
+            "title": title,
+            "url": url,
+            "language": language,
+            # Timestamps
+            "published_at": published_at,
+            "collected_at": collected_at,
+            # Author
+            "author_platform_id": author_platform_id,
+            "author_display_name": author_display_name,
+            "author_id": None,  # resolved later by EntityResolver
+            "pseudonymized_author_id": pseudonymized_author_id,
+            # Engagement
+            "views_count": views_count,
+            "likes_count": likes_count,
+            "shares_count": shares_count,
+            "comments_count": comments_count,
+            "engagement_score": None,  # computed by analysis layer
+            # Collection context
+            "collection_run_id": collection_run_id,
+            "query_design_id": query_design_id,
+            "search_terms_matched": search_terms_matched or [],
+            "collection_tier": collection_tier,
+            # Platform-specific passthrough
+            "raw_metadata": raw_item,
+            "media_urls": media_urls,
+            # Deduplication
+            "content_hash": content_hash,
+        }
+
+    def pseudonymize_author(self, platform: str, platform_user_id: str) -> str | None:
+        """Compute a pseudonymized author identifier.
+
+        Uses SHA-256(platform + ":" + platform_user_id + ":" + salt) as
+        mandated by the DPIA.  The colon separators prevent collisions between
+        platform values with common prefixes.  The salt is the
+        ``PSEUDONYMIZATION_SALT`` application secret.
+
+        Returns ``None`` when the salt is empty (misconfigured environment) to
+        avoid storing insecure pseudo-IDs that could be trivially reversed.
+
+        Args:
+            platform: Platform identifier (e.g. ``"bluesky"``).
+            platform_user_id: Native platform user ID (not the display name).
+
+        Returns:
+            64-character lowercase hex SHA-256 digest, or ``None`` if the
+            pseudonymization salt is not configured.
+        """
+        if not self._salt:
+            return None
+        payload = f"{platform}:{platform_user_id}:{self._salt}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def compute_content_hash(self, text: str) -> str:
+        """Compute a content deduplication hash.
+
+        Normalizes whitespace and Unicode before hashing so that minor
+        formatting differences between platforms do not produce different
+        hashes for semantically identical content.
+
+        Normalization steps:
+        1. Unicode NFC normalization.
+        2. Strip leading/trailing whitespace.
+        3. Collapse internal runs of whitespace to a single space.
+        4. Lowercase.
+
+        Args:
+            text: Raw text content from the platform.
+
+        Returns:
+            64-character lowercase hex SHA-256 digest.
+        """
+        normalized = unicodedata.normalize("NFC", text)
+        normalized = normalized.strip()
+        normalized = re.sub(r"\s+", " ", normalized)
+        normalized = normalized.lower()
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    # ------------------------------------------------------------------
+    # Private extraction helpers
+    # ------------------------------------------------------------------
+
+    def _extract_str(
+        self,
+        raw: dict[str, Any],
+        keys: list[str],
+    ) -> str | None:
+        """Return the first non-empty string value found under any of *keys*.
+
+        Args:
+            raw: Source dict.
+            keys: Candidate keys to try in order.
+
+        Returns:
+            First non-empty string value, or ``None``.
+        """
+        for key in keys:
+            value = raw.get(key)
+            if value and isinstance(value, str):
+                return value.strip() or None
+        return None
+
+    def _extract_int(
+        self,
+        raw: dict[str, Any],
+        keys: list[str],
+    ) -> int | None:
+        """Return the first integer value found under any of *keys*.
+
+        Args:
+            raw: Source dict.
+            keys: Candidate keys to try in order.
+
+        Returns:
+            First integer-castable value as ``int``, or ``None``.
+        """
+        for key in keys:
+            value = raw.get(key)
+            if value is not None:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    def _extract_datetime(
+        self,
+        raw: dict[str, Any],
+        keys: list[str],
+    ) -> str | None:
+        """Return the first recognizable datetime value as an ISO 8601 string.
+
+        Handles:
+        - Already-formatted ISO 8601 strings.
+        - Unix epoch integers/floats.
+        - ``datetime`` objects.
+
+        Args:
+            raw: Source dict.
+            keys: Candidate keys to try in order.
+
+        Returns:
+            ISO 8601 string (with UTC timezone suffix) or ``None``.
+        """
+        for key in keys:
+            value = raw.get(key)
+            if value is None:
+                continue
+
+            if isinstance(value, datetime):
+                if value.tzinfo is None:
+                    value = value.replace(tzinfo=timezone.utc)
+                return value.isoformat()
+
+            if isinstance(value, (int, float)):
+                try:
+                    dt = datetime.fromtimestamp(value, tz=timezone.utc)
+                    return dt.isoformat()
+                except (OSError, OverflowError, ValueError):
+                    continue
+
+            if isinstance(value, str):
+                value = value.strip()
+                if not value:
+                    continue
+                # Attempt common ISO 8601 parsing
+                for fmt in (
+                    "%Y-%m-%dT%H:%M:%S%z",
+                    "%Y-%m-%dT%H:%M:%SZ",
+                    "%Y-%m-%dT%H:%M:%S.%f%z",
+                    "%Y-%m-%dT%H:%M:%S.%fZ",
+                    "%Y-%m-%d %H:%M:%S",
+                    "%Y-%m-%d",
+                ):
+                    try:
+                        dt = datetime.strptime(value, fmt)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        return dt.isoformat()
+                    except ValueError:
+                        continue
+                logger.debug("Could not parse datetime string '%s' for key '%s'", value, key)
+
+        return None
+
+    def _extract_list(
+        self,
+        raw: dict[str, Any],
+        keys: list[str],
+    ) -> list[str]:
+        """Return the first list of strings found under any of *keys*.
+
+        Args:
+            raw: Source dict.
+            keys: Candidate keys to try in order.
+
+        Returns:
+            List of strings (may be empty).
+        """
+        for key in keys:
+            value = raw.get(key)
+            if isinstance(value, list):
+                return [str(item) for item in value if item is not None]
+        return []

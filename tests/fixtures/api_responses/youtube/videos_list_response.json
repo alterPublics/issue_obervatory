@@ -1,0 +1,30 @@
+{
+  "kind": "youtube#videoListResponse",
+  "etag": "test_etag_abc123",
+  "items": [
+    {
+      "kind": "youtube#video",
+      "etag": "test_video_etag_001",
+      "id": "dXtest001",
+      "snippet": {
+        "publishedAt": "2026-02-15T08:00:00Z",
+        "channelId": "UCtest_channel_denmark_001",
+        "title": "Grøn omstilling i Danmark: Fremtiden for velfærdssamfundet",
+        "description": "Vi diskuterer grøn omstilling og velfærdsstatens fremtid i Danmark. Mette Frederiksen præsenterer nye tiltag for Aarhus og Ålborg kommuner.",
+        "channelTitle": "DR Nyheder",
+        "defaultAudioLanguage": "da",
+        "thumbnails": {
+          "default": {"url": "https://i.ytimg.com/vi/dXtest001/default.jpg"},
+          "high": {"url": "https://i.ytimg.com/vi/dXtest001/hqdefault.jpg"}
+        },
+        "categoryId": "25"
+      },
+      "statistics": {
+        "viewCount": "15230",
+        "likeCount": "342",
+        "commentCount": "87"
+      }
+    }
+  ],
+  "pageInfo": {"totalResults": 1, "resultsPerPage": 50}
+}

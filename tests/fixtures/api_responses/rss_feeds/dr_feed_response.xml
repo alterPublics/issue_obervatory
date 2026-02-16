@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>DR Nyheder</title>
+    <link>https://www.dr.dk/nyheder</link>
+    <description>Danmarks Radio - Alle nyheder</description>
+    <language>da</language>
+    <item>
+      <title>Mette Frederiksen: Grøn omstilling er vores vigtigste opgave</title>
+      <link>https://www.dr.dk/nyheder/politik/mette-frederiksen-groen-omstilling</link>
+      <guid>https://www.dr.dk/nyheder/politik/mette-frederiksen-groen-omstilling</guid>
+      <description>Statsministeren talte om klimaforandringer og velfærdsstaten i Ålborg. Folkeskolens rolle i den grønne omstilling blev fremhævet.</description>
+      <pubDate>Sat, 15 Feb 2026 10:00:00 +0000</pubDate>
+      <author>dr@dr.dk (DR Nyheder)</author>
+    </item>
+    <item>
+      <title>Aarhus: Ny plan for bæredygtig byudvikling</title>
+      <link>https://www.dr.dk/nyheder/regionale/aarhus-ny-plan</link>
+      <guid>https://www.dr.dk/nyheder/regionale/aarhus-ny-plan</guid>
+      <description>Aarhus Kommune præsenterer ambitiøs plan for bæredygtighed med focus på ældre borgere og unge.</description>
+      <pubDate>Fri, 14 Feb 2026 14:30:00 +0000</pubDate>
+    </item>
+  </channel>
+</rss>

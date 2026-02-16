@@ -92,18 +92,36 @@ issue_observatory/
 ## Development
 
 ```bash
-# Run tests
-pytest
+# Run tests with coverage
+make test
 
-# Run linter
-ruff check src/ tests/
+# Run linter (and auto-fix)
+make lint-fix
 
 # Type checking
-mypy src/
+make typecheck
 
 # Rebuild CSS after template changes
 make css
 ```
+
+## Make Targets
+
+| Target | Description |
+|--------|-------------|
+| `make run` | Start FastAPI dev server with reload |
+| `make worker` | Start Celery worker |
+| `make beat` | Start Celery Beat scheduler |
+| `make migrate` | Run Alembic migrations (upgrade head) |
+| `make css` | Compile Tailwind CSS in watch mode |
+| `make css-build` | Compile Tailwind CSS once (minified) |
+| `make test` | Run pytest with coverage |
+| `make lint` | Check code style with ruff |
+| `make lint-fix` | Fix code style issues automatically |
+| `make typecheck` | Run mypy static type checking |
+| `make docker-up` | Start all Docker services |
+| `make docker-down` | Stop all Docker services |
+| `make docker-logs` | Tail service logs |
 
 ## License
 

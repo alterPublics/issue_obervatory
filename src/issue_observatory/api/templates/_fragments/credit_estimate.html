@@ -1,0 +1,100 @@
+{#
+    HTMX fragment: pre-flight credit estimate.
+    Returned by GET /collections/estimate and swapped into #estimate-panel.
+
+    Context:
+        - estimate (dict|None):
+            - total_credits (int)
+            - available_credits (int)
+            - sufficient (bool)
+            - per_arena (list of dicts):
+                - arena (str)
+                - platform (str)
+                - tier (str)
+                - estimated_credits (int)
+                - note (str, optional)
+        - error (str|None): human-readable error if estimation failed
+#}
+{% if error %}
+    <div class="rounded-md bg-red-50 border border-red-200 p-4 text-sm text-red-800">
+        <p class="font-medium">Estimation failed</p>
+        <p class="mt-1">{{ error }}</p>
+    </div>
+{% elif estimate %}
+    <div class="space-y-3">
+        {# Per-arena breakdown table #}
+        {% if estimate.per_arena %}
+        <div class="overflow-hidden rounded-md border border-gray-200">
+            <table class="min-w-full text-sm">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="text-left px-3 py-2 font-medium text-gray-600">Arena</th>
+                        <th class="text-left px-3 py-2 font-medium text-gray-600">Tier</th>
+                        <th class="text-right px-3 py-2 font-medium text-gray-600">Credits</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                    {% for row in estimate.per_arena %}
+                    <tr>
+                        <td class="px-3 py-2 text-gray-900">
+                            {{ row.platform | default(row.arena) }}
+                            {% if row.note | default('') %}
+                                <span class="text-xs text-gray-400 ml-1">({{ row.note }})</span>
+                            {% endif %}
+                        </td>
+                        <td class="px-3 py-2">
+                            {% set tier = row.tier | default('free') %}
+                            {% if tier == 'free' %}
+                                <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">Free</span>
+                            {% elif tier == 'medium' %}
+                                <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">Medium</span>
+                            {% else %}
+                                <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">Premium</span>
+                            {% endif %}
+                        </td>
+                        <td class="px-3 py-2 text-right font-mono text-gray-900">
+                            {{ row.estimated_credits | default(0) }}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
+        {# Summary row #}
+        <div class="flex items-center justify-between bg-gray-50 rounded-md px-4 py-3 text-sm">
+            <div>
+                <span class="text-gray-600">Estimated total</span>
+                <span class="font-semibold text-gray-900 ml-2">{{ estimate.total_credits | default(0) }} credits</span>
+            </div>
+            <div class="text-gray-500">
+                Available: <span class="font-medium text-gray-900">{{ estimate.available_credits | default(0) }}</span>
+            </div>
+        </div>
+
+        {# Insufficient credit warning #}
+        {% if not estimate.sufficient %}
+        <div class="rounded-md bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-800 flex items-start gap-2">
+            <svg class="w-4 h-4 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg"
+                 fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+            </svg>
+            <p>Insufficient credits. Contact an administrator to be allocated more.</p>
+        </div>
+        {% else %}
+        <div class="rounded-md bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 flex items-center gap-2">
+            <svg class="w-4 h-4 flex-shrink-0" xmlns="http://www.w3.org/2000/svg"
+                 fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            Credits sufficient — ready to launch.
+        </div>
+        {% endif %}
+    </div>
+{% else %}
+    <p class="text-sm text-gray-400 italic">
+        Select a query design and tier to see an estimate.
+    </p>
+{% endif %}

@@ -1,0 +1,34 @@
+{#
+    Empty state card — shown when a list or table has no items.
+    Expects context variables (all optional with defaults):
+        - empty_title:   heading text
+        - empty_message: supporting description
+        - empty_cta_label: button/link label
+        - empty_cta_href:  URL for the CTA button
+#}
+<div class="flex flex-col items-center justify-center py-16 px-6 text-center">
+    <div class="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mb-4">
+        <svg class="w-8 h-8 text-gray-400" xmlns="http://www.w3.org/2000/svg"
+             fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"
+             aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round"
+                  d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/>
+        </svg>
+    </div>
+    <h3 class="text-base font-semibold text-gray-900 mb-1">
+        {{ empty_title | default('No records yet') }}
+    </h3>
+    <p class="text-sm text-gray-500 mb-6 max-w-sm">
+        {{ empty_message | default('There are no records to display. Get started by creating one.') }}
+    </p>
+    {% if empty_cta_href | default(none) %}
+    <a href="{{ empty_cta_href }}"
+       class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+             stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+        </svg>
+        {{ empty_cta_label | default('Create new') }}
+    </a>
+    {% endif %}
+</div>

@@ -1,0 +1,38 @@
+{
+  "searchParameters": {
+    "q": "klimaforandringer",
+    "gl": "dk",
+    "hl": "da",
+    "num": 10,
+    "type": "search"
+  },
+  "organic": [
+    {
+      "title": "Klimaforandringer: Hvad sker der med Jordens klima?",
+      "link": "https://www.dr.dk/nyheder/viden/miljoe/klimaforandringer-hvad-sker-der-med-jordens-klima",
+      "snippet": "Klimaforandringer er de langsigtede forandringer i temperaturer og vejrmønstre. Disse forandringer kan være naturlige, men siden 1800-tallet er menneskelig aktivitet.",
+      "position": 1,
+      "date": "15 jan 2024",
+      "displayLink": "dr.dk"
+    },
+    {
+      "title": "Grøn omstilling og klimaforandringer i Danmark",
+      "link": "https://www.klimaraad.dk/klimaforandringer",
+      "snippet": "Den Grønne Omstilling er Danmarks bidrag til at bekæmpe klimaforandringer. Læs om velfærdsstatens rolle i den grønne transition og om Aalborg kommunes klimaplan.",
+      "position": 2,
+      "date": "10 jan 2024",
+      "displayLink": "klimaraad.dk"
+    },
+    {
+      "title": "Færøernes klimastrategi og arktiske udfordringer",
+      "link": "https://www.samvirkende.fo/klimastrategi",
+      "snippet": "Færøerne og Grønland oplever de mest markante klimaforandringer i Rigsfællesskabet. Søren Aa Nielsen, klimaekspert, udtaler at Ålborg og Aarhus må følge trop.",
+      "position": 3,
+      "displayLink": "samvirkende.fo"
+    }
+  ],
+  "searchInformation": {
+    "totalResults": "45200000",
+    "timeTaken": 0.42
+  }
+}

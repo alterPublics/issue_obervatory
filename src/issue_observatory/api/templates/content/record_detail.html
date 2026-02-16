@@ -1,0 +1,215 @@
+{#
+    HTMX partial: content record detail panel.
+    Loaded into #detail-panel-inner when a row is clicked in the content browser,
+    or as a standalone page at /content/{id}.
+
+    Context:
+        - record (dict):
+            - id (str)
+            - platform (str)
+            - arena (str)
+            - title (str, optional)
+            - text (str, optional)
+            - author (str, optional)
+            - author_id (str, optional)
+            - url (str, optional)
+            - published_at (str)
+            - collected_at (str)
+            - language (str, optional)
+            - engagement_score (int, optional)
+            - search_terms_matched (list[str], optional)
+            - run_id (str, optional)
+            - metadata (dict, optional): raw platform-specific fields
+        - standalone (bool): True when rendered as a full page, False as a panel partial
+#}
+{% set record = record | default({}) %}
+{% set standalone = standalone | default(false) %}
+
+{% if standalone %}
+{% extends "base.html" %}
+{% block title %}Content Record — {{ record.platform | default('') | capitalize }}{% endblock %}
+{% block content %}
+<div class="max-w-3xl mx-auto space-y-6">
+    <div class="flex items-center gap-3">
+        <a href="/content"
+           class="text-gray-400 hover:text-gray-600 transition-colors"
+           aria-label="Back to content browser">
+            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
+            </svg>
+        </a>
+        <h1 class="text-xl font-bold text-gray-900">Content Record</h1>
+    </div>
+{% endif %}
+
+<div class="space-y-4" x-data="{ showRaw: false }">
+
+    {# Header row: platform badge + title + external link #}
+    <div class="flex items-start justify-between gap-3">
+        <div class="flex items-center gap-2 flex-wrap">
+            <span class="inline-flex px-2.5 py-0.5 rounded text-xs font-medium
+                {% set p = record.platform | default('') %}
+                {% if p == 'youtube' %}bg-red-100 text-red-800
+                {% elif p == 'reddit' %}bg-orange-100 text-orange-800
+                {% elif p == 'bluesky' %}bg-sky-100 text-sky-800
+                {% elif p == 'telegram' %}bg-blue-100 text-blue-800
+                {% elif p == 'tiktok' %}bg-slate-100 text-slate-800
+                {% elif p == 'gab' %}bg-green-100 text-green-800
+                {% else %}bg-gray-100 text-gray-700{% endif %}">
+                {{ record.platform | default('unknown') | capitalize }}
+            </span>
+            <span class="text-xs text-gray-400 font-mono">{{ record.arena | default('') }}</span>
+        </div>
+        {% if record.url | default('') %}
+        <a href="{{ record.url }}"
+           target="_blank"
+           rel="noopener noreferrer"
+           class="flex-shrink-0 inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800">
+            <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+            </svg>
+            View original
+        </a>
+        {% endif %}
+    </div>
+
+    {# Title #}
+    {% if record.title | default('') %}
+    <h2 class="text-base font-semibold text-gray-900 leading-snug">{{ record.title }}</h2>
+    {% endif %}
+
+    {# Main text content #}
+    {% if record.text | default('') %}
+    <div class="bg-gray-50 rounded-md p-3 border border-gray-200">
+        <p class="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">{{ record.text | truncate(2000, true, '… [truncated]') }}</p>
+    </div>
+    {% endif %}
+
+    {# Metadata grid #}
+    <dl class="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
+        {% if record.author | default('') %}
+        <div>
+            <dt class="text-gray-500 font-medium">Author</dt>
+            <dd class="text-gray-900 mt-0.5">
+                {% if record.author_id | default('') %}
+                <a href="/actors?q={{ record.author }}"
+                   class="text-blue-600 hover:text-blue-800">{{ record.author }}</a>
+                {% else %}
+                {{ record.author }}
+                {% endif %}
+            </dd>
+        </div>
+        {% endif %}
+
+        {% if record.published_at | default('') %}
+        <div>
+            <dt class="text-gray-500 font-medium">Published</dt>
+            <dd class="text-gray-900 mt-0.5 font-mono">{{ record.published_at | truncate(19, true, '') }}</dd>
+        </div>
+        {% endif %}
+
+        {% if record.collected_at | default('') %}
+        <div>
+            <dt class="text-gray-500 font-medium">Collected</dt>
+            <dd class="text-gray-900 mt-0.5 font-mono">{{ record.collected_at | truncate(19, true, '') }}</dd>
+        </div>
+        {% endif %}
+
+        {% if record.language | default('') %}
+        <div>
+            <dt class="text-gray-500 font-medium">Language</dt>
+            <dd class="text-gray-900 mt-0.5">{{ record.language | upper }}</dd>
+        </div>
+        {% endif %}
+
+        {% if record.engagement_score | default(0) %}
+        <div>
+            <dt class="text-gray-500 font-medium">Engagement</dt>
+            <dd class="text-gray-900 mt-0.5 font-mono">{{ record.engagement_score | int }}</dd>
+        </div>
+        {% endif %}
+
+        {% if record.run_id | default('') %}
+        <div>
+            <dt class="text-gray-500 font-medium">Collection Run</dt>
+            <dd class="text-gray-900 mt-0.5">
+                <a href="/collections/{{ record.run_id }}"
+                   class="text-blue-600 hover:text-blue-800 font-mono">
+                    {{ record.run_id | truncate(8, true, '') }}
+                </a>
+            </dd>
+        </div>
+        {% endif %}
+
+        <div class="col-span-2">
+            <dt class="text-gray-500 font-medium">Record ID</dt>
+            <dd class="text-gray-400 mt-0.5 font-mono break-all">{{ record.id | default('') }}</dd>
+        </div>
+    </dl>
+
+    {# Search terms matched #}
+    {% if record.search_terms_matched | default([]) | length > 0 %}
+    <div>
+        <p class="text-xs font-medium text-gray-500 mb-1.5">Matched search terms</p>
+        <div class="flex flex-wrap gap-1.5">
+            {% for term in record.search_terms_matched %}
+            <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100">
+                {{ term }}
+            </span>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    {# Raw JSON viewer — Alpine-toggled #}
+    {% if record.metadata | default({}) %}
+    <div class="border-t border-gray-200 pt-3">
+        <button type="button"
+                @click="showRaw = !showRaw"
+                class="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 transition-colors">
+            <svg class="w-3.5 h-3.5 transition-transform" :class="showRaw ? 'rotate-90' : ''"
+                 xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
+            </svg>
+            <span x-text="showRaw ? 'Hide raw metadata' : 'Show raw metadata'">Show raw metadata</span>
+        </button>
+
+        <div x-show="showRaw"
+             x-cloak
+             x-transition:enter="transition ease-out duration-150"
+             x-transition:enter-start="opacity-0"
+             x-transition:enter-end="opacity-100"
+             class="mt-2">
+            <pre class="bg-gray-900 text-gray-100 text-xs p-4 rounded-md overflow-x-auto leading-relaxed max-h-80 overflow-y-auto">{{ record.metadata | tojson(indent=2) if record.metadata else '{}' }}</pre>
+        </div>
+    </div>
+    {% endif %}
+
+    {# Actions row #}
+    <div class="flex items-center gap-3 pt-2 border-t border-gray-200">
+        <a href="/actors?q={{ record.author | default('') | urlencode }}"
+           class="text-xs text-gray-500 hover:text-blue-600 transition-colors">
+            Find actor
+        </a>
+        <a href="/content?run_id={{ record.run_id | default('') }}&arenas={{ record.arena | default('') }}"
+           class="text-xs text-gray-500 hover:text-blue-600 transition-colors">
+            More from this run
+        </a>
+        {% if not standalone %}
+        <a href="/content/{{ record.id }}"
+           class="ml-auto text-xs text-gray-400 hover:text-gray-600 transition-colors">
+            Full page
+        </a>
+        {% endif %}
+    </div>
+
+</div>
+
+{% if standalone %}
+</div>
+{% endblock %}
+{% endif %}

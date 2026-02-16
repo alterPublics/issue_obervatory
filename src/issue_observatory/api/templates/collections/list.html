@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}Collections{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto space-y-6">
+
+    {# Page header #}
+    <div class="flex items-center justify-between">
+        <div>
+            <h1 class="text-xl font-bold text-gray-900">Collections</h1>
+            <p class="text-sm text-gray-500 mt-0.5">History of all your collection runs</p>
+        </div>
+        <a href="/collections/new"
+           class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+                <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            New Collection
+        </a>
+    </div>
+
+    {# Runs table #}
+    <div class="bg-white rounded-lg shadow overflow-hidden">
+        {% if runs | default([]) | length > 0 %}
+        <table class="min-w-full divide-y divide-gray-200 text-sm">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="text-left px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Query Design</th>
+                    <th class="text-left px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Type</th>
+                    <th class="text-left px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Tier</th>
+                    <th class="text-left px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Status</th>
+                    <th class="text-right px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Records</th>
+                    <th class="text-right px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Credits</th>
+                    <th class="text-left px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Started</th>
+                    <th class="px-6 py-3"><span class="sr-only">Link</span></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100" id="runs-tbody">
+                {% for run in runs %}
+                <tr class="hover:bg-gray-50 transition-colors">
+                    <td class="px-6 py-4">
+                        <a href="/collections/{{ run.id }}"
+                           class="font-medium text-gray-900 hover:text-blue-600">
+                            {{ run.query_design_name | default('(unknown design)') }}
+                        </a>
+                    </td>
+                    <td class="px-6 py-4 text-gray-600">
+                        {% if run.mode | default('batch') == 'live' %}
+                            <span class="inline-flex items-center gap-1 text-xs text-blue-700">
+                                <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 8 8">
+                                    <circle cx="4" cy="4" r="3"/>
+                                </svg>
+                                Live
+                            </span>
+                        {% else %}
+                            <span class="text-xs text-gray-500">Batch</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4">
+                        {% set tier = run.tier | default('free') %}
+                        {% if tier == 'free' %}
+                            <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">Free</span>
+                        {% elif tier == 'medium' %}
+                            <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">Medium</span>
+                        {% else %}
+                            <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">Premium</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4">
+                        {% set status = run.status | default('pending') %}
+                        {% if status == 'running' %}
+                            <span class="inline-flex items-center gap-1.5 text-blue-600 text-xs font-medium">
+                                <svg class="animate-spin w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                </svg>
+                                Running
+                            </span>
+                        {% elif status == 'completed' %}
+                            <span class="text-green-600 text-xs font-medium">Completed</span>
+                        {% elif status == 'failed' %}
+                            <span class="text-red-600 text-xs font-medium">Failed</span>
+                        {% elif status == 'cancelled' %}
+                            <span class="text-gray-400 text-xs font-medium">Cancelled</span>
+                        {% else %}
+                            <span class="text-gray-400 text-xs font-medium">Pending</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4 text-right text-gray-700 font-mono text-xs">
+                        {{ run.records_collected | default(0) | int | format_number }}
+                    </td>
+                    <td class="px-6 py-4 text-right text-gray-500 font-mono text-xs">
+                        {{ run.credits_spent | default(0) }}
+                    </td>
+                    <td class="px-6 py-4 text-gray-500 text-xs">
+                        {{ run.started_at | default('') | truncate(16, true, '') }}
+                    </td>
+                    <td class="px-6 py-4 text-right">
+                        <a href="/collections/{{ run.id }}"
+                           class="text-sm text-blue-600 hover:underline">
+                            Details
+                        </a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% if next_cursor is defined or prev_cursor is defined %}
+        <div class="px-6 py-3 border-t border-gray-200">
+            {% set hx_target = '#runs-tbody' %}
+            {% set base_url = '/collections' %}
+            {% include '_partials/pagination.html' %}
+        </div>
+        {% endif %}
+
+        {% else %}
+        {% set empty_title = 'No collections yet' %}
+        {% set empty_message = 'Start your first collection run by selecting a query design and configuring the collection parameters.' %}
+        {% set empty_cta_label = 'Start New Collection' %}
+        {% set empty_cta_href = '/collections/new' %}
+        {% include '_partials/empty_state.html' %}
+        {% endif %}
+    </div>
+
+</div>
+{% endblock %}

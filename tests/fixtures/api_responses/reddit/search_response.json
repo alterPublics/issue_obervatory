@@ -1,0 +1,35 @@
+{
+  "kind": "Listing",
+  "data": {
+    "after": null,
+    "children": [
+      {
+        "kind": "t3",
+        "data": {
+          "id": "test_post_001",
+          "title": "Hvad synes I om folkeskolen i Danmark? Diskussion om æøå og reform",
+          "selftext": "Folkeskolen i Danmark har brug for en reform. Aarhus kommune har allerede taget initiativ. Hvad tænker I?",
+          "author": "danskdebattoer",
+          "subreddit": "Denmark",
+          "subreddit_id": "t5_2qiuf",
+          "score": 156,
+          "upvote_ratio": 0.92,
+          "num_comments": 47,
+          "created_utc": 1739620200.0,
+          "permalink": "/r/Denmark/comments/test_post_001/hvad_synes_i_om_folkeskolen/",
+          "url": "https://www.reddit.com/r/Denmark/comments/test_post_001/hvad_synes_i_om_folkeskolen/",
+          "is_self": true,
+          "num_crossposts": 0,
+          "over_18": false,
+          "spoiler": false,
+          "stickied": false,
+          "distinguished": null,
+          "gilded": 0,
+          "link_flair_text": "Diskussion",
+          "domain": "self.Denmark",
+          "post_hint": null
+        }
+      }
+    ]
+  }
+}

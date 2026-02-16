@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Credit Allocation — Administration{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto space-y-6">
+
+    <div>
+        <h1 class="text-xl font-bold text-gray-900">Credit Allocation</h1>
+        <p class="text-sm text-gray-500 mt-0.5">Assign collection credits to users</p>
+    </div>
+
+    {# Allocation form #}
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-sm font-semibold text-gray-900 border-b border-gray-200 pb-3 mb-5">Allocate Credits</h2>
+
+        <form method="POST"
+              action="/admin/credits/allocate"
+              hx-post="/admin/credits/allocate"
+              hx-target="#allocation-result"
+              hx-swap="innerHTML">
+
+            <div class="grid grid-cols-2 gap-5">
+                <div class="col-span-2">
+                    <label for="user_id" class="block text-sm font-medium text-gray-700 mb-1">
+                        User <span class="text-red-500">*</span>
+                    </label>
+                    <select id="user_id" name="user_id" required
+                            class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                        <option value="">Select user...</option>
+                        {% for u in users | default([]) %}
+                        <option value="{{ u.id }}"
+                                {% if request.query_params.get('user_id') == u.id %}selected{% endif %}>
+                            {{ u.display_name | default('') }} ({{ u.email | default('') }})
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div>
+                    <label for="credits_amount" class="block text-sm font-medium text-gray-700 mb-1">
+                        Number of credits <span class="text-red-500">*</span>
+                    </label>
+                    <input type="number" id="credits_amount" name="credits_amount"
+                           min="1" required placeholder="f.eks. 1000"
+                           class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+
+                <div>
+                    <label for="valid_until" class="block text-sm font-medium text-gray-700 mb-1">
+                        Valid until (optional)
+                    </label>
+                    <input type="date" id="valid_until" name="valid_until"
+                           class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <p class="text-xs text-gray-400 mt-1">Leave blank for no expiry date.</p>
+                </div>
+
+                <div class="col-span-2">
+                    <label for="memo" class="block text-sm font-medium text-gray-700 mb-1">Memo</label>
+                    <input type="text" id="memo" name="memo" maxlength="200"
+                           placeholder="e.g. Q1 2026 project budget"
+                           class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+            </div>
+
+            <div class="pt-4 border-t border-gray-200 mt-5">
+                <button type="submit"
+                        class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+                    Allocate Credits
+                </button>
+            </div>
+        </form>
+
+        <div id="allocation-result" class="mt-4"></div>
+    </div>
+
+    {# Recent allocations #}
+    <div class="bg-white rounded-lg shadow overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-200">
+            <h2 class="text-sm font-semibold text-gray-900">Recent Allocations</h2>
+        </div>
+        {% if allocations | default([]) | length > 0 %}
+        <table class="min-w-full divide-y divide-gray-200 text-sm">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
+                    <th class="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Credits</th>
+                    <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Valid Until</th>
+                    <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Memo</th>
+                    <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Allocated</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+                {% for alloc in allocations %}
+                <tr class="hover:bg-gray-50">
+                    <td class="px-6 py-3 text-gray-900">{{ alloc.user_email | default('') }}</td>
+                    <td class="px-6 py-3 text-right font-mono text-gray-900">{{ alloc.credits_amount | default(0) }}</td>
+                    <td class="px-6 py-3 text-gray-500 text-xs">{{ alloc.valid_until | default('No expiry') }}</td>
+                    <td class="px-6 py-3 text-gray-500 text-xs">{{ alloc.memo | default('') }}</td>
+                    <td class="px-6 py-3 text-gray-500 text-xs">{{ alloc.allocated_at | default('') | truncate(16, true, '') }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        {% set empty_title = 'No allocations yet' %}
+        {% set empty_message = 'Use the form above to allocate credits to users.' %}
+        {% include '_partials/empty_state.html' %}
+        {% endif %}
+    </div>
+
+</div>
+{% endblock %}

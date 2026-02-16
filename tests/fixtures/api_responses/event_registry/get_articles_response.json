@@ -1,0 +1,68 @@
+{
+  "articles": {
+    "results": [
+      {
+        "uri": "eng-20260215-001",
+        "url": "https://www.dr.dk/nyheder/indland/gron-omstilling-afgørende",
+        "title": "Grøn omstilling er afgørende for dansk økonomi, siger Frederiksen",
+        "body": "Statsminister Mette Frederiksen understregede på et pressemøde, at grøn omstilling er afgørende for velfærdssamfundets fremtid. Investeringer i vedvarende energi fra Ørsted og andre selskaber er nøglen til at nå klimamålene. Ålborg og andre byer spiller en central rolle.",
+        "lang": "dan",
+        "dateTimePub": "2026-02-15T09:00:00Z",
+        "date": "2026-02-15",
+        "image": "https://www.dr.dk/images/gron-omstilling.jpg",
+        "source": {
+          "uri": "dr.dk",
+          "title": "DR",
+          "dataType": "news"
+        },
+        "authors": [
+          {
+            "uri": "journalist/jakob_nielsen",
+            "name": "Jakob Nielsen"
+          }
+        ],
+        "concepts": [
+          {"uri": "http://en.wikipedia.org/wiki/Mette_Frederiksen", "label": {"dan": "Mette Frederiksen"}}
+        ],
+        "categories": [
+          {"uri": "news/Politics/Denmark", "label": "Dansk politik"}
+        ],
+        "sentiment": 0.15,
+        "wgt": 8.5,
+        "relevance": 0.95,
+        "isDuplicate": false,
+        "eventUri": "eng-2026-02-15-climate",
+        "shares": {"facebook": 120}
+      },
+      {
+        "uri": "eng-20260215-002",
+        "url": "https://www.berlingske.dk/aarhus/velfaerdsreform-haardt-ramte-kommuner",
+        "title": "Velfærdsreformen rammer kommunerne hårdt i Ålborg og Aarhus",
+        "body": "Kommunale direktører i Ålborg og Aarhus advarer om konsekvenserne af den planlagte velfærdsreform. Ændringer i det offentlige sundhedsvæsen vil påvirke borgerne direkte fra 2027.",
+        "lang": "dan",
+        "dateTimePub": "2026-02-15T11:30:00Z",
+        "date": "2026-02-15",
+        "image": null,
+        "source": {
+          "uri": "berlingske.dk",
+          "title": "Berlingske",
+          "dataType": "news"
+        },
+        "authors": [],
+        "concepts": [],
+        "categories": [],
+        "sentiment": -0.25,
+        "wgt": 6.2,
+        "relevance": 0.87,
+        "isDuplicate": false,
+        "eventUri": null,
+        "shares": null
+      }
+    ],
+    "totalResults": 2,
+    "page": 1,
+    "count": 2,
+    "pages": 1
+  },
+  "remainingTokens": 4800
+}

@@ -1,0 +1,99 @@
+{#
+    HTMX / SSE fragment: single arena task row in the collection run detail table.
+
+    Rendered server-side and streamed via SSE with `hx-swap-oob="true"` so each
+    update targets the correct row by ID without replacing the whole table.
+
+    Context:
+        - task (dict):
+            - id (str):              task UUID
+            - arena (str):           arena slug (e.g. 'google_search')
+            - platform (str):        human-readable platform name
+            - status (str):          'pending' | 'running' | 'success' | 'failed' | 'cancelled'
+            - records_collected (int, optional)
+            - credits_spent (int, optional)
+            - error_message (str, optional): short error if status == 'failed'
+            - started_at (str, optional):    ISO datetime or display string
+            - finished_at (str, optional):   ISO datetime or display string
+            - duration_seconds (int, optional)
+#}
+{% set status = task.status | default('pending') %}
+
+<tr id="task-row-{{ task.id }}"
+    hx-swap-oob="true"
+    class="{% if status == 'running' %}bg-blue-50{% elif status == 'failed' %}bg-red-50{% elif status == 'success' %}bg-green-50/30{% else %}bg-white{% endif %} transition-colors">
+
+    {# Arena / platform name #}
+    <td class="px-6 py-3 text-sm font-medium text-gray-900 whitespace-nowrap">
+        {{ task.platform | default(task.arena | default('—')) }}
+    </td>
+
+    {# Status indicator #}
+    <td class="px-6 py-3">
+        {% if status == 'running' %}
+            <span class="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700">
+                <svg class="animate-spin w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg"
+                     fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+                Running
+            </span>
+        {% elif status == 'success' %}
+            <span class="inline-flex items-center gap-1.5 text-xs font-medium text-green-700">
+                <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                     viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                </svg>
+                Completed
+            </span>
+        {% elif status == 'failed' %}
+            <span class="inline-flex items-center gap-1.5 text-xs font-medium text-red-700">
+                <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                     viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+                Failed
+            </span>
+        {% elif status == 'cancelled' %}
+            <span class="text-xs font-medium text-gray-400">Cancelled</span>
+        {% else %}
+            <span class="text-xs font-medium text-gray-400">Pending</span>
+        {% endif %}
+    </td>
+
+    {# Records collected #}
+    <td class="px-6 py-3 text-right text-xs font-mono text-gray-700">
+        {{ task.records_collected | default(0) | int }}
+    </td>
+
+    {# Credits spent #}
+    <td class="px-6 py-3 text-right text-xs font-mono text-gray-500">
+        {{ task.credits_spent | default(0) }}
+    </td>
+
+    {# Duration #}
+    <td class="px-6 py-3 text-xs text-gray-500 whitespace-nowrap">
+        {% if task.duration_seconds is defined and task.duration_seconds is not none %}
+            {% set d = task.duration_seconds | int %}
+            {% if d >= 60 %}
+                {{ (d // 60) }}m {{ (d % 60) }}s
+            {% else %}
+                {{ d }}s
+            {% endif %}
+        {% elif status in ('pending',) %}
+            —
+        {% else %}
+            —
+        {% endif %}
+    </td>
+
+    {# Error message (collapsed into the row when present) #}
+    <td class="px-6 py-3 text-xs max-w-xs">
+        {% if status == 'failed' and task.error_message | default('') %}
+            <span class="text-red-600 truncate block" title="{{ task.error_message }}">
+                {{ task.error_message | truncate(80) }}
+            </span>
+        {% endif %}
+    </td>
+</tr>

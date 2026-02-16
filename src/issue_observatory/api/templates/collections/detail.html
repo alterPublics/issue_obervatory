@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% block title %}Collection Run — {{ run.query_design_name | default(run_id | default('')) }}{% endblock %}
+
+{% block content %}
+{#
+    Collection run live status page.
+
+    SSE connection to /api/collections/{run_id}/stream streams two event types:
+      - 'task_update':  server renders _fragments/task_row.html with hx-swap-oob
+                        which HTMX automatically routes to the matching <tr> by id.
+      - 'run_update':   server renders _fragments/run_summary.html with hx-swap-oob
+                        which updates the summary card at the top.
+      - 'run_complete': signals the SSE close event; HTMX disconnects the stream.
+
+    Context:
+        - run_id (str):  UUID of the run (always available)
+        - run (dict, optional): initial run state from the page route handler
+        - tasks (list, optional): initial task list for pre-rendering rows
+#}
+{% set run = run | default({}) %}
+{% set tasks = tasks | default([]) %}
+{% set run_id = run_id | default(run.id | default('')) %}
+{% set status = run.status | default('running') %}
+{% set is_terminal = status in ('completed', 'failed', 'cancelled') %}
+
+<div class="max-w-5xl mx-auto space-y-6">
+
+    {# Back navigation + page title #}
+    <div class="flex items-center gap-3">
+        <a href="/collections"
+           class="text-gray-400 hover:text-gray-600 transition-colors"
+           aria-label="Back to collections">
+            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
+            </svg>
+        </a>
+        <h1 class="text-xl font-bold text-gray-900">Collection Run</h1>
+        <span class="text-gray-300 text-xs font-mono">{{ run_id | truncate(8, true, '') }}</span>
+    </div>
+
+    {#
+        SSE container — wraps everything that receives live updates.
+        hx-ext="sse" activates the HTMX SSE extension.
+        sse-connect points to the streaming endpoint.
+        sse-close="run_complete" closes the SSE connection when the server
+        emits an event named 'run_complete'.
+
+        The inner elements use hx-swap-oob, so HTMX routes each incoming HTML
+        fragment to its target element by id rather than swapping innerHTML here.
+    #}
+    <div {% if not is_terminal %}
+         hx-ext="sse"
+         sse-connect="/api/collections/{{ run_id }}/stream"
+         sse-close="run_complete"
+         {% endif %}
+         id="sse-container">
+
+        {# Run summary card — updated via hx-swap-oob on run_update SSE events #}
+        {% with run = run %}
+            {% include '_fragments/run_summary.html' %}
+        {% endwith %}
+
+        {# Per-arena task table #}
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+            <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+                <h2 class="text-sm font-semibold text-gray-900">Arena Tasks</h2>
+                {% if not is_terminal %}
+                <div class="flex items-center gap-2">
+                    {# Live indicator dot while running #}
+                    <span class="inline-flex items-center gap-1.5 text-xs text-blue-600">
+                        <svg class="w-2 h-2 text-blue-500 animate-pulse" xmlns="http://www.w3.org/2000/svg"
+                             fill="currentColor" viewBox="0 0 8 8" aria-hidden="true">
+                            <circle cx="4" cy="4" r="3"/>
+                        </svg>
+                        Live
+                    </span>
+
+                    {# Cancel button — HTMX POST to cancel the run #}
+                    <button type="button"
+                            hx-post="/api/collections/{{ run_id }}/cancel"
+                            hx-confirm="Cancel this collection run?"
+                            hx-target="#run-summary-card"
+                            hx-swap="outerHTML"
+                            class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-600 border border-red-200 rounded-md hover:bg-red-50 transition-colors">
+                        <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                        Cancel run
+                    </button>
+                </div>
+                {% endif %}
+            </div>
+
+            {% if tasks %}
+            <table class="min-w-full divide-y divide-gray-200 text-sm" id="tasks-table">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Arena</th>
+                        <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                        <th class="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Records</th>
+                        <th class="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Credits</th>
+                        <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
+                        <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Notes</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100" id="tasks-tbody">
+                    {% for task in tasks %}
+                        {% include '_fragments/task_row.html' %}
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            {# Empty state: no tasks pre-loaded — will populate via SSE or HTMX poll #}
+            <div class="px-6 py-12 text-center">
+                {% if is_terminal %}
+                    {% set empty_title = 'No task data available' %}
+                    {% set empty_message = 'Task details were not recorded for this run.' %}
+                    {% include '_partials/empty_state.html' %}
+                {% else %}
+                    <div class="flex flex-col items-center gap-3">
+                        {% include '_partials/loading_spinner.html' %}
+                        <p class="text-sm text-gray-400">Waiting for tasks to start...</p>
+                    </div>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+
+        {# Post-run actions (shown when terminal) #}
+        {% if is_terminal %}
+        <div class="flex items-center justify-between bg-white rounded-lg shadow px-6 py-4">
+            <div class="text-sm text-gray-500">
+                {% if status == 'completed' %}
+                    Collection finished. Explore the collected content below.
+                {% elif status == 'failed' %}
+                    This run encountered errors. Check the task table above for details.
+                {% else %}
+                    This run was cancelled.
+                {% endif %}
+            </div>
+            <div class="flex gap-3">
+                {% if status == 'completed' %}
+                <a href="/content?run_id={{ run_id }}"
+                   class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 transition-colors">
+                    <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none"
+                         viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
+                    </svg>
+                    Browse content
+                </a>
+                {% endif %}
+                <a href="/collections/new?design_id={{ run.query_design_id | default('') }}"
+                   class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+                    <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none"
+                         viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                    </svg>
+                    Run again
+                </a>
+            </div>
+        </div>
+        {% endif %}
+
+    </div>{# /sse-container #}
+
+</div>
+{% endblock %}

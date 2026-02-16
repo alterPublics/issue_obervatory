@@ -1,0 +1,41 @@
+{
+  "posts": [
+    {
+      "uri": "at://did:plc:abc123testuser/app.bsky.feed.post/3kwxtest001",
+      "author": {
+        "did": "did:plc:abc123testuser",
+        "handle": "soeren.bsky.social",
+        "displayName": "Søren Ærlighed"
+      },
+      "record": {
+        "$type": "app.bsky.feed.post",
+        "text": "Grøn omstilling er afgørende for vores fremtid. Mette Frederiksen talte om klimaet i Ålborg i dag.",
+        "createdAt": "2026-02-15T10:30:00.000Z",
+        "langs": ["da"]
+      },
+      "likeCount": 42,
+      "repostCount": 7,
+      "replyCount": 3,
+      "indexedAt": "2026-02-15T10:30:05.000Z"
+    },
+    {
+      "uri": "at://did:plc:xyz789testuser/app.bsky.feed.post/3kwxtest002",
+      "author": {
+        "did": "did:plc:xyz789testuser",
+        "handle": "lars.aarhus.bsky.social",
+        "displayName": "Lars fra Aarhus"
+      },
+      "record": {
+        "$type": "app.bsky.feed.post",
+        "text": "Folkeskolen trænger til en reform. Børnene i Ålborg fortjener bedre.",
+        "createdAt": "2026-02-15T09:15:00.000Z",
+        "langs": ["da"]
+      },
+      "likeCount": 18,
+      "repostCount": 2,
+      "replyCount": 5,
+      "indexedAt": "2026-02-15T09:15:07.000Z"
+    }
+  ],
+  "cursor": null
+}

@@ -32,9 +32,11 @@ env/
 
 # Testing
 .coverage
+.coverage.*
 .pytest_cache/
 htmlcov/
 .mypy_cache/
+.ruff_cache/
 
 # OS
 .DS_Store

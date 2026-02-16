@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Users — Administration{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto space-y-6">
+
+    <div class="flex items-center justify-between">
+        <div>
+            <h1 class="text-xl font-bold text-gray-900">User Management</h1>
+            <p class="text-sm text-gray-500 mt-0.5">Activate accounts, change roles and manage access</p>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-lg shadow overflow-hidden">
+        {% if users | default([]) | length > 0 %}
+        <table class="min-w-full divide-y divide-gray-200 text-sm">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
+                    <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
+                    <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                    <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Last Login</th>
+                    <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                    <th class="px-6 py-3"><span class="sr-only">Actions</span></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100" id="users-tbody">
+                {% for u in users %}
+                <tr class="hover:bg-gray-50" id="user-row-{{ u.id }}">
+                    <td class="px-6 py-4">
+                        <div class="flex items-center gap-3">
+                            <div class="w-8 h-8 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-sm font-bold flex-shrink-0">
+                                {{ (u.display_name or u.email or '?')[0] | upper }}
+                            </div>
+                            <div>
+                                <p class="font-medium text-gray-900">{{ u.display_name | default('') }}</p>
+                                <p class="text-xs text-gray-500">{{ u.email | default('') }}</p>
+                            </div>
+                        </div>
+                    </td>
+                    <td class="px-6 py-4">
+                        {% if u.role | default('researcher') == 'admin' %}
+                            <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">Admin</span>
+                        {% else %}
+                            <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">Researcher</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4">
+                        {% if u.is_active | default(false) %}
+                            <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">Active</span>
+                        {% else %}
+                            <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">Pending</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4 text-gray-500 text-xs">
+                        {{ u.last_login_at | default('Never') | truncate(16, true, '') }}
+                    </td>
+                    <td class="px-6 py-4 text-gray-500 text-xs">
+                        {{ u.created_at | default('') | truncate(10, true, '') }}
+                    </td>
+                    <td class="px-6 py-4 text-right">
+                        <div class="flex items-center justify-end gap-2">
+                            {% if not u.is_active | default(false) %}
+                            <button type="button"
+                                    hx-post="/admin/users/{{ u.id }}/activate"
+                                    hx-target="#user-row-{{ u.id }}"
+                                    hx-swap="outerHTML"
+                                    class="text-sm text-green-700 hover:text-green-900 px-2 py-1 rounded hover:bg-green-50 transition-colors">
+                                Activate
+                            </button>
+                            {% else %}
+                            <button type="button"
+                                    hx-post="/admin/users/{{ u.id }}/deactivate"
+                                    hx-target="#user-row-{{ u.id }}"
+                                    hx-swap="outerHTML"
+                                    hx-confirm="Deactivate account for {{ u.email | default('this user') }}?"
+                                    class="text-sm text-yellow-700 hover:text-yellow-900 px-2 py-1 rounded hover:bg-yellow-50 transition-colors">
+                                Deactivate
+                            </button>
+                            {% endif %}
+                            <a href="/admin/credits?user_id={{ u.id }}"
+                               class="text-sm text-gray-500 hover:text-blue-600 px-2 py-1 rounded hover:bg-gray-100 transition-colors">
+                                Credits
+                            </a>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        {% set empty_title = 'No users' %}
+        {% set empty_message = 'There are no users in the system yet.' %}
+        {% include '_partials/empty_state.html' %}
+        {% endif %}
+    </div>
+
+</div>
+{% endblock %}

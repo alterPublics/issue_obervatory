@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}System Status — Administration{% endblock %}
+
+{% block content %}
+{#
+    System health dashboard — HTMX-polled.
+    GET /admin/health/status returns a JSON-equivalent fragment with
+    PostgreSQL, Redis, Celery worker, and arena health check results.
+
+    Context:
+        - health (dict, optional): pre-rendered server-side health snapshot
+            - postgres: {status: 'ok'|'error', latency_ms: int}
+            - redis:    {status: 'ok'|'error', latency_ms: int}
+            - celery:   {status: 'ok'|'error', workers: int, queued_tasks: int}
+            - arenas:   list of {name, platform, status, last_checked}
+#}
+<div class="max-w-5xl mx-auto space-y-6">
+
+    <div class="flex items-center justify-between">
+        <div>
+            <h1 class="text-xl font-bold text-gray-900">System Status</h1>
+            <p class="text-sm text-gray-500 mt-0.5">Infrastructure and arena health status</p>
+        </div>
+        <div class="flex items-center gap-2 text-sm text-gray-500">
+            <span id="health-spinner" class="htmx-indicator">
+                <svg class="animate-spin w-4 h-4 text-blue-600" xmlns="http://www.w3.org/2000/svg"
+                     fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+            </span>
+            Updates every 15s
+        </div>
+    </div>
+
+    {# Core infrastructure status — HTMX-polled #}
+    <div id="infrastructure-status"
+         hx-get="/admin/health/status"
+         hx-trigger="load, every 15s"
+         hx-target="#infrastructure-status"
+         hx-swap="innerHTML"
+         hx-indicator="#health-spinner">
+
+        {# Skeleton / initial render #}
+        <div class="grid grid-cols-3 gap-4">
+            {% for service in ['PostgreSQL', 'Redis', 'Celery Workers'] %}
+            <div class="bg-white rounded-lg shadow p-5">
+                <div class="flex items-center justify-between mb-2">
+                    <h3 class="text-sm font-medium text-gray-700">{{ service }}</h3>
+                    <div class="w-2 h-2 rounded-full bg-gray-200 animate-pulse"></div>
+                </div>
+                <p class="text-2xl font-bold text-gray-300">—</p>
+                <p class="text-xs text-gray-400 mt-1">Loading...</p>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    {# Arena health status #}
+    <div class="bg-white rounded-lg shadow">
+        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+            <h2 class="text-sm font-semibold text-gray-900">Arena Status</h2>
+            <span class="text-xs text-gray-400">Individual health checks</span>
+        </div>
+
+        <div id="arena-health"
+             hx-get="/admin/health/arenas"
+             hx-trigger="load, every 60s"
+             hx-target="#arena-health"
+             hx-swap="innerHTML">
+            <div class="px-6 py-8 text-center">
+                {% include '_partials/loading_spinner.html' %}
+            </div>
+        </div>
+    </div>
+
+    {# System info footer #}
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-sm font-semibold text-gray-900 border-b border-gray-200 pb-3 mb-4">System Information</h2>
+        <dl class="grid grid-cols-2 gap-x-8 gap-y-3 text-sm">
+            <div class="flex justify-between">
+                <dt class="text-gray-500">Version</dt>
+                <dd class="font-medium text-gray-900">0.1.0 (Phase 0)</dd>
+            </div>
+            <div class="flex justify-between">
+                <dt class="text-gray-500">Implementation Phase</dt>
+                <dd class="font-medium text-gray-900">Phase 0 — Infrastructure</dd>
+            </div>
+            <div class="flex justify-between">
+                <dt class="text-gray-500">Active Arenas</dt>
+                <dd class="font-medium text-gray-900">Google Search</dd>
+            </div>
+            <div class="flex justify-between">
+                <dt class="text-gray-500">Database Partitioning</dt>
+                <dd class="font-medium text-gray-900">Monthly (published_at)</dd>
+            </div>
+        </dl>
+    </div>
+
+</div>
+{% endblock %}

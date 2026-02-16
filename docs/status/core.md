@@ -3,15 +3,866 @@
 ## Phase 0
 - [ ] Project bootstrap (pyproject.toml, Docker Compose, Makefile)
 - [ ] FastAPI application shell with middleware
-- [ ] Celery infrastructure (app, beat schedule, rate limiter)
-- [ ] Configuration system (settings, tiers, Danish defaults)
-- [ ] ArenaCollector base class and registry
-- [ ] Normalizer pipeline
-- [ ] Credential pool
-- [ ] Credit service
-- [ ] Exception hierarchy
-- [ ] Auth routes (login, logout, refresh)
-- [ ] Core API routes (query designs, collections, content, actors)
+- [x] Celery infrastructure (app, beat schedule) — Task 0.3 complete (2026-02-15)
+- [x] Redis rate limiter (workers/rate_limiter.py) — Task 0.6 complete (2026-02-16)
+- [x] Configuration system — settings.py implemented by DB/Core (2026-02-15)
+- [x] Tier definitions (config/tiers.py) — Task 0.5 complete (2026-02-16)
+- [x] Danish defaults (config/danish_defaults.py) — Task 0.5 complete (2026-02-16)
+- [x] ArenaCollector base class (arenas/base.py) — Task 0.3 complete (2026-02-15)
+- [x] Arena registry (arenas/registry.py) — Task 0.3 complete (2026-02-15)
+- [x] Normalizer pipeline (core/normalizer.py) — Task 0.3 complete (2026-02-15)
+- [x] Credential pool — Task 1.1 complete (2026-02-16): DB-backed with Fernet encryption, Redis lease/quota/cooldown, env-var fallback
+- [ ] Credit service (core/credit_service.py) — Task 0.8 (DB Engineer)
+- [x] Exception hierarchy (core/exceptions.py) — Task 0.3 complete (2026-02-15)
+- [x] Entity resolver stub (core/entity_resolver.py) — Task 0.3 complete (2026-02-15)
+- [x] Auth routes (login, logout, refresh, register, password reset) — Task 0.7 complete (2026-02-15)
+- [x] FastAPI app assembly (main.py, CORS, logging middleware, /health) — Task 0.7 complete (2026-02-15)
+- [x] Auth dependencies (get_current_user, require_admin, ownership_guard) — Task 0.7 complete (2026-02-15)
+- [x] Admin bootstrap script (scripts/bootstrap_admin.py) — Task 0.7 complete (2026-02-15)
+- [x] API key generation script (scripts/generate_api_key.py) — Task 0.7 complete (2026-02-15)
+- [x] Core API routes: query_designs.py, collections.py — Task 1.3 confirmed (2026-02-16): ownership_guard applied on all routes
+- [ ] Content and actors routes — Task 0.4 / 0.9b still pending
+
+### Task 0.3 — Delivered files
+| File | Status |
+|------|--------|
+| `src/issue_observatory/core/exceptions.py` | Done |
+| `src/issue_observatory/arenas/base.py` | Done |
+| `src/issue_observatory/arenas/registry.py` | Done |
+| `src/issue_observatory/core/normalizer.py` | Done |
+| `src/issue_observatory/core/entity_resolver.py` | Done (stub) |
+| `src/issue_observatory/core/credential_pool.py` | Done (Phase 0 env-var stub) |
+| `src/issue_observatory/workers/celery_app.py` | Done |
+| `src/issue_observatory/workers/beat_schedule.py` | Done |
+
+### Task 0.7 — Delivered files
+| File | Status |
+|------|--------|
+| `src/issue_observatory/core/user_manager.py` | Done — FastAPI-Users adapter, UserManager, schemas, dependency factories |
+| `src/issue_observatory/api/routes/auth.py` | Done — cookie + bearer backends, auth/register/reset routers |
+| `src/issue_observatory/api/dependencies.py` | Done — get_current_user, get_current_active_user, get_optional_user, require_admin, ownership_guard, get_pagination |
+| `src/issue_observatory/api/main.py` | Done — app factory, CORS, request logging middleware, /health, all routers mounted |
+| `src/issue_observatory/api/routes/users.py` | Done — admin activation, role management, API key CRUD |
+| `scripts/bootstrap_admin.py` | Done — idempotent first-run admin creation |
+| `scripts/generate_api_key.py` | Done — CLI tool for API key generation/revocation by email |
+
+### Task 0.7 — Design notes
+- **No modifications to `core/models/users.py`** (DB Engineer-owned).  The
+  `ObservatoryUserDatabase` adapter in `user_manager.py` injects virtual
+  `is_superuser` (derived from `role == 'admin'`) and `is_verified` (always
+  `True`) attributes onto returned `User` instances at runtime.
+- `UserCreate.is_active` is always forced to `False` in the adapter's
+  `create()` override — admin activation is required for every new account.
+- Two auth backends: `cookie` (browser, HttpOnly SameSite=Lax, 30 min) and
+  `bearer` (API clients, `Authorization: Bearer`).  Both use the same JWT
+  strategy and secret.
+- `ownership_guard()` is a plain function (not a FastAPI dependency) that
+  route handlers call explicitly after fetching the resource.
+
+### Task 0.5 — Completed (2026-02-16)
+`config/tiers.py` was already fully implemented.  `config/danish_defaults.py`
+received three new constants:
+- `PSEUDONYMIZATION_SALT_ENV_VAR = "PSEUDONYMIZATION_SALT"`
+- `FULL_TEXT_SEARCH_CONFIG = "danish"` (alias for `POSTGRES_FTS_LANGUAGE`)
+- `BLUESKY_LANG_FILTER = "da"` (bare language code companion to `BLUESKY_DANISH_FILTER`)
+
+### Task 0.6 — Completed (2026-02-16)
+`workers/rate_limiter.py` received two additions:
+- `RateLimitTimeoutError` exception class (key, timeout attributes).
+- `RateLimiter.acquire(key, max_calls, window_seconds) -> bool` — low-level
+  method using an explicit Redis key string; uses the same Lua sliding-window
+  script as `check_and_acquire`.
+- `RateLimiter.wait_for_slot(key, max_calls, window_seconds, timeout=60.0)` —
+  polls `acquire()` in a loop with calculated sleep, raises
+  `RateLimitTimeoutError` on timeout.
+- Key convention: `ratelimit:{arena}:{platform}:{credential_id}`.
+
+### Task 1.1 — Completed (2026-02-16)
+`core/credential_pool.py` fully replaced with DB-backed implementation:
+- Fernet decryption of `api_credentials.credentials` JSONB column.
+- Redis lease: `credential:lease:{id}:{task_id}` TTL=3600s.
+- Redis daily quota: `credential:quota:{id}:daily` TTL=seconds-until-midnight-UTC.
+- Redis monthly quota: `credential:quota:{id}:monthly` TTL=seconds-until-month-end.
+- Redis cooldown: `credential:cooldown:{id}` exponential backoff (2^(n-1) min, max 60 min = 3600s).
+- Circuit breaker: 5 consecutive errors → max cooldown; admin resets `error_count` in DB.
+- `acquire()` queries DB LRU-ordered, skips cooldown/quota-exceeded, sets lease, increments quota.
+- `release()` deletes Redis lease key(s).
+- `report_error()` increments DB `error_count`, sets Redis cooldown.
+- Env-var fallback preserves Phase 0 `{PLATFORM}_{TIER}_API_KEY` behaviour when DB has no rows.
+- `get_credential_pool()` FastAPI dependency (singleton).
+- Backward-compat: `release(platform=..., credential_id=...)` and `report_error(platform=..., credential_id=...)` still work.
+
+### Task 1.2 — Completed (2026-02-16)
+`core/normalizer.py` changes:
+- `pseudonymize_author()` formula updated to `SHA-256(platform + ":" + platform_user_id + ":" + salt)` (colons added as separators, matching DPIA spec).
+- Empty salt now logs WARNING instead of raising `ValueError`; `pseudonymize_author()` returns `None` when salt is empty.
+- `Normalizer.__init__` falls back to `os.environ.get("PSEUDONYMIZATION_SALT", "")` if Settings cannot be loaded.
+
+`core/retention_service.py` created:
+- `RetentionService.enforce_retention(db, retention_days) -> int` — bulk DELETE on `content_records` by `collected_at`, returns count.
+- `RetentionService.delete_actor_data(db, actor_id) -> dict` — deletes `content_records`, `actor_platform_presences`, `actor_aliases`, `actor_list_members`, `actors` rows; returns per-table counts.
+- All deletions logged at INFO.
+
+### Task 1.3 — Confirmed complete (2026-02-16)
+`api/routes/query_designs.py` and `api/routes/collections.py` already existed
+with full `ownership_guard` coverage on all read/write routes.  No changes needed.
+- `query_designs.py`: list (owner filter in WHERE clause), create (sets owner_id), get/put/delete/terms (ownership_guard call after fetch).
+- `collections.py`: list (initiated_by filter), create (ownership_guard on query_design), get/cancel (ownership_guard after fetch), estimate (ownership_guard on query_design).
+
+### Blockers / Notes
+- `workers/tasks.py` (orchestration tasks) needs to be created in Task 0.4.
+- Entity resolver's `create_or_update_presence()` imports `core/models/actors.py` — DB Engineer must ensure `Actor` and `ActorPlatformPresence` models are available.
+- `credential_pool.py` uses `AsyncSessionLocal` from `core/database.py` — requires DB to be initialised before credential pool operations can reach the database layer.  Env-var fallback remains available when DB is not yet running.
+
+## Integration Wiring (2026-02-16)
+
+All Phase 1 arenas wired into the application backbone.
+
+### Task modules registered in `workers/celery_app.py` `include` list
+
+| Module | Status |
+|--------|--------|
+| `issue_observatory.arenas.google_search.tasks` | Was already registered (Phase 0) |
+| `issue_observatory.arenas.google_autocomplete.tasks` | Added |
+| `issue_observatory.arenas.bluesky.tasks` | Added |
+| `issue_observatory.arenas.reddit.tasks` | Added |
+| `issue_observatory.arenas.youtube.tasks` | Added |
+| `issue_observatory.arenas.rss_feeds.tasks` | Added |
+| `issue_observatory.arenas.gdelt.tasks` | Added |
+| `issue_observatory.arenas.event_registry.tasks` | Added (Phase 2, Task 2.4) |
+
+Stale phase-1 comment paths (e.g. `arenas.social_media.bluesky.tasks`) replaced
+with correct flat paths matching the actual arena directory layout.
+
+### Arena routers mounted in `api/main.py`
+
+All arena routers are mounted under the `/arenas` prefix, consistent with the
+docstring convention in each `router.py` file.  The resulting endpoint paths are:
+
+| Arena | Endpoints |
+|-------|-----------|
+| Google Search | `POST /arenas/google-search/collect`, `GET /arenas/google-search/health` |
+| Google Autocomplete | `POST /arenas/google-autocomplete/collect`, `GET /arenas/google-autocomplete/health` |
+| Bluesky | `POST /arenas/bluesky/collect/terms`, `POST /arenas/bluesky/collect/actors`, `GET /arenas/bluesky/health` |
+| Reddit | `POST /arenas/reddit/collect/terms`, `POST /arenas/reddit/collect/actors`, `GET /arenas/reddit/health` |
+| YouTube | `POST /arenas/youtube/collect/terms`, `POST /arenas/youtube/collect/actors`, `GET /arenas/youtube/health`, `GET /arenas/youtube/estimate` |
+| RSS Feeds | `POST /arenas/rss-feeds/collect/terms`, `POST /arenas/rss-feeds/collect/actors`, `GET /arenas/rss-feeds/health`, `GET /arenas/rss-feeds/feeds` |
+| GDELT | `POST /arenas/gdelt/collect`, `GET /arenas/gdelt/health` |
+| Event Registry | `POST /arenas/event-registry/collect/terms`, `POST /arenas/event-registry/collect/actors`, `GET /arenas/event-registry/health` |
+
+### Dependencies added to `pyproject.toml`
+
+| Dependency | Note |
+|------------|------|
+| `asyncpraw>=7.7,<8.0` | Was already present (Reddit arena) |
+| `feedparser>=6.0,<7.0` | Was already present (RSS + YouTube arenas) |
+| `websockets>=13.0,<14.0` | Added — Bluesky Jetstream streamer |
+
+### Beat schedule entries added to `workers/beat_schedule.py`
+
+| Entry key | Task | Schedule |
+|-----------|------|----------|
+| `rss_feeds_collect_terms` | `issue_observatory.arenas.rss_feeds.tasks.collect_by_terms` | Every 15 minutes |
+| `gdelt_collect_terms` | `issue_observatory.arenas.gdelt.tasks.collect_by_terms` | Every 15 minutes |
+
+Note: The beat schedule entries will fire collection tasks but they require
+`query_design_id` and `collection_run_id` arguments.  Until the orchestration
+layer (`workers/tasks.py`) is in place, these entries serve as a placeholder
+that will be refined in Task 0.4 to trigger all active query designs.
+
+---
 
 ## Arenas Implemented
-_None yet._
+
+### Task 2.1 — X/Twitter Arena (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/x_twitter/__init__.py` | Done |
+| `src/issue_observatory/arenas/x_twitter/config.py` | Done |
+| `src/issue_observatory/arenas/x_twitter/collector.py` | Done |
+| `src/issue_observatory/arenas/x_twitter/tasks.py` | Done |
+| `src/issue_observatory/arenas/x_twitter/router.py` | Done |
+
+**Design notes**:
+- `arena_name = "social_media"`, `platform_name = "x_twitter"`, `supported_tiers = [Tier.MEDIUM, Tier.PREMIUM]`.
+- No free tier: the official X free tier (100 reads/month) is unusable for research.
+- Medium tier (TwitterAPI.io): POST to `https://api.twitterapi.io/twitter/tweet/advanced_search` with `X-API-Key` header. Cursor pagination via `next_cursor`. Credential: `platform="twitterapi_io"`, `tier="medium"`, JSONB `{"api_key": "..."}`.
+- Premium tier (X API v2 Pro): GET `/2/tweets/search/all` (full-archive). Bearer token auth. `next_token` pagination. Credential: `platform="x_twitter"`, `tier="premium"`, JSONB `{"bearer_token": "..."}`.
+- Danish defaults: `lang:da` unconditionally appended to every query. Optional `since:YYYY-MM-DD until:YYYY-MM-DD` operators applied from date range parameters.
+- `collect_by_terms()`: builds `{term} lang:da [since:... until:...]`, paginates until `max_results` or no more pages.
+- `collect_by_actors()`: constructs `from:{handle} lang:da` for medium tier. For premium, uses `/2/users/{id}/tweets` for numeric IDs, falls back to `from:{handle}` search for handles.
+- Tweet type detection: two helpers — `_detect_tweet_type_twitterapiio()` (boolean `isRetweet`/`isReply`/`isQuote`) and `_detect_tweet_type_v2()` (`referenced_tweets[].type` field). Types: `"tweet"`, `"retweet"`, `"reply"`, `"quote_tweet"`.
+- Two parsing paths: `_parse_twitterapiio(raw)` and `_parse_twitter_v2(raw)`, both converging to a flat dict for `Normalizer.normalize()`. The v2 parser accepts an injected `_users` lookup dict for author hydration from `includes.users`.
+- URL construction: `https://x.com/{username}/status/{tweet_id}` for both tiers.
+- Engagement metrics: `likes_count`, `shares_count` (retweets + quotes for v2), `comments_count` (reply count), `views_count` (impression count where available).
+- Rate limiting: medium at 1 call/sec via `RateLimiter.wait_for_slot()`; premium at 15 calls/60 sec + adaptive sleep on `x-rate-limit-remaining=0`.
+- `health_check()`: acquires medium credential first, fires `"test lang:da"` test query; falls back to premium if medium unavailable.
+- Celery tasks: `x_twitter_collect_terms`, `x_twitter_collect_actors`, `x_twitter_health_check`. Max 3 retries, exponential backoff capped at 600 seconds. `asyncio.run()` bridges sync Celery to async collector.
+- Standalone router: `POST /arenas/x-twitter/collect/terms`, `POST /arenas/x-twitter/collect/actors`, `GET /arenas/x-twitter/health`.
+- `issue_observatory.arenas.x_twitter.tasks` added to `include` in `workers/celery_app.py`. Router mounted under `/arenas` in `api/main.py`.
+
+**Blockers / Notes for QA**:
+- Medium credential: TwitterAPI.io account required. `platform="twitterapi_io"`, `tier="medium"`, JSONB `{"api_key": "..."}`.
+- Premium credential: X API Pro subscription required ($5,000/month). `platform="x_twitter"`, `tier="premium"`, JSONB `{"bearer_token": "..."}`.
+- Integration tests: mock `httpx.AsyncClient` via `respx` or `pytest-httpx`. Inject via `http_client` constructor parameter on `XTwitterCollector`.
+- v2 test fixtures must include the full `includes.users` envelope for author hydration to work.
+- `TWITTER_V2_SEARCH_RECENT` constant in `config.py` can be substituted for `search/all` when testing on the Basic tier ($100/month, 7-day search only).
+- GDPR: ensure `PSEUDONYMIZATION_SALT` is set. Tweet text and author display names are personal data under GDPR Art. 6(1)(e) + Art. 89. Political tweets (e.g. `#dkpol`) are Art. 9(1) special category data; legal basis Art. 9(2)(j).
+
+---
+
+### Task 1.10 — Telegram Arena (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/telegram/__init__.py` | Done |
+| `src/issue_observatory/arenas/telegram/config.py` | Done |
+| `src/issue_observatory/arenas/telegram/collector.py` | Done |
+| `src/issue_observatory/arenas/telegram/tasks.py` | Done |
+| `src/issue_observatory/arenas/telegram/router.py` | Done |
+
+**Design notes**:
+- `arena_name = "social_media"`, `platform_name = "telegram"`, `supported_tiers = [Tier.FREE]`.
+- Free-only arena: Telethon MTProto client. Credentials: `platform="telegram"`, `tier="free"`. JSONB fields: `api_id`, `api_hash`, `session_string`.
+- `collect_by_terms()`: searches each term across the configured Danish channel list (plus any `actor_ids`) using `client.get_messages(channel, search=term)`. Paginates via `offset_id` until `date_from` exceeded or `max_results` reached.
+- `collect_by_actors()`: fetches messages from each specified channel with date filtering. Pagination via `offset_id`.
+- `normalize()`: `platform_id = "{channel_id}_{message_id}"` (globally unique). `url = "https://t.me/{username}/{id}"` when channel has a username. `author_platform_id` = channel entity ID. `likes_count` = sum of reaction counts. Media presence/type recorded in `raw_metadata`; actual media download is out of scope (Phase 1).
+- FloodWaitError: sets `credential:cooldown:{id}` Redis key with exact TTL = `error.seconds`. Raises `ArenaRateLimitError`. Celery auto-retries (max 3, exp backoff capped 600s).
+- ChannelPrivateError and PeerIdInvalidError: log WARNING and skip channel (do not raise).
+- UserDeactivatedBanError: calls `report_error()` on credential, raises `NoCredentialAvailableError`.
+- Baseline rate limit: 20 req/min per credential via `RateLimiter.wait_for_slot()`. Real signal is FloodWaitError.
+- `health_check()`: connects via Telethon and calls `client.get_me()` to verify session validity.
+- Celery tasks: `telegram_collect_terms`, `telegram_collect_actors`, `telegram_health_check`. Tasks use `asyncio.run()` to bridge sync Celery worker to async Telethon.
+- Standalone router: `POST /telegram/collect/terms`, `POST /telegram/collect/actors`, `GET /telegram/health`.
+- Default Danish channel list in `config.DANISH_TELEGRAM_CHANNELS` (6 starter channels). Expansion tracked as pre-Phase task E.5.
+- `telethon>=1.36,<2.0` added to `pyproject.toml`.
+- Arena path is `arenas/telegram/` (not `arenas/social_media/telegram/`); `arena_name = "social_media"` sets the correct DB column value.
+
+**Blockers / Notes for QA**:
+- Telegram credentials must be manually provisioned: generate `api_id`/`api_hash` at https://my.telegram.org/apps, perform one-time interactive phone auth to generate a `session_string`, then store in CredentialPool (`platform="telegram"`, `tier="free"`).
+- Integration tests must mock `TelegramClient` (inject via `unittest.mock.patch` on `telethon.TelegramClient`) since live credentials cannot be used in CI.
+- The `telegram` arena must be added to the Celery `include` list in `workers/celery_app.py` to register the tasks.
+- Pre-Phase task E.5 (channel curation) and E.3 (ethics documentation) are prerequisites for production use.
+
+
+
+### Task 1.8 — Danish RSS Feeds Arena (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/rss_feeds/__init__.py` | Done |
+| `src/issue_observatory/arenas/rss_feeds/config.py` | Done |
+| `src/issue_observatory/arenas/rss_feeds/collector.py` | Done |
+| `src/issue_observatory/arenas/rss_feeds/tasks.py` | Done |
+| `src/issue_observatory/arenas/rss_feeds/router.py` | Done |
+
+**Design notes**:
+- `arena_name = "rss_feeds"` (registry key); `arena="news_media"` written to content records.
+- `platform` per record is the outlet slug (e.g. `"dr"`, `"tv2"`) derived from `DANISH_RSS_FEEDS` key prefix.
+- `collect_by_terms()`: fetches all feeds in parallel (asyncio.Semaphore(10)), case-insensitive term matching on title+summary.
+- `collect_by_actors()`: actor_ids are outlet slug prefixes or exact feed keys.
+- Conditional GET (ETag / If-Modified-Since) cached per-feed in memory.
+- `feedparser` used for parsing; `httpx.AsyncClient` for async fetching.
+- HTML stripped from summaries via regex.
+- `content_hash` is SHA-256 of normalized title for cross-feed deduplication.
+- `health_check()` fetches DR all-news feed; verifies non-empty entries.
+- Celery tasks: `rss_feeds_collect_terms`, `rss_feeds_collect_actors`, `rss_feeds_health_check`.
+- No credentials required.
+
+### Task 1.9 — GDELT Arena (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/gdelt/__init__.py` | Done |
+| `src/issue_observatory/arenas/gdelt/config.py` | Done |
+| `src/issue_observatory/arenas/gdelt/collector.py` | Done |
+| `src/issue_observatory/arenas/gdelt/tasks.py` | Done |
+| `src/issue_observatory/arenas/gdelt/router.py` | Done |
+
+**Design notes**:
+- `arena_name = "gdelt"` (registry key); `arena="news_media"` written to content records.
+- `collect_by_terms()`: two queries per term — `sourcecountry:DA` and `sourcelang:danish` — deduplicated by URL.
+- `collect_by_actors()` raises `NotImplementedError` (GDELT does not track authors).
+- Rate limiting: `RateLimiter.wait_for_slot("ratelimit:news_media:gdelt:shared", max_calls=1, window_seconds=1)`. Falls back to `asyncio.sleep(1)` when no Redis.
+- GDELT may return HTML on errors; `content-type` header checked before JSON parse.
+- `platform_id` = SHA-256 of URL. `content_hash` = SHA-256 of normalized URL.
+- Language mapping: `"Danish"` → `"da"`. Country mapping: FIPS `"DA"` → ISO `"DK"`.
+- `health_check()` queries `"denmark"` with maxrecords=1.
+- Celery tasks: `gdelt_collect_terms`, `gdelt_health_check`.
+- No credentials required.
+
+### Task 1.4 — Google Autocomplete Arena (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/google_autocomplete/__init__.py` | Done |
+| `src/issue_observatory/arenas/google_autocomplete/config.py` | Done |
+| `src/issue_observatory/arenas/google_autocomplete/collector.py` | Done |
+| `src/issue_observatory/arenas/google_autocomplete/tasks.py` | Done |
+| `src/issue_observatory/arenas/google_autocomplete/router.py` | Done |
+
+### Task 1.4 — Design notes
+- FREE tier: undocumented Google endpoint `suggestqueries.google.com/complete/search?client=firefox`; no auth.
+- MEDIUM tier: Serper.dev `POST google.serper.dev/autocomplete`; credentials `platform="serper"` (shared with Google Search).
+- PREMIUM tier: SerpAPI `GET serpapi.com/search?engine=google_autocomplete`; credentials `platform="serpapi"` (shared with Google Search).
+- Danish params `gl=dk&hl=da` on all requests.
+- `collect_by_actors()` raises `NotImplementedError` — not applicable.
+- `content_type="autocomplete_suggestion"`, `arena="google_autocomplete"`, `platform="google"`.
+- `platform_id` = SHA-256(query + suggestion + minute-bucket).
+- Rate limiter key: `ratelimit:google_search:google_autocomplete:{credential_id}` (10 calls/sec).
+- Celery task `google_autocomplete_collect_terms` auto-retries on `ArenaRateLimitError` (max 3, exp backoff).
+
+### Task 1.5 — Bluesky Arena (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/bluesky/__init__.py` | Done |
+| `src/issue_observatory/arenas/bluesky/config.py` | Done |
+| `src/issue_observatory/arenas/bluesky/collector.py` | Done |
+| `src/issue_observatory/arenas/bluesky/tasks.py` | Done |
+| `src/issue_observatory/arenas/bluesky/router.py` | Done |
+
+### Task 1.5 — Design notes
+- FREE tier only: AT Protocol public API (`public.api.bsky.app`), unauthenticated, 3,000 req/5 min per IP.
+- `collect_by_terms()`: `searchPosts` with `lang=da` filter and cursor pagination.
+- `collect_by_actors()`: `getAuthorFeed` with cursor pagination; date filter applied client-side.
+- `platform="bluesky"`, `arena="bluesky"`, `platform_id` = AT URI, web URL from handle/rkey.
+- `BlueskyStreamer` in `collector.py`: optional Jetstream WebSocket (future enhancement; not required by Celery tasks).
+- Rate limiter key: `ratelimit:bluesky:public:{credential_id}` (10 calls/sec).
+- Celery tasks: `bluesky_collect_terms`, `bluesky_collect_actors`, `bluesky_health_check`.
+- No credentials required.
+
+### Task 1.6 — Reddit Arena (2026-02-16) — READY FOR QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/reddit/__init__.py` | Done |
+| `src/issue_observatory/arenas/reddit/config.py` | Done |
+| `src/issue_observatory/arenas/reddit/collector.py` | Done |
+| `src/issue_observatory/arenas/reddit/tasks.py` | Done |
+| `src/issue_observatory/arenas/reddit/router.py` | Done |
+
+### Task 1.6 — Design notes
+- FREE-only arena. ``arena_name = "social_media"``, ``platform_name = "reddit"``.
+- ``asyncpraw>=7.7,<8.0`` added to ``pyproject.toml``.
+- Credentials: ``CredentialPool.acquire(platform="reddit", tier="free")``. JSONB fields: ``client_id``, ``client_secret``, ``user_agent``. Env-var fallbacks: ``REDDIT_CLIENT_ID``, ``REDDIT_CLIENT_SECRET``, ``REDDIT_USER_AGENT``.
+- ``collect_by_terms()``: searches ``Denmark+danish+copenhagen+aarhus+dkfinance+scandinavia+NORDVANSEN`` for each term. Deduplicates by post ID. Optional comment collection (``include_comments=False`` default).
+- ``collect_by_actors()``: fetches from ``redditor.submissions.new()`` and ``redditor.comments.new()``. Handles NotFound gracefully.
+- Deleted posts: ``author`` None → ``author_platform_id = None``; ``[deleted]``/``[removed]`` text → ``None``.
+- Rate limiting: safety-net at 90 req/min via shared RateLimiter (key: ``ratelimit:social_media:reddit:{credential_id}``).
+- ``asyncprawcore.TooManyRequests`` → ``ArenaRateLimitError``; ``Forbidden`` → WARNING + skip.
+- ``health_check()``: fetches ``r/Denmark.hot(limit=1)``.
+- Celery tasks: ``reddit_collect_terms``, ``reddit_collect_actors`` (max 3 retries, exp backoff capped 5 min).
+- Standalone router: ``POST /reddit/collect/terms``, ``POST /reddit/collect/actors``, ``GET /reddit/health``.
+- Arena path is ``arenas/reddit/`` (not ``arenas/social_media/reddit/``); ``arena_name = "social_media"`` sets the correct DB column value.
+
+### Task 1.7 — YouTube Arena (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/youtube/__init__.py` | Done |
+| `src/issue_observatory/arenas/youtube/config.py` | Done |
+| `src/issue_observatory/arenas/youtube/collector.py` | Done |
+| `src/issue_observatory/arenas/youtube/tasks.py` | Done |
+| `src/issue_observatory/arenas/youtube/router.py` | Done |
+
+### Task 1.7 — Design notes
+- `arena_name = "social_media"`, `platform_name = "youtube"`, `supported_tiers = [Tier.FREE]`.
+- **RSS-first strategy**: `collect_by_actors()` polls `https://www.youtube.com/feeds/videos.xml?channel_id={id}` (zero quota) via `feedparser`, then batch-enriches via `videos.list` (1 unit/50 videos).
+- **Keyword discovery**: `collect_by_terms()` uses `search.list` (100 units/call) with `relevanceLanguage=da` + `regionCode=DK` from `YOUTUBE_DANISH_PARAMS` in `danish_defaults.py`.
+- **Credential rotation**: HTTP 403 + `reason="quotaExceeded"` → `ArenaRateLimitError` → `CredentialPool.report_error()` then Celery auto-retry acquires fresh key. All keys exhausted → `NoCredentialAvailableError` → task CRITICAL + fails.
+- **Rate-limit throttling**: `RateLimiter.wait_for_slot()` at 10 calls/second (separate from quota management).
+- **Normalizer**: manual `normalize()` implementation (not delegated to `Normalizer.normalize()`) to precisely control field mapping per the research brief. `content_hash` = SHA-256 of title+description. `pseudonymized_author_id` computed via `Normalizer.pseudonymize_author()`.
+- **`shares_count`**: always `None` — YouTube API does not expose share count.
+- **`raw_metadata`**: includes full API resource plus `category_name` (human-readable from `_CATEGORY_NAMES` map).
+- **`health_check()`**: `videos.list(id="dQw4w9WgXcQ", part="snippet")` — 1 quota unit.
+- **Celery tasks**: `youtube_collect_terms`, `youtube_collect_actors`, `youtube_health_check`. Max 5 retries, exponential backoff capped at 10 minutes.
+- **Standalone router**: `/youtube/collect/terms`, `/youtube/collect/actors`, `/youtube/health`, `/youtube/estimate` — all independently testable.
+- **Credit cost**: `estimate_credits()` computes `pages * 100 + batches * 1` units. `DAILY_QUOTA_PER_KEY = 10,000`.
+- **Danish channel IDs**: 14 curated channels in `DANISH_YOUTUBE_CHANNEL_IDS` (config.py).
+- Add `feedparser` to `pyproject.toml` dependencies.
+
+### Task 1.7 — Blockers / Notes
+- `feedparser` must be added to `pyproject.toml` as a dependency.
+- QA Engineer: integration tests should mock `feedparser.parse()` calls and `httpx.AsyncClient` via `respx` or `pytest-httpx`. The `http_client` constructor parameter on `YouTubeCollector` supports test injection.
+- The `youtube` arena is not yet added to the Celery `include` list in `workers/celery_app.py` — this must be done to register the tasks.
+- Status file updated 2026-02-16.
+
+### Task 1.11 — TikTok Arena (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/tiktok/__init__.py` | Done |
+| `src/issue_observatory/arenas/tiktok/config.py` | Done |
+| `src/issue_observatory/arenas/tiktok/collector.py` | Done |
+| `src/issue_observatory/arenas/tiktok/tasks.py` | Done |
+| `src/issue_observatory/arenas/tiktok/router.py` | Done |
+
+**Design notes**:
+- `arena_name = "social_media"`, `platform_name = "tiktok"`, `supported_tiers = [Tier.FREE]`.
+- FREE tier only (Phase 1). TikTok Research API. Credentials: `platform="tiktok"`, `tier="free"`. JSONB: `{"client_key": "...", "client_secret": "..."}`.
+- OAuth 2.0 client credentials flow. Tokens expire every 2 hours. Cached in Redis: `tiktok:token:{credential_id}` with TTL = expires_in - 600s. In-memory fallback when Redis unavailable.
+- `collect_by_terms()`: `POST /v2/research/video/query/` with `region_code: "DK"` and `keyword` conditions. Cursor + search_id pagination. Date ranges > 30 days split into 30-day windows.
+- `collect_by_actors()`: same endpoint with `username` condition.
+- `normalize()`: `platform_id` = video id, `url` = `https://www.tiktok.com/@{username}/video/{id}`, `text_content` = `video_description` + `\n[transcript] voice_to_text`. Engagement metrics subject to 10-day accuracy lag (noted in code comment).
+- Rate limiter key: `ratelimit:tiktok:research_api:{credential_id}` (1 call/sec, conservative).
+- `tiktok_refresh_engagement` task: skeleton with TODO for Phase 3 engagement re-collection (10-15 day lag window). Required by TikTok policy (15-day refresh cycle).
+- Celery tasks: `tiktok_collect_terms`, `tiktok_collect_actors`, `tiktok_health_check`, `tiktok_refresh_engagement`.
+- Standalone router: `POST /tiktok/collect/terms`, `POST /tiktok/collect/actors`, `GET /tiktok/health`.
+
+**Blockers / Notes for QA**:
+- TikTok Research API credentials require academic access approval from TikTok for Developers. Store in CredentialPool as `platform="tiktok"`, `tier="free"`.
+- Integration tests must mock `httpx.AsyncClient` via `respx` or `pytest-httpx`. Inject via `http_client` constructor param.
+- `voice_to_text` quality for Danish speech is unverified (WARNING in brief).
+- Phase 3 action required: implement `tiktok_refresh_engagement` task body (see task docstring).
+
+---
+
+### Task 1.12 — Via Ritzau Arena (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/ritzau_via/__init__.py` | Done |
+| `src/issue_observatory/arenas/ritzau_via/config.py` | Done |
+| `src/issue_observatory/arenas/ritzau_via/collector.py` | Done |
+| `src/issue_observatory/arenas/ritzau_via/tasks.py` | Done |
+| `src/issue_observatory/arenas/ritzau_via/router.py` | Done |
+
+**Design notes**:
+- `arena_name = "news_media"`, `platform_name = "ritzau_via"`, `supported_tiers = [Tier.FREE]`.
+- No credentials required. API is fully public and unauthenticated. `credential_pool=None` always.
+- `collect_by_terms()`: `GET /json/v2/releases?query={term}&language=da` with offset pagination.
+- `collect_by_actors()`: `GET /json/v2/releases?publisherId={id}&language=da` with offset pagination.
+- `normalize()`: `content_type = "press_release"`. HTML body stripped with block-tag-to-newline conversion. Original HTML preserved in `raw_metadata`. Media URLs extracted from `images[].url`.
+- Rate limiter: courtesy throttle 2 calls/sec.
+- `health_check()`: `GET /json/v2/releases?limit=1&language=da`.
+- `fetch_publishers()` helper for publisher ID discovery.
+- Celery tasks: `ritzau_via_collect_terms`, `ritzau_via_collect_actors`, `ritzau_via_health_check`.
+- Standalone router: `POST /ritzau-via/collect/terms`, `POST /ritzau-via/collect/actors`, `GET /ritzau-via/health`.
+
+---
+
+### Task 2.10 — Common Crawl and Wayback Machine Arenas (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/web/__init__.py` | Done |
+| `src/issue_observatory/arenas/web/common_crawl/__init__.py` | Done |
+| `src/issue_observatory/arenas/web/common_crawl/config.py` | Done |
+| `src/issue_observatory/arenas/web/common_crawl/collector.py` | Done |
+| `src/issue_observatory/arenas/web/common_crawl/tasks.py` | Done |
+| `src/issue_observatory/arenas/web/common_crawl/router.py` | Done |
+| `src/issue_observatory/arenas/web/wayback/__init__.py` | Done |
+| `src/issue_observatory/arenas/web/wayback/config.py` | Done |
+| `src/issue_observatory/arenas/web/wayback/collector.py` | Done |
+| `src/issue_observatory/arenas/web/wayback/tasks.py` | Done |
+| `src/issue_observatory/arenas/web/wayback/router.py` | Done |
+
+**Design notes**:
+
+**Common Crawl** (`arena_name="web"`, `platform_name="common_crawl"`, `supported_tiers=[Tier.FREE]`):
+- No credentials required. CC Index API is unauthenticated.
+- `collect_by_terms()`: queries `*.dk` domain captures from the CC Index API with `matchType=domain` and `filter=status:200`. Filters client-side by term substring match against `url` field. Pagination via `from` offset parameter.
+- `collect_by_actors()`: queries CC Index directly by domain name (actor_ids must be registered domain names, e.g. `"dr.dk"`).
+- `normalize()`: `content_type="web_index_entry"`. `platform_id` = CC `content_digest` if available, else SHA-256(`url+timestamp`). `published_at` parsed from CC `timestamp` (YYYYMMDDHHmmss). Language mapped from ISO 639-3 (`"dan"`) to ISO 639-1 (`"da"`). WARC location (`filename`, `offset`, `length`) stored in `raw_metadata` for future retrieval.
+- Rate limit: 1 req/sec via `RateLimiter.wait_for_slot`. Falls back to `asyncio.sleep(1)`.
+- `health_check()`: GET `https://index.commoncrawl.org/collinfo.json` and verify non-empty index list.
+- `cc_index` parameter on collector and Celery task allows overriding the default index (`CC-MAIN-2025-51`).
+- Celery tasks: `common_crawl_collect_terms`, `common_crawl_collect_actors`, `common_crawl_health_check`.
+- Standalone router: `POST /common-crawl/collect/terms`, `POST /common-crawl/collect/actors`, `GET /common-crawl/health`.
+
+**Wayback Machine** (`arena_name="web"`, `platform_name="wayback"`, `supported_tiers=[Tier.FREE]`):
+- No credentials required. CDX API is unauthenticated.
+- `collect_by_terms()`: queries `*.dk` captures with `matchType=domain`, `filter=statuscode:200`, `collapse=digest`. Filters client-side by term substring match against `original` URL. Pagination via `showResumeKey=true` and `resumeKey` parameter.
+- `collect_by_actors()`: queries CDX by domain or URL prefix. Actor_ids are domain names or URL prefixes.
+- `normalize()`: `content_type="web_page_snapshot"`. `platform_id` = SHA-256(`url+timestamp`). `published_at` from CDX `timestamp` (YYYYMMDDHHmmss). Language inferred from `.dk` TLD. CDX metadata + `wayback_url` stored in `raw_metadata`.
+- Rate limit: 1 req/sec. 503 responses handled gracefully (WARNING log, skip page).
+- `health_check()`: CDX query for `dr.dk` with `limit=1`.
+- Celery tasks: `wayback_collect_terms`, `wayback_collect_actors`, `wayback_health_check`.
+- Standalone router: `POST /wayback/collect/terms`, `POST /wayback/collect/actors`, `GET /wayback/health`.
+
+**Wiring**:
+- Both task modules added to `workers/celery_app.py` `include` list.
+- Both routers mounted in `api/main.py` under `/arenas` prefix.
+
+**Blockers / Notes for QA**:
+- Both arenas are batch-only; they do not participate in Celery Beat live tracking.
+- Integration tests should mock `httpx.AsyncClient` via `respx` or `pytest-httpx`. `http_client` constructor parameter supports injection.
+- CC Index may return 404 for URLs not in a given crawl — not an error, handled gracefully (returns `[]`).
+- Wayback Machine 503 responses handled gracefully. Infrastructure fragility is a known limitation.
+- `CC_DEFAULT_INDEX = "CC-MAIN-2025-51"` must be updated as new crawls are released.
+- No new dependencies required — both arenas use only `httpx` (already in `pyproject.toml`).
+
+---
+
+### Task 2.6 — Threads Arena (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/threads/__init__.py` | Done |
+| `src/issue_observatory/arenas/threads/config.py` | Done |
+| `src/issue_observatory/arenas/threads/collector.py` | Done |
+| `src/issue_observatory/arenas/threads/tasks.py` | Done |
+| `src/issue_observatory/arenas/threads/router.py` | Done |
+
+**Design notes**:
+- `arena_name = "social_media"`, `platform_name = "threads"`, `supported_tiers = [Tier.FREE, Tier.MEDIUM]`.
+- FREE tier: Official Threads API (OAuth 2.0). Base URL: `https://graph.threads.net/v1.0`. 250 calls/hour per user token.
+- MEDIUM tier (MCL): Both collection methods raise `NotImplementedError`. Phase 2 stub — pending MCL access approval.
+- **Actor-first architecture**: `collect_by_actors()` is the PRIMARY mode. `GET /{user_id}/threads?fields=...&limit=25` with `paging.cursors.after` pagination. Date filter client-side.
+- **No global keyword search at FREE tier**: `collect_by_terms()` logs WARNING, falls back to `DEFAULT_DANISH_THREADS_ACCOUNTS` + client-side text filtering. Returns `[]` if no accounts configured.
+- **Engagement metrics gap**: `views`, `likes`, `replies`, `reposts`, `quotes` only returned for the authenticated token owner's own posts. Other users get `None` for all engagement fields.
+- `normalize()`: `content_type = "reply"` if `is_reply=True`, else `"post"`. `platform_id` = thread `id`. `url` = `permalink`. Engagement set only when field is present in raw response.
+- **Token refresh**: `refresh_token_if_needed()` checks Redis key `threads:token_expiry:{credential_id}`. Within 55 days of 60-day expiry: calls `GET /refresh_access_token?grant_type=th_refresh_token`. Updates Redis expiry key with new TTL.
+- Credentials: `platform="threads"`, `tier="free"`. JSONB: `{"access_token": "...", "user_id": "...", "expires_at": "ISO8601"}`.
+- Rate limiter: `ratelimit:social_media:threads:{credential_id}`, 250 calls/3600 s.
+- `health_check()`: `GET /me?fields=id,username` with Bearer token. Returns `{"status": "ok", "username": "..."}`.
+- Celery tasks: `threads_collect_terms`, `threads_collect_actors`, `threads_health_check`, `threads_refresh_tokens`.
+- `threads_refresh_tokens` beat entry: daily at 02:00 Copenhagen time (`workers/beat_schedule.py`).
+- `issue_observatory.arenas.threads.tasks` wired into `workers/celery_app.py` include list.
+- Router mounted in `api/main.py` under `/arenas`: endpoints at `/arenas/threads/collect/terms`, `/arenas/threads/collect/actors`, `/arenas/threads/health`.
+
+**Blockers / Notes for QA**:
+- Threads credentials require a Meta Developer account, registered app with Threads API permissions, and an OAuth 2.0 long-lived token. Store as `platform="threads"`, `tier="free"`. JSONB: `{"access_token": "...", "user_id": "...", "expires_at": "ISO8601"}`.
+- Mirror `expires_at` to Redis at key `threads:token_expiry:{credential_id}` on credential creation so the refresh task can trigger.
+- `DEFAULT_DANISH_THREADS_ACCOUNTS` in `config.py` starts empty — populate via actor management UI.
+- Integration tests: mock `httpx.AsyncClient` via `respx`/`pytest-httpx`; inject via `http_client` constructor param on `ThreadsCollector`.
+- GDPR note: Threads identities are linked to Instagram accounts — pseudonymization is especially important. Pseudonymization formula: `SHA-256("threads" + ":" + username + ":" + salt)` via `Normalizer.pseudonymize_author()`.
+
+---
+
+### Task 1.13 — Gab Arena (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/gab/__init__.py` | Done |
+| `src/issue_observatory/arenas/gab/config.py` | Done |
+| `src/issue_observatory/arenas/gab/collector.py` | Done |
+| `src/issue_observatory/arenas/gab/tasks.py` | Done |
+| `src/issue_observatory/arenas/gab/router.py` | Done |
+
+**Design notes**:
+- `arena_name = "social_media"`, `platform_name = "gab"`, `supported_tiers = [Tier.FREE]`.
+- FREE tier only. Mastodon-compatible API at `https://gab.com/api/`. Credentials: `platform="gab"`, `tier="free"`. JSONB: `{"client_id": "...", "client_secret": "...", "access_token": "..."}`.
+- `collect_by_terms()`: `GET /api/v2/search?type=statuses`. Falls back to `GET /api/v1/timelines/tag/{hashtag}` for `#hashtag` terms or if search returns 422.
+- `collect_by_actors()`: account lookup via `GET /api/v1/accounts/lookup?acct={username}` (if username provided), then paginate `GET /api/v1/accounts/{id}/statuses` using `max_id` cursor. Date filter applied client-side.
+- `normalize()`: HTML stripped from `content` field. Reblogs: original status used as base; reblog context preserved in `raw_metadata`. `likes_count` = `favourites_count`, `shares_count` = `reblogs_count`, `comments_count` = `replies_count`.
+- Rate limiter: 60 calls/60 sec (conservative vs 300/5 min Mastodon default).
+- `health_check()`: `GET /api/v1/timelines/public?limit=1` with Bearer token; falls back to `GET /api/v1/instance`.
+- Expected content volume: very low (Danish-relevant content is sparse on Gab). Primary value is cross-platform actor tracking.
+- Celery tasks: `gab_collect_terms`, `gab_collect_actors`, `gab_health_check`.
+- Standalone router: `POST /gab/collect/terms`, `POST /gab/collect/actors`, `GET /gab/health`.
+
+**Blockers / Notes for QA**:
+- Gab account required for OAuth. Access token is obtained interactively (one-time). Store in CredentialPool as `platform="gab"`, `tier="free"`.
+- Gab's Mastodon fork may have API deviations from the standard Mastodon spec. Verify search endpoint behavior during integration testing.
+- Research ethics: creating a Gab account for research purposes should be documented in Pre-Phase task E.3.
+- Integration tests must mock `httpx.AsyncClient`. Inject via `http_client` constructor param.
+
+---
+
+### Tasks 2.8 & 2.9 — Actor Sampling Modules (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/sampling/__init__.py` | Done — exports all public symbols |
+| `src/issue_observatory/sampling/network_expander.py` | Done — Task 2.8 |
+| `src/issue_observatory/sampling/similarity_finder.py` | Done — Task 2.9 |
+| `src/issue_observatory/sampling/snowball.py` | Done — Tasks 2.8/2.9 combined |
+
+**Design notes**:
+
+**NetworkExpander** (`network_expander.py`):
+- `expand_from_actor(actor_id, platforms, db, credential_pool, depth=1)`: dispatches to platform-specific expanders.
+  - Bluesky: `app.bsky.graph.getFollows` + `app.bsky.graph.getFollowers` (public AT Protocol API, up to 500 per direction with cursor pagination).
+  - Reddit: fetches user's last 100 comments via public JSON API (`/user/{username}/comments.json`), extracts `u/username` mentions with regex `(?<!\w)u/([A-Za-z0-9_-]{3,20})`.
+  - YouTube: reads `featuredChannelsUrls` from `brandingSettings` via `channels.list` (requires API key credential).
+  - Unknown platforms: no-op (empty list returned, not an error).
+- `find_co_mentioned_actors(query_design_id, db, min_co_occurrences=3)`: self-join on `content_records` comparing `search_terms_matched && search_terms_matched` and counting co-occurrences of `author_platform_id` pairs. Returns `{actor_a, actor_b, platform, co_occurrence_count}` dicts.
+- `suggest_for_actor_list(actor_list_id, db, credential_pool)`: loads all actors from `actor_list_members`, determines platforms from `actor_platform_presences`, runs `expand_from_actor` for each, deduplicates by `platform:user_id` key.
+- No arena collector imports — all HTTP via `httpx.AsyncClient` directly.
+- `get_network_expander()` factory for FastAPI dependency injection.
+
+**SimilarityFinder** (`similarity_finder.py`):
+- `find_similar_by_platform(actor_id, platform, credential_pool, db, top_n=25)`:
+  - Bluesky: `app.bsky.graph.getSuggestedFollowsByActor` (public, up to 25 results).
+  - Reddit: fetches user's subreddits via `/user/{username}/submitted.json`, then top posters from each subreddit's `/r/{sr}/top.json` (up to 3 subreddits, 25 posts each).
+  - YouTube: reads `relatedPlaylists.uploads` from `channels.list`, then `playlistItems.list` to extract `videoOwnerChannelId` fields (requires API key).
+- `find_similar_by_content(actor_id, db, top_n=10)`:
+  - Fetches `STRING_AGG(text_content)` for target actor and up to 500 other actors from `content_records`.
+  - TF-IDF cosine similarity via `sklearn.feature_extraction.text.TfidfVectorizer` + `cosine_similarity` when scikit-learn is installed.
+  - Falls back to Jaccard word-overlap similarity with WARNING log when scikit-learn is absent.
+  - Minimum 5-token threshold applied to both target and candidates.
+- `cross_platform_match(name_or_handle, platforms, credential_pool, top_n=5)`:
+  - Bluesky: `app.bsky.actor.searchActors`.
+  - Reddit: `/users/search.json`.
+  - YouTube: `search.list?type=channel` (requires API key, costs 100 quota units per call).
+  - Confidence score via character-trigram Jaccard similarity between query and returned handle/display name.
+- `get_similarity_finder()` factory for FastAPI dependency injection.
+- `scikit-learn>=1.4,<2.0` added to `pyproject.toml` under `[project.optional-dependencies] ml`.
+
+**SnowballSampler** (`snowball.py`):
+- `run(seed_actor_ids, platforms, db, credential_pool, max_depth=2, max_actors_per_step=20)`:
+  - Wave 0: loads seed actors from DB (`Actor` + `ActorPlatformPresence`), adds to result with `discovery_depth=0`.
+  - Waves 1+: calls `expand_from_actor` for each actor UUID in current wave queue.
+  - Deduplication: `visited_keys` set of `"platform:user_id"` strings; `visited_uuids` set of actor UUIDs.
+  - Novel actors (not in `visited_keys`) appended to result with `discovery_depth=N`.
+  - Budget: stops adding to current wave when `len(next_wave_dicts) >= max_actors_per_step`.
+  - UUID resolution: at end of each wave, resolves novel actor dicts back to DB UUIDs via `actor_platform_presences`. Only DB-known actors can be expanded in subsequent waves.
+  - Per-wave INFO logging: actor count, discovery methods used.
+  - Error isolation: exceptions in `expand_from_actor` logged and skipped.
+- Returns `SnowballResult` with `actors`, `wave_log`, `total_actors`, `max_depth_reached`.
+- `get_snowball_sampler()` factory for FastAPI dependency injection.
+
+**Blockers / Notes for QA**:
+- All HTTP calls use `httpx.AsyncClient`; inject via constructor `http_client` param for mocking.
+- `find_similar_by_content` and `find_co_mentioned_actors` require `content_records` to be populated with `author_id` and `text_content` data.
+- YouTube expansion and cross-platform search require a YouTube Data API v3 key credential in the pool.
+- Reddit public JSON API is rate-limited to ~1 req/sec for anonymous clients; integration tests must mock `_get_json`.
+- scikit-learn is optional: `pip install 'issue-observatory[ml]'`.
+
+---
+
+### Task 2.7 — Majestic Backlink Intelligence Arena (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/majestic/__init__.py` | Done |
+| `src/issue_observatory/arenas/majestic/config.py` | Done |
+| `src/issue_observatory/arenas/majestic/collector.py` | Done |
+| `src/issue_observatory/arenas/majestic/tasks.py` | Done |
+| `src/issue_observatory/arenas/majestic/router.py` | Done |
+
+**Design notes**:
+- `arena_name = "web"`, `platform_name = "majestic"`, `supported_tiers = [Tier.PREMIUM]`.
+- Premium-only arena ($399.99/month Full API plan). No free or medium tier.
+- Reactive analysis tool, not a polling/streaming arena. Collection is triggered by domain names discovered from other arenas.
+- `collect_by_terms()`: treats each term as a domain name (extracts domain from URLs automatically). Calls `GetIndexItemInfo` in batches of up to 100 items. Returns `content_type="domain_metrics"` records.
+- `collect_by_actors()`: actor_ids are domain names. Calls `GetIndexItemInfo` for metrics AND `GetBackLinkData` (Mode=1, one backlink per referring domain, up to 1,000) for individual backlinks. Returns mixed `domain_metrics` + `backlink` records.
+- `FREE`/`MEDIUM` tiers: `collect_by_terms()` and `collect_by_actors()` both raise `NotImplementedError` with explanation.
+- `normalize()` dispatches on `_record_type` private field:
+  - `"domain_metrics"`: `platform_id` = SHA-256(domain+"_"+date), `engagement_score` = TrustFlow, all Majestic metrics in `raw_metadata`, `language=None`.
+  - `"backlink"`: `platform_id` = SHA-256(SourceURL+TargetURL), `engagement_score` = SourceTrustFlow, `text_content` = AnchorText, `published_at` = FirstIndexedDate, `language=None`.
+- `pseudonymized_author_id = None` for all records (no personal data in backlink/domain data).
+- `author_platform_id` = domain name (proxy "author").
+- `_call_majestic()`: GET `{MAJESTIC_API_BASE}?app_api_key={key}&cmd={cmd}&{params}`. Checks `response["Code"]` for `"InvalidAPIKey"`, `"RateLimitExceeded"`, `"InsufficientCredits"`, and generic non-OK codes.
+- Rate limiting: `RateLimiter.wait_for_slot()` at 1 call/sec. Falls back to `asyncio.sleep(1.0)`.
+- `health_check()`: `GetIndexItemInfo` for `dr.dk`, verifies TrustFlow > 0.
+- Credentials: `CredentialPool.acquire(platform="majestic", tier="premium")`. JSONB: `{"api_key": "..."}`. Env-var fallback: `MAJESTIC_PREMIUM_API_KEY`.
+- `estimate_credits()`: 1 credit = 1,000 analysis units. Domain metrics ~1 unit each; backlink calls ~N units for N rows.
+- Celery tasks: `majestic_collect_terms`, `majestic_collect_actors`, `majestic_health_check`. Max 3 retries, exponential backoff capped at 300s. `asyncio.run()` bridges sync Celery to async collector.
+- `issue_observatory.arenas.majestic.tasks` added to `workers/celery_app.py` `include` list.
+- Router mounted in `api/main.py` under `/arenas` prefix: `POST /arenas/majestic/collect/terms`, `POST /arenas/majestic/collect/actors`, `GET /arenas/majestic/health`.
+- HTTP 501 returned for non-premium tier requests from the router.
+
+**Blockers / Notes for QA**:
+- Credential: Majestic Full API subscription required ($399.99/month). Store API key as `platform="majestic"`, `tier="premium"`, JSONB `{"api_key": "..."}`. Also accepted via `MAJESTIC_PREMIUM_API_KEY` env var.
+- Integration tests: mock `httpx.AsyncClient` via `respx` or `pytest-httpx`. Inject via `http_client` constructor parameter on `MajesticCollector`.
+- `GetIndexItemInfo` response structure: `data["DataTables"]["Results"]["Data"]` (list of items). `GetBackLinkData`: `data["DataTables"]["BackLinks"]["Data"]`. Test fixtures must replicate this nesting.
+- GDPR: backlink data is structural web graph data (URLs, domains). No personal data unless anchor text contains personal names. `pseudonymized_author_id` is always `None`. Art. 89 research exemption applies.
+- Note on arena path: the brief specifies `arenas/web/majestic/` but the flat layout `arenas/majestic/` was used for consistency with all other Phase 1/2 arenas. The `arena_name="web"` constant correctly writes `"web"` to the DB `arena` column.
+
+---
+
+### Task 2.3 — Facebook and Instagram Arenas (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/facebook/__init__.py` | Done |
+| `src/issue_observatory/arenas/facebook/config.py` | Done |
+| `src/issue_observatory/arenas/facebook/collector.py` | Done |
+| `src/issue_observatory/arenas/facebook/tasks.py` | Done |
+| `src/issue_observatory/arenas/facebook/router.py` | Done |
+| `src/issue_observatory/arenas/instagram/__init__.py` | Done |
+| `src/issue_observatory/arenas/instagram/config.py` | Done |
+| `src/issue_observatory/arenas/instagram/collector.py` | Done |
+| `src/issue_observatory/arenas/instagram/tasks.py` | Done |
+| `src/issue_observatory/arenas/instagram/router.py` | Done |
+
+**Decision**: MCL is NOT approved. Bright Data is the default implementation.
+PREMIUM tier methods raise `NotImplementedError` with an explanatory message.
+The MCL parsing paths (`_parse_mcl_facebook`, `_parse_mcl_instagram`) are
+implemented as stubs with field mappings defined so MCL can be wired in once
+institutional approval is granted.
+
+**Facebook design notes**:
+- `arena_name = "social_media"`, `platform_name = "facebook"`, `supported_tiers = [Tier.MEDIUM, Tier.PREMIUM]`.
+- MEDIUM: Bright Data Facebook Datasets. Asynchronous dataset delivery pattern:
+  1. POST `BRIGHTDATA_TRIGGER_URL` (dataset_id=`gd_l95fol7l1ru6rlo116`) with keyword/page filters and `country="DK"`.
+  2. Get `snapshot_id` from trigger response.
+  3. Poll `GET /datasets/v3/progress/{snapshot_id}` every 30 seconds until `status=="ready"` (max 40 attempts = 20 minutes).
+  4. GET `/datasets/v3/snapshot/{snapshot_id}?format=json` to download results.
+- `collect_by_terms()`: builds keyword + country=DK filter payload, runs full trigger→poll→download cycle per term.
+- `collect_by_actors()`: targets specific page by `page_url` or `page_id` in filter payload.
+- `normalize()`: dispatches to `_parse_brightdata_facebook()`. Reactions total → `likes_count`; full reaction breakdown preserved in `raw_metadata`. `content_type = "comment"` if `comment_id` field is present, else `"post"`. `views_count = None` (Bright Data does not expose view counts; MCL does).
+- Credentials: `CredentialPool.acquire(platform="brightdata_facebook", tier="medium")`. JSONB: `{"api_token": "bd-fb-xxx", "zone": "facebook_zone"}`.
+- Rate limit: 2 calls/sec courtesy throttle via `RateLimiter.wait_for_slot()`.
+- `health_check()`: GET `https://api.brightdata.com/datasets/v3` with Bearer token — 200 or 404 both confirm reachability.
+- Celery tasks: `facebook_collect_terms`, `facebook_collect_actors`, `facebook_health_check`. Max 2 retries (dataset delivery is expensive). `time_limit=1800`, `soft_time_limit=1500`.
+- Standalone router: `POST /arenas/facebook/collect/terms`, `POST /arenas/facebook/collect/actors`, `GET /arenas/facebook/health`.
+- `issue_observatory.arenas.facebook.tasks` added to `workers/celery_app.py` include list.
+- Router mounted in `api/main.py` under `/arenas` prefix.
+
+**Instagram design notes**:
+- `arena_name = "social_media"`, `platform_name = "instagram"`, `supported_tiers = [Tier.MEDIUM, Tier.PREMIUM]`.
+- MEDIUM: Bright Data Instagram Scraper API. Same polling pattern as Facebook.
+  Dataset ID: `gd_lyclm20il4r5helnj`. Trigger URL: `BRIGHTDATA_INSTAGRAM_POSTS_URL`.
+- `collect_by_terms()`: converts terms to hashtags (`"klima debat"` → `"#klimadebat"`); terms already starting with `#` used as-is. Submits hashtag scraper request per term.
+- `collect_by_actors()`: targets profile by `username` or `profile_url`. This is the recommended mode for Danish content (known accounts).
+- No native language filter on Instagram. Language field passed through if Bright Data provides it; otherwise `None`. Downstream language detection applies.
+- `normalize()`: dispatches to `_parse_brightdata_instagram()`. `content_type = "reel"` if `product_type` in (`clips`, `reel`, `igtv`) or `media_type == "2"`, else `"post"`. `url = "https://www.instagram.com/p/{shortcode}/"`. `shares_count = None` (not available via Bright Data). Carousel media URLs extracted from `carousel_media[]` into `media_urls`. Hashtags extracted from caption if not already in raw data.
+- Credentials: `CredentialPool.acquire(platform="brightdata_instagram", tier="medium")`. JSONB: `{"api_token": "bd-ig-xxx", "zone": "instagram_zone"}`.
+- Rate limit: 2 calls/sec courtesy throttle via `RateLimiter.wait_for_slot()`.
+- `health_check()`: same pattern as Facebook — GET Bright Data API base URL with Bearer token.
+- Celery tasks: `instagram_collect_terms`, `instagram_collect_actors`, `instagram_health_check`. Max 2 retries. `time_limit=1800`, `soft_time_limit=1500`.
+- Standalone router: `POST /arenas/instagram/collect/terms`, `POST /arenas/instagram/collect/actors`, `GET /arenas/instagram/health`.
+- `issue_observatory.arenas.instagram.tasks` added to `workers/celery_app.py` include list.
+- Router mounted in `api/main.py` under `/arenas` prefix.
+
+**Blockers / Notes for QA**:
+- Facebook credential: Bright Data account with Facebook Datasets zone required. `platform="brightdata_facebook"`, `tier="medium"`, JSONB `{"api_token": "bd-fb-xxx", "zone": "facebook_zone"}`.
+- Instagram credential: Bright Data account with Instagram Scraper zone required. `platform="brightdata_instagram"`, `tier="medium"`, JSONB `{"api_token": "bd-ig-xxx", "zone": "instagram_zone"}`.
+- Note: a single Bright Data account can serve both zones; use the same account-level API token in both credentials with different zone identifiers.
+- PREMIUM tier MCL stub: both `collect_by_terms()` and `collect_by_actors()` raise `NotImplementedError` for PREMIUM tier. MCL application status must be confirmed before implementing. The MCL parsing paths (`_parse_mcl_facebook`, `_parse_mcl_instagram`) contain the field mappings from the research brief and are ready for wiring once access tokens are available.
+- Integration tests: mock `httpx.AsyncClient` via `respx` or `pytest-httpx`. Inject via `http_client` constructor parameter. Two sets of fixtures needed: one for the trigger response (containing `snapshot_id`), one for the progress polling responses, and one for the snapshot download response.
+- Bright Data delivery latency: Facebook datasets may take hours; Instagram may take minutes to tens of minutes. `BRIGHTDATA_MAX_POLL_ATTEMPTS=40` and `BRIGHTDATA_POLL_INTERVAL=30` give a 20-minute maximum wait. The Celery `time_limit=1800` provides a 30-minute hard cap.
+- GDPR: Facebook and Instagram post content and author identifiers are personal data under GDPR Art. 6(1)(e) + Art. 89 (research). Posts revealing political opinions, religious beliefs, or health conditions are Art. 9(1) special category data. Legal basis: Art. 9(2)(j) + Databeskyttelsesloven section 10. `pseudonymized_author_id` computed via `Normalizer.pseudonymize_author()`. Ensure `PSEUDONYMIZATION_SALT` is configured.
+- Legal note: *Meta v. Bright Data* (2024, US District Court, dismissed). Scraping publicly accessible posts is lawful under US law. EU legal risk is moderate under GDPR and Meta ToS — document in DPIA with research exemption under GDPR Art. 89 and DSA Art. 40(12).
+- No new dependencies required: both arenas use only `httpx` and `asyncio` (already in `pyproject.toml`).
+- `DANISH_INSTAGRAM_HASHTAGS` in `instagram/config.py` provides a starter list of Danish hashtags for ad-hoc term collection. Expand via the query design system for production runs.
+
+---
+
+### Task 2.4 — Event Registry / NewsAPI.ai Arena (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/event_registry/__init__.py` | Done |
+| `src/issue_observatory/arenas/event_registry/config.py` | Done |
+| `src/issue_observatory/arenas/event_registry/collector.py` | Done |
+| `src/issue_observatory/arenas/event_registry/tasks.py` | Done |
+| `src/issue_observatory/arenas/event_registry/router.py` | Done |
+
+**Design notes**:
+- `arena_name = "news_media"`, `platform_name = "event_registry"`, `supported_tiers = [Tier.MEDIUM, Tier.PREMIUM]`.
+- No free tier.  Credentials required in `CredentialPool` as `platform="event_registry"`. JSONB: `{"api_key": "..."}`.
+- Pure `httpx.AsyncClient` implementation — no `eventregistry` SDK dependency. No new dependencies added to `pyproject.toml`.
+- `collect_by_terms()`: POST to `https://newsapi.ai/api/v1/article/getArticles` with `lang="dan"`, `sourceLocationUri="http://en.wikipedia.org/wiki/Denmark"`, `dataType=["news","blog"]`. Page pagination with 1-token-per-request cost.
+- `collect_by_actors()`: same endpoint with `conceptUri` parameter.  Actor IDs must be Event Registry concept URIs (Wikipedia-based).
+- `normalize()`: `platform_id` = article `uri`, `content_type = "article"`, `language` mapped from ISO 639-3 `"dan"` → ISO 639-1 `"da"`, full `body` → `text_content`, `pseudonymized_author_id` via `Normalizer.pseudonymize_author()` using author name, NLP enrichments (`concepts`, `categories`, `sentiment`, `eventUri`) in `raw_metadata`.
+- `content_hash` = SHA-256 of normalized article URL for cross-arena deduplication.
+- Token budget tracking: `remainingTokens` from API response checked against `TOKEN_BUDGET_WARNING_PCT=20%` (WARNING) and `TOKEN_BUDGET_CRITICAL_PCT=5%` (CRITICAL + halt).
+- Rate limit: 5 calls/sec per credential via `RateLimiter.wait_for_slot()`. Falls back to `asyncio.sleep(0.2)` when Redis unavailable.
+- Error handling: HTTP 401 → `ArenaAuthError` + `credential_pool.report_error()`; HTTP 402 → `ArenaCollectionError` (token budget); HTTP 429 → `ArenaRateLimitError` (Celery auto-retry); HTTP 5xx → `ArenaCollectionError`.
+- `health_check()`: tries MEDIUM then PREMIUM credential; issues single `getArticles` request; reports `remaining_tokens`.
+- Celery tasks: `event_registry_collect_terms`, `event_registry_collect_actors`, `event_registry_health_check`. Max 3 retries, exponential backoff capped 300s.
+- Standalone router: `POST /arenas/event-registry/collect/terms`, `POST /arenas/event-registry/collect/actors`, `GET /arenas/event-registry/health`.
+- `issue_observatory.arenas.event_registry.tasks` added to `workers/celery_app.py` `include` list.
+- Router mounted in `api/main.py` under `/arenas` prefix.
+
+**Blockers / Notes for QA**:
+- Credentials must be provisioned manually: register at https://newsapi.ai/register, store API key in CredentialPool as `platform="event_registry"`, `tier="medium"` or `"premium"`.
+- Integration tests must mock `httpx.AsyncClient` via `respx` or `pytest-httpx`. Inject via `http_client` constructor param.
+- Actor IDs (concept URIs) must be resolved before calling `collect_by_actors()`. Use `POST /api/v1/suggestConcepts` to resolve Danish entity names to URIs. This resolution step is out of scope for the collector itself.
+- Token budget is the primary constraint. At 5,000 tokens/month (Medium), ~5,000 search pages (up to 500,000 articles) are available per month. Targeted use only at Medium tier.
+- `isDuplicate` flag is preserved in `raw_metadata`. Downstream deduplication policy (skip vs. ingest duplicates) should be configured at the query design level.
+
+---
+
+### Task 2.5 — LinkedIn Import Endpoint (2026-02-16) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/api/routes/imports.py` | Done — full implementation replacing stub |
+| `src/issue_observatory/api/main.py` | Updated — imports router now mounted at `/api` prefix |
+
+**Design notes**:
+- `POST /api/content/import` — multipart form upload with `file`, `collection_method`, and optional `query_design_id` fields.
+- Auth: `get_current_active_user` required (rejects inactive/unauthenticated users with HTTP 401/403).
+- Format detection: `.ndjson`/`.jsonl`/`application/x-ndjson` → NDJSON; `.csv`/`text/csv` → CSV. Falls back to content-type substring match. HTTP 415 when format cannot be determined.
+- File size limit: 50 MB hard cap. HTTP 413 when exceeded.
+- NDJSON path: each non-empty line parsed as JSON, platform inferred via `_infer_platform_from_ndjson()` (explicit `platform` key first, then Zeeschuimer fingerprints for LinkedIn/TikTok). `collection_method` injected into raw item and `raw_metadata` before normalization.
+- CSV path: `csv.DictReader` with columns `url`, `text`, `title`, `published_at`, `platform`, `author_display_name`, `author_id`, `language` mapped to normalizer-compatible keys via `_CSV_COLUMN_MAP`.
+- Both paths call `Normalizer.normalize()` with `collection_tier="manual"` for imported data.
+- Bulk insert: `INSERT INTO content_records (...) VALUES (...) ON CONFLICT (content_hash) DO NOTHING` per record, using SQLAlchemy `text()` with parameterized binds. Returns `(inserted, skipped)` counts.
+- Error threshold: if >10% of rows error, returns HTTP 422 with full error list and aborts DB insert.
+- Per-row errors returned as `{"row": N, "error": "..."}` dicts even when below threshold.
+- Response: `{"imported": N, "skipped": M, "errors": [...]}`.
+
+**Blockers / Notes for QA**:
+- `content_records` table must have a unique constraint on `content_hash` for ON CONFLICT to work. Verify in DB migrations.
+- LinkedIn NDJSON from Zeeschuimer does not always contain a `platform` field — the LinkedIn fingerprint detector checks for `"urn:li:"` URN patterns. Test with real Zeeschuimer exports to verify detection.
+- The `arena` field defaults to `"import"` for CSV rows and falls back to `"import"` for NDJSON without an `arena` key. For LinkedIn Zeeschuimer data, explicitly include `"arena": "social_media"` in the NDJSON records or the arena column will contain `"import"`.
+- Pseudonymization: `PSEUDONYMIZATION_SALT` must be set for `pseudonymized_author_id` to be populated. Without it, `Normalizer` logs a WARNING and sets `pseudonymized_author_id=None`.
+- No new dependencies required — only stdlib (`csv`, `io`, `json`) and existing project dependencies.
+
+---
+
+### Task 2.2 — Google SERP Verification (2026-02-16)
+
+**Verification result**: Two defects found and fixed.
+
+**Checks performed**:
+
+1. `acquire()` called with correct `platform` and `tier` arguments — **PASS (no change needed)**
+   - `_acquire_credential()` calls `self.credential_pool.acquire(platform=provider_platform, tier=tier.value)` where `provider_platform` is `"serper"` for MEDIUM and `"serpapi"` for PREMIUM. The `tier.value` produces the lowercase tier string (`"medium"` / `"premium"`) as required by `CredentialPool.acquire()`.
+
+2. `release()` called in `finally` block — **FAIL — FIXED**
+   - `collect_by_terms()` acquired the credential at line 145 but had no `try/finally` around the HTTP client block. If any exception escaped from `_collect_term()` (e.g. `ArenaCollectionError` other than rate-limit/auth), the credential lease in Redis would never be released.
+   - Fix: wrapped the `async with self._build_http_client()` block in `try/finally`, calling `self.credential_pool.release(credential_id=cred["id"])` in the `finally` clause.
+
+3. `report_error()` called on 429/auth failures — **PARTIAL FAIL — FIXED**
+   - `_collect_term()` correctly catches `(ArenaRateLimitError, ArenaAuthError)` and calls `report_error()`.
+   - Defect: the `error` argument was hardcoded as `ArenaRateLimitError("rate limit hit")` regardless of which exception was actually raised. When an `ArenaAuthError` was caught, the credential pool received a synthetic rate-limit error instead of the real auth error, causing incorrect backoff classification in `_report_db_error()` (the isinstance check on `ArenaAuthError` would never trigger for DB credentials).
+   - Fix: changed `except (ArenaRateLimitError, ArenaAuthError) as exc` and passed `error=exc` to `report_error()`.
+
+4. No hardcoded API keys — **PASS (no change needed)**
+   - All credentials flow through `CredentialPool`. No string literals resembling API keys appear in the file.
+
+**Files modified**:
+- `src/issue_observatory/arenas/google_search/collector.py` — two targeted fixes (lines ~149-162 and ~435-441 in original).
+
+---
+
+### Task 0.12 — Google Search Arena (2026-02-15)
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/google_search/__init__.py` | Done |
+| `src/issue_observatory/arenas/google_search/config.py` | Done |
+| `src/issue_observatory/arenas/google_search/collector.py` | Done |
+| `src/issue_observatory/arenas/google_search/tasks.py` | Done |
+| `src/issue_observatory/arenas/google_search/router.py` | Done |
+| `src/issue_observatory/arenas/google_search/README.md` | Done |
+
+### Task 0.12 — Design notes
+- FREE tier returns `[]` with a warning log; no exception raised.
+- MEDIUM tier uses Serper.dev (POST JSON, `X-API-KEY` header).
+- PREMIUM tier uses SerpAPI (GET with query params, `api_key` param).
+- Danish params `gl=dk&hl=da` applied on every request via `DANISH_PARAMS`.
+- Credentials acquired via `CredentialPool.acquire(platform="serper", tier="medium")`
+  and `acquire(platform="serpapi", tier="premium")`.  Env var names:
+  `SERPER_MEDIUM_API_KEY`, `SERPAPI_PREMIUM_API_KEY`.
+- `collect_by_actors()` converts domain actor IDs to `site:` queries and
+  delegates to `collect_by_terms()` — not a `NotImplementedError` stub.
+- `normalize()` delegates to `Normalizer.normalize()` with `content_type="search_result"`.
+- Celery task `google_search_collect_terms` auto-retries on `ArenaRateLimitError`
+  (max 3 retries, exponential backoff capped at 5 min).
+- `_update_task_status()` is best-effort: DB failures are logged at WARNING
+  and do not mask collection outcomes.
+- `health_check()` acquires MEDIUM credential, fires a 1-result test query to
+  Serper.dev, and always releases the credential in a `finally` block.
+
+### Task 0.12 — Blockers / Notes
+- `/docs/arenas/google_search.md` brief does not exist on disk.  Task was
+  executed using the inline specification provided in the task description,
+  which is functionally equivalent.  The Research Agent should create the
+  brief retroactively for completeness.
+- QA Engineer: integration test should mock Serper.dev responses using
+  `respx` or `pytest-httpx`.  The `http_client` constructor argument on
+  `GoogleSearchCollector` supports injection of a mock client.
+- `_update_task_status()` imports `get_sync_session` lazily — if the DB
+  schema is not yet migrated, the import will fail gracefully (logged at
+  WARNING).  This is acceptable in Phase 0 where the DB migration may lag
+  arena implementation.

@@ -80,6 +80,18 @@ This is **The Issue Observatory**, a modular multi-platform media data collectio
 - All external API calls wrapped in try/except with specific error types
 - Use structured logging (structlog or standard logging with JSON formatter)
 
+### UI Language
+- The application interface MUST be in **English**. All nav labels, page headings, button labels,
+  form labels, placeholder text, status badges, error messages, confirmation dialogs,
+  empty-state messages, and any other user-visible strings must be in English.
+- Danish is relevant ONLY as a data/query parameter: locale settings such as `gl=dk&hl=da`,
+  Danish RSS feed URLs, ISO language codes stored in the database (`da`, `DK`), and
+  PostgreSQL full-text search dictionaries (`to_tsvector('danish', ...)`). None of these
+  are UI text.
+- Do NOT write Danish strings in Jinja2 templates, Alpine.js components, or JavaScript.
+  There is no i18n layer; every string is hardcoded in English.
+- The `<html lang="en">` attribute must be set in `base.html` and `base_auth.html`.
+
 ### Testing
 - Every arena collector must have unit tests with mocked API responses
 - Integration tests use Docker-based PostgreSQL and Redis (pytest fixtures in conftest.py)

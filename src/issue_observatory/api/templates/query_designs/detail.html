@@ -1,0 +1,230 @@
+{% extends "base.html" %}
+{% block title %}{{ design.name | default('Query Design') }} — Issue Observatory{% endblock %}
+
+{% block content %}
+{#
+    Query design detail — read-only view with run history.
+    Task 1.18 stub / Task 1.14 companion.
+
+    Context:
+        - design (dict): {id, name, description, visibility, default_tier, language, created_at, owner_email}
+        - terms (list): search terms
+        - runs (list): recent collection runs [{id, status, created_at, total_records, credits_spent}]
+        - actors (list): actor list members
+#}
+{% set design = design | default({}) %}
+{% set design_id = design.id | default('') %}
+{% set terms = terms | default([]) %}
+{% set runs = runs | default([]) %}
+{% set actors = actors | default([]) %}
+
+<div class="max-w-4xl mx-auto space-y-6">
+
+    {# Header #}
+    <div class="flex items-center gap-3">
+        <a href="/query-designs"
+           class="text-gray-400 hover:text-gray-600 transition-colors"
+           aria-label="Back to list">
+            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
+            </svg>
+        </a>
+        <h1 class="text-xl font-bold text-gray-900 flex-1">{{ design.name | default('Query Design') }}</h1>
+        <a href="/query-designs/{{ design_id }}/edit"
+           class="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-gray-600 border border-gray-200 rounded-md hover:bg-gray-50 transition-colors">
+            <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+            </svg>
+            Edit
+        </a>
+        <a href="/collections/new?design_id={{ design_id }}"
+           class="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+            <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            Run collection
+        </a>
+    </div>
+
+    {# Design metadata card #}
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-sm font-semibold text-gray-900 border-b border-gray-200 pb-3 mb-4">Basic Information</h2>
+        <dl class="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
+            {% if design.description | default('') %}
+            <div class="col-span-2">
+                <dt class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Description</dt>
+                <dd class="text-gray-800">{{ design.description }}</dd>
+            </div>
+            {% endif %}
+
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Visibility</dt>
+                <dd>
+                    {% set vis = design.visibility | default('private') %}
+                    {% if vis == 'public' %}
+                        <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">Public</span>
+                    {% elif vis == 'team' %}
+                        <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">Team</span>
+                    {% else %}
+                        <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">Private</span>
+                    {% endif %}
+                </dd>
+            </div>
+
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Default Tier</dt>
+                <dd>
+                    {% set tier = design.default_tier | default('free') %}
+                    {% if tier == 'free' %}
+                        <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">Free</span>
+                    {% elif tier == 'medium' %}
+                        <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">Medium</span>
+                    {% else %}
+                        <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">Premium</span>
+                    {% endif %}
+                </dd>
+            </div>
+
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Language</dt>
+                <dd class="text-gray-700">{{ design.language | default('da') | upper }}</dd>
+            </div>
+
+            {% if design.owner_email | default('') %}
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Owner</dt>
+                <dd class="text-gray-700">{{ design.owner_email }}</dd>
+            </div>
+            {% endif %}
+
+            {% if design.created_at | default('') %}
+            <div>
+                <dt class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Created</dt>
+                <dd class="text-gray-700 font-mono text-xs">{{ design.created_at | truncate(16, true, '') }}</dd>
+            </div>
+            {% endif %}
+        </dl>
+    </div>
+
+    {# Search terms (read-only) #}
+    <div class="bg-white rounded-lg shadow p-6">
+        <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4">
+            <h2 class="text-sm font-semibold text-gray-900">Search Terms</h2>
+            <span class="text-xs text-gray-400">{{ terms | length }} term{% if terms | length != 1 %}er{% endif %}</span>
+        </div>
+
+        {% if terms %}
+        <ul class="flex flex-wrap gap-2">
+            {% for term in terms %}
+            <li class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-gray-50 border border-gray-200 text-sm">
+                {% set ttype = term.term_type | default('keyword') %}
+                {% if ttype == 'hashtag' %}
+                    <span class="text-xs font-medium text-blue-600">#</span>
+                {% elif ttype == 'phrase' %}
+                    <span class="text-xs font-medium text-purple-600">""</span>
+                {% elif ttype == 'url_pattern' %}
+                    <span class="text-xs font-medium text-orange-600">URL</span>
+                {% else %}
+                    <span class="text-xs text-gray-400">kw</span>
+                {% endif %}
+                <span class="text-gray-800">{{ term.term | default('') }}</span>
+                {% if not term.is_active | default(true) %}
+                <span class="text-xs text-gray-300 italic">(inactive)</span>
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-sm text-gray-400">No search terms defined.</p>
+        {% endif %}
+    </div>
+
+    {# Actor list (read-only, shown if populated) #}
+    {% if actors %}
+    <div class="bg-white rounded-lg shadow p-6">
+        <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4">
+            <h2 class="text-sm font-semibold text-gray-900">Actor List</h2>
+            <span class="text-xs text-gray-400">{{ actors | length }} actor{% if actors | length != 1 %}s{% endif %}</span>
+        </div>
+        <ul class="flex flex-wrap gap-2">
+            {% for actor in actors %}
+            <li class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-gray-50 border border-gray-200 text-sm">
+                <a href="/actors/{{ actor.actor_id | default('') }}"
+                   class="text-gray-800 hover:text-blue-600">{{ actor.name | default('') }}</a>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    {# Run history #}
+    <div class="bg-white rounded-lg shadow overflow-hidden">
+        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+            <h2 class="text-sm font-semibold text-gray-900">Run History</h2>
+            <a href="/collections?design_id={{ design_id }}"
+               class="text-xs text-blue-600 hover:text-blue-800">View all runs</a>
+        </div>
+
+        {% if runs %}
+        <table class="min-w-full divide-y divide-gray-200 text-sm">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Run ID</th>
+                    <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                    <th class="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Records</th>
+                    <th class="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Credits</th>
+                    <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Started</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+                {% for run in runs %}
+                <tr class="hover:bg-gray-50 transition-colors">
+                    <td class="px-6 py-3">
+                        <a href="/collections/{{ run.id }}"
+                           class="font-mono text-xs text-blue-600 hover:text-blue-800">
+                            {{ run.id | truncate(8, true, '') }}
+                        </a>
+                    </td>
+                    <td class="px-6 py-3">
+                        {% set st = run.status | default('unknown') %}
+                        {% if st == 'completed' %}
+                            <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">Completed</span>
+                        {% elif st == 'running' %}
+                            <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">Running</span>
+                        {% elif st == 'failed' %}
+                            <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">Failed</span>
+                        {% elif st == 'cancelled' %}
+                            <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">Cancelled</span>
+                        {% else %}
+                            <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-500">{{ st }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-3 text-right text-xs font-mono text-gray-700">
+                        {{ run.total_records | default(0) | int }}
+                    </td>
+                    <td class="px-6 py-3 text-right text-xs font-mono text-gray-500">
+                        {{ run.credits_spent | default(0) }}
+                    </td>
+                    <td class="px-6 py-3 text-xs text-gray-500">
+                        {{ run.created_at | default('') | truncate(16, true, '') }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        {% set empty_title = 'No runs yet' %}
+        {% set empty_message = 'Launch a collection to see run history here.' %}
+        {% include '_partials/empty_state.html' %}
+        {% endif %}
+    </div>
+
+</div>
+{% endblock %}

@@ -1,0 +1,30 @@
+{#
+    Credit balance badge — polled every 30s via HTMX.
+    The server endpoint GET /credits/balance returns a rendered fragment
+    (this same partial or _fragments/credit_balance.html) with live values.
+
+    Context when rendered inline (initial render before polling kicks in):
+    - credits_available (int, optional)
+    - credits_reserved  (int, optional)
+#}
+<div id="credit-badge"
+     hx-get="/credits/balance"
+     hx-trigger="load, every 30s"
+     hx-target="#credit-badge"
+     hx-swap="outerHTML"
+     class="rounded-md bg-gray-50 border border-gray-200 px-3 py-2 text-xs">
+    {% if credits_available is defined %}
+        <div class="flex items-center justify-between gap-2">
+            <span class="text-gray-500">Credits</span>
+            <span class="font-semibold text-gray-900">{{ credits_available }}</span>
+        </div>
+        {% if credits_reserved is defined and credits_reserved > 0 %}
+        <div class="flex items-center justify-between gap-2 mt-0.5">
+            <span class="text-gray-400">Reserved</span>
+            <span class="text-amber-600">{{ credits_reserved }}</span>
+        </div>
+        {% endif %}
+    {% else %}
+        <span class="text-gray-400">Credits: loading...</span>
+    {% endif %}
+</div>

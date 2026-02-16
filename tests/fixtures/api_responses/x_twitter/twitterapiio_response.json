@@ -1,0 +1,90 @@
+{
+  "tweets": [
+    {
+      "id": "1760000000000001",
+      "text": "Grøn omstilling er afgørende for dansk velfærd og fremtiden for Ålborg.",
+      "lang": "da",
+      "createdAt": "2026-02-15T10:30:00.000Z",
+      "author": {
+        "id": "987654321",
+        "userName": "soeren_dk",
+        "name": "Søren Ærlighed"
+      },
+      "favorites": 42,
+      "retweets": 7,
+      "replies": 3,
+      "views": 1500,
+      "isRetweet": false,
+      "isReply": false,
+      "isQuote": false,
+      "conversationId": "1760000000000001",
+      "entities": {}
+    },
+    {
+      "id": "1760000000000002",
+      "text": "RT @drdk: Socialdemokratiet og Venstre er uenige om velfærdsreformen.",
+      "lang": "da",
+      "createdAt": "2026-02-15T09:15:00.000Z",
+      "author": {
+        "id": "111222333",
+        "userName": "aase_nyheder",
+        "name": "Åse Nyheder"
+      },
+      "favorites": 0,
+      "retweets": 25,
+      "replies": 0,
+      "views": 800,
+      "isRetweet": true,
+      "isReply": false,
+      "isQuote": false,
+      "conversationId": "1760000000000002",
+      "entities": {}
+    },
+    {
+      "id": "1760000000000003",
+      "text": "@drdk Jeg er enig i, at Ørsted bør investere mere i vedvarende energi.",
+      "lang": "da",
+      "createdAt": "2026-02-15T08:00:00.000Z",
+      "author": {
+        "id": "444555666",
+        "userName": "ole_kommentator",
+        "name": "Ole Kommentator"
+      },
+      "favorites": 5,
+      "retweets": 0,
+      "replies": 2,
+      "views": 300,
+      "isRetweet": false,
+      "isReply": true,
+      "isQuote": false,
+      "conversationId": "1760000000000000",
+      "entities": {}
+    },
+    {
+      "id": "1760000000000004",
+      "text": "Interessant pointe om miljøpolitik. Hvad tænker I? Kilde: @groenomstilling",
+      "lang": "da",
+      "createdAt": "2026-02-15T07:45:00.000Z",
+      "author": {
+        "id": "777888999",
+        "userName": "mette_debat",
+        "name": "Mette Debat"
+      },
+      "favorites": 15,
+      "retweets": 3,
+      "replies": 8,
+      "views": 950,
+      "isRetweet": false,
+      "isReply": false,
+      "isQuote": true,
+      "conversationId": "1760000000000004",
+      "media": [
+        {
+          "media_url_https": "https://pbs.twimg.com/media/test_image.jpg"
+        }
+      ],
+      "entities": {}
+    }
+  ],
+  "next_cursor": null
+}

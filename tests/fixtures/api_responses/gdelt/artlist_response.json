@@ -1,0 +1,26 @@
+{
+  "articles": [
+    {
+      "url": "https://www.dr.dk/nyheder/politik/groen-omstilling-test-001",
+      "url_mobile": "https://m.dr.dk/nyheder/politik/groen-omstilling-test-001",
+      "title": "Grøn omstilling: Mette Frederiksen vil investere i folkeskolen",
+      "seendate": "20260215T103000Z",
+      "socialimage": "https://www.dr.dk/img/groen-test.jpg",
+      "domain": "dr.dk",
+      "language": "Danish",
+      "sourcecountry": "DA",
+      "tone": "-2.5"
+    },
+    {
+      "url": "https://politiken.dk/klima/groen-test-002",
+      "url_mobile": null,
+      "title": "Velfærdsstat og klimaforandringer i Ålborg",
+      "seendate": "20260215T090000Z",
+      "socialimage": null,
+      "domain": "politiken.dk",
+      "language": "Danish",
+      "sourcecountry": "DA",
+      "tone": "1.0"
+    }
+  ]
+}
