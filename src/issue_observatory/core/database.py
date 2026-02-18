@@ -20,14 +20,17 @@ Owned by the DB Engineer.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
+from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.orm import Session, sessionmaker
 
 # ---------------------------------------------------------------------------
 # Import Base so callers can do:
@@ -66,6 +69,19 @@ def _get_database_url() -> str:
     return str(get_settings().database_url)
 
 
+def _get_sync_database_url() -> str:
+    """Return a synchronous (psycopg2) database URL derived from the async URL.
+
+    Replaces the ``postgresql+asyncpg://`` driver prefix with the standard
+    ``postgresql+psycopg2://`` prefix required by the synchronous engine used
+    in Celery task helpers.
+    """
+    url = _get_database_url()
+    return url.replace("postgresql+asyncpg://", "postgresql+psycopg2://").replace(
+        "postgresql://", "postgresql+psycopg2://"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Application-wide engine and session factory.
 # These are module-level singletons created on first import.
@@ -79,6 +95,48 @@ AsyncSessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
     autocommit=False,
     autoflush=False,
 )
+
+# ---------------------------------------------------------------------------
+# Synchronous engine and session factory (used by Celery task helpers)
+# ---------------------------------------------------------------------------
+
+_sync_engine = create_engine(
+    _get_sync_database_url(),
+    pool_size=5,
+    max_overflow=10,
+    pool_pre_ping=True,
+)
+
+SyncSessionLocal: sessionmaker[Session] = sessionmaker(
+    bind=_sync_engine,
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=False,
+)
+
+
+@contextmanager
+def get_sync_session() -> Generator[Session, None, None]:
+    """Yield a synchronous SQLAlchemy Session for use in Celery task helpers.
+
+    The session is committed on clean exit and rolled back on exception.
+    Intended for best-effort status updates inside arena tasks where an
+    async event loop is not available.
+
+    Usage::
+
+        with get_sync_session() as session:
+            session.execute(text("UPDATE ..."), {...})
+            session.commit()
+    """
+    session = SyncSessionLocal()
+    try:
+        yield session
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 # ---------------------------------------------------------------------------

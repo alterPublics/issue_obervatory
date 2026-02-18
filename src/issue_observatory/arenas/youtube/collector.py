@@ -28,6 +28,7 @@ from typing import Any
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.youtube._client import (
     fetch_videos_batch,
@@ -118,6 +119,8 @@ class YouTubeCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect YouTube videos matching one or more search terms.
 
@@ -126,12 +129,20 @@ class YouTubeCollector(ArenaCollector):
         collecting video IDs, enriches them via ``videos.list`` batch calls
         (1 unit per 50 videos).
 
+        When ``term_groups`` is provided, YouTube's pipe ``|`` OR and space AND
+        syntax is used to build a single combined query that captures all groups.
+
         Args:
-            terms: Search terms to query independently.
+            terms: Search terms (used when ``term_groups`` is ``None``).
             tier: Operational tier.  Only ``Tier.FREE`` is supported.
             date_from: Optional ``publishedAfter`` ISO 8601 / datetime filter.
             date_to: Optional ``publishedBefore`` ISO 8601 / datetime filter.
             max_results: Maximum records to return across all terms.
+            term_groups: Optional boolean AND/OR groups.  Groups are joined
+                with ``|`` (YouTube OR) and terms within a group are
+                space-joined (YouTube AND).
+            language_filter: Optional language codes; the first code overrides
+                the default ``relevanceLanguage`` param (default ``"da"``).
 
         Returns:
             List of normalized content record dicts.
@@ -149,10 +160,20 @@ class YouTubeCollector(ArenaCollector):
         cred = await self._acquire_credential()
         published_after = self._to_iso8601(date_from) if date_from else None
         published_before = self._to_iso8601(date_to) if date_to else None
+
+        # Build query strings.  YouTube supports pipe-OR and space-AND natively,
+        # so all groups can be combined into one query string.
+        if term_groups is not None:
+            query_strings: list[str] = [
+                format_boolean_query_for_platform(groups=term_groups, platform="youtube")
+            ]
+        else:
+            query_strings = list(terms)
+
         all_video_ids: list[str] = []
 
         async with self._build_http_client() as client:
-            for term in terms:
+            for term in query_strings:
                 if len(all_video_ids) >= effective_max:
                     break
                 page_token: str | None = None
@@ -183,8 +204,8 @@ class YouTubeCollector(ArenaCollector):
             )
 
         logger.info(
-            "youtube: collect_by_terms — terms=%d, records=%d, tier=%s",
-            len(terms), len(records), tier.value,
+            "youtube: collect_by_terms — queries=%d, records=%d, tier=%s",
+            len(query_strings), len(records), tier.value,
         )
         return records
 

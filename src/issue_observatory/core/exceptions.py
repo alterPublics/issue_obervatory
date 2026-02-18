@@ -14,7 +14,9 @@ Hierarchy::
     │   ├── InsufficientCreditError
     │   └── CreditReservationError
     ├── NormalizationError
-    └── EntityResolutionError
+    ├── EntityResolutionError
+    └── ScraperError
+        └── RobotsTxtBlockedError
 """
 
 from __future__ import annotations
@@ -211,3 +213,16 @@ class EntityResolutionError(IssueObservatoryError):
         super().__init__(message)
         self.platform = platform
         self.platform_user_id = platform_user_id
+
+
+# ---------------------------------------------------------------------------
+# Scraper exceptions
+# ---------------------------------------------------------------------------
+
+
+class ScraperError(IssueObservatoryError):
+    """Raised when the web scraper fails to fetch or extract content."""
+
+
+class RobotsTxtBlockedError(ScraperError):
+    """Raised when robots.txt disallows scraping the requested URL."""

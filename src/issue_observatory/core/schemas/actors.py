@@ -10,9 +10,27 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from issue_observatory.core.models.actors import ActorType
+
+#: All valid actor type string values, derived from the ActorType enum.
+#: Used as a Literal type constraint in Pydantic schemas.
+ACTOR_TYPE_VALUES = Literal[
+    "person",
+    "organization",
+    "political_party",
+    "educational_institution",
+    "teachers_union",
+    "think_tank",
+    "media_outlet",
+    "government_body",
+    "ngo",
+    "company",
+    "unknown",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -74,14 +92,18 @@ class ActorCreate(BaseModel):
 
     Attributes:
         canonical_name: The authoritative display name for the actor.
-        actor_type: Free-form type label (e.g. ``'person'``, ``'outlet'``).
+        actor_type: Actor category from the ``ActorType`` enumeration.
+            Valid values: ``person``, ``organization``, ``political_party``,
+            ``educational_institution``, ``teachers_union``, ``think_tank``,
+            ``media_outlet``, ``government_body``, ``ngo``, ``company``,
+            ``unknown``.
         description: Optional longer description or biography.
         is_shared: When ``True``, the actor is visible to all researchers.
         presence: Optional initial platform presence to attach on creation.
     """
 
     canonical_name: str = Field(..., min_length=1, max_length=500)
-    actor_type: Optional[str] = Field(default=None, max_length=50)
+    actor_type: Optional[ACTOR_TYPE_VALUES] = Field(default=None)
     description: Optional[str] = Field(default=None)
     is_shared: bool = Field(default=False)
     presence: Optional[ActorPresenceCreate] = Field(default=None)
@@ -95,13 +117,13 @@ class ActorUpdate(BaseModel):
 
     Attributes:
         canonical_name: New canonical name for the actor.
-        actor_type: New type label.
+        actor_type: New actor category from the ``ActorType`` enumeration.
         description: New description text.
         is_shared: New sharing visibility flag.
     """
 
     canonical_name: Optional[str] = Field(default=None, min_length=1, max_length=500)
-    actor_type: Optional[str] = Field(default=None, max_length=50)
+    actor_type: Optional[ACTOR_TYPE_VALUES] = Field(default=None)
     description: Optional[str] = Field(default=None)
     is_shared: Optional[bool] = Field(default=None)
 
@@ -112,7 +134,7 @@ class ActorResponse(BaseModel):
     Attributes:
         id: Unique identifier.
         canonical_name: Authoritative display name.
-        actor_type: Type label.
+        actor_type: Actor category from the ``ActorType`` enumeration.
         description: Optional description.
         created_by: UUID of the researcher who created the actor.
         is_shared: Whether the actor is visible to all researchers.
@@ -124,7 +146,7 @@ class ActorResponse(BaseModel):
 
     id: uuid.UUID
     canonical_name: str
-    actor_type: Optional[str]
+    actor_type: Optional[ACTOR_TYPE_VALUES]
     description: Optional[str]
     created_by: Optional[uuid.UUID]
     is_shared: bool

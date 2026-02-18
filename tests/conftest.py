@@ -44,6 +44,8 @@ _TEST_ENV_DEFAULTS: dict[str, str] = {
     "CREDENTIAL_ENCRYPTION_KEY": "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==",
     "PSEUDONYMIZATION_SALT": "test-pseudonymization-salt-for-unit-tests",
     "REDIS_URL": "redis://localhost:6379/0",
+    "FIRST_ADMIN_EMAIL": "admin@test.example.com",
+    "FIRST_ADMIN_PASSWORD": "test-admin-password-123",
 }
 
 for _key, _default in _TEST_ENV_DEFAULTS.items():

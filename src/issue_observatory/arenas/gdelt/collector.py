@@ -30,6 +30,7 @@ from typing import Any
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.gdelt.config import (
     GDELT_DATETIME_FORMAT,
     GDELT_DOC_API_BASE,
@@ -100,6 +101,8 @@ class GDELTCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect GDELT articles matching the supplied search terms.
 
@@ -107,15 +110,20 @@ class GDELTCollector(ArenaCollector):
         ``sourcelang:danish``) to capture both country-filtered and
         language-filtered results.  Deduplicates by URL.
 
+        When ``term_groups`` is provided, GDELT's native ``AND``/``OR``
+        boolean syntax is used: each AND-group becomes ``(term1 AND term2)``
+        and groups are ORed together.  One query pair is issued per group.
+
         Args:
-            terms: Search terms.  GDELT supports Boolean operators
-                (``AND``, ``OR``, ``NOT``, quotes for phrases).
+            terms: Search terms (used when ``term_groups`` is ``None``).
             tier: Must be ``Tier.FREE``.
-            date_from: Earliest observation date (inclusive).  GDELT
-                uses ``seendate``, not publication date.
+            date_from: Earliest observation date (inclusive).
             date_to: Latest observation date (inclusive).
-            max_results: Upper bound on returned records.  ``None`` uses
-                the tier default (5,000).
+            max_results: Upper bound on returned records.
+            term_groups: Optional boolean AND/OR groups.  GDELT supports
+                native ``AND``/``OR`` syntax.
+            language_filter: Not used — Danish defaults applied via
+                ``sourcecountry``/``sourcelang`` filters.
 
         Returns:
             List of normalized content record dicts.
@@ -135,8 +143,18 @@ class GDELTCollector(ArenaCollector):
         seen_urls: set[str] = set()
         all_records: list[dict[str, Any]] = []
 
+        # Build query strings: use GDELT boolean syntax for groups.
+        if term_groups is not None:
+            query_strings: list[str] = [
+                format_boolean_query_for_platform(groups=[grp], platform="gdelt")
+                for grp in term_groups
+                if grp
+            ]
+        else:
+            query_strings = list(terms)
+
         async with self._build_http_client() as client:
-            for term in terms:
+            for term in query_strings:
                 if len(all_records) >= effective_max:
                     break
 
@@ -171,9 +189,9 @@ class GDELTCollector(ArenaCollector):
                 all_records.extend(records_lang)
 
         logger.info(
-            "gdelt: collect_by_terms — %d records for %d terms",
+            "gdelt: collect_by_terms — %d records for %d queries",
             len(all_records),
-            len(terms),
+            len(query_strings),
         )
         return all_records
 

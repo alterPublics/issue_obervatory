@@ -10,26 +10,35 @@ Access rules:
     - Write:  actor must be owned by the current user (or caller is admin)
 
 Routes:
-    GET    /actors/                            list actors (paginated, searchable)
-    POST   /actors/                            create actor
-    GET    /actors/search                      HTMX search fragment
-    GET    /actors/{actor_id}                  actor detail
-    PATCH  /actors/{actor_id}                  update actor fields
-    DELETE /actors/{actor_id}                  delete actor
-    GET    /actors/{actor_id}/content          content records for actor (HTMX)
-    POST   /actors/{actor_id}/presences        add platform presence
-    DELETE /actors/{actor_id}/presences/{pid}  remove platform presence
+    GET    /actors/                               list actors (paginated, searchable)
+    POST   /actors/                               create actor
+    GET    /actors/search                         HTMX search fragment
+    GET    /actors/resolution                     entity resolution UI page
+    GET    /actors/resolution-candidates          cross-platform resolution candidates
+    GET    /actors/sampling/snowball/platforms    platforms that support network expansion
+    POST   /actors/sampling/snowball              run snowball sampling from seed actors
+    GET    /actors/{actor_id}                     actor detail
+    PATCH  /actors/{actor_id}                     update actor fields
+    DELETE /actors/{actor_id}                     delete actor
+    GET    /actors/{actor_id}/content             content records for actor (HTMX)
+    POST   /actors/{actor_id}/presences           add platform presence
+    DELETE /actors/{actor_id}/presences/{pid}     remove platform presence
+    POST   /actors/{actor_id}/merge/{other_actor_id}  merge other actor into actor
+    POST   /actors/lists/{list_id}/members/bulk   bulk-add actors to a list
 """
 
 from __future__ import annotations
 
+import logging
+import time
 import uuid
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 import structlog
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
-from sqlalchemy import and_, or_, select
+from pydantic import BaseModel
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -40,7 +49,7 @@ from issue_observatory.api.dependencies import (
     ownership_guard,
 )
 from issue_observatory.core.database import get_db
-from issue_observatory.core.models.actors import Actor, ActorPlatformPresence
+from issue_observatory.core.models.actors import Actor, ActorAlias, ActorListMember, ActorPlatformPresence
 from issue_observatory.core.models.content import UniversalContentRecord
 from issue_observatory.core.models.users import User
 from issue_observatory.core.schemas.actors import (
@@ -50,10 +59,109 @@ from issue_observatory.core.schemas.actors import (
     ActorUpdate,
     PresenceResponse,
 )
+from issue_observatory.sampling.snowball import SnowballSampler
+
+_py_logger = logging.getLogger(__name__)
+
+#: Platforms that have a dedicated network-expansion strategy in NetworkExpander.
+#: Derived from the if/elif dispatch in NetworkExpander.expand_from_actor().
+_NETWORK_EXPANSION_PLATFORMS: list[str] = ["bluesky", "reddit", "youtube"]
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Pydantic schemas for snowball sampling and bulk-member endpoints
+# ---------------------------------------------------------------------------
+
+
+class SnowballRequest(BaseModel):
+    """Request body for the snowball sampling endpoint.
+
+    Attributes:
+        seed_actor_ids: UUIDs of actors to start sampling from.
+        platforms: Platform identifiers to expand on (e.g. ``["bluesky", "reddit"]``).
+        max_depth: Maximum number of expansion waves after the seed level.
+        max_actors_per_step: Maximum novel actors added per wave.
+        add_to_actor_list_id: When provided, discovered actors are added to
+            this ``ActorList`` as ``'snowball'`` members.
+    """
+
+    seed_actor_ids: list[uuid.UUID]
+    platforms: list[str]
+    max_depth: int = 2
+    max_actors_per_step: int = 20
+    add_to_actor_list_id: Optional[uuid.UUID] = None
+
+
+class SnowballWaveEntry(BaseModel):
+    """Summary of one expansion wave.
+
+    Attributes:
+        wave: Depth level (0 = seeds, 1+ = expansions).
+        count: Number of actors discovered at this depth.
+        methods: Discovery method strings used in this wave.
+    """
+
+    wave: int
+    count: int
+    methods: list[str]
+
+
+class SnowballActorEntry(BaseModel):
+    """A single actor as returned by the snowball sampling result.
+
+    Attributes:
+        actor_id: UUID string of the actor if resolved in the DB, else empty.
+        canonical_name: Human-readable canonical name.
+        platforms: Platform name(s) associated with this actor entry.
+        discovery_depth: Wave in which this actor was discovered (0 = seed).
+    """
+
+    actor_id: str
+    canonical_name: str
+    platforms: list[str]
+    discovery_depth: int
+
+
+class SnowballResponse(BaseModel):
+    """Response body for the snowball sampling endpoint.
+
+    Attributes:
+        total_actors: Total unique actors in the result.
+        max_depth_reached: Deepest expansion level actually completed.
+        wave_log: Per-wave summary entries.
+        actors: All discovered actors in order of discovery.
+    """
+
+    total_actors: int
+    max_depth_reached: int
+    wave_log: list[SnowballWaveEntry]
+    actors: list[SnowballActorEntry]
+
+
+class BulkMemberRequest(BaseModel):
+    """Request body for bulk actor list membership.
+
+    Attributes:
+        actor_ids: UUIDs of actors to add to the list.
+    """
+
+    actor_ids: list[uuid.UUID]
+
+
+class BulkMemberResponse(BaseModel):
+    """Response body for bulk actor list membership.
+
+    Attributes:
+        added: Number of actors newly added to the list.
+        already_present: Number of actors that were already members.
+    """
+
+    added: int
+    already_present: int
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +259,446 @@ def _content_record_to_html(record: UniversalContentRecord) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Entity resolution page — must be declared before parametric /{actor_id}
+# routes so that FastAPI does not match "resolution" as an actor_id UUID.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/resolution", include_in_schema=False)
+async def actor_resolution_page(
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> HTMLResponse:
+    """Render the entity resolution UI page.
+
+    The page loads resolution candidates via Alpine.js fetch calls to
+    ``GET /actors/resolution-candidates`` and lets the researcher create
+    new actors or merge existing ones.
+
+    Args:
+        request: The current HTTP request (used to resolve the template engine
+            stored on ``request.app.state``).
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        Rendered ``actors/resolution.html`` template.
+    """
+    tpl = request.app.state.templates
+    return tpl.TemplateResponse(
+        "actors/resolution.html",
+        {"request": request, "user": current_user},
+    )
+
+
+@router.get("/resolution-candidates")
+async def get_resolution_candidates(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    run_id: Optional[uuid.UUID] = Query(default=None),
+    query_design_id: Optional[uuid.UUID] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[dict]:
+    """Return entity resolution candidates from content records.
+
+    Finds ``author_display_name`` values that appear across multiple distinct
+    platforms — strong evidence of cross-platform identity.  Each candidate
+    row shows whether it is already resolved to a canonical ``Actor`` record
+    via ``content_records.author_id``.
+
+    Optional filters:
+        ``run_id``          — restrict to content from a specific collection run.
+        ``query_design_id`` — restrict to content from a specific query design.
+
+    Args:
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        run_id: Optional UUID to filter by collection run.
+        query_design_id: Optional UUID to filter by query design.
+        limit: Maximum candidates to return (1–200, default 50).
+
+    Returns:
+        List of candidate dicts ordered by platform count (desc), each with:
+        ``display_name``, ``platforms``, ``platform_count``, ``total_records``,
+        ``is_resolved``, ``actor_id``, ``canonical_name``.
+    """
+    # Build the base content_records subquery.
+    # We aggregate over author_display_name to find names that span > 1 platform.
+    UCR = UniversalContentRecord
+
+    # Subquery: per (author_display_name, author_id) grouping — collect platforms
+    # and record counts.  author_id may be NULL for unresolved names.
+    # We use a two-step approach:
+    #   Step 1: aggregate platforms and counts per (display_name, author_id) pair.
+    #   Step 2: filter to those with platform_count >= 2.
+
+    base_stmt = (
+        select(
+            UCR.author_display_name.label("display_name"),
+            UCR.author_id.label("actor_id"),
+            func.array_agg(
+                func.distinct(UCR.platform)
+            ).label("platforms"),
+            func.count(func.distinct(UCR.platform)).label("platform_count"),
+            func.count(UCR.id).label("total_records"),
+        )
+        .where(UCR.author_display_name.isnot(None))
+        .group_by(UCR.author_display_name, UCR.author_id)
+        .having(func.count(func.distinct(UCR.platform)) >= 2)
+        .order_by(func.count(func.distinct(UCR.platform)).desc(), func.count(UCR.id).desc())
+        .limit(limit)
+    )
+
+    if run_id is not None:
+        base_stmt = base_stmt.where(UCR.collection_run_id == run_id)
+    if query_design_id is not None:
+        base_stmt = base_stmt.where(UCR.query_design_id == query_design_id)
+
+    result = await db.execute(base_stmt)
+    rows = result.all()
+
+    # For resolved rows (actor_id IS NOT NULL), fetch canonical names in bulk.
+    resolved_actor_ids: list[uuid.UUID] = [
+        r.actor_id for r in rows if r.actor_id is not None
+    ]
+    canonical_names: dict[uuid.UUID, str] = {}
+    if resolved_actor_ids:
+        actor_result = await db.execute(
+            select(Actor.id, Actor.canonical_name).where(
+                Actor.id.in_(resolved_actor_ids)
+            )
+        )
+        canonical_names = {a.id: a.canonical_name for a in actor_result.all()}
+
+    candidates: list[dict] = []
+    for row in rows:
+        actor_id_val = row.actor_id
+        is_resolved = actor_id_val is not None
+        candidates.append(
+            {
+                "display_name": row.display_name,
+                "platforms": sorted(row.platforms or []),
+                "platform_count": row.platform_count,
+                "total_records": row.total_records,
+                "is_resolved": is_resolved,
+                "actor_id": str(actor_id_val) if actor_id_val else None,
+                "canonical_name": canonical_names.get(actor_id_val, "") if actor_id_val else "",
+            }
+        )
+
+    logger.info(
+        "resolution_candidates_fetched",
+        count=len(candidates),
+        user_id=str(current_user.id),
+    )
+    return candidates
+
+
+# ---------------------------------------------------------------------------
+# Snowball sampling — must be declared before parametric /{actor_id} routes
+# ---------------------------------------------------------------------------
+
+
+@router.get("/sampling/snowball/platforms")
+async def list_snowball_platforms(
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> dict[str, list[str]]:
+    """Return the platforms that support network expansion.
+
+    Reads the set of platforms with dedicated expansion strategies from the
+    ``NetworkExpander`` implementation (Bluesky, Reddit, YouTube).  All other
+    platforms fall back to co-mention detection which requires stored content
+    records; they are not listed here because the snowball UI should only
+    offer platforms with first-class graph traversal.
+
+    Args:
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        Dict with key ``"platforms"`` mapped to the supported platform list.
+    """
+    return {"platforms": _NETWORK_EXPANSION_PLATFORMS}
+
+
+@router.post("/sampling/snowball", response_model=SnowballResponse)
+async def run_snowball_sampling(
+    payload: SnowballRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> SnowballResponse:
+    """Run snowball sampling starting from a set of seed actors.
+
+    Executes ``SnowballSampler.run()`` synchronously within the request
+    lifecycle.  This is a potentially slow operation (network expansion calls
+    external platform APIs); the frontend must display a loading indicator.
+    If the operation exceeds 30 seconds a warning is logged, but the result
+    is still returned.
+
+    When ``add_to_actor_list_id`` is provided, all discovered actors that can
+    be resolved to a UUID in the database are added to the specified
+    ``ActorList`` with ``added_by='snowball'``.  The caller must own the list.
+
+    Args:
+        payload: Validated ``SnowballRequest`` body.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        A ``SnowballResponse`` with the full set of discovered actors and a
+        per-wave summary log.
+
+    Raises:
+        HTTPException 404: If ``add_to_actor_list_id`` references a list that
+            does not exist.
+        HTTPException 403: If the caller does not own the target actor list.
+    """
+    # Validate and guard the target actor list before running the expensive
+    # sampling operation so we fail fast on auth errors.
+    if payload.add_to_actor_list_id is not None:
+        from issue_observatory.core.models.query_design import ActorList  # noqa: PLC0415
+
+        list_result = await db.execute(
+            select(ActorList).where(ActorList.id == payload.add_to_actor_list_id)
+        )
+        actor_list = list_result.scalar_one_or_none()
+        if actor_list is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"ActorList '{payload.add_to_actor_list_id}' not found.",
+            )
+        ownership_guard(actor_list.created_by or uuid.UUID(int=0), current_user)
+
+    t_start = time.monotonic()
+
+    sampler = SnowballSampler()
+    result = await sampler.run(
+        seed_actor_ids=payload.seed_actor_ids,
+        platforms=payload.platforms,
+        db=db,
+        max_depth=payload.max_depth,
+        max_actors_per_step=payload.max_actors_per_step,
+    )
+
+    elapsed = time.monotonic() - t_start
+    if elapsed > 30.0:
+        _py_logger.warning(
+            "snowball_sampling_slow",
+            elapsed_seconds=round(elapsed, 1),
+            seed_count=len(payload.seed_actor_ids),
+            platforms=payload.platforms,
+            total_actors=result.total_actors,
+        )
+
+    # Optionally add resolved actors to the requested list.
+    if payload.add_to_actor_list_id is not None:
+        added_count = await _bulk_add_to_list(
+            actor_dicts=result.actors,
+            list_id=payload.add_to_actor_list_id,
+            added_by="snowball",
+            db=db,
+        )
+        logger.info(
+            "snowball_list_populated",
+            list_id=str(payload.add_to_actor_list_id),
+            added=added_count,
+            user_id=str(current_user.id),
+        )
+
+    # Build the response.
+    wave_log: list[SnowballWaveEntry] = [
+        SnowballWaveEntry(
+            wave=depth,
+            count=info["discovered"],
+            methods=info["methods"],
+        )
+        for depth, info in sorted(result.wave_log.items())
+    ]
+
+    actors_out: list[SnowballActorEntry] = []
+    for actor_dict in result.actors:
+        actors_out.append(
+            SnowballActorEntry(
+                actor_id=actor_dict.get("actor_uuid", ""),
+                canonical_name=actor_dict.get("canonical_name", ""),
+                platforms=(
+                    [actor_dict["platform"]] if actor_dict.get("platform") else []
+                ),
+                discovery_depth=int(actor_dict.get("discovery_depth", 0)),
+            )
+        )
+
+    logger.info(
+        "snowball_sampling_complete",
+        total_actors=result.total_actors,
+        max_depth_reached=result.max_depth_reached,
+        elapsed_seconds=round(elapsed, 1),
+        user_id=str(current_user.id),
+    )
+
+    return SnowballResponse(
+        total_actors=result.total_actors,
+        max_depth_reached=result.max_depth_reached,
+        wave_log=wave_log,
+        actors=actors_out,
+    )
+
+
+async def _bulk_add_to_list(
+    actor_dicts: list[dict[str, Any]],
+    list_id: uuid.UUID,
+    added_by: str,
+    db: AsyncSession,
+) -> int:
+    """Add actors from a list of dicts to an ActorList, skipping duplicates.
+
+    Only actors that carry a non-empty ``actor_uuid`` field (i.e. already
+    resolved in the database) are inserted.
+
+    Args:
+        actor_dicts: Actor dicts as returned by ``SnowballSampler.run()``.
+        list_id: UUID of the target ``ActorList``.
+        added_by: Source label stored on each ``ActorListMember`` row.
+        db: Active async database session.
+
+    Returns:
+        Number of newly inserted membership rows.
+    """
+    # Collect unique resolvable UUIDs from the actor dicts.
+    uuids_to_add: list[uuid.UUID] = []
+    seen: set[str] = set()
+    for actor in actor_dicts:
+        raw_uuid = actor.get("actor_uuid", "")
+        if not raw_uuid or raw_uuid in seen:
+            continue
+        try:
+            uuids_to_add.append(uuid.UUID(raw_uuid))
+            seen.add(raw_uuid)
+        except ValueError:
+            continue
+
+    if not uuids_to_add:
+        return 0
+
+    # Fetch existing members to avoid duplicate-key errors.
+    existing_result = await db.execute(
+        select(ActorListMember.actor_id).where(
+            ActorListMember.actor_list_id == list_id,
+            ActorListMember.actor_id.in_(uuids_to_add),
+        )
+    )
+    existing_ids: set[uuid.UUID] = {row[0] for row in existing_result.fetchall()}
+
+    added = 0
+    for actor_uuid in uuids_to_add:
+        if actor_uuid in existing_ids:
+            continue
+        db.add(
+            ActorListMember(
+                actor_list_id=list_id,
+                actor_id=actor_uuid,
+                added_by=added_by,
+            )
+        )
+        added += 1
+
+    if added:
+        await db.commit()
+
+    return added
+
+
+# ---------------------------------------------------------------------------
+# Actor list membership — bulk add
+# Must be declared before parametric /{actor_id} routes to avoid routing
+# conflicts.  The literal path segment "lists" is unambiguous.
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/lists/{list_id}/members/bulk",
+    response_model=BulkMemberResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def bulk_add_list_members(
+    list_id: uuid.UUID,
+    payload: BulkMemberRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> BulkMemberResponse:
+    """Bulk-add actors to an actor list.
+
+    Idempotent: actors already present in the list are counted as
+    ``already_present`` and are not re-inserted.  Requires ownership of
+    the target actor list (or admin role).
+
+    Args:
+        list_id: UUID of the ``ActorList`` to add actors to.
+        payload: Validated ``BulkMemberRequest`` body with ``actor_ids``.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        A ``BulkMemberResponse`` with counts of newly added and already-present
+        actors.
+
+    Raises:
+        HTTPException 404: If the actor list does not exist.
+        HTTPException 403: If the caller does not own the list.
+    """
+    from issue_observatory.core.models.query_design import ActorList  # noqa: PLC0415
+
+    list_result = await db.execute(
+        select(ActorList).where(ActorList.id == list_id)
+    )
+    actor_list = list_result.scalar_one_or_none()
+    if actor_list is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"ActorList '{list_id}' not found.",
+        )
+    ownership_guard(actor_list.created_by or uuid.UUID(int=0), current_user)
+
+    if not payload.actor_ids:
+        return BulkMemberResponse(added=0, already_present=0)
+
+    # Determine which actor IDs are already members.
+    existing_result = await db.execute(
+        select(ActorListMember.actor_id).where(
+            ActorListMember.actor_list_id == list_id,
+            ActorListMember.actor_id.in_(payload.actor_ids),
+        )
+    )
+    existing_ids: set[uuid.UUID] = {row[0] for row in existing_result.fetchall()}
+
+    added = 0
+    already_present = 0
+    for actor_id in payload.actor_ids:
+        if actor_id in existing_ids:
+            already_present += 1
+            continue
+        db.add(
+            ActorListMember(
+                actor_list_id=list_id,
+                actor_id=actor_id,
+                added_by="manual",
+            )
+        )
+        added += 1
+
+    if added:
+        await db.commit()
+
+    logger.info(
+        "bulk_list_members_added",
+        list_id=str(list_id),
+        added=added,
+        already_present=already_present,
+        user_id=str(current_user.id),
+    )
+
+    return BulkMemberResponse(added=added, already_present=already_present)
+
+
+# ---------------------------------------------------------------------------
 # List
 # ---------------------------------------------------------------------------
 
@@ -223,7 +771,7 @@ async def list_actors(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/search")
+@router.get("/search", response_model=None)
 async def search_actors(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
@@ -404,7 +952,7 @@ async def update_actor(
 # ---------------------------------------------------------------------------
 
 
-@router.delete("/{actor_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{actor_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 async def delete_actor(
     actor_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -436,7 +984,7 @@ async def delete_actor(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{actor_id}/content")
+@router.get("/{actor_id}/content", response_model=None)
 async def get_actor_content(
     actor_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -606,6 +1154,7 @@ async def add_presence(
 @router.delete(
     "/{actor_id}/presences/{presence_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
 )
 async def remove_presence(
     actor_id: uuid.UUID,
@@ -655,7 +1204,7 @@ async def remove_presence(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{actor_id}/candidates")
+@router.get("/{actor_id}/candidates", response_model=None)
 async def find_merge_candidates(
     actor_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -707,8 +1256,8 @@ async def find_merge_candidates(
                 f'<td class="px-4 py-2 text-right">'
                 f'<button type="button"'
                 f' x-data=""'
-                f' @click="if(confirm(\'Merge {c[&quot;canonical_name&quot;]} into {actor.canonical_name}? This cannot be undone.\'))'
-                f"{{ $dispatch('merge-actor', {{ duplicate_id: '{c[\"actor_id\"]}' }}) }}"
+                f' @click="if(confirm(\'Merge {c["canonical_name"]} into {actor.canonical_name}? This cannot be undone.\'))'
+                f"{{ $dispatch('merge-actor', {{ duplicate_id: '{c['actor_id']}' }}) }}"
                 f'"'
                 f' class="text-xs text-red-600 hover:text-red-800 px-2 py-1 rounded hover:bg-red-50">'
                 f"Merge"
@@ -878,3 +1427,185 @@ async def split_actor(
         **result,
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Two-actor merge (entity resolution UI)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{actor_id}/merge/{other_actor_id}")
+async def merge_actors(
+    actor_id: uuid.UUID,
+    other_actor_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> dict:
+    """Merge ``other_actor_id`` into ``actor_id``.
+
+    The *target* actor (``actor_id``) is preserved.  The *source* actor
+    (``other_actor_id``) is deleted after all its related data are
+    transferred:
+
+    * ``ActorPlatformPresence`` rows — moved to ``actor_id``; rows that would
+      violate the ``UNIQUE(platform, platform_user_id)`` constraint are
+      skipped (the target already has that presence).
+    * ``ActorAlias`` rows — moved to ``actor_id``; duplicates are skipped.
+    * ``ActorListMember`` rows — moved to ``actor_id``; duplicates are skipped.
+    * ``content_records.author_id`` — bulk-updated from ``other_actor_id`` to
+      ``actor_id``.
+    * An ``ActorAlias`` entry is created on ``actor_id`` from the source
+      actor's ``canonical_name`` (unless it already exists).
+
+    Requires ownership of both actors (or admin role).
+
+    Args:
+        actor_id: UUID of the actor to keep (the merge target).
+        other_actor_id: UUID of the actor to absorb (the merge source).
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        Dict with ``presences_moved``, ``aliases_moved``, ``list_members_moved``,
+        and ``records_updated`` counts.
+
+    Raises:
+        HTTPException 400: If ``actor_id == other_actor_id``.
+        HTTPException 404: If either actor does not exist.
+        HTTPException 403: If the caller does not own both actors.
+    """
+    if actor_id == other_actor_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot merge an actor into itself.",
+        )
+
+    # Load both actors and enforce ownership.
+    target = await _get_actor_or_404(actor_id, db, load_presences=True)
+    ownership_guard(target.created_by or uuid.UUID(int=0), current_user)
+
+    source = await _get_actor_or_404(other_actor_id, db, load_presences=True)
+    ownership_guard(source.created_by or uuid.UUID(int=0), current_user)
+
+    presences_moved = 0
+    aliases_moved = 0
+    list_members_moved = 0
+
+    # ------------------------------------------------------------------
+    # 1. Move ActorPlatformPresence rows — skip conflicts.
+    # ------------------------------------------------------------------
+    # Fetch existing (platform, platform_user_id) pairs on target to detect conflicts.
+    existing_presence_keys: set[tuple[str, str | None]] = {
+        (p.platform, p.platform_user_id) for p in target.platform_presences
+    }
+
+    source_presences_result = await db.execute(
+        select(ActorPlatformPresence).where(
+            ActorPlatformPresence.actor_id == other_actor_id
+        )
+    )
+    source_presences = list(source_presences_result.scalars().all())
+
+    for presence in source_presences:
+        key = (presence.platform, presence.platform_user_id)
+        if key in existing_presence_keys:
+            # Conflict: target already has this presence — skip.
+            await db.delete(presence)
+        else:
+            presence.actor_id = actor_id
+            existing_presence_keys.add(key)
+            presences_moved += 1
+
+    # ------------------------------------------------------------------
+    # 2. Move ActorAlias rows — skip duplicates.
+    # ------------------------------------------------------------------
+    existing_aliases_result = await db.execute(
+        select(ActorAlias.alias).where(ActorAlias.actor_id == actor_id)
+    )
+    existing_aliases: set[str] = {row[0] for row in existing_aliases_result.all()}
+
+    source_aliases_result = await db.execute(
+        select(ActorAlias).where(ActorAlias.actor_id == other_actor_id)
+    )
+    source_aliases = list(source_aliases_result.scalars().all())
+
+    for alias in source_aliases:
+        if alias.alias in existing_aliases:
+            await db.delete(alias)
+        else:
+            alias.actor_id = actor_id
+            existing_aliases.add(alias.alias)
+            aliases_moved += 1
+
+    # Create an alias on target from the source actor's canonical_name.
+    if source.canonical_name not in existing_aliases:
+        db.add(ActorAlias(actor_id=actor_id, alias=source.canonical_name))
+        existing_aliases.add(source.canonical_name)
+
+    # ------------------------------------------------------------------
+    # 3. Move ActorListMember rows — skip duplicates.
+    # ActorListMember uses a composite PK (actor_list_id, actor_id), so we
+    # cannot mutate actor_id in-place via the ORM.  Instead we delete the
+    # source rows and insert new ones for the target actor where no conflict
+    # exists.
+    # ------------------------------------------------------------------
+    existing_memberships_result = await db.execute(
+        select(ActorListMember.actor_list_id).where(
+            ActorListMember.actor_id == actor_id
+        )
+    )
+    existing_list_ids: set[uuid.UUID] = {row[0] for row in existing_memberships_result.all()}
+
+    source_memberships_result = await db.execute(
+        select(ActorListMember).where(ActorListMember.actor_id == other_actor_id)
+    )
+    source_memberships = list(source_memberships_result.scalars().all())
+
+    for membership in source_memberships:
+        if membership.actor_list_id not in existing_list_ids:
+            db.add(
+                ActorListMember(
+                    actor_list_id=membership.actor_list_id,
+                    actor_id=actor_id,
+                    added_by=membership.added_by,
+                )
+            )
+            existing_list_ids.add(membership.actor_list_id)
+            list_members_moved += 1
+        await db.delete(membership)
+
+    # ------------------------------------------------------------------
+    # 4. Re-point content_records.author_id from source to target.
+    # ------------------------------------------------------------------
+    update_result = await db.execute(
+        update(UniversalContentRecord)
+        .where(UniversalContentRecord.author_id == other_actor_id)
+        .values(author_id=actor_id)
+        .execution_options(synchronize_session="fetch")
+    )
+    records_updated: int = update_result.rowcount
+
+    # ------------------------------------------------------------------
+    # 5. Flush pending changes then delete the source actor.
+    # ------------------------------------------------------------------
+    await db.flush()
+    await db.delete(source)
+    await db.commit()
+
+    logger.info(
+        "actors_merged",
+        target_actor_id=str(actor_id),
+        source_actor_id=str(other_actor_id),
+        presences_moved=presences_moved,
+        aliases_moved=aliases_moved,
+        list_members_moved=list_members_moved,
+        records_updated=records_updated,
+        performed_by=str(current_user.id),
+    )
+
+    return {
+        "presences_moved": presences_moved,
+        "aliases_moved": aliases_moved,
+        "list_members_moved": list_members_moved,
+        "records_updated": records_updated,
+    }

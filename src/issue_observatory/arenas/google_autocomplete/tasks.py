@@ -117,6 +117,7 @@ def google_autocomplete_collect_terms(
     collection_run_id: str,
     terms: list[str],
     tier: str = "free",
+    language_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     """Collect Google Autocomplete suggestions for a list of terms.
 
@@ -173,6 +174,7 @@ def google_autocomplete_collect_terms(
                 terms=terms,
                 tier=tier_enum,
                 max_results=None,
+                language_filter=language_filter,
             )
         )
     except NoCredentialAvailableError as exc:

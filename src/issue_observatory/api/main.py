@@ -247,6 +247,9 @@ def create_app() -> FastAPI:
     from issue_observatory.arenas.gab.router import (  # noqa: PLC0415
         router as gab_router,
     )
+    from issue_observatory.arenas.ai_chat_search.router import (  # noqa: PLC0415
+        router as ai_chat_search_router,
+    )
     from issue_observatory.arenas.event_registry.router import (  # noqa: PLC0415
         router as event_registry_router,
     )
@@ -283,6 +286,7 @@ def create_app() -> FastAPI:
     application.include_router(tiktok_router, prefix="/arenas")
     application.include_router(ritzau_via_router, prefix="/arenas")
     application.include_router(gab_router, prefix="/arenas")
+    application.include_router(ai_chat_search_router, prefix="/arenas")
     application.include_router(event_registry_router, prefix="/arenas")
     application.include_router(x_twitter_router, prefix="/arenas")
     application.include_router(threads_router, prefix="/arenas")
@@ -292,6 +296,14 @@ def create_app() -> FastAPI:
     application.include_router(facebook_router, prefix="/arenas")
     application.include_router(instagram_router, prefix="/arenas")
 
+    # ---- Scraper enrichment service ----------------------------------------
+
+    from issue_observatory.scraper.router import router as scraper_router  # noqa: PLC0415
+
+    application.include_router(
+        scraper_router, prefix="/scraping-jobs", tags=["scraping"]
+    )
+
     # ---- Application routers ----------------------------------------------
     # Each stub module is imported lazily.  As routes are fleshed out these
     # imports will populate with real route handlers.
@@ -299,6 +311,8 @@ def create_app() -> FastAPI:
     from issue_observatory.api.routes import (  # noqa: PLC0415
         actors,
         analysis,
+        annotations,
+        arenas as arenas_routes,
         collections,
         content,
         credits,
@@ -312,9 +326,14 @@ def create_app() -> FastAPI:
     # Health endpoints (/api/health, /api/arenas/health)
     application.include_router(health_routes.router)
 
+    # Arena metadata endpoint (GET /api/arenas/) — must be included before the
+    # per-arena routers (mounted under /arenas) to avoid path conflicts.
+    application.include_router(arenas_routes.router)
+
     application.include_router(query_designs.router, prefix="/query-designs", tags=["query-designs"])
     application.include_router(collections.router, prefix="/collections", tags=["collections"])
     application.include_router(content.router, prefix="/content", tags=["content"])
+    application.include_router(annotations.router, prefix="/annotations", tags=["annotations"])
     application.include_router(actors.router, prefix="/actors", tags=["actors"])
     application.include_router(analysis.router, prefix="/analysis", tags=["analysis"])
     application.include_router(credits.router, prefix="/credits", tags=["credits"])

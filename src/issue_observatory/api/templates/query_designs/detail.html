@@ -40,6 +40,23 @@
             </svg>
             Edit
         </a>
+        {#
+            IP2-051: Clone this design — creates a copy with all its search terms.
+            The backend returns a 303 redirect to the new design's editor.
+            hx-boost="false" lets the browser follow the redirect normally.
+        #}
+        <button type="button"
+                hx-post="/query-designs/{{ design_id }}/clone"
+                hx-confirm="Create a copy of '{{ design.name | default('this design') }}'?"
+                hx-boost="false"
+                class="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-purple-700 border border-purple-200 rounded-md hover:bg-purple-50 transition-colors">
+            <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+            </svg>
+            Clone this design
+        </button>
         <a href="/collections/new?design_id={{ design_id }}"
            class="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
             <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
@@ -117,7 +134,7 @@
     <div class="bg-white rounded-lg shadow p-6">
         <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4">
             <h2 class="text-sm font-semibold text-gray-900">Search Terms</h2>
-            <span class="text-xs text-gray-400">{{ terms | length }} term{% if terms | length != 1 %}er{% endif %}</span>
+            <span class="text-xs text-gray-400">{{ terms | length }} term{% if terms | length != 1 %}s{% endif %}</span>
         </div>
 
         {% if terms %}
@@ -163,6 +180,98 @@
         </ul>
     </div>
     {% endif %}
+
+    {#
+        IP2-014: Arena Configuration (read-only).
+        Fetched client-side from GET /api/query-designs/{id}/arena-config.
+        Shows only enabled arenas with their tier selections.
+        The /api/arenas/ endpoint provides descriptions and credential status
+        for each arena, merged in after the config is loaded.
+    #}
+    <div class="bg-white rounded-lg shadow p-6"
+         x-data="arenaConfigReadOnly('{{ design_id }}')"
+         x-init="load()">
+
+        <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4">
+            <div>
+                <h2 class="text-sm font-semibold text-gray-900">Arena Configuration</h2>
+                <p class="text-xs text-gray-400 mt-0.5">Saved arena and tier selections for this query design</p>
+            </div>
+            <a href="/query-designs/{{ design_id }}/edit#arena-config"
+               class="text-xs text-blue-600 hover:text-blue-800">Edit</a>
+        </div>
+
+        {# Loading state #}
+        <div x-show="loading" class="py-4 text-sm text-gray-400 animate-pulse">Loading arena configuration...</div>
+
+        {# Error state #}
+        <div x-show="!loading && error"
+             class="py-3 px-3 rounded-md bg-red-50 border border-red-200 text-sm text-red-700"
+             x-text="error"></div>
+
+        {# Empty state — no arenas saved yet #}
+        <div x-show="!loading && !error && enabledArenas.length === 0"
+             class="py-4 text-sm text-gray-400 italic">
+            No arenas configured. Use the editor to enable arenas for this query design.
+        </div>
+
+        {# Arena list — only enabled arenas are shown #}
+        <div x-show="!loading && !error && enabledArenas.length > 0">
+            <table class="min-w-full text-sm">
+                <thead>
+                    <tr class="text-left">
+                        <th class="pb-2 pr-4 text-xs font-medium text-gray-500 uppercase tracking-wider w-52">Arena</th>
+                        <th class="pb-2 pr-4 text-xs font-medium text-gray-500 uppercase tracking-wider">Tier</th>
+                        <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Credentials</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                    <template x-for="arena in enabledArenas" :key="arena.id">
+                        <tr>
+                            <td class="py-2.5 pr-4">
+                                <div class="flex items-start gap-2">
+                                    {# Credential status dot — sourced from /api/arenas/ metadata #}
+                                    <span class="mt-1 flex-shrink-0 w-2 h-2 rounded-full"
+                                          :class="arena.hasCredentials ? 'bg-green-500' : 'bg-gray-300'"
+                                          :title="arena.hasCredentials
+                                              ? 'Credentials configured'
+                                              : 'Credentials not configured — this arena will be skipped during collection'">
+                                    </span>
+                                    <div>
+                                        <span class="block text-sm font-medium text-gray-800"
+                                              x-text="arena.label"></span>
+                                        <span x-show="arena.description"
+                                              class="block text-xs text-gray-400"
+                                              x-text="arena.description"></span>
+                                    </div>
+                                </div>
+                            </td>
+                            <td class="py-2.5 pr-4">
+                                <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium capitalize"
+                                      :class="{
+                                          'bg-green-100 text-green-800':  arena.tier === 'free',
+                                          'bg-yellow-100 text-yellow-800': arena.tier === 'medium',
+                                          'bg-purple-100 text-purple-800': arena.tier === 'premium',
+                                          'bg-gray-100 text-gray-600':    !['free','medium','premium'].includes(arena.tier),
+                                      }"
+                                      x-text="arena.tier || 'free'"></span>
+                            </td>
+                            <td class="py-2.5">
+                                <span x-show="arena.hasCredentials"
+                                      class="text-xs text-green-700">Ready</span>
+                                <span x-show="!arena.hasCredentials"
+                                      class="text-xs text-gray-400"
+                                      title="Configure credentials in Settings">Not configured</span>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+            <p class="mt-3 text-xs text-gray-400"
+               x-text="'Showing ' + enabledArenas.length + ' enabled arena' + (enabledArenas.length !== 1 ? 's' : '') + '. Disabled arenas are hidden.'">
+            </p>
+        </div>
+    </div>
 
     {# Run history #}
     <div class="bg-white rounded-lg shadow overflow-hidden">
@@ -227,4 +336,85 @@
     </div>
 
 </div>
+
+<script>
+/**
+ * Alpine component for the read-only arena configuration section (IP2-014).
+ *
+ * Loads saved arena config from GET /api/query-designs/{id}/arena-config,
+ * then enriches each entry with metadata (label, description, hasCredentials)
+ * from GET /api/arenas/. Only enabled arenas are shown in the table.
+ */
+function arenaConfigReadOnly(designId) {
+    return {
+        loading: true,
+        error: null,
+        enabledArenas: [],
+
+        async load() {
+            this.loading = true;
+            this.error = null;
+            try {
+                // Fetch saved arena config and arena metadata in parallel.
+                const [configResp, arenaResp] = await Promise.all([
+                    fetch('/api/query-designs/' + designId + '/arena-config', { credentials: 'include' }),
+                    fetch('/api/arenas/', { credentials: 'include' }),
+                ]);
+
+                if (!configResp.ok) throw new Error('Could not load arena config (HTTP ' + configResp.status + ').');
+
+                const configData = await configResp.json();
+                const savedArenas = Array.isArray(configData.arenas) ? configData.arenas : [];
+
+                // Build a metadata map from the /api/arenas/ response for label/description/credentials.
+                const metaMap = {};
+                if (arenaResp.ok) {
+                    const arenaList = await arenaResp.json();
+                    arenaList.forEach(a => {
+                        metaMap[a.arena_name] = a;
+                    });
+                }
+
+                // Merge and filter to only enabled arenas.
+                this.enabledArenas = savedArenas
+                    .filter(a => a.enabled)
+                    .map(a => {
+                        const meta = metaMap[a.id] || {};
+                        return {
+                            id: a.id,
+                            label: _arenaLabelDetail(a.id),
+                            tier: a.tier || 'free',
+                            description: meta.description || '',
+                            hasCredentials: meta.has_credentials === true,
+                        };
+                    });
+            } catch (err) {
+                this.error = 'Could not load arena configuration: ' + err.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+    };
+}
+
+/**
+ * Convert a snake_case arena_name to a human-readable label for the detail view.
+ */
+function _arenaLabelDetail(arenaName) {
+    const labels = {
+        'google_search':       'Google Search',
+        'google_autocomplete': 'Google Autocomplete',
+        'bluesky':             'Bluesky',
+        'reddit':              'Reddit',
+        'youtube':             'YouTube',
+        'rss_feeds':           'RSS Feeds',
+        'gdelt':               'GDELT',
+        'telegram':            'Telegram',
+        'tiktok':              'TikTok',
+        'ritzau_via':          'Ritzau Infostream',
+        'gab':                 'Gab',
+    };
+    return labels[arenaName] || arenaName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+</script>
 {% endblock %}

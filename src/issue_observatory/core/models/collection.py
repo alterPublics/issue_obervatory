@@ -39,6 +39,8 @@ class CollectionRun(Base):
         pending → running → completed
     failure path:
         pending / running → failed
+    live-tracking suspension:
+        active → suspended → active  (live mode only)
 
     arenas_config stores per-arena tier overrides as a JSON object:
         {"youtube": "medium", "reddit": "free", "bluesky": "free"}
@@ -87,6 +89,10 @@ class CollectionRun(Base):
         nullable=True,
     )
     completed_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
+    suspended_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )

@@ -1,0 +1,110 @@
+{
+  "statuses": [
+    {
+      "id": "112345678901234501",
+      "created_at": "2026-02-15T09:30:00.000Z",
+      "url": "https://gab.com/@dansk_debat/112345678901234501",
+      "uri": "https://gab.com/users/dansk_debat/statuses/112345678901234501",
+      "content": "<p>Grøn omstilling er en fejltagelse. Vi ødelægger dansk økonomi med de her CO2-afgifter. Hvad tænker I andre om det? #dkpol #klima</p>",
+      "language": "da",
+      "account": {
+        "id": "9900011",
+        "username": "dansk_debat",
+        "display_name": "Dansk Debat",
+        "acct": "dansk_debat",
+        "url": "https://gab.com/@dansk_debat",
+        "avatar": "https://gab.com/system/accounts/avatars/001/dansk_debat.png",
+        "followers_count": 1240,
+        "following_count": 89,
+        "statuses_count": 4321
+      },
+      "reblogs_count": 12,
+      "favourites_count": 87,
+      "replies_count": 23,
+      "reblog": null,
+      "media_attachments": [],
+      "mentions": [],
+      "tags": [
+        {"name": "dkpol", "url": "https://gab.com/tags/dkpol"},
+        {"name": "klima", "url": "https://gab.com/tags/klima"}
+      ],
+      "sensitive": false,
+      "spoiler_text": "",
+      "visibility": "public",
+      "in_reply_to_id": null,
+      "in_reply_to_account_id": null
+    },
+    {
+      "id": "112345678901234502",
+      "created_at": "2026-02-14T14:15:00.000Z",
+      "url": "https://gab.com/@frihed_dk/112345678901234502",
+      "uri": "https://gab.com/users/frihed_dk/statuses/112345678901234502",
+      "content": "<p>Velfærdssamfundet er under pres. Ældre og syge betaler prisen for politikernes beslutninger. Folkeskolen mangler lærere. Det er ikke holdbart.</p>",
+      "language": "da",
+      "account": {
+        "id": "9900012",
+        "username": "frihed_dk",
+        "display_name": "Frihed Danmark",
+        "acct": "frihed_dk",
+        "url": "https://gab.com/@frihed_dk",
+        "avatar": "https://gab.com/system/accounts/avatars/002/frihed_dk.png",
+        "followers_count": 3210,
+        "following_count": 45,
+        "statuses_count": 8765
+      },
+      "reblogs_count": 34,
+      "favourites_count": 210,
+      "replies_count": 67,
+      "reblog": null,
+      "media_attachments": [
+        {
+          "id": "att001",
+          "type": "image",
+          "url": "https://gab.com/system/media_attachments/files/001/img001.jpg",
+          "preview_url": "https://gab.com/system/media_attachments/files/001/preview001.jpg",
+          "description": "Demonstration for velfærd"
+        }
+      ],
+      "mentions": [],
+      "tags": [],
+      "sensitive": false,
+      "spoiler_text": "",
+      "visibility": "public",
+      "in_reply_to_id": null,
+      "in_reply_to_account_id": null
+    },
+    {
+      "id": "112345678901234503",
+      "created_at": "2026-02-13T20:00:00.000Z",
+      "url": "https://gab.com/@aalborg_borger/112345678901234503",
+      "uri": "https://gab.com/users/aalborg_borger/statuses/112345678901234503",
+      "content": "<p>Nyt fra Ålborg: Kommunen lukker svømmehallen i Øst. Borgere er vrede. Ring til Rådhuset på ålborg.dk</p>",
+      "language": "da",
+      "account": {
+        "id": "9900013",
+        "username": "aalborg_borger",
+        "display_name": "Ålborg Borger",
+        "acct": "aalborg_borger",
+        "url": "https://gab.com/@aalborg_borger",
+        "avatar": null,
+        "followers_count": 320,
+        "following_count": 201,
+        "statuses_count": 1098
+      },
+      "reblogs_count": 5,
+      "favourites_count": 18,
+      "replies_count": 9,
+      "reblog": null,
+      "media_attachments": [],
+      "mentions": [],
+      "tags": [],
+      "sensitive": false,
+      "spoiler_text": "",
+      "visibility": "public",
+      "in_reply_to_id": null,
+      "in_reply_to_account_id": null
+    }
+  ],
+  "accounts": [],
+  "hashtags": []
+}

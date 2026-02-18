@@ -1,0 +1,23 @@
+{
+  "id": "gen-01JM4EXPAND123456789ABCDE",
+  "provider": "Google",
+  "model": "google/gemma-3-27b-it:free",
+  "object": "chat.completion",
+  "created": 1739750200,
+  "choices": [
+    {
+      "logprobs": null,
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "1. Hvad er CO2 afgiften i Danmark, og hvem betaler den?\n2. Hvordan påvirker CO2-skatten danske virksomheders konkurrenceevne?\n3. Hvor meget CO2 udleder Danmark sammenlignet med andre europæiske lande?\n4. Kan individuelle borgere reducere deres CO2-aftryk via afgiftssystemet?\n5. Hvad er regeringens plan for at øge CO2-afgiften frem mod 2030?"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 67,
+    "completion_tokens": 89,
+    "total_tokens": 156
+  }
+}

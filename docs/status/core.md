@@ -9,7 +9,7 @@
 - [x] Tier definitions (config/tiers.py) — Task 0.5 complete (2026-02-16)
 - [x] Danish defaults (config/danish_defaults.py) — Task 0.5 complete (2026-02-16)
 - [x] ArenaCollector base class (arenas/base.py) — Task 0.3 complete (2026-02-15)
-- [x] Arena registry (arenas/registry.py) — Task 0.3 complete (2026-02-15)
+- [x] Arena registry (arenas/registry.py) — Task 0.3 complete (2026-02-15); registry collision bugfix (2026-02-18): re-keyed by platform_name, added get_arenas_by_arena_name(), fixed all callers
 - [x] Normalizer pipeline (core/normalizer.py) — Task 0.3 complete (2026-02-15)
 - [x] Credential pool — Task 1.1 complete (2026-02-16): DB-backed with Fernet encryption, Redis lease/quota/cooldown, env-var fallback
 - [ ] Credit service (core/credit_service.py) — Task 0.8 (DB Engineer)
@@ -1117,3 +1117,117 @@ Four operations documentation files written:
 - Celery tasks use lazy imports (`from issue_observatory.api.metrics import ...` inside the task body) wrapped in `try/except Exception` — metrics recording failures are logged at DEBUG and never propagate to the task return value.
 - `arena_health_status` Gauge is defined here for arena tasks to set directly; the `health_check_all_arenas` task should be extended to call `arena_health_status.labels(arena=name).set(1 or 0)` based on actual health check results.
 - Prometheus scrape config snippet documented in `docs/operations/deployment.md`.
+
+---
+
+## Phase 3 Blocker Fixes (2026-02-17)
+
+### B-01 — Snowball Sampling API Route — Fixed
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/api/routes/actors.py` | Updated — three new endpoints added |
+
+**New endpoints**:
+- `GET /actors/sampling/snowball/platforms` — returns the list of platforms that support first-class network expansion (`bluesky`, `reddit`, `youtube`). Derived from the explicit `if/elif` dispatch in `NetworkExpander.expand_from_actor()`. Auth: `get_current_active_user`.
+- `POST /actors/sampling/snowball` — runs `SnowballSampler.run()` synchronously. Body: `{seed_actor_ids, platforms, max_depth=2, max_actors_per_step=20, add_to_actor_list_id?}`. Returns `{total_actors, max_depth_reached, wave_log, actors}`. Logs a WARNING if the operation takes >30 s. Auth: `get_current_active_user`.
+- `POST /actors/lists/{list_id}/members/bulk` — idempotent bulk-add. Body: `{actor_ids}`. Returns `{added, already_present}`. Auth: ownership_guard on the ActorList. Returns HTTP 200 (idempotent convenience call, not a creation).
+
+**Design notes**:
+- All three endpoints are declared before the parametric `/{actor_id}` routes to prevent FastAPI routing ambiguity.
+- `SnowballRequest`, `SnowballResponse`, `SnowballWaveEntry`, `SnowballActorEntry`, `BulkMemberRequest`, `BulkMemberResponse` Pydantic schemas are defined inline in the actors router module.
+- `add_to_actor_list_id` is validated (ownership check) *before* the expensive sampling call so the API fails fast on auth errors.
+- The `_bulk_add_to_list()` private helper is shared between the snowball endpoint and the standalone bulk-member endpoint.
+- `ActorList` is imported inside route bodies (lazy import) to avoid a cross-module circular import between `actors.py` routes and `query_design` models.
+- `_NETWORK_EXPANSION_PLATFORMS` constant is defined at module level from code inspection of `NetworkExpander`; update it if new platform expanders are added.
+
+---
+
+### B-03 — Live Tracking Suspend/Resume/Schedule — Fixed
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/core/models/collection.py` | Updated — `suspended_at` column + `'suspended'` status documented |
+| `src/issue_observatory/core/schemas/collection.py` | Updated — `suspended_at: Optional[datetime]` added to `CollectionRunRead` |
+| `src/issue_observatory/api/routes/collections.py` | Updated — three new endpoints added |
+| `alembic/versions/003_add_suspended_at_to_collection_runs.py` | Created — migration adds `suspended_at TIMESTAMPTZ NULL` column |
+
+**New endpoints**:
+- `POST /collections/{run_id}/suspend` — sets `status='suspended'`, records `suspended_at=NOW()`. HTTP 409 if not `mode='live'` and `status='active'`.
+- `POST /collections/{run_id}/resume` — sets `status='active'`, clears `suspended_at`. HTTP 409 if not `mode='live'` and `status='suspended'`.
+- `GET /collections/{run_id}/schedule` — returns `{mode, status, next_run_at, timezone, last_triggered_at, suspended_at}`. HTTP 400 if not a live run.
+
+**Design notes**:
+- `next_run_at` is derived statically from `beat_schedule.py` (`crontab(hour=0, minute=0)` → `"00:00 Copenhagen time"`). This is intentionally a human-readable string rather than a computed timestamp to avoid timezone arithmetic issues in the API layer; the frontend can render it directly.
+- `last_triggered_at` maps to `CollectionRun.started_at` (the timestamp of the last Celery Beat trigger for this run).
+- `suspended_at` is nullable on both the ORM model and the Alembic migration; it is `None` for batch runs and active live runs.
+- Migration 003 chains `down_revision = "002"`. Run `alembic upgrade 003` (or `alembic upgrade head`) to apply.
+
+---
+
+## Phase D — Item 14 / IP2-052 / IP2-061 (2026-02-18) — Complete
+
+### Item 14 — Boolean Query Support in Arena Collectors
+
+**New shared utility: `src/issue_observatory/arenas/query_builder.py`**
+- `build_boolean_query_groups(term_specs)` — groups SearchTerm-like dicts into AND groups (same group_id → AND, different groups → OR, group_id=None → individual OR)
+- `format_boolean_query_for_platform(groups, platform)` — formats AND/OR groups as platform-native query syntax (google: implicit AND space, twitter/x_twitter: `(t1 t2) OR`, reddit: `t1+t2`, youtube: `|` for OR, gdelt: explicit `AND`/`OR`, bluesky: space-join)
+- `has_boolean_groups(term_specs)` — predicate
+
+**Updated `arenas/base.py`**: `collect_by_terms()` abstract signature extended with `term_groups: list[list[str]] | None = None` and `language_filter: list[str] | None = None`.
+
+**Updated all 20 collector implementations** (google_search, google_autocomplete, bluesky, reddit, youtube, rss_feeds, gdelt, telegram, tiktok, ritzau_via, gab, threads, facebook, instagram, common_crawl, wayback, majestic, event_registry, x_twitter, ai_chat_search):
+- Native boolean via single query: google_search, x_twitter, gdelt, youtube, event_registry
+- Separate-requests-per-group with deduplication: bluesky, reddit, telegram, tiktok, ritzau_via, gab, facebook, instagram, common_crawl, wayback
+- Client-side filtering: rss_feeds, threads
+- Flatten all groups (domain names, no boolean): majestic
+- Individual terms per group (autocomplete): google_autocomplete, ai_chat_search
+
+**Updated all 20 arena `tasks.py` files**: added `language_filter: list[str] | None = None` parameter; passed through to `collector.collect_by_terms()`.
+
+### IP2-052 — Multilingual Query Design
+
+**Updated `core/schemas/query_design.py`**:
+- Added `parse_language_codes(language: str) -> list[str]` utility — splits comma-separated language string, strips/lowercases/deduplicates
+- Added `_normalise_language(value: str) -> str` — validates each code against `[a-zA-Z]{2,3}`, normalises for storage
+- `QueryDesignCreate.language` accepts comma-separated codes (`"da,en"`); validated via `@field_validator`; `max_length=10` aligned to DB column
+- `QueryDesignUpdate.language` (new field): same validator, optional
+
+**Updated `workers/_task_helpers.py`**: `fetch_live_tracking_designs()` now returns `language` field from `QueryDesign.language`.
+
+**Updated `workers/tasks.py`**: `trigger_daily_collection` imports `parse_language_codes`, splits `raw_language` per design, passes `language_filter` list in Celery task kwargs alongside `collection_run_id` and `tier`.
+
+### Phase 2.5 — Wikipedia Arena (2026-02-18) — Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/wikipedia/__init__.py` | Done |
+| `src/issue_observatory/arenas/wikipedia/config.py` | Done |
+| `src/issue_observatory/arenas/wikipedia/collector.py` | Done |
+| `src/issue_observatory/arenas/wikipedia/tasks.py` | Done |
+| `src/issue_observatory/arenas/wikipedia/router.py` | Done |
+
+**Design notes**:
+- `arena_name = "reference"` (new arena group), `platform_name = "wikipedia"`, `supported_tiers = [Tier.FREE]`.
+- No credentials required. Mandatory `User-Agent` header set via `DEFAULT_USER_AGENT` constant.
+- Two record types: `wiki_revision` (edit to article) and `wiki_pageview` (daily view count).
+- `collect_by_terms()`: three-step pipeline — (1) search articles via `action=query&list=search`, (2) collect revision history via `action=query&prop=revisions`, (3) collect pageviews via Wikimedia Analytics API.
+- `collect_by_actors()`: treats `actor_ids` as Wikipedia usernames; fetches via `action=query&list=usercontribs` on both da.wikipedia and en.wikipedia.
+- Rate limiting: `asyncio.Semaphore(5)` + 0.2 s inter-request sleep = 5 req/s polite limit.
+- Bot edit filtering: edits with bot-related tags excluded by default (`INCLUDE_BOT_EDITS = False`).
+- Danish defaults: `da.wikipedia.org` queried first; `en.wikipedia.org` included when `language_filter` is None or includes `"en"`.
+- `platform_id` format: `{wiki_project}:rev:{revision_id}` for revisions; `{wiki_project}:pv:{article}:{date}` for pageviews.
+- `raw_metadata` structure: revisions include `delta`, `minor`, `tags`, `parentid`, `namespace`, `is_talk_page`, `wiki_project`, `page_id`; pageviews include `access`, `agent`, `wiki_project`.
+- Celery tasks: `wikipedia_collect_terms`, `wikipedia_collect_actors`, `wikipedia_health_check`.
+- Router: 4 endpoints — `POST /wikipedia/collect/terms`, `POST /wikipedia/collect/actors`, `GET /wikipedia/health`, `GET /wikipedia/pageviews/{article}`.
+- Cross-cutting registry/celery updates (ARENA_DESCRIPTIONS entry, celery_app include) are a separate task; the collector registers itself via `@register` on import.
+
+---
+
+### IP2-061 — Mixed Hash/Name Resolution in Top Actors Chart
+
+**Updated `analysis/descriptive.py`**: `get_top_actors()` now LEFT JOINs `actors a ON a.id = c.author_id`. Returns two additional fields:
+- `resolved_name`: `actors.canonical_name` when entity resolution is complete, `None` otherwise
+- `actor_id`: UUID string of the resolved actor, `None` otherwise
+
+The front-end in `analysis/index.html` `actorsChart()` function already used `r.resolved_name` (written in anticipation of this feature); no template changes required.

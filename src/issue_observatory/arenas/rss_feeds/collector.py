@@ -36,6 +36,7 @@ import feedparser
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.query_builder import build_boolean_query_groups
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.rss_feeds.config import (
     FETCH_CONCURRENCY,
@@ -133,20 +134,29 @@ class RSSFeedsCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect RSS entries matching any of the supplied terms.
 
         Fetches all configured feeds in parallel (bounded by semaphore),
         then filters entries by term occurrence in title or summary.
 
+        Boolean logic is applied client-side when ``term_groups`` is provided:
+        an entry matches when at least one group has ALL its terms present in
+        the searchable text (group = AND, groups = OR).
+
         Args:
             terms: Search terms for case-insensitive substring matching
-                against ``entry.title + entry.summary``.
+                (used when ``term_groups`` is ``None``).
             tier: Must be ``Tier.FREE``.
             date_from: Earliest publication date to include (inclusive).
             date_to: Latest publication date to include (inclusive).
-            max_results: Upper bound on returned records.  ``None`` means
-                use the tier default.
+            max_results: Upper bound on returned records.
+            term_groups: Optional boolean AND/OR groups for client-side
+                filtering.  Entries must satisfy at least one AND-group.
+            language_filter: Not used — RSS feeds are language-specific by
+                their source URL configuration.
 
         Returns:
             List of normalized content record dicts.
@@ -161,7 +171,17 @@ class RSSFeedsCollector(ArenaCollector):
 
         date_from_dt = _parse_date_bound(date_from)
         date_to_dt = _parse_date_bound(date_to)
-        lower_terms = [t.lower() for t in terms]
+
+        # Build lowercase group structure for client-side boolean matching.
+        if term_groups is not None:
+            lower_groups: list[list[str]] = [
+                [t.lower() for t in grp] for grp in term_groups if grp
+            ]
+            # Flat list for matched-term recording
+            lower_terms = [t for grp in lower_groups for t in grp]
+        else:
+            lower_terms = [t.lower() for t in terms]
+            lower_groups = [[t] for t in lower_terms]  # each term = own OR group
 
         all_records: list[dict[str, Any]] = []
 
@@ -179,15 +199,20 @@ class RSSFeedsCollector(ArenaCollector):
                 continue
 
             searchable = _build_searchable_text(entry)
-            matched = [t for t in lower_terms if t in searchable]
-            if not matched:
+
+            # An entry matches if any AND-group has all its terms present.
+            matched_terms: list[str] = []
+            for grp in lower_groups:
+                if all(t in searchable for t in grp):
+                    matched_terms.extend(grp)
+            if not matched_terms:
                 continue
 
             record = self._normalize_entry(
                 entry=entry,
                 feed_key=feed_key,
                 outlet_slug=outlet_slug,
-                search_terms_matched=matched,
+                search_terms_matched=matched_terms,
             )
             all_records.append(record)
 

@@ -9,9 +9,11 @@
             - term (str): the search term text
             - term_type (str): 'keyword' | 'phrase' | 'hashtag' | 'url_pattern'
             - is_active (bool)
+            - group_label (str|None): display name of the term's group, or None
         - design_id (str): UUID of the parent query design (for delete URL)
 #}
 <li id="term-{{ term.id }}"
+    {% if term.group_label %}data-group="{{ term.group_label | e }}"{% endif %}
     class="flex items-center justify-between gap-3 py-2 px-3 rounded-md bg-gray-50 border border-gray-200 group">
     <div class="flex items-center gap-2 min-w-0">
         {# Term type badge #}
@@ -39,7 +41,7 @@
             hx-delete="/query-designs/{{ design_id }}/terms/{{ term.id }}"
             hx-target="#term-{{ term.id }}"
             hx-swap="outerHTML"
-            hx-confirm="Delete search term '{{ term.term | default('') }}'?"
+            hx-confirm="Delete search term '{{ term.term | default('') | e }}'?"
             class="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50"
             aria-label="Delete term">
         <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"

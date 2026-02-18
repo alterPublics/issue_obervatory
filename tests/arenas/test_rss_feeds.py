@@ -182,7 +182,6 @@ class TestNormalize:
 
         assert result["title"] == danish_title
         assert "ø" in result["title"]
-        assert "Æ" in result["title"]  # from "vigtigste" -> no, but "Grøn" has ø
 
     def test_normalize_preserves_danish_text_content(self) -> None:
         """æ, ø, å in article body survive normalize()."""

@@ -1,6 +1,26 @@
 {% extends "base.html" %}
 {% block title %}Analysis — {{ run.id | default(run_id) | truncate(8, true, '') }}{% endblock %}
 
+{% block extra_head %}
+{#
+    Sigma.js + graphology — loaded only on the analysis page.
+    These libraries are not needed on other pages so they live here, not in base.html.
+
+    Load order matters:
+      1. graphology core (defines window.Graph)
+      2. sigma (depends on graphology)
+      3. graphology-layout (random layout helper — defines window.graphologyLayout)
+      4. graphology-layout-forceatlas2 (FA2 worker — defines window.graphologyLayoutForceAtlas2)
+      5. network_preview.js (local helper — exposes window.initNetworkPreview)
+#}
+<script src="https://cdn.jsdelivr.net/npm/graphology@0.25.4/dist/graphology.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sigma@3.0.0-beta.35/build/sigma.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/graphology-layout@0.6.1/dist/graphology-layout.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/graphology-layout-forceatlas2@0.10.1/dist/graphology-layout-forceatlas2.min.js"></script>
+{# Local network preview helper — must load after the CDN libs above. #}
+<script src="{{ url_for('static', path='js/network_preview.js') }}"></script>
+{% endblock %}
+
 {% block content %}
 {#
     Analysis dashboard for a completed collection run.
@@ -21,6 +41,8 @@
         initActorsChart(canvasId, data)          — horizontal bar (top actors)
         initTermsChart(canvasId, data)           — horizontal bar (top terms)
         initEngagementStatsChart(canvasId, data) — grouped bar (engagement stats)
+        initEmergentTermsChart(canvasId, data)   — horizontal bar (emergent terms)
+        initTemporalNetworkChart(canvasId, data) — bar chart (node/edge count over time)
 #}
 
 {# ------------------------------------------------------------------ #}
@@ -127,27 +149,47 @@
     </div>
 
     {# ---- Filter bar ------------------------------------------------- #}
+    {#
+        IP2-012: Platform and Arena are select dropdowns populated from the API.
+
+        Options are loaded by the parent analysisDashboard() component on init()
+        from GET /analysis/{run_id}/filter-options.
+
+        BACKEND GAP (IP2-012): The endpoint GET /analysis/{run_id}/filter-options
+        does not yet exist. It should return the distinct platform and arena values
+        present in the run's content records:
+            { "platforms": string[], "arenas": string[] }
+        Until it exists, the selects show only the "All" sentinel option and the
+        researcher can still type values via the fallback text path. The component
+        silently swallows the 404 and leaves platformOptions/arenaOptions empty.
+    #}
     <div class="bg-white rounded-lg shadow px-5 py-4">
         <div class="flex flex-wrap items-end gap-4">
             <div>
                 <label class="block text-xs font-medium text-gray-700 mb-1">Platform</label>
-                <input
-                    type="text"
-                    placeholder="e.g. reddit"
+                <select
                     x-model="filters.platform"
-                    class="block w-36 rounded-md border border-gray-300 shadow-sm text-sm px-2 py-1.5
-                           focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
-                />
+                    class="block w-40 rounded-md border border-gray-300 shadow-sm text-sm px-2 py-1.5
+                           focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none bg-white"
+                >
+                    <option value="">All platforms</option>
+                    <template x-for="p in platformOptions" :key="p">
+                        <option :value="p" x-text="p"></option>
+                    </template>
+                </select>
             </div>
             <div>
                 <label class="block text-xs font-medium text-gray-700 mb-1">Arena</label>
-                <input
-                    type="text"
-                    placeholder="e.g. social"
+                <select
                     x-model="filters.arena"
-                    class="block w-36 rounded-md border border-gray-300 shadow-sm text-sm px-2 py-1.5
-                           focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
-                />
+                    class="block w-40 rounded-md border border-gray-300 shadow-sm text-sm px-2 py-1.5
+                           focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none bg-white"
+                >
+                    <option value="">All arenas</option>
+                    <template x-for="a in arenaOptions" :key="a">
+                        <option :value="a" x-text="a"></option>
+                    </template>
+                </select>
             </div>
             <div>
                 <label class="block text-xs font-medium text-gray-700 mb-1">From</label>
@@ -238,6 +280,13 @@
             <div x-show="!error">
                 <canvas id="actorsChart" height="200"></canvas>
             </div>
+            {# Resolved-name legend: shown when at least one actor has a confirmed identity #}
+            <div x-show="!loading && !error && hasResolvedActors"
+                 class="mt-2 flex items-center gap-1.5 text-xs text-gray-500">
+                <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-green-100 text-green-700 font-bold text-xs"
+                      aria-hidden="true">&#10003;</span>
+                <span>Green check indicates identity confirmed via Actor Directory</span>
+            </div>
         </div>
 
         {# Top terms #}
@@ -276,11 +325,145 @@
 
     </div>{# /chart grid #}
 
+    {# ---- Emergent Terms panel --------------------------------------- #}
+    {#
+        BACKEND GAP (IP2-042 / get_emergent_terms):
+        Requires GET /analysis/{run_id}/emergent-terms endpoint returning:
+            [{ term: string, score: number, document_frequency: number,
+               is_search_term: boolean }]
+        Until the endpoint exists this panel silently shows the "No data" state.
+        The exclude_search_terms and top_n params should be forwarded as query params.
+    #}
+    <div
+        class="bg-white rounded-lg shadow p-5"
+        x-data="emergentTermsPanel('{{ run_id }}')"
+        x-init="load()"
+    >
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <div>
+                <h2 class="text-sm font-semibold text-gray-900">Emergent Terms</h2>
+                <p class="text-xs text-gray-500 mt-0.5">
+                    Terms that appear frequently in collected content but were not part of the original query design.
+                </p>
+            </div>
+            <span x-show="loading" class="text-xs text-gray-400 animate-pulse">Loading...</span>
+        </div>
+
+        {# Controls row #}
+        <div class="flex flex-wrap items-center gap-4 mb-4">
+            {# Exclude search terms toggle #}
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                    type="checkbox"
+                    x-model="excludeSearchTerms"
+                    @change="load()"
+                    class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+                <span class="text-sm text-gray-700">Exclude known search terms</span>
+            </label>
+
+            {# Top N slider #}
+            <div class="flex items-center gap-3">
+                <label class="text-sm text-gray-700 whitespace-nowrap">Show top</label>
+                <div class="flex rounded-md border border-gray-300 overflow-hidden text-xs font-medium">
+                    <template x-for="n in [10, 20, 50, 100]" :key="n">
+                        <button
+                            type="button"
+                            :class="topN === n
+                                ? 'bg-blue-600 text-white px-3 py-1.5'
+                                : 'bg-white text-gray-700 px-3 py-1.5 hover:bg-gray-50'"
+                            @click="topN = n; load()"
+                            x-text="n"
+                        ></button>
+                    </template>
+                </div>
+            </div>
+        </div>
+
+        {# Error state #}
+        <p x-show="error" class="text-sm text-red-600 mb-3" x-text="error"></p>
+
+        {# Empty / not-yet-available state #}
+        <div
+            x-show="!loading && !error && terms.length === 0"
+            class="flex items-center justify-center h-24 text-sm text-gray-400 italic"
+        >
+            No emergent terms data available for this run.
+        </div>
+
+        {# Chart + table side-by-side #}
+        <div x-show="!loading && !error && terms.length > 0" class="space-y-4">
+            {# Chart #}
+            <canvas id="emergentTermsChart" height="180"></canvas>
+
+            {# Table #}
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200 text-sm">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Term</th>
+                            <th class="text-right px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Score</th>
+                            <th class="text-right px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Doc frequency</th>
+                            <th class="text-center px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-100">
+                        <template x-for="t in terms" :key="t.term">
+                            <tr class="hover:bg-gray-50">
+                                <td class="px-4 py-2 font-medium text-gray-900" x-text="t.term"></td>
+                                <td class="px-4 py-2 text-right text-gray-700 font-mono text-xs"
+                                    x-text="typeof t.score === 'number' ? t.score.toFixed(4) : '—'"></td>
+                                <td class="px-4 py-2 text-right text-gray-700"
+                                    x-text="t.document_frequency !== undefined ? t.document_frequency.toLocaleString() : '—'"></td>
+                                <td class="px-4 py-2 text-center">
+                                    {#
+                                        "Add to query design" — placeholder action.
+                                        Full integration (selecting a design and POSTing the term)
+                                        requires a backend endpoint and a design picker modal.
+                                        For now this copies the term name to the clipboard.
+                                    #}
+                                    <button
+                                        type="button"
+                                        @click="copyTerm(t.term)"
+                                        title="Copy term name to clipboard"
+                                        class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs
+                                               font-medium text-blue-700 bg-blue-50 rounded-md
+                                               hover:bg-blue-100 transition-colors"
+                                    >
+                                        <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round"
+                                                  d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                                        </svg>
+                                        Add to query design
+                                    </button>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+
+            {# Clipboard confirmation toast (inline, no extra lib) #}
+            <div
+                x-show="clipboardToast"
+                x-transition:enter="transition ease-out duration-200"
+                x-transition:enter-start="opacity-0 translate-y-1"
+                x-transition:enter-end="opacity-100 translate-y-0"
+                x-transition:leave="transition ease-in duration-150"
+                x-transition:leave-start="opacity-100"
+                x-transition:leave-end="opacity-0"
+                class="fixed bottom-4 right-4 bg-gray-900 text-white text-sm px-4 py-2 rounded-lg shadow-lg z-50"
+                x-text="clipboardToast"
+            ></div>
+        </div>
+    </div>{# /emergent terms #}
+
     {# ---- Network section -------------------------------------------- #}
     <div
         class="bg-white rounded-lg shadow p-5"
         x-data="networkTabs('{{ run_id }}')"
-        x-init="loadCrossplatform()"
+        x-init="init()"
     >
         <h2 class="text-sm font-semibold text-gray-900 mb-4">Network analysis</h2>
 
@@ -292,7 +475,7 @@
                     :class="activeTab === tab.id
                         ? 'border-b-2 border-blue-600 text-blue-600 font-medium whitespace-nowrap pb-2 px-4 text-sm'
                         : 'text-gray-500 hover:text-gray-700 whitespace-nowrap pb-2 px-4 text-sm transition-colors'"
-                    @click="activeTab = tab.id"
+                    @click="switchTab(tab.id)"
                     x-text="tab.label"
                 ></button>
             </template>
@@ -305,18 +488,133 @@
                 content matching at least one shared search term. Edge weight is the
                 number of distinct record pairs. Export to GEXF for visualisation in Gephi.
             </p>
-            <a
-                href="/content/export?format=gexf&run_id={{ run_id }}"
-                class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300
-                       text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 transition-colors"
+
+            {# Network sub-tabs: Static | Temporal #}
+            <div
+                x-data="networkPreview('{{ run_id }}', 'actor')"
+                x-init="init()"
+                @destroy.window="if ($event.detail && $event.detail.tab === 'actor') destroy()"
             >
-                <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none"
-                     viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round"
-                          d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
-                </svg>
-                Download actor network (GEXF)
-            </a>
+                <div class="flex gap-1 mb-3">
+                    <button
+                        type="button"
+                        :class="viewMode === 'static'
+                            ? 'px-3 py-1 text-xs font-medium bg-gray-900 text-white rounded-md'
+                            : 'px-3 py-1 text-xs font-medium bg-gray-100 text-gray-600 rounded-md hover:bg-gray-200'"
+                        @click="viewMode = 'static'"
+                    >Static Network</button>
+                    <button
+                        type="button"
+                        :class="viewMode === 'temporal'
+                            ? 'px-3 py-1 text-xs font-medium bg-gray-900 text-white rounded-md'
+                            : 'px-3 py-1 text-xs font-medium bg-gray-100 text-gray-600 rounded-md hover:bg-gray-200'"
+                        @click="viewMode = 'temporal'; loadTemporal()"
+                    >Temporal Snapshots</button>
+                </div>
+
+                {# Static network preview #}
+                <div x-show="viewMode === 'static'">
+                    <template x-if="_includeNetworkPreview()">
+                        <div x-html="_buildNetworkPreviewHTML('actor-network-container')"></div>
+                    </template>
+                    {# Large-graph warning — shown when node count exceeds the preview limit #}
+                    <div x-show="!loading && tooLarge"
+                         class="mb-3 flex items-start gap-2 px-3 py-2.5 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-800">
+                        <svg class="w-4 h-4 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
+                        <span x-text="`Graph too large to preview (${nodeCount} nodes). Showing top 100 nodes by degree. Download GEXF for full visualisation in Gephi.`"></span>
+                    </div>
+                    <div class="relative">
+                        <div id="actor-network-container" class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50" style="height: 360px;">
+                            <div x-show="loading" class="absolute inset-0 flex items-center justify-center">
+                                <div class="text-sm text-gray-400 animate-pulse">Loading network data...</div>
+                            </div>
+                            <div x-show="error" class="absolute inset-0 flex items-center justify-center px-8">
+                                <p class="text-sm text-red-600 text-center" x-text="error"></p>
+                            </div>
+                            <div x-show="!loading && !error && nodeCount === 0"
+                                 class="absolute inset-0 flex items-center justify-center">
+                                <p class="text-sm text-gray-400 italic">No network data available for this run.</p>
+                            </div>
+                        </div>
+                        {# Zoom controls — overlaid top-right corner of the canvas #}
+                        <div x-show="!loading && nodeCount > 0"
+                             class="absolute top-2 right-2 flex flex-col gap-1 z-10">
+                            <button type="button" @click="zoomIn('actor')"
+                                    title="Zoom in"
+                                    class="w-7 h-7 flex items-center justify-center bg-white border border-gray-300 rounded shadow-sm text-gray-600 hover:bg-gray-50 text-sm font-bold">+</button>
+                            <button type="button" @click="zoomOut('actor')"
+                                    title="Zoom out"
+                                    class="w-7 h-7 flex items-center justify-center bg-white border border-gray-300 rounded shadow-sm text-gray-600 hover:bg-gray-50 text-sm font-bold">-</button>
+                            <button type="button" @click="resetZoom('actor')"
+                                    title="Reset view"
+                                    class="w-7 h-7 flex items-center justify-center bg-white border border-gray-300 rounded shadow-sm text-gray-600 hover:bg-gray-50 text-xs">&#8635;</button>
+                        </div>
+                    </div>
+                    <div x-show="!loading && nodeCount > 0" class="flex items-center gap-4 mt-2 text-xs text-gray-500">
+                        <span x-text="`${Math.min(nodeCount, 100)} nodes shown`"></span>
+                        <span x-text="`${edgeCount} edges`"></span>
+                        <span class="flex items-center gap-1">
+                            <span class="w-3 h-3 rounded-full bg-blue-500 inline-block"></span> Author
+                        </span>
+                        <span class="flex items-center gap-1">
+                            <span class="w-3 h-3 rounded-full bg-amber-500 inline-block"></span> Term
+                        </span>
+                    </div>
+                </div>
+
+                {# Temporal snapshots view #}
+                <div x-show="viewMode === 'temporal'">
+                    <div x-show="temporalLoading" class="text-sm text-gray-400 animate-pulse py-4">Loading temporal data...</div>
+                    <div x-show="temporalError" class="text-sm text-red-600 py-2" x-text="temporalError"></div>
+                    <div x-show="!temporalLoading && !temporalError && temporalPeriods.length === 0"
+                         class="py-4 text-sm text-gray-400 italic">
+                        No temporal snapshots available.
+                    </div>
+                    <div x-show="!temporalLoading && !temporalError && temporalPeriods.length > 0" class="space-y-4">
+                        <p class="text-xs text-gray-500">
+                            Each bar represents a time period. Click a bar to load that period's network preview.
+                        </p>
+                        <canvas id="actor-temporal-chart" height="80"></canvas>
+                        <div class="flex items-center gap-2 text-xs text-gray-600">
+                            <span>Selected period:</span>
+                            <span class="font-medium text-gray-900"
+                                  x-text="selectedPeriod || 'None — click a bar above'"></span>
+                        </div>
+                        {# Period network container #}
+                        <div id="actor-period-network-container"
+                             class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50"
+                             style="height: 300px;"
+                             x-show="selectedPeriod">
+                            <div x-show="periodLoading" class="absolute inset-0 flex items-center justify-center">
+                                <div class="text-sm text-gray-400 animate-pulse">Loading period network...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {# Download button (always visible when data exists) #}
+                <div class="mt-3 flex flex-wrap gap-2">
+                    <a
+                        href="/content/export?format=gexf&network_type=actor&run_id={{ run_id }}"
+                        class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300
+                               text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 transition-colors"
+                    >
+                        <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none"
+                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                        </svg>
+                        Download Actor Co-occurrence Network (GEXF)
+                    </a>
+                </div>
+                <p class="mt-2 text-xs text-gray-500">
+                    Nodes are pseudonymised authors; edges connect authors who discussed the same search terms.
+                </p>
+            </div>
         </div>
 
         {# Term co-occurrence network #}
@@ -327,18 +625,112 @@
                 array of the same record.
                 Export to GEXF format for network visualisation in Gephi.
             </p>
-            <a
-                href="/content/export?format=gexf&run_id={{ run_id }}"
-                class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300
-                       text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 transition-colors"
+
+            <div
+                x-data="networkPreview('{{ run_id }}', 'term')"
+                x-init="init()"
             >
-                <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none"
-                     viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round"
-                          d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
-                </svg>
-                Download term network (GEXF)
-            </a>
+                <div class="flex gap-1 mb-3">
+                    <button
+                        type="button"
+                        :class="viewMode === 'static'
+                            ? 'px-3 py-1 text-xs font-medium bg-gray-900 text-white rounded-md'
+                            : 'px-3 py-1 text-xs font-medium bg-gray-100 text-gray-600 rounded-md hover:bg-gray-200'"
+                        @click="viewMode = 'static'"
+                    >Static Network</button>
+                    <button
+                        type="button"
+                        :class="viewMode === 'temporal'
+                            ? 'px-3 py-1 text-xs font-medium bg-gray-900 text-white rounded-md'
+                            : 'px-3 py-1 text-xs font-medium bg-gray-100 text-gray-600 rounded-md hover:bg-gray-200'"
+                        @click="viewMode = 'temporal'; loadTemporal()"
+                    >Temporal Snapshots</button>
+                </div>
+
+                <div x-show="viewMode === 'static'">
+                    {# Large-graph warning — shown when node count exceeds the preview limit #}
+                    <div x-show="!loading && tooLarge"
+                         class="mb-3 flex items-start gap-2 px-3 py-2.5 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-800">
+                        <svg class="w-4 h-4 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
+                        <span x-text="`Graph too large to preview (${nodeCount} nodes). Showing top 100 nodes by degree. Download GEXF for full visualisation in Gephi.`"></span>
+                    </div>
+                    <div class="relative">
+                        <div id="term-network-container" class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50" style="height: 360px;">
+                            <div x-show="loading" class="absolute inset-0 flex items-center justify-center">
+                                <div class="text-sm text-gray-400 animate-pulse">Loading network data...</div>
+                            </div>
+                            <div x-show="error" class="absolute inset-0 flex items-center justify-center px-8">
+                                <p class="text-sm text-red-600 text-center" x-text="error"></p>
+                            </div>
+                            <div x-show="!loading && !error && nodeCount === 0"
+                                 class="absolute inset-0 flex items-center justify-center">
+                                <p class="text-sm text-gray-400 italic">No network data available for this run.</p>
+                            </div>
+                        </div>
+                        {# Zoom controls — overlaid top-right corner of the canvas #}
+                        <div x-show="!loading && nodeCount > 0"
+                             class="absolute top-2 right-2 flex flex-col gap-1 z-10">
+                            <button type="button" @click="zoomIn('term')"
+                                    title="Zoom in"
+                                    class="w-7 h-7 flex items-center justify-center bg-white border border-gray-300 rounded shadow-sm text-gray-600 hover:bg-gray-50 text-sm font-bold">+</button>
+                            <button type="button" @click="zoomOut('term')"
+                                    title="Zoom out"
+                                    class="w-7 h-7 flex items-center justify-center bg-white border border-gray-300 rounded shadow-sm text-gray-600 hover:bg-gray-50 text-sm font-bold">-</button>
+                            <button type="button" @click="resetZoom('term')"
+                                    title="Reset view"
+                                    class="w-7 h-7 flex items-center justify-center bg-white border border-gray-300 rounded shadow-sm text-gray-600 hover:bg-gray-50 text-xs">&#8635;</button>
+                        </div>
+                    </div>
+                    <div x-show="!loading && nodeCount > 0" class="flex items-center gap-4 mt-2 text-xs text-gray-500">
+                        <span x-text="`${Math.min(nodeCount, 100)} nodes shown`"></span>
+                        <span x-text="`${edgeCount} edges`"></span>
+                    </div>
+                </div>
+
+                <div x-show="viewMode === 'temporal'">
+                    <div x-show="temporalLoading" class="text-sm text-gray-400 animate-pulse py-4">Loading temporal data...</div>
+                    <div x-show="temporalError" class="text-sm text-red-600 py-2" x-text="temporalError"></div>
+                    <div x-show="!temporalLoading && !temporalError && temporalPeriods.length === 0"
+                         class="py-4 text-sm text-gray-400 italic">No temporal snapshots available.</div>
+                    <div x-show="!temporalLoading && !temporalError && temporalPeriods.length > 0" class="space-y-4">
+                        <canvas id="term-temporal-chart" height="80"></canvas>
+                        <div x-show="selectedPeriod" class="flex items-center gap-2 text-xs text-gray-600">
+                            <span>Selected:</span>
+                            <span class="font-medium text-gray-900" x-text="selectedPeriod"></span>
+                        </div>
+                        <div id="term-period-network-container"
+                             x-show="selectedPeriod"
+                             class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50"
+                             style="height: 300px;">
+                            <div x-show="periodLoading" class="absolute inset-0 flex items-center justify-center">
+                                <div class="text-sm text-gray-400 animate-pulse">Loading period network...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-3 flex flex-wrap gap-2">
+                    <a
+                        href="/content/export?format=gexf&network_type=term&run_id={{ run_id }}"
+                        class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300
+                               text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 transition-colors"
+                    >
+                        <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none"
+                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                        </svg>
+                        Download Term Co-occurrence Network (GEXF)
+                    </a>
+                </div>
+                <p class="mt-2 text-xs text-gray-500">
+                    Nodes are search terms; edges connect terms that co-appeared in the same collected record.
+                </p>
+            </div>
         </div>
 
         {# Bipartite actor-term network #}
@@ -348,18 +740,118 @@
                 terms their posts matched.  Edge weight is the record count per pair.
                 Export to GEXF format for analysis in Gephi.
             </p>
-            <a
-                href="/content/export?format=gexf&run_id={{ run_id }}"
-                class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300
-                       text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 transition-colors"
+
+            <div
+                x-data="networkPreview('{{ run_id }}', 'bipartite')"
+                x-init="init()"
             >
-                <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none"
-                     viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round"
-                          d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
-                </svg>
-                Download bipartite network (GEXF)
-            </a>
+                <div class="flex gap-1 mb-3">
+                    <button
+                        type="button"
+                        :class="viewMode === 'static'
+                            ? 'px-3 py-1 text-xs font-medium bg-gray-900 text-white rounded-md'
+                            : 'px-3 py-1 text-xs font-medium bg-gray-100 text-gray-600 rounded-md hover:bg-gray-200'"
+                        @click="viewMode = 'static'"
+                    >Static Network</button>
+                    <button
+                        type="button"
+                        :class="viewMode === 'temporal'
+                            ? 'px-3 py-1 text-xs font-medium bg-gray-900 text-white rounded-md'
+                            : 'px-3 py-1 text-xs font-medium bg-gray-100 text-gray-600 rounded-md hover:bg-gray-200'"
+                        @click="viewMode = 'temporal'; loadTemporal()"
+                    >Temporal Snapshots</button>
+                </div>
+
+                <div x-show="viewMode === 'static'">
+                    {# Large-graph warning — shown when node count exceeds the preview limit #}
+                    <div x-show="!loading && tooLarge"
+                         class="mb-3 flex items-start gap-2 px-3 py-2.5 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-800">
+                        <svg class="w-4 h-4 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
+                        <span x-text="`Graph too large to preview (${nodeCount} nodes). Showing top 100 nodes by degree. Download GEXF for full visualisation in Gephi.`"></span>
+                    </div>
+                    <div class="relative">
+                        <div id="bipartite-network-container" class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50" style="height: 360px;">
+                            <div x-show="loading" class="absolute inset-0 flex items-center justify-center">
+                                <div class="text-sm text-gray-400 animate-pulse">Loading network data...</div>
+                            </div>
+                            <div x-show="error" class="absolute inset-0 flex items-center justify-center px-8">
+                                <p class="text-sm text-red-600 text-center" x-text="error"></p>
+                            </div>
+                            <div x-show="!loading && !error && nodeCount === 0"
+                                 class="absolute inset-0 flex items-center justify-center">
+                                <p class="text-sm text-gray-400 italic">No network data available for this run.</p>
+                            </div>
+                        </div>
+                        {# Zoom controls — overlaid top-right corner of the canvas #}
+                        <div x-show="!loading && nodeCount > 0"
+                             class="absolute top-2 right-2 flex flex-col gap-1 z-10">
+                            <button type="button" @click="zoomIn('bipartite')"
+                                    title="Zoom in"
+                                    class="w-7 h-7 flex items-center justify-center bg-white border border-gray-300 rounded shadow-sm text-gray-600 hover:bg-gray-50 text-sm font-bold">+</button>
+                            <button type="button" @click="zoomOut('bipartite')"
+                                    title="Zoom out"
+                                    class="w-7 h-7 flex items-center justify-center bg-white border border-gray-300 rounded shadow-sm text-gray-600 hover:bg-gray-50 text-sm font-bold">-</button>
+                            <button type="button" @click="resetZoom('bipartite')"
+                                    title="Reset view"
+                                    class="w-7 h-7 flex items-center justify-center bg-white border border-gray-300 rounded shadow-sm text-gray-600 hover:bg-gray-50 text-xs">&#8635;</button>
+                        </div>
+                    </div>
+                    <div x-show="!loading && nodeCount > 0" class="flex items-center gap-4 mt-2 text-xs text-gray-500">
+                        <span x-text="`${Math.min(nodeCount, 100)} nodes shown`"></span>
+                        <span x-text="`${edgeCount} edges`"></span>
+                        <span class="flex items-center gap-1">
+                            <span class="w-3 h-3 rounded-full bg-blue-500 inline-block"></span> Author
+                        </span>
+                        <span class="flex items-center gap-1">
+                            <span class="w-3 h-3 rounded-full bg-amber-500 inline-block"></span> Term
+                        </span>
+                    </div>
+                </div>
+
+                <div x-show="viewMode === 'temporal'">
+                    <div x-show="temporalLoading" class="text-sm text-gray-400 animate-pulse py-4">Loading temporal data...</div>
+                    <div x-show="temporalError" class="text-sm text-red-600 py-2" x-text="temporalError"></div>
+                    <div x-show="!temporalLoading && !temporalError && temporalPeriods.length === 0"
+                         class="py-4 text-sm text-gray-400 italic">No temporal snapshots available.</div>
+                    <div x-show="!temporalLoading && !temporalError && temporalPeriods.length > 0" class="space-y-4">
+                        <canvas id="bipartite-temporal-chart" height="80"></canvas>
+                        <div x-show="selectedPeriod" class="flex items-center gap-2 text-xs text-gray-600">
+                            <span>Selected:</span>
+                            <span class="font-medium text-gray-900" x-text="selectedPeriod"></span>
+                        </div>
+                        <div id="bipartite-period-network-container"
+                             x-show="selectedPeriod"
+                             class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50"
+                             style="height: 300px;">
+                            <div x-show="periodLoading" class="absolute inset-0 flex items-center justify-center">
+                                <div class="text-sm text-gray-400 animate-pulse">Loading period network...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-3 flex flex-wrap gap-2">
+                    <a
+                        href="/content/export?format=gexf&network_type=bipartite&run_id={{ run_id }}"
+                        class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300
+                               text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 transition-colors"
+                    >
+                        <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none"
+                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                        </svg>
+                        Download Bipartite Actor-Term Network (GEXF)
+                    </a>
+                </div>
+                <p class="mt-2 text-xs text-gray-500">
+                    Two-mode network with authors and search terms as separate node sets; edges link each author to the terms their content matched.
+                </p>
+            </div>
         </div>
 
         {# Cross-platform actors table #}
@@ -424,24 +916,58 @@
         <fieldset class="mb-4">
             <legend class="text-xs font-medium text-gray-700 mb-2">Format</legend>
             <div class="flex flex-wrap gap-4">
-                <template x-for="fmt in ['csv','xlsx','json','parquet','gexf']" :key="fmt">
-                    <label class="flex items-center gap-2 cursor-pointer">
+                <template x-for="fmt in formats" :key="fmt.value">
+                    <label class="flex items-center gap-2 cursor-pointer" :title="fmt.tooltip || ''">
                         <input
                             type="radio"
-                            :value="fmt"
+                            :value="fmt.value"
                             x-model="exportFormat"
                             class="text-blue-600 focus:ring-blue-500"
                         />
-                        <span class="text-sm font-medium text-gray-700 uppercase" x-text="fmt"></span>
+                        <span class="text-sm font-medium text-gray-700" x-text="fmt.label"></span>
+                        <span
+                            x-show="fmt.tooltip"
+                            class="inline-flex items-center justify-center w-4 h-4 rounded-full
+                                   bg-gray-200 text-gray-400 text-xs font-bold cursor-help
+                                   leading-none select-none"
+                            aria-hidden="true"
+                        >?</span>
                     </label>
                 </template>
             </div>
         </fieldset>
 
+        {# GEXF network type selector — only visible when GEXF is selected #}
+        <fieldset x-show="exportFormat === 'gexf'" class="mb-4 p-3 bg-gray-50 rounded-md border border-gray-200">
+            <legend class="text-xs font-medium text-gray-700 mb-2">Network type</legend>
+            <div class="flex flex-wrap gap-4">
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" value="actor" x-model="gexfNetworkType"
+                           class="text-blue-600 focus:ring-blue-500"/>
+                    <span class="text-sm text-gray-700">Actor co-occurrence</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" value="term" x-model="gexfNetworkType"
+                           class="text-blue-600 focus:ring-blue-500"/>
+                    <span class="text-sm text-gray-700">Term co-occurrence</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" value="bipartite" x-model="gexfNetworkType"
+                           class="text-blue-600 focus:ring-blue-500"/>
+                    <span class="text-sm text-gray-700">Bipartite actor-term</span>
+                </label>
+            </div>
+            <p class="mt-2 text-xs text-gray-500">
+                Selects which network structure is exported. Each type produces a distinct GEXF file.
+            </p>
+        </fieldset>
+
         {# Export buttons #}
         <div class="flex flex-wrap gap-3">
             <a
-                :href="`/content/export?format=${exportFormat}&run_id={{ run_id }}`"
+                :href="exportFormat === 'gexf'
+                    ? `/content/export?format=gexf&network_type=${gexfNetworkType}&run_id={{ run_id }}`
+                    : `/content/export?format=${exportFormat}&run_id={{ run_id }}`"
                 class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white
                        text-sm font-medium rounded-md hover:bg-blue-700 transition-colors"
             >
@@ -504,7 +1030,150 @@
             <p x-show="exportError" class="text-sm text-red-600" x-text="exportError"></p>
         </div>
 
+        {# Export filtered records (IP2-055) #}
+        <div class="mt-6 border-t border-gray-100 pt-5">
+            <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <div>
+                    <h3 class="text-sm font-semibold text-gray-900">Export filtered records</h3>
+                    <p class="text-xs text-gray-500 mt-0.5">
+                        Apply additional filters before downloading. Format is taken from the selector above.
+                    </p>
+                </div>
+                <button
+                    type="button"
+                    @click="filteredExportOpen = !filteredExportOpen"
+                    class="px-3 py-1.5 bg-white border border-gray-300 text-gray-700 text-xs
+                           font-medium rounded-md hover:bg-gray-50 transition-colors"
+                >
+                    <span x-text="filteredExportOpen ? 'Collapse' : 'Show filters'"></span>
+                </button>
+            </div>
+            <div x-show="filteredExportOpen" class="space-y-3">
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    <div>
+                        <label class="block text-xs font-medium text-gray-700 mb-1">Search term</label>
+                        <input
+                            type="text"
+                            x-model="filteredExport.search_term"
+                            placeholder="e.g. klimaforandringer"
+                            class="block w-full rounded-md border border-gray-300 shadow-sm text-sm
+                                   px-2 py-1.5 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                        />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-700 mb-1">Top actors (comma-separated)</label>
+                        <input
+                            type="text"
+                            x-model="filteredExport.top_actors"
+                            placeholder="e.g. Alice, Bob"
+                            class="block w-full rounded-md border border-gray-300 shadow-sm text-sm
+                                   px-2 py-1.5 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                        />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-700 mb-1">Min. engagement score</label>
+                        <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            x-model="filteredExport.min_engagement"
+                            placeholder="e.g. 0.5"
+                            class="block w-full rounded-md border border-gray-300 shadow-sm text-sm
+                                   px-2 py-1.5 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                        />
+                    </div>
+                </div>
+                <div>
+                    <a
+                        :href="filteredExportUrl()"
+                        class="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white
+                               text-sm font-medium rounded-md hover:bg-indigo-700 transition-colors"
+                    >
+                        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none"
+                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                        </svg>
+                        Download filtered records
+                    </a>
+                    <p class="mt-1 text-xs text-gray-400">
+                        Platform, arena, and date filters from the dashboard filter bar are also applied.
+                    </p>
+                </div>
+            </div>
+        </div>
+
     </div>{# /export section #}
+
+    {# ---- Suggested terms section (IP2-053) -------------------------- #}
+    <div
+        class="bg-white rounded-lg shadow p-5"
+        x-data="suggestedTermsPanel('{{ run_id }}', '{{ run.query_design_id or '' }}')"
+        x-init="load()"
+    >
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <div>
+                <h2 class="text-sm font-semibold text-gray-900">Suggested terms</h2>
+                <p class="text-xs text-gray-500 mt-0.5">
+                    Top terms from collected content not yet in your query design.
+                </p>
+            </div>
+            <span x-show="loading" class="text-xs text-gray-400 animate-pulse">Loading...</span>
+        </div>
+
+        <p x-show="error" class="text-sm text-red-600 mb-3" x-text="error"></p>
+
+        <div
+            x-show="!loading && !error && terms.length === 0"
+            class="flex items-center justify-center h-16 text-sm text-gray-400 italic"
+        >
+            No suggestions available for this run.
+        </div>
+
+        <div x-show="!loading && !error && terms.length > 0">
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200 text-sm">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Term</th>
+                            <th class="text-right px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Score</th>
+                            <th class="text-right px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Doc frequency</th>
+                            <th class="text-center px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-100">
+                        <template x-for="t in terms" :key="t.term">
+                            <tr class="hover:bg-gray-50">
+                                <td class="px-4 py-2 font-medium text-gray-900" x-text="t.term"></td>
+                                <td class="px-4 py-2 text-right text-gray-700 font-mono text-xs"
+                                    x-text="typeof t.score === 'number' ? t.score.toFixed(4) : '—'"></td>
+                                <td class="px-4 py-2 text-right text-gray-700"
+                                    x-text="t.document_frequency !== undefined ? t.document_frequency.toLocaleString() : '—'"></td>
+                                <td class="px-4 py-2 text-center">
+                                    <button
+                                        type="button"
+                                        @click="addTerm(t.term)"
+                                        :disabled="!queryDesignId || addedTerms.has(t.term)"
+                                        :title="!queryDesignId
+                                            ? 'No query design linked to this run'
+                                            : addedTerms.has(t.term)
+                                                ? 'Already added'
+                                                : 'Add to query design'"
+                                        :class="addedTerms.has(t.term)
+                                            ? 'inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-green-700 bg-green-50 rounded-md cursor-default'
+                                            : 'inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 rounded-md hover:bg-blue-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed'"
+                                    >
+                                        <span x-text="addedTerms.has(t.term) ? 'Added' : 'Add to query design'"></span>
+                                    </button>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+            <p x-show="addError" class="mt-2 text-xs text-red-600" x-text="addError"></p>
+        </div>
+    </div>{# /suggested terms #}
 
 </div>{# /analysisDashboard #}
 
@@ -539,10 +1208,33 @@ function analysisDashboard(runId) {
             date_to: '',
             granularity: 'day',
         },
-        init() {
+        // IP2-012: dropdown option lists populated from GET /analysis/{run_id}/filter-options.
+        // Stays empty (and dropdowns show only the "All" sentinel) until the backend
+        // endpoint exists. See BACKEND GAP note in the filter bar template comment.
+        platformOptions: [],
+        arenaOptions: [],
+
+        async init() {
             // Expose a live reference so chart sub-components can read filters.
             window.__analysisFilters = this.filters;
+
+            // IP2-012: Attempt to load filter options from the backend.
+            // The endpoint GET /analysis/{run_id}/filter-options is not yet implemented.
+            // When it exists it should return { platforms: string[], arenas: string[] }.
+            // We silently swallow errors so the page works without this endpoint.
+            try {
+                const resp = await fetch(`/analysis/${runId}/filter-options`, { credentials: 'include' });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    if (Array.isArray(data.platforms)) this.platformOptions = data.platforms;
+                    if (Array.isArray(data.arenas))    this.arenaOptions    = data.arenas;
+                }
+                // 404 is expected until the endpoint is implemented — no error shown.
+            } catch (_) {
+                // Network error or JSON parse failure — leave options empty.
+            }
         },
+
         applyFilters() {
             window.dispatchEvent(new CustomEvent('filter-applied', { detail: { ...this.filters } }));
         },
@@ -601,8 +1293,12 @@ function volumeChart(runId) {
                 const arenaNames = [...arenaSet].sort();
                 const labels = rows.map(r => r.period ? r.period.slice(0, 10) : r.period);
 
+                const axisLabels = {
+                    xLabel: 'Date',
+                    yLabel: 'Number of records',
+                };
                 if (typeof window.initMultiArenaVolumeChart === 'function') {
-                    window.initMultiArenaVolumeChart('volumeChart', { labels, rows, arenaNames });
+                    window.initMultiArenaVolumeChart('volumeChart', { labels, rows, arenaNames, ...axisLabels });
                 } else if (typeof window.initVolumeChart === 'function') {
                     // Fallback to the existing single-series helper.
                     window.initVolumeChart('volumeChart', {
@@ -610,6 +1306,7 @@ function volumeChart(runId) {
                         values: rows.map(r => r.count),
                         type: 'line',
                         label: 'Total records',
+                        ...axisLabels,
                     });
                 }
             } catch (e) {
@@ -627,9 +1324,14 @@ function actorsChart(runId) {
         runId,
         loading: false,
         error: null,
+        // True when at least one returned actor has a resolved_name.
+        // Used to show the resolved-identity legend below the chart.
+        hasResolvedActors: false,
+
         async load() {
             this.loading = true;
             this.error = null;
+            this.hasResolvedActors = false;
             try {
                 const f = window.__analysisFilters || {};
                 const p = new URLSearchParams({ limit: 20 });
@@ -639,10 +1341,26 @@ function actorsChart(runId) {
                 const res = await fetch(`/analysis/${runId}/actors?${p}`, { credentials: 'include' });
                 if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                 const rows = await res.json();
+
+                // IP2-061: prefer resolved_name over display_name when available.
+                // A resolved_name indicates the actor has been confirmed via the Actor Directory.
+                // Append a checkmark suffix to labels where identity is confirmed.
+                const labels = rows.map(r => {
+                    const base = r.resolved_name
+                        || r.author_display_name
+                        || (r.pseudonymized_author_id
+                            ? r.pseudonymized_author_id.substring(0, 8) + '...'
+                            : '?');
+                    return r.resolved_name ? base + ' \u2713' : base;
+                });
+
+                this.hasResolvedActors = rows.some(r => !!r.resolved_name);
+
                 if (typeof window.initActorsChart === 'function') {
                     window.initActorsChart('actorsChart', {
-                        labels: rows.map(r => r.author_display_name || r.pseudonymized_author_id || '?'),
+                        labels,
                         values: rows.map(r => r.count),
+                        xLabel: 'Record count',
                     });
                 }
             } catch (e) {
@@ -675,6 +1393,7 @@ function termsChart(runId) {
                     window.initTermsChart('termsChart', {
                         labels: rows.map(r => r.term),
                         values: rows.map(r => r.count),
+                        xLabel: 'Record count',
                     });
                 }
             } catch (e) {
@@ -707,7 +1426,10 @@ function engagementChart(runId) {
                 if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                 const data = await res.json();
                 if (typeof window.initEngagementStatsChart === 'function') {
-                    window.initEngagementStatsChart('engagementChart', data);
+                    window.initEngagementStatsChart('engagementChart', data, {
+                        xLabel: 'Metric',
+                        yLabel: 'Engagement value',
+                    });
                 } else if (typeof window.initEngagementChart === 'function') {
                     // Fallback: render mean values only via the existing helper.
                     const metrics = Object.keys(data);
@@ -715,6 +1437,8 @@ function engagementChart(runId) {
                         labels: metrics,
                         values: metrics.map(m => data[m] ? (data[m].mean ?? 0) : 0),
                         label: 'Mean',
+                        xLabel: 'Metric',
+                        yLabel: 'Engagement value',
                     });
                 }
             } catch (e) {
@@ -726,7 +1450,138 @@ function engagementChart(runId) {
     };
 }
 
-// ---- Network tabs component ----------------------------------------------
+// ---- Emergent Terms panel component ---------------------------------------
+//
+// BACKEND GAP: Requires GET /analysis/{run_id}/emergent-terms
+//   Query params: top_n (int), exclude_search_terms (bool)
+//   Response: [{ term: string, score: number, document_frequency: number,
+//                is_search_term: boolean }]
+//
+function emergentTermsPanel(runId) {
+    return {
+        runId,
+        loading: false,
+        error: null,
+        terms: [],
+        excludeSearchTerms: true,
+        topN: 20,
+        clipboardToast: '',
+        _toastTimer: null,
+
+        async load() {
+            this.loading = true;
+            this.error = null;
+            try {
+                const p = new URLSearchParams({
+                    top_n: this.topN,
+                    exclude_search_terms: this.excludeSearchTerms ? '1' : '0',
+                });
+                const res = await fetch(`/analysis/${runId}/emergent-terms?${p}`, { credentials: 'include' });
+                if (res.status === 404) {
+                    // Endpoint not yet implemented — show empty state silently.
+                    this.terms = [];
+                    return;
+                }
+                if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                this.terms = await res.json();
+                // Render chart after DOM updates with new terms.
+                this.$nextTick(() => this._renderChart());
+            } catch (e) {
+                this.error = e.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        _renderChart() {
+            if (!this.terms.length) return;
+            if (typeof window.initEmergentTermsChart === 'function') {
+                window.initEmergentTermsChart('emergentTermsChart', {
+                    labels: this.terms.map(t => t.term),
+                    values: this.terms.map(t => t.score),
+                    xLabel: 'Emergence score',
+                });
+                return;
+            }
+            // Fallback: use the existing initTermsChart helper with a different colour.
+            if (typeof window.initTermsChart === 'function') {
+                const canvas = document.getElementById('emergentTermsChart');
+                if (!canvas) return;
+                // Destroy any existing chart instance on this canvas first.
+                const existing = window.Chart && window.Chart.getChart(canvas);
+                if (existing) existing.destroy();
+                // Render using initTermsChart with overridden colour via Chart.js options.
+                new window.Chart(canvas, {
+                    type: 'bar',
+                    data: {
+                        labels: this.terms.map(t => t.term),
+                        datasets: [{
+                            label: 'Emergence score',
+                            data: this.terms.map(t => t.score),
+                            // Green-600 to distinguish from the regular terms chart (amber).
+                            backgroundColor: 'rgba(22, 163, 74, 0.7)',
+                            borderColor: '#16a34a',
+                            borderWidth: 0,
+                            borderRadius: 3,
+                        }],
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        indexAxis: 'y',
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                backgroundColor: '#1f2937',
+                                titleColor: '#f9fafb',
+                                bodyColor: '#d1d5db',
+                                padding: 10,
+                                cornerRadius: 6,
+                            },
+                        },
+                        scales: {
+                            x: {
+                                beginAtZero: true,
+                                ticks: { color: '#6b7280', font: { size: 11 }, precision: 4 },
+                                grid: { color: 'rgba(0,0,0,0.05)' },
+                                title: { display: true, text: 'Emergence score', color: '#6b7280', font: { size: 11 } },
+                            },
+                            y: {
+                                ticks: { color: '#374151', font: { size: 11 } },
+                                grid: { display: false },
+                            },
+                        },
+                    },
+                });
+            }
+        },
+
+        async copyTerm(term) {
+            // Copy the term name to the system clipboard so it can be pasted
+            // into a query design's search terms field.
+            try {
+                await navigator.clipboard.writeText(term);
+                this._showToast(`Copied "${term}" to clipboard`);
+            } catch (_) {
+                // Clipboard API may be blocked in insecure contexts.
+                this._showToast('Could not access clipboard. Copy manually: ' + term);
+            }
+        },
+
+        _showToast(msg) {
+            if (this._toastTimer) clearTimeout(this._toastTimer);
+            this.clipboardToast = msg;
+            this._toastTimer = setTimeout(() => { this.clipboardToast = ''; }, 3000);
+        },
+    };
+}
+
+// ---- Network tabs component -----------------------------------------------
+//
+// Manages tab switching and the cross-platform actors table.
+// The three network tabs (actor/term/bipartite) each embed their own
+// networkPreview() Alpine component which owns the sigma.js lifecycle.
+//
 function networkTabs(runId) {
     return {
         runId,
@@ -740,6 +1595,16 @@ function networkTabs(runId) {
         crossplatformActors: [],
         crossplatformLoading: false,
         crossplatformError: null,
+
+        init() {
+            // Cross-platform data loads once on mount.
+            this.loadCrossplatform();
+        },
+
+        switchTab(tabId) {
+            this.activeTab = tabId;
+        },
+
         async loadCrossplatform() {
             this.crossplatformLoading = true;
             this.crossplatformError = null;
@@ -756,17 +1621,554 @@ function networkTabs(runId) {
     };
 }
 
+// ---- Network preview component (IP2-042) ----------------------------------
+//
+// Reusable Alpine.js component for in-browser force-directed graph preview.
+// Used inside each of the three network tabs (actor, term, bipartite).
+//
+// Depends on (loaded via CDN in extra_head block):
+//   - graphology  (window.Graph / window.graphology)
+//   - sigma       (window.Sigma)
+//   - graphology-layout        (window.graphologyLayout)
+//   - graphology-layout-forceatlas2 (window.graphologyLayoutForceAtlas2)
+//
+// API endpoint expected:
+//   GET /analysis/{run_id}/network/{network_type}
+//   Response: {
+//       nodes: [{ id: string, label: string, node_type: 'actor'|'term', weight?: number }],
+//       edges: [{ source: string, target: string, weight?: number }]
+//   }
+//
+// Temporal snapshots endpoint expected:
+//   GET /analysis/{run_id}/network/{network_type}/temporal
+//   Response: [{ period: string, node_count: int, edge_count: int }]
+//
+// Period snapshot endpoint expected:
+//   GET /analysis/{run_id}/network/{network_type}/temporal/{period}
+//   Response: same shape as the static endpoint above
+//
+// BACKEND GAP: Neither the static JSON nor the temporal endpoints currently
+// exist. The component silently shows the "No data" empty state when the
+// API returns 404.
+//
+// Maximum nodes to render in the browser preview.
+// Graphs larger than this are trimmed to the top-N nodes by degree before
+// passing to sigma.js, and a warning banner is shown to the researcher.
+const _NETWORK_PREVIEW_MAX_NODES = 100;
+// Maximum edges to render alongside the trimmed node set.
+const _NETWORK_PREVIEW_MAX_EDGES = 200;
+
+function networkPreview(runId, networkType) {
+    return {
+        runId,
+        networkType,
+
+        // Static network state
+        loading: false,
+        error: null,
+        // nodeCount reflects the FULL graph size returned by the API (before trimming).
+        // The UI displays this so researchers know when the preview is partial.
+        nodeCount: 0,
+        edgeCount: 0,
+        // True when the raw graph exceeded _NETWORK_PREVIEW_MAX_NODES.
+        tooLarge: false,
+        sigmaInstance: null,
+
+        // View mode: 'static' | 'temporal'
+        viewMode: 'static',
+
+        // Temporal state
+        temporalLoading: false,
+        temporalError: null,
+        temporalPeriods: [],   // [{ period, node_count, edge_count }]
+        selectedPeriod: null,
+        periodLoading: false,
+        _periodSigmaInstance: null,
+        _temporalChartInstance: null,
+
+        // --------------- lifecycle ----------------------------------------
+
+        async init() {
+            // Load the static network on mount.
+            await this.loadStatic();
+        },
+
+        destroy() {
+            // Kill sigma instances to free WebGL context memory.
+            if (this.sigmaInstance) {
+                this.sigmaInstance.kill();
+                this.sigmaInstance = null;
+            }
+            if (this._periodSigmaInstance) {
+                this._periodSigmaInstance.kill();
+                this._periodSigmaInstance = null;
+            }
+            if (this._temporalChartInstance) {
+                this._temporalChartInstance.destroy();
+                this._temporalChartInstance = null;
+            }
+        },
+
+        // --------------- static network -----------------------------------
+
+        async loadStatic() {
+            this.loading = true;
+            this.error = null;
+            this.nodeCount = 0;
+            this.edgeCount = 0;
+            this.tooLarge = false;
+
+            // Kill any previous sigma instance before creating a new one.
+            if (this.sigmaInstance) {
+                this.sigmaInstance.kill();
+                this.sigmaInstance = null;
+            }
+
+            try {
+                const res = await fetch(
+                    `/analysis/${runId}/network/${networkType}`,
+                    { credentials: 'include' }
+                );
+                if (res.status === 404) {
+                    // Endpoint not yet available — show empty state silently.
+                    return;
+                }
+                if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+
+                const graphData = await res.json();
+                // Record raw sizes so the UI can display the full graph statistics
+                // and show the large-graph warning when appropriate.
+                this.nodeCount = graphData.nodes ? graphData.nodes.length : 0;
+                this.edgeCount = graphData.edges ? graphData.edges.length : 0;
+
+                if (this.nodeCount > _NETWORK_PREVIEW_MAX_NODES) {
+                    this.tooLarge = true;
+                }
+
+                if (this.nodeCount > 0) {
+                    // Trim oversized graphs before rendering to keep sigma.js responsive.
+                    const trimmed = this._trimGraph(graphData);
+                    // Wait for Alpine to finish rendering the container before measuring it.
+                    this.$nextTick(() => this._renderSigma(trimmed, this._containerId(), 'sigmaInstance'));
+                }
+            } catch (e) {
+                this.error = e.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        /**
+         * Trim a graph to the top-N nodes by degree and the top-M edges
+         * connecting those nodes. This keeps the browser preview lightweight
+         * regardless of how large the full graph is.
+         *
+         * @param {{ nodes: Array, edges: Array }} graphData
+         * @returns {{ nodes: Array, edges: Array }}
+         */
+        _trimGraph(graphData) {
+            const nodes = graphData.nodes || [];
+            const edges = graphData.edges || [];
+
+            if (nodes.length <= _NETWORK_PREVIEW_MAX_NODES) {
+                // Small enough — return as-is, trimming edges only if excessive.
+                const trimmedEdges = edges.length > _NETWORK_PREVIEW_MAX_EDGES
+                    ? edges.slice(0, _NETWORK_PREVIEW_MAX_EDGES)
+                    : edges;
+                return { nodes, edges: trimmedEdges };
+            }
+
+            // Build degree map from edges.
+            const degree = {};
+            edges.forEach(e => {
+                degree[e.source] = (degree[e.source] || 0) + 1;
+                degree[e.target] = (degree[e.target] || 0) + 1;
+            });
+            nodes.forEach(n => {
+                if (degree[n.id] === undefined) degree[n.id] = n.weight || 0;
+            });
+
+            // Sort nodes descending by degree, keep top N.
+            const sorted = [...nodes].sort((a, b) => (degree[b.id] || 0) - (degree[a.id] || 0));
+            const topNodes = sorted.slice(0, _NETWORK_PREVIEW_MAX_NODES);
+            const nodeSet = new Set(topNodes.map(n => n.id));
+
+            // Keep only edges where both endpoints are in the top-N node set.
+            const filteredEdges = edges
+                .filter(e => nodeSet.has(e.source) && nodeSet.has(e.target))
+                .slice(0, _NETWORK_PREVIEW_MAX_EDGES);
+
+            return { nodes: topNodes, edges: filteredEdges };
+        },
+
+        // --------------- temporal network ---------------------------------
+
+        async loadTemporal() {
+            if (this.temporalPeriods.length > 0) return;  // Already loaded.
+            this.temporalLoading = true;
+            this.temporalError = null;
+            try {
+                const res = await fetch(
+                    `/analysis/${runId}/network/${networkType}/temporal`,
+                    { credentials: 'include' }
+                );
+                if (res.status === 404) {
+                    this.temporalPeriods = [];
+                    return;
+                }
+                if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                this.temporalPeriods = await res.json();
+                // Render the timeline bar chart after the DOM updates.
+                this.$nextTick(() => this._renderTemporalChart());
+            } catch (e) {
+                this.temporalError = e.message;
+            } finally {
+                this.temporalLoading = false;
+            }
+        },
+
+        async loadPeriod(period) {
+            this.selectedPeriod = period;
+            this.periodLoading = true;
+
+            // Kill the previous period sigma instance.
+            if (this._periodSigmaInstance) {
+                this._periodSigmaInstance.kill();
+                this._periodSigmaInstance = null;
+            }
+
+            try {
+                const encodedPeriod = encodeURIComponent(period);
+                const res = await fetch(
+                    `/analysis/${runId}/network/${networkType}/temporal/${encodedPeriod}`,
+                    { credentials: 'include' }
+                );
+                if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                const graphData = await res.json();
+                const trimmed = this._trimGraph(graphData);
+                this.$nextTick(() => this._renderSigma(trimmed, this._periodContainerId(), '_periodSigmaInstance'));
+            } catch (e) {
+                // Surface temporal period load errors inline in the period container.
+                console.error(`[networkPreview] Period ${period} failed: ${e.message}`);
+            } finally {
+                this.periodLoading = false;
+            }
+        },
+
+        // --------------- zoom controls ------------------------------------
+
+        /**
+         * Zoom in on the sigma instance for this network type.
+         * Uses sigma's built-in camera API.
+         *
+         * @param {string} _type - Unused; provided by the template for clarity.
+         */
+        zoomIn(_type) {
+            const sigma = this.sigmaInstance;
+            if (!sigma) return;
+            const camera = sigma.getCamera();
+            camera.animatedZoom({ duration: 200 });
+        },
+
+        /**
+         * Zoom out on the sigma instance for this network type.
+         *
+         * @param {string} _type - Unused; provided by the template for clarity.
+         */
+        zoomOut(_type) {
+            const sigma = this.sigmaInstance;
+            if (!sigma) return;
+            const camera = sigma.getCamera();
+            camera.animatedUnzoom({ duration: 200 });
+        },
+
+        /**
+         * Reset the camera to fit all nodes in view.
+         *
+         * @param {string} _type - Unused; provided by the template for clarity.
+         */
+        resetZoom(_type) {
+            const sigma = this.sigmaInstance;
+            if (!sigma) return;
+            sigma.getCamera().animatedReset({ duration: 300 });
+        },
+
+        // --------------- sigma.js rendering -------------------------------
+
+        _containerId() {
+            return `${networkType}-network-container`;
+        },
+
+        _periodContainerId() {
+            return `${networkType}-period-network-container`;
+        },
+
+        _renderSigma(graphData, containerId, instanceKey) {
+            // Guard: sigma must be available from CDN.
+            if (typeof window.Sigma === 'undefined' || typeof window.Graph === 'undefined') {
+                console.warn('[networkPreview] sigma.js or graphology not loaded — skipping render.');
+                return;
+            }
+
+            const container = document.getElementById(containerId);
+            if (!container) {
+                console.warn(`[networkPreview] Container #${containerId} not found.`);
+                return;
+            }
+
+            // Build a graphology graph.
+            // Graph() comes from graphology UMD as window.Graph.
+            const graph = new window.Graph({ type: 'undirected', multi: false });
+
+            // Compute degree map for node sizing.
+            const degree = {};
+            (graphData.edges || []).forEach(e => {
+                degree[e.source] = (degree[e.source] || 0) + 1;
+                degree[e.target] = (degree[e.target] || 0) + 1;
+            });
+
+            // Add nodes with initial random positions and visual attributes.
+            (graphData.nodes || []).forEach(node => {
+                const isActor = node.node_type === 'actor';
+                const deg = degree[node.id] || 1;
+                // Scale node size: minimum 5, proportional to degree (capped at 25).
+                const size = Math.min(5 + deg * 1.5, 25);
+                // Actor nodes: blue (#3b82f6); term nodes: amber (#f59e0b).
+                const color = isActor ? '#3b82f6' : '#f59e0b';
+
+                graph.addNode(node.id, {
+                    label: node.label || node.id,
+                    size,
+                    color,
+                    // Random initial position — ForceAtlas2 will refine this.
+                    x: Math.random(),
+                    y: Math.random(),
+                });
+            });
+
+            // Add edges. Skip edges referencing nodes not present in the node list.
+            (graphData.edges || []).forEach(edge => {
+                if (!graph.hasNode(edge.source) || !graph.hasNode(edge.target)) return;
+                if (graph.hasEdge(edge.source, edge.target)) return;  // Skip multi-edges.
+                graph.addEdge(edge.source, edge.target, {
+                    weight: edge.weight || 1,
+                    size: Math.min(1 + (edge.weight || 1) * 0.2, 4),
+                    color: 'rgba(156, 163, 175, 0.6)',  // gray-400 at 60% opacity
+                });
+            });
+
+            // Apply ForceAtlas2 layout synchronously for small-to-medium graphs
+            // (< 500 nodes). For larger graphs use random layout to avoid blocking
+            // the main thread.
+            if (graph.order < 500 && typeof window.graphologyLayoutForceAtlas2 !== 'undefined') {
+                try {
+                    window.graphologyLayoutForceAtlas2.assign(graph, {
+                        iterations: 150,
+                        settings: {
+                            gravity: 1,
+                            scalingRatio: 2,
+                            slowDown: 5,
+                        },
+                    });
+                } catch (layoutErr) {
+                    console.warn('[networkPreview] ForceAtlas2 failed, using random layout:', layoutErr);
+                    if (typeof window.graphologyLayout !== 'undefined') {
+                        window.graphologyLayout.random.assign(graph);
+                    }
+                }
+            } else if (typeof window.graphologyLayout !== 'undefined') {
+                window.graphologyLayout.random.assign(graph);
+            }
+
+            // Instantiate sigma.js renderer.
+            const sigma = new window.Sigma(graph, container, {
+                renderEdgeLabels: false,
+                // Show node labels only when zoomed in enough.
+                labelRenderedSizeThreshold: 6,
+                labelFont: 'system-ui, sans-serif',
+                defaultEdgeColor: 'rgba(156, 163, 175, 0.5)',
+                defaultEdgeType: 'line',
+                allowInvalidContainer: true,
+            });
+
+            // Hover: highlight hovered node and its neighbours.
+            let hoveredNode = null;
+            sigma.on('enterNode', ({ node }) => {
+                hoveredNode = node;
+                sigma.setSetting('nodeReducer', (n, data) => {
+                    if (n === hoveredNode || graph.neighbors(hoveredNode).includes(n)) {
+                        return { ...data, highlighted: true };
+                    }
+                    return { ...data, color: 'rgba(200,200,200,0.3)', label: '' };
+                });
+                sigma.setSetting('edgeReducer', (edge, data) => {
+                    if (graph.extremities(edge).includes(hoveredNode)) {
+                        return { ...data, color: '#6b7280', size: (data.size || 1) + 1 };
+                    }
+                    return { ...data, color: 'rgba(200,200,200,0.15)' };
+                });
+            });
+
+            sigma.on('leaveNode', () => {
+                hoveredNode = null;
+                sigma.setSetting('nodeReducer', null);
+                sigma.setSetting('edgeReducer', null);
+            });
+
+            // Store instance reference so it can be killed on tab switch / destroy.
+            this[instanceKey] = sigma;
+        },
+
+        // --------------- temporal chart rendering -------------------------
+
+        _temporalChartCanvasId() {
+            return `${networkType}-temporal-chart`;
+        },
+
+        _renderTemporalChart() {
+            if (!this.temporalPeriods.length) return;
+            if (typeof window.Chart === 'undefined') return;
+
+            const canvasId = this._temporalChartCanvasId();
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return;
+
+            // Destroy any existing chart on this canvas.
+            if (this._temporalChartInstance) {
+                this._temporalChartInstance.destroy();
+            }
+            const existing = window.Chart.getChart(canvas);
+            if (existing) existing.destroy();
+
+            const periods = this.temporalPeriods;
+            const labels = periods.map(p => p.period ? p.period.slice(0, 10) : p.period);
+
+            // Capture reference to this Alpine component for the click callback.
+            const self = this;
+
+            this._temporalChartInstance = new window.Chart(canvas, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'Nodes',
+                            data: periods.map(p => p.node_count || 0),
+                            backgroundColor: 'rgba(37, 99, 235, 0.7)',
+                            borderColor: '#2563eb',
+                            borderWidth: 0,
+                            borderRadius: 3,
+                        },
+                        {
+                            label: 'Edges',
+                            data: periods.map(p => p.edge_count || 0),
+                            backgroundColor: 'rgba(217, 119, 6, 0.7)',
+                            borderColor: '#d97706',
+                            borderWidth: 0,
+                            borderRadius: 3,
+                        },
+                    ],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: {
+                            labels: { font: { size: 12, family: 'system-ui, sans-serif' }, color: '#374151' },
+                        },
+                        tooltip: {
+                            backgroundColor: '#1f2937',
+                            titleColor: '#f9fafb',
+                            bodyColor: '#d1d5db',
+                            padding: 10,
+                            cornerRadius: 6,
+                        },
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#6b7280', font: { size: 11 }, maxRotation: 45 },
+                            grid: { display: false },
+                            title: { display: true, text: 'Period', color: '#6b7280', font: { size: 11 } },
+                        },
+                        y: {
+                            beginAtZero: true,
+                            ticks: { color: '#6b7280', font: { size: 11 }, precision: 0 },
+                            grid: { color: 'rgba(0,0,0,0.05)' },
+                            title: { display: true, text: 'Count', color: '#6b7280', font: { size: 11 } },
+                        },
+                    },
+                    // Click a bar to load that period's network.
+                    onClick(event, elements) {
+                        if (!elements.length) return;
+                        const idx = elements[0].index;
+                        const period = periods[idx] ? periods[idx].period : null;
+                        if (period) self.loadPeriod(period);
+                    },
+                    onHover(event, elements) {
+                        event.native.target.style.cursor = elements.length ? 'pointer' : 'default';
+                    },
+                },
+            });
+        },
+
+        // Helper called by x-html to force Alpine to recognise container init.
+        // Not actually used for HTML injection — the containers are in static markup.
+        _includeNetworkPreview() { return false; },
+        _buildNetworkPreviewHTML() { return ''; },
+    };
+}
+
 // ---- Export panel component -----------------------------------------------
 function exportPanel(runId) {
     return {
         runId,
         exportFormat: 'csv',
+        // formats: the value is what is sent to the server; label is what the researcher sees.
+        // tooltip (optional) is shown as a help icon for citation formats.
+        formats: [
+            { value: 'csv',     label: 'CSV',     tooltip: '' },
+            { value: 'xlsx',    label: 'XLSX',    tooltip: '' },
+            { value: 'json',    label: 'NDJSON (one record per line)', tooltip: '' },
+            { value: 'parquet', label: 'PARQUET', tooltip: '' },
+            { value: 'gexf',    label: 'GEXF',    tooltip: '' },
+            { value: 'ris',     label: 'RIS',     tooltip: 'RIS \u2014 for Zotero, Mendeley, EndNote' },
+            { value: 'bibtex',  label: 'BibTeX',  tooltip: 'BibTeX \u2014 for LaTeX/Overleaf' },
+        ],
+        // gexfNetworkType is only relevant when exportFormat === 'gexf'.
+        // It controls both the sync download link and the async export job body.
+        gexfNetworkType: 'actor',
         exportJobId: null,
         exportStatus: null,
         exportPct: null,
         exportDownloadUrl: null,
         exportError: null,
         _pollTimer: null,
+
+        // Filtered export state (IP2-055)
+        filteredExportOpen: false,
+        filteredExport: {
+            search_term: '',
+            top_actors: '',
+            min_engagement: '',
+        },
+
+        filteredExportUrl() {
+            const f = window.__analysisFilters || {};
+            const fe = this.filteredExport;
+            // Derive format: RIS/BibTeX map to same keys on the filtered export endpoint;
+            // GEXF is not supported by the filtered endpoint (only tabular formats).
+            const fmt = (this.exportFormat === 'gexf') ? 'csv' : this.exportFormat;
+            const p = new URLSearchParams({ format: fmt });
+            if (f.platform)                    p.set('platform',       f.platform);
+            if (f.arena)                       p.set('arena',          f.arena);
+            if (f.date_from)                   p.set('date_from',      f.date_from);
+            if (f.date_to)                     p.set('date_to',        f.date_to);
+            if (fe.search_term.trim())         p.set('search_term',    fe.search_term.trim());
+            if (fe.top_actors.trim())          p.set('top_actors',     fe.top_actors.trim());
+            if (fe.min_engagement !== '')      p.set('min_engagement', fe.min_engagement);
+            return `/analysis/${runId}/filtered-export?${p.toString()}`;
+        },
+
         async startAsyncExport() {
             // Clear previous job state.
             if (this._pollTimer) clearInterval(this._pollTimer);
@@ -777,13 +2179,20 @@ function exportPanel(runId) {
             this.exportError = null;
 
             try {
-                const p = new URLSearchParams({
+                // Build POST body — include network_type only for GEXF format.
+                const payload = {
                     format: this.exportFormat,
                     run_id: this.runId,
-                });
-                const res = await fetch(`/content/export/async?${p}`, {
+                };
+                if (this.exportFormat === 'gexf') {
+                    payload.network_type = this.gexfNetworkType;
+                }
+
+                const res = await fetch('/content/export/async', {
                     method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
                     credentials: 'include',
+                    body: JSON.stringify(payload),
                 });
                 if (!res.ok) {
                     const body = await res.json().catch(() => ({}));
@@ -819,6 +2228,69 @@ function exportPanel(runId) {
             } catch (e) {
                 this.exportError = e.message;
                 clearInterval(this._pollTimer);
+            }
+        },
+    };
+}
+
+// ---- Suggested terms panel component (IP2-053) ----------------------------
+//
+// Loads emergent terms that are not yet in the query design from the endpoint:
+//   GET /analysis/{run_id}/suggested-terms
+// Response: [{ term: string, score: float, document_frequency: int }]
+//
+// If a queryDesignId is available, the "Add to query design" button POSTs to:
+//   POST /query-designs/{design_id}/terms  (HTMX form, application/x-www-form-urlencoded)
+//
+function suggestedTermsPanel(runId, queryDesignId) {
+    return {
+        runId,
+        queryDesignId: queryDesignId || null,
+        loading: false,
+        error: null,
+        terms: [],
+        addedTerms: new Set(),
+        addError: null,
+
+        async load() {
+            this.loading = true;
+            this.error = null;
+            try {
+                const p = new URLSearchParams({ top_n: 10 });
+                const res = await fetch(`/analysis/${runId}/suggested-terms?${p}`, { credentials: 'include' });
+                if (res.status === 404) {
+                    // Endpoint not yet available — show empty state silently.
+                    this.terms = [];
+                    return;
+                }
+                if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                this.terms = await res.json();
+            } catch (e) {
+                this.error = e.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        async addTerm(term) {
+            if (!this.queryDesignId) return;
+            this.addError = null;
+            try {
+                const body = new URLSearchParams({ term, term_type: 'keyword' });
+                const res = await fetch(`/query-designs/${this.queryDesignId}/terms`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: body.toString(),
+                });
+                if (!res.ok) {
+                    const errBody = await res.text().catch(() => '');
+                    throw new Error(`HTTP ${res.status}: ${errBody || res.statusText}`);
+                }
+                // Mark term as added so the button state changes.
+                this.addedTerms = new Set([...this.addedTerms, term]);
+            } catch (e) {
+                this.addError = `Could not add "${term}": ${e.message}`;
             }
         },
     };

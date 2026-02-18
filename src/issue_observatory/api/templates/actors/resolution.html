@@ -1,0 +1,747 @@
+{% extends "base.html" %}
+{% block title %}Entity Resolution — Issue Observatory{% endblock %}
+
+{% block content %}
+{#
+    Entity Resolution page — IP2-041.
+
+    Two main sections:
+    1. Resolution Candidates — authors seen on 2+ platforms, loaded via
+       Alpine.js fetch to GET /actors/resolution-candidates.
+       - Unresolved: "Create Actor" button opens a modal to POST /actors/
+       - Resolved: "View Actor" link to /actors/{id}
+
+    2. Merge Actors — two actor search inputs; submits to
+       POST /actors/{actor_id}/merge/{other_actor_id}.
+#}
+
+<div class="max-w-5xl mx-auto space-y-6"
+     x-data="entityResolutionPage()">
+
+    {# Page header with back navigation #}
+    <div class="flex items-center gap-3">
+        <a href="/actors"
+           class="text-gray-400 hover:text-gray-600 transition-colors"
+           aria-label="Back to actor directory">
+            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
+            </svg>
+        </a>
+        <div>
+            <h1 class="text-xl font-bold text-gray-900">Entity Resolution</h1>
+            <p class="text-sm text-gray-500 mt-0.5">Link pseudonymized authors to canonical actor records</p>
+        </div>
+    </div>
+
+    {# ------------------------------------------------------------------ #}
+    {# Create Actor modal — opened when researcher clicks "Create Actor"   #}
+    {# for an unresolved candidate.                                        #}
+    {# ------------------------------------------------------------------ #}
+    <div x-show="createModal.open"
+         x-cloak
+         class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40"
+         @keydown.escape.window="createModal.open = false">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 p-6" @click.stop>
+            <div class="flex items-center justify-between mb-5">
+                <h2 class="text-base font-semibold text-gray-900">Create Actor</h2>
+                <button @click="createModal.open = false" class="text-gray-400 hover:text-gray-600">
+                    <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                         stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+
+            {# Pre-filled with the candidate display name #}
+            <div class="mb-4 p-3 bg-gray-50 rounded-md border border-gray-200">
+                <p class="text-xs text-gray-500 mb-1">Candidate display name</p>
+                <p class="text-sm font-medium text-gray-900" x-text="createModal.displayName"></p>
+                <div class="flex flex-wrap gap-1 mt-2">
+                    <template x-for="platform in (createModal.platforms || [])" :key="platform">
+                        <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700"
+                              x-text="platform"></span>
+                    </template>
+                </div>
+            </div>
+
+            <div class="space-y-4">
+                <div>
+                    <label for="create_canonical_name" class="block text-sm font-medium text-gray-700 mb-1">
+                        Canonical name <span class="text-red-500">*</span>
+                    </label>
+                    <input type="text"
+                           id="create_canonical_name"
+                           x-model="createModal.canonicalName"
+                           placeholder="e.g. DR Nyheder"
+                           class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+
+                <div>
+                    <label for="create_actor_type" class="block text-sm font-medium text-gray-700 mb-1">
+                        Actor type
+                    </label>
+                    <select id="create_actor_type"
+                            x-model="createModal.actorType"
+                            class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                        <option value="person">Person</option>
+                        <option value="organization">Organization</option>
+                        <option value="political_party">Political party</option>
+                        <option value="educational_institution">Educational institution</option>
+                        <option value="teachers_union">Teachers' union</option>
+                        <option value="think_tank">Think tank</option>
+                        <option value="media_outlet">Media outlet</option>
+                        <option value="government_body">Government body</option>
+                        <option value="ngo">NGO</option>
+                        <option value="company">Company</option>
+                        <option value="unknown">Unknown</option>
+                    </select>
+                </div>
+
+                {# Error display #}
+                <div x-show="createModal.error"
+                     class="p-3 bg-red-50 border border-red-200 rounded-md">
+                    <p class="text-sm text-red-700" x-text="createModal.error"></p>
+                </div>
+
+                <div class="pt-4 border-t border-gray-200 flex justify-between items-center">
+                    <button type="button"
+                            @click="createModal.open = false"
+                            class="text-sm text-gray-500 hover:text-gray-700">
+                        Cancel
+                    </button>
+                    <button type="button"
+                            @click="submitCreateActor()"
+                            :disabled="createModal.loading || !createModal.canonicalName.trim()"
+                            class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                        <svg x-show="createModal.loading"
+                             class="animate-spin w-4 h-4 text-white"
+                             xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                        </svg>
+                        <span x-text="createModal.loading ? 'Creating...' : 'Create Actor'"></span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {# ------------------------------------------------------------------ #}
+    {# Section 1: Resolution candidates                                    #}
+    {# ------------------------------------------------------------------ #}
+    <div class="bg-white rounded-lg shadow overflow-hidden">
+        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+            <div>
+                <h2 class="text-sm font-semibold text-gray-900">Resolution Candidates</h2>
+                <p class="text-xs text-gray-500 mt-0.5">
+                    Authors whose display name appears across two or more platforms
+                </p>
+            </div>
+            <div class="flex items-center gap-3">
+                {# Optional: run_id filter #}
+                <div class="flex items-center gap-2">
+                    <label for="filter-limit" class="text-xs text-gray-500 whitespace-nowrap">
+                        Show
+                    </label>
+                    <select id="filter-limit"
+                            x-model.number="candidatesLimit"
+                            @change="loadCandidates()"
+                            class="border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white">
+                        <option value="25">25</option>
+                        <option value="50" selected>50</option>
+                        <option value="100">100</option>
+                        <option value="200">200</option>
+                    </select>
+                </div>
+                <button type="button"
+                        @click="loadCandidates()"
+                        :disabled="candidatesLoading"
+                        class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-600 border border-blue-200 rounded-md hover:bg-blue-50 transition-colors disabled:opacity-50">
+                    <svg x-show="candidatesLoading"
+                         class="animate-spin w-3 h-3"
+                         xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    <svg x-show="!candidatesLoading"
+                         class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                         stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                    </svg>
+                    <span x-text="candidatesLoading ? 'Loading...' : 'Refresh'"></span>
+                </button>
+            </div>
+        </div>
+
+        {# Error banner #}
+        <div x-show="candidatesError"
+             class="mx-6 mt-4 flex items-start gap-2 bg-red-50 border border-red-200 rounded-md px-4 py-3">
+            <svg class="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" xmlns="http://www.w3.org/2000/svg"
+                 fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <p class="text-sm text-red-700" x-text="candidatesError"></p>
+        </div>
+
+        {# Loading skeleton #}
+        <div x-show="candidatesLoading && candidates.length === 0"
+             class="px-6 py-10 text-center">
+            <svg class="animate-spin w-6 h-6 text-blue-400 mx-auto mb-3"
+                 xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+            </svg>
+            <p class="text-sm text-gray-400">Loading candidates...</p>
+        </div>
+
+        {# Empty state #}
+        <div x-show="!candidatesLoading && !candidatesError && candidates.length === 0"
+             class="px-6 py-12 text-center">
+            <svg class="w-10 h-10 text-gray-300 mx-auto mb-3" xmlns="http://www.w3.org/2000/svg"
+                 fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0"/>
+            </svg>
+            <p class="text-sm font-medium text-gray-500">No cross-platform candidates found</p>
+            <p class="text-xs text-gray-400 mt-1">
+                Candidates appear when the same author display name is seen on two or more platforms.
+                Collect more content or click Refresh to check again.
+            </p>
+        </div>
+
+        {# Candidates table #}
+        <div x-show="candidates.length > 0" class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200 text-sm">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Display name
+                        </th>
+                        <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Platforms
+                        </th>
+                        <th class="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Records
+                        </th>
+                        <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Status
+                        </th>
+                        <th class="px-6 py-3">
+                            <span class="sr-only">Actions</span>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody class="bg-white divide-y divide-gray-100">
+                    <template x-for="(candidate, idx) in candidates" :key="idx">
+                        <tr class="hover:bg-gray-50 transition-colors">
+                            {# Display name #}
+                            <td class="px-6 py-3">
+                                <div class="flex items-center gap-2">
+                                    <div class="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center text-xs font-bold text-gray-500 flex-shrink-0"
+                                         x-text="(candidate.display_name || '?')[0].toUpperCase()"></div>
+                                    <span class="font-medium text-gray-900 text-sm"
+                                          x-text="candidate.display_name"></span>
+                                </div>
+                            </td>
+
+                            {# Platforms #}
+                            <td class="px-6 py-3">
+                                <div class="flex flex-wrap gap-1">
+                                    <template x-for="platform in (candidate.platforms || [])" :key="platform">
+                                        <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700 capitalize"
+                                              x-text="platform"></span>
+                                    </template>
+                                </div>
+                            </td>
+
+                            {# Record count #}
+                            <td class="px-6 py-3 text-right font-mono text-xs text-gray-500"
+                                x-text="candidate.total_records.toLocaleString()"></td>
+
+                            {# Resolution status badge #}
+                            <td class="px-6 py-3">
+                                <template x-if="candidate.is_resolved">
+                                    <div class="flex items-center gap-1.5">
+                                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                            <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none"
+                                                 viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                                            </svg>
+                                            Resolved
+                                        </span>
+                                        <span class="text-xs text-gray-500" x-text="candidate.canonical_name"></span>
+                                    </div>
+                                </template>
+                                <template x-if="!candidate.is_resolved">
+                                    <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+                                        Unresolved
+                                    </span>
+                                </template>
+                            </td>
+
+                            {# Action buttons #}
+                            <td class="px-6 py-3 text-right">
+                                <template x-if="candidate.is_resolved">
+                                    <a :href="'/actors/' + candidate.actor_id"
+                                       class="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 px-2 py-1 rounded hover:bg-blue-50 transition-colors">
+                                        View Actor
+                                    </a>
+                                </template>
+                                <template x-if="!candidate.is_resolved">
+                                    <button type="button"
+                                            @click="openCreateModal(candidate)"
+                                            class="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 px-2 py-1 rounded hover:bg-blue-50 transition-colors">
+                                        <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none"
+                                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+                                        </svg>
+                                        Create Actor
+                                    </button>
+                                </template>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+
+        {# Success banner after creating an actor #}
+        <div x-show="createSuccess"
+             x-cloak
+             class="mx-6 my-4 flex items-start gap-2 bg-green-50 border border-green-200 rounded-md px-4 py-3">
+            <svg class="w-4 h-4 text-green-600 mt-0.5 flex-shrink-0" xmlns="http://www.w3.org/2000/svg"
+                 fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+            </svg>
+            <p class="text-sm text-green-800" x-text="createSuccess"></p>
+        </div>
+    </div>
+
+    {# ------------------------------------------------------------------ #}
+    {# Section 2: Merge actors                                             #}
+    {# ------------------------------------------------------------------ #}
+    <div class="bg-white rounded-lg shadow overflow-hidden">
+        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200 cursor-pointer select-none"
+             @click="mergePanel.open = !mergePanel.open">
+            <div>
+                <h2 class="text-sm font-semibold text-gray-900">Merge Actors</h2>
+                <p class="text-xs text-gray-500 mt-0.5">
+                    Absorb one actor record into another, transferring all presences and content
+                </p>
+            </div>
+            <svg class="w-4 h-4 text-gray-400 transition-transform duration-150"
+                 :class="mergePanel.open ? 'rotate-180' : ''"
+                 xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+            </svg>
+        </div>
+
+        <div x-show="mergePanel.open" x-cloak class="px-6 py-5 space-y-5">
+
+            <p class="text-xs text-gray-500">
+                The <strong>target actor</strong> is preserved.
+                The <strong>source actor</strong> is deleted after all its platform presences,
+                aliases, list memberships, and content records are transferred to the target.
+                This action cannot be undone.
+            </p>
+
+            <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
+
+                {# Target actor search #}
+                <div>
+                    <label class="block text-xs font-medium text-gray-700 mb-1.5">
+                        Target actor
+                        <span class="text-gray-400 font-normal ml-1">— keep this one</span>
+                    </label>
+                    <div class="relative">
+                        <input type="text"
+                               x-model="mergePanel.targetQuery"
+                               @input.debounce.300ms="searchActors('target')"
+                               @focus="mergePanel.targetDropdownOpen = true"
+                               placeholder="Search by name..."
+                               autocomplete="off"
+                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        {# Dropdown #}
+                        <div x-show="mergePanel.targetDropdownOpen && mergePanel.targetResults.length > 0"
+                             @click.outside="mergePanel.targetDropdownOpen = false"
+                             class="absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-48 overflow-y-auto">
+                            <template x-for="actor in mergePanel.targetResults" :key="actor.id">
+                                <button type="button"
+                                        @click="selectActor('target', actor)"
+                                        class="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 transition-colors flex items-center justify-between gap-2">
+                                    <span x-text="actor.canonical_name" class="font-medium text-gray-900"></span>
+                                    <span x-show="actor.actor_type"
+                                          class="text-xs text-gray-400 capitalize"
+                                          x-text="actor.actor_type"></span>
+                                </button>
+                            </template>
+                        </div>
+                    </div>
+                    {# Selected actor display #}
+                    <div x-show="mergePanel.targetActor"
+                         x-cloak
+                         class="mt-2 flex items-center gap-2 p-2 bg-blue-50 border border-blue-200 rounded-md">
+                        <svg class="w-4 h-4 text-blue-500 flex-shrink-0" xmlns="http://www.w3.org/2000/svg"
+                             fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                        </svg>
+                        <span class="text-sm font-medium text-blue-900"
+                              x-text="mergePanel.targetActor && mergePanel.targetActor.canonical_name"></span>
+                        <button type="button"
+                                @click="mergePanel.targetActor = null; mergePanel.targetQuery = ''"
+                                class="ml-auto text-blue-400 hover:text-blue-600 text-xs">
+                            Clear
+                        </button>
+                    </div>
+                </div>
+
+                {# Source actor search #}
+                <div>
+                    <label class="block text-xs font-medium text-gray-700 mb-1.5">
+                        Source actor
+                        <span class="text-gray-400 font-normal ml-1">— delete this one</span>
+                    </label>
+                    <div class="relative">
+                        <input type="text"
+                               x-model="mergePanel.sourceQuery"
+                               @input.debounce.300ms="searchActors('source')"
+                               @focus="mergePanel.sourceDropdownOpen = true"
+                               placeholder="Search by name..."
+                               autocomplete="off"
+                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        {# Dropdown #}
+                        <div x-show="mergePanel.sourceDropdownOpen && mergePanel.sourceResults.length > 0"
+                             @click.outside="mergePanel.sourceDropdownOpen = false"
+                             class="absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-48 overflow-y-auto">
+                            <template x-for="actor in mergePanel.sourceResults" :key="actor.id">
+                                <button type="button"
+                                        @click="selectActor('source', actor)"
+                                        class="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 transition-colors flex items-center justify-between gap-2">
+                                    <span x-text="actor.canonical_name" class="font-medium text-gray-900"></span>
+                                    <span x-show="actor.actor_type"
+                                          class="text-xs text-gray-400 capitalize"
+                                          x-text="actor.actor_type"></span>
+                                </button>
+                            </template>
+                        </div>
+                    </div>
+                    {# Selected actor display #}
+                    <div x-show="mergePanel.sourceActor"
+                         x-cloak
+                         class="mt-2 flex items-center gap-2 p-2 bg-red-50 border border-red-200 rounded-md">
+                        <svg class="w-4 h-4 text-red-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg"
+                             fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                        </svg>
+                        <span class="text-sm font-medium text-red-900"
+                              x-text="mergePanel.sourceActor && mergePanel.sourceActor.canonical_name"></span>
+                        <button type="button"
+                                @click="mergePanel.sourceActor = null; mergePanel.sourceQuery = ''"
+                                class="ml-auto text-red-400 hover:text-red-600 text-xs">
+                            Clear
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+
+            {# Merge action area #}
+            <div class="pt-3 border-t border-gray-100 flex items-center gap-4">
+                <button type="button"
+                        @click="submitMerge()"
+                        :disabled="!mergePanel.targetActor || !mergePanel.sourceActor || mergePanel.loading"
+                        class="inline-flex items-center gap-2 px-5 py-2 bg-red-600 text-white text-sm font-medium rounded-md hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                    <svg x-show="mergePanel.loading"
+                         class="animate-spin w-4 h-4 text-white"
+                         xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    <svg x-show="!mergePanel.loading"
+                         class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none"
+                         viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                              d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                    </svg>
+                    <span x-text="mergePanel.loading ? 'Merging...' : 'Merge actors'"></span>
+                </button>
+
+                <p x-show="!mergePanel.targetActor || !mergePanel.sourceActor"
+                   class="text-xs text-gray-400">
+                    Select both a target and a source actor above.
+                </p>
+            </div>
+
+            {# Merge error #}
+            <div x-show="mergePanel.error"
+                 x-cloak
+                 class="flex items-start gap-2 bg-red-50 border border-red-200 rounded-md px-4 py-3">
+                <svg class="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" xmlns="http://www.w3.org/2000/svg"
+                     fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <p class="text-sm text-red-700" x-text="mergePanel.error"></p>
+            </div>
+
+            {# Merge success #}
+            <div x-show="mergePanel.success"
+                 x-cloak
+                 class="flex items-start gap-2 bg-green-50 border border-green-200 rounded-md px-4 py-3">
+                <svg class="w-4 h-4 text-green-600 mt-0.5 flex-shrink-0" xmlns="http://www.w3.org/2000/svg"
+                     fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                </svg>
+                <p class="text-sm text-green-800" x-text="mergePanel.success"></p>
+            </div>
+
+        </div>
+    </div>
+
+</div>
+
+<script>
+function entityResolutionPage() {
+    return {
+        // ----------------------------------------------------------------
+        // Candidates section state
+        // ----------------------------------------------------------------
+        candidates: [],
+        candidatesLoading: false,
+        candidatesError: null,
+        candidatesLimit: 50,
+        createSuccess: null,
+
+        // Create-actor modal state
+        createModal: {
+            open: false,
+            displayName: '',
+            platforms: [],
+            canonicalName: '',
+            actorType: 'unknown',
+            loading: false,
+            error: null,
+        },
+
+        // ----------------------------------------------------------------
+        // Merge panel state
+        // ----------------------------------------------------------------
+        mergePanel: {
+            open: false,
+            targetQuery: '',
+            sourceQuery: '',
+            targetResults: [],
+            sourceResults: [],
+            targetDropdownOpen: false,
+            sourceDropdownOpen: false,
+            targetActor: null,
+            sourceActor: null,
+            loading: false,
+            error: null,
+            success: null,
+        },
+
+        // ----------------------------------------------------------------
+        // Lifecycle
+        // ----------------------------------------------------------------
+        async init() {
+            await this.loadCandidates();
+        },
+
+        // ----------------------------------------------------------------
+        // Candidates section
+        // ----------------------------------------------------------------
+        async loadCandidates() {
+            this.candidatesLoading = true;
+            this.candidatesError = null;
+            this.createSuccess = null;
+
+            try {
+                const url = `/actors/resolution-candidates?limit=${this.candidatesLimit}`;
+                const res = await fetch(url, { credentials: 'include' });
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    throw new Error(data.detail || `HTTP ${res.status}: ${res.statusText}`);
+                }
+                this.candidates = await res.json();
+            } catch (e) {
+                this.candidatesError = e.message;
+            } finally {
+                this.candidatesLoading = false;
+            }
+        },
+
+        openCreateModal(candidate) {
+            this.createModal = {
+                open: true,
+                displayName: candidate.display_name,
+                platforms: candidate.platforms || [],
+                // Pre-fill canonical name with the display name as a starting point.
+                canonicalName: candidate.display_name,
+                actorType: 'unknown',
+                loading: false,
+                error: null,
+            };
+        },
+
+        async submitCreateActor() {
+            const name = this.createModal.canonicalName.trim();
+            if (!name) return;
+
+            this.createModal.loading = true;
+            this.createModal.error = null;
+
+            try {
+                const res = await fetch('/actors/', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({
+                        canonical_name: name,
+                        actor_type: this.createModal.actorType,
+                    }),
+                });
+
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    throw new Error(data.detail || `HTTP ${res.status}: ${res.statusText}`);
+                }
+
+                const actor = await res.json();
+                this.createModal.open = false;
+                this.createSuccess = `Actor "${actor.canonical_name}" created successfully. Refreshing candidates...`;
+
+                // Refresh the candidates list so the newly created actor
+                // appears as resolved if the backend links it.
+                await this.loadCandidates();
+            } catch (e) {
+                this.createModal.error = e.message;
+            } finally {
+                this.createModal.loading = false;
+            }
+        },
+
+        // ----------------------------------------------------------------
+        // Merge section
+        // ----------------------------------------------------------------
+        async searchActors(side) {
+            const query = side === 'target'
+                ? this.mergePanel.targetQuery
+                : this.mergePanel.sourceQuery;
+
+            if (!query || query.length < 2) {
+                if (side === 'target') {
+                    this.mergePanel.targetResults = [];
+                } else {
+                    this.mergePanel.sourceResults = [];
+                }
+                return;
+            }
+
+            try {
+                const res = await fetch(
+                    `/actors/search?q=${encodeURIComponent(query)}`,
+                    { credentials: 'include' }
+                );
+                if (!res.ok) return;
+                const actors = await res.json();
+
+                if (side === 'target') {
+                    this.mergePanel.targetResults = actors;
+                    this.mergePanel.targetDropdownOpen = true;
+                } else {
+                    this.mergePanel.sourceResults = actors;
+                    this.mergePanel.sourceDropdownOpen = true;
+                }
+            } catch {
+                // Search errors are non-fatal; just clear results.
+                if (side === 'target') {
+                    this.mergePanel.targetResults = [];
+                } else {
+                    this.mergePanel.sourceResults = [];
+                }
+            }
+        },
+
+        selectActor(side, actor) {
+            if (side === 'target') {
+                this.mergePanel.targetActor = actor;
+                this.mergePanel.targetQuery = actor.canonical_name;
+                this.mergePanel.targetDropdownOpen = false;
+                this.mergePanel.targetResults = [];
+            } else {
+                this.mergePanel.sourceActor = actor;
+                this.mergePanel.sourceQuery = actor.canonical_name;
+                this.mergePanel.sourceDropdownOpen = false;
+                this.mergePanel.sourceResults = [];
+            }
+        },
+
+        async submitMerge() {
+            const target = this.mergePanel.targetActor;
+            const source = this.mergePanel.sourceActor;
+            if (!target || !source) return;
+
+            if (target.id === source.id) {
+                this.mergePanel.error = 'Target and source actors must be different.';
+                return;
+            }
+
+            const confirmed = confirm(
+                `Merge "${source.canonical_name}" into "${target.canonical_name}"?\n\n` +
+                `"${source.canonical_name}" will be permanently deleted and all its data ` +
+                `transferred to "${target.canonical_name}". This cannot be undone.`
+            );
+            if (!confirmed) return;
+
+            this.mergePanel.loading = true;
+            this.mergePanel.error = null;
+            this.mergePanel.success = null;
+
+            try {
+                const res = await fetch(
+                    `/actors/${target.id}/merge/${source.id}`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                    }
+                );
+
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    throw new Error(data.detail || `HTTP ${res.status}: ${res.statusText}`);
+                }
+
+                const data = await res.json();
+                this.mergePanel.success =
+                    `Merge complete. ` +
+                    `${data.presences_moved} presence(s) moved, ` +
+                    `${data.aliases_moved} alias(es) moved, ` +
+                    `${data.list_members_moved} list membership(s) moved, ` +
+                    `${data.records_updated} content record(s) updated. ` +
+                    `"${source.canonical_name}" has been deleted.`;
+
+                // Reset selection.
+                this.mergePanel.targetActor = null;
+                this.mergePanel.sourceActor = null;
+                this.mergePanel.targetQuery = '';
+                this.mergePanel.sourceQuery = '';
+
+                // Refresh candidates — the merged actor may now resolve some.
+                await this.loadCandidates();
+            } catch (e) {
+                this.mergePanel.error = e.message;
+            } finally {
+                this.mergePanel.loading = false;
+            }
+        },
+    };
+}
+</script>
+{% endblock %}

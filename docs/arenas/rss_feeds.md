@@ -70,6 +70,29 @@ RSS (Really Simple Syndication) feeds provide structured, machine-readable acces
 | Nordjyske | `https://nordjyske.dk/rss/nyheder` | Active |
 | Fyens Stiftstidende | `https://fyens.dk/feed/danmark` | Active (pattern: `/feed/{category}`) |
 
+#### Altinget Section Feeds (Added: IP2-009)
+
+| Feed | URL | Status |
+|------|-----|--------|
+| Altinget Main | `https://www.altinget.dk/feed/rss.xml` | In config (existing) |
+| Altinget Uddannelse | `https://www.altinget.dk/uddannelse/rss` | Unverified -- follows expected pattern |
+| Altinget Klima | `https://www.altinget.dk/klima/rss` | Unverified -- follows expected pattern |
+
+#### Education-Sector Feeds (Added: IP2-058)
+
+These feeds support the "AI og uddannelse" (AI and education) issue mapping use case and broader education policy tracking in Denmark.
+
+| Outlet | Feed URL | Status | Notes |
+|--------|----------|--------|-------|
+| Folkeskolen | `https://www.folkeskolen.dk/rss` | Unverified | Published by DLF (Danmarks Laererforening). Primary/lower-secondary education. |
+| Gymnasieskolen | `https://gymnasieskolen.dk/feed` | Unverified | Published by GL (Gymnasieskolernes Laererforening). Upper-secondary education. |
+| KU (Univ. of Copenhagen) | `https://nyheder.ku.dk/feed/` | Unverified | University news feed. |
+| DTU | `https://www.dtu.dk/nyheder/rss` | Unverified | Technical University of Denmark news. |
+| CBS | `https://www.cbs.dk/rss` | Unverified | Copenhagen Business School news. |
+| DEA (think tank) | `https://dea.nu/feed` | Unverified, commented out in config | Education/research policy think tank. RSS availability uncertain. |
+
+**Important**: All education-sector feed URLs above are unverified and based on common Danish website RSS patterns. They must be confirmed at implementation time via the RSS arena health check. If a URL returns an error, consult the outlet's website for the correct feed path.
+
 #### Uncertain/Needs Verification
 
 | Outlet | Feed URL | Status |

@@ -7,7 +7,18 @@
       "WebFetch(domain:github.com)",
       "Bash(gh api:*)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(wc:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(python3 -m pytest:*)",
+      "Bash(ls:*)",
+      "Bash(python3:*)",
+      "Bash(__NEW_LINE_dff3398d20864201__ echo \"=== test_content_extractor.py ===\")",
+      "Bash(source:*)",
+      "Bash(pytest:*)",
+      "WebSearch",
+      "Bash(pip3 show:*)",
+      "Bash(.venv/bin/pip install:*)"
     ]
   }
 }

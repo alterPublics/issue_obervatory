@@ -15,6 +15,7 @@ All models are imported here so that:
 from __future__ import annotations
 
 from issue_observatory.core.models.base import Base, TimestampMixin, UserOwnedMixin
+from issue_observatory.core.models.annotations import ContentAnnotation
 from issue_observatory.core.models.actors import (
     Actor,
     ActorAlias,
@@ -28,6 +29,7 @@ from issue_observatory.core.models.collection import (
 )
 from issue_observatory.core.models.content import UniversalContentRecord
 from issue_observatory.core.models.credentials import ApiCredential
+from issue_observatory.core.models.scraping import ScrapingJob
 from issue_observatory.core.models.query_design import (
     ActorList,
     QueryDesign,
@@ -44,6 +46,8 @@ __all__ = [
     "Base",
     "TimestampMixin",
     "UserOwnedMixin",
+    # Annotations
+    "ContentAnnotation",
     # Users
     "User",
     "CreditAllocation",
@@ -65,4 +69,6 @@ __all__ = [
     "CreditTransaction",
     # Credentials
     "ApiCredential",
+    # Scraping
+    "ScrapingJob",
 ]

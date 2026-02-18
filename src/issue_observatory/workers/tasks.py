@@ -46,6 +46,11 @@ from celery.exceptions import Retry
 
 from issue_observatory.config.settings import get_settings
 from issue_observatory.core.email_service import get_email_service
+from issue_observatory.core.schemas.query_design import parse_language_codes
+from issue_observatory.workers._enrichment_helpers import (
+    fetch_content_records_for_run,
+    write_enrichment,
+)
 from issue_observatory.workers._task_helpers import (
     enforce_retention,
     fetch_live_tracking_designs,
@@ -120,6 +125,9 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
         owner_id = design["owner_id"]
         arenas_config: dict[str, str] = design.get("arenas_config") or {}
         default_tier: str = design.get("default_tier") or "free"
+        # IP2-052: parse comma-separated language field into a list for dispatch.
+        raw_language: str = design.get("language") or "da"
+        language_filter: list[str] = parse_language_codes(raw_language)
 
         task_log = log.bind(
             query_design_id=str(design_id), run_id=str(run_id)
@@ -184,7 +192,13 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
             try:
                 celery_app.send_task(
                     task_name,
-                    kwargs={"collection_run_id": str(run_id), "tier": tier},
+                    kwargs={
+                        "collection_run_id": str(run_id),
+                        "tier": tier,
+                        # IP2-052: pass language filter so arena tasks can
+                        # restrict results to the design's configured language(s).
+                        "language_filter": language_filter,
+                    },
                     queue="celery",
                 )
                 task_log.info(
@@ -280,6 +294,7 @@ def health_check_all_arenas() -> dict[str, Any]:  # noqa: PLR0912
 
     for arena_info in arenas:
         arena_name: str = arena_info["arena_name"]
+        platform_name: str = arena_info["platform_name"]
         collector_class: str = arena_info.get("collector_class", "")
         try:
             # collector_class = "issue_observatory.arenas.{...}.collector.ClassName"
@@ -287,31 +302,37 @@ def health_check_all_arenas() -> dict[str, Any]:  # noqa: PLR0912
             # to get the arena package.
             module_parts = collector_class.split(".")[:-1]  # drop class name
             arena_package = ".".join(module_parts[:-1])     # drop ".collector"
-            task_name = f"{arena_package}.tasks.{arena_name}_health_check"
+            # Task naming convention: {arena_package}.tasks.{platform_name}_health_check
+            # (platform_name is the unique per-collector identifier; arena_name is a
+            # shared grouping label that multiple collectors share, so it cannot be
+            # used unambiguously as a task name component).
+            task_name = f"{arena_package}.tasks.{platform_name}_health_check"
         except Exception:
             task_name = (
-                f"issue_observatory.arenas.{arena_name}"
-                f".tasks.{arena_name}_health_check"
+                f"issue_observatory.arenas.{platform_name}"
+                f".tasks.{platform_name}_health_check"
             )
 
         try:
             celery_app.send_task(task_name, queue="celery")
-            redis_client.setex(f"arena:health:{arena_name}", 360, "dispatched")
+            redis_client.setex(f"arena:health:{platform_name}", 360, "dispatched")
             log.info(
                 "health_check_all_arenas: dispatched",
                 arena=arena_name,
+                platform=platform_name,
                 task_name=task_name,
             )
-            checked_arenas.append(arena_name)
+            checked_arenas.append(platform_name)
         except Exception as exc:
             log.error(
                 "health_check_all_arenas: dispatch failed",
                 arena=arena_name,
+                platform=platform_name,
                 error=str(exc),
             )
             try:
                 redis_client.setex(
-                    f"arena:health:{arena_name}", 360, f"dispatch_error: {exc}"
+                    f"arena:health:{platform_name}", 360, f"dispatch_error: {exc}"
                 )
             except Exception:
                 pass
@@ -557,5 +578,165 @@ def enforce_retention_policy() -> dict[str, Any]:
     except Exception as _metrics_exc:  # noqa: BLE001
         _stdlib_logger.debug(
             "enforce_retention_policy: metrics recording failed: %s", _metrics_exc
+        )
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Task 6: enrich_collection_run
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(
+    name="issue_observatory.workers.tasks.enrich_collection_run",
+    bind=True,
+    max_retries=3,
+)
+def enrich_collection_run(
+    self: Any,
+    run_id: str,
+    enricher_names: list[str] | None = None,
+) -> dict[str, Any]:
+    """Run content enrichment on all records from a collection run.
+
+    Fetches content records in batches of 100, applies each registered
+    enricher whose ``is_applicable()`` returns True, and writes results
+    into ``raw_metadata.enrichments.{enricher_name}`` via ``jsonb_set``.
+
+    Enrichers are imported lazily from
+    :mod:`issue_observatory.analysis.enrichments` to avoid circular imports
+    at module load time.
+
+    Args:
+        run_id: UUID string of the CollectionRun whose records to enrich.
+        enricher_names: Optional list of enricher names to run.  If None,
+            all registered enrichers are applied.  Pass a list to restrict
+            to a subset (e.g. ``["language_detection"]``).
+
+    Returns:
+        Dict with ``records_processed``, ``enrichments_applied``, and
+        ``error_count``.
+    """
+    _task_start = time.perf_counter()
+    log = logger.bind(task="enrich_collection_run", run_id=run_id)
+    log.info("enrich_collection_run: starting", enricher_names=enricher_names)
+
+    # --- Build enricher registry ---
+    from issue_observatory.analysis.enrichments import (  # noqa: PLC0415
+        DanishLanguageDetector,
+    )
+
+    _all_enrichers: list[Any] = [
+        DanishLanguageDetector(),
+    ]
+
+    if enricher_names is not None:
+        enrichers = [e for e in _all_enrichers if e.enricher_name in enricher_names]
+        unknown = set(enricher_names) - {e.enricher_name for e in enrichers}
+        if unknown:
+            log.warning(
+                "enrich_collection_run: unknown enricher names ignored",
+                unknown=sorted(unknown),
+            )
+    else:
+        enrichers = _all_enrichers
+
+    if not enrichers:
+        log.warning("enrich_collection_run: no enrichers to run; exiting")
+        return {"records_processed": 0, "enrichments_applied": 0, "error_count": 0}
+
+    log.info(
+        "enrich_collection_run: enrichers loaded",
+        enrichers=[e.enricher_name for e in enrichers],
+    )
+
+    # --- Process records in batches ---
+    records_processed = 0
+    enrichments_applied = 0
+    error_count = 0
+    offset = 0
+
+    while True:
+        try:
+            batch = asyncio.run(
+                fetch_content_records_for_run(run_id, offset=offset)
+            )
+        except Exception as exc:
+            log.error(
+                "enrich_collection_run: DB error fetching batch",
+                offset=offset,
+                error=str(exc),
+                exc_info=True,
+            )
+            try:
+                raise self.retry(countdown=60, exc=exc)
+            except Exception:
+                return {
+                    "records_processed": records_processed,
+                    "enrichments_applied": enrichments_applied,
+                    "error_count": error_count + 1,
+                }
+
+        if not batch:
+            break  # all records consumed
+
+        log.debug(
+            "enrich_collection_run: processing batch",
+            offset=offset,
+            batch_size=len(batch),
+        )
+
+        for record in batch:
+            record_id = record.get("id")
+            for enricher in enrichers:
+                if not enricher.is_applicable(record):
+                    continue
+                try:
+                    result = asyncio.run(enricher.enrich(record))
+                    asyncio.run(
+                        write_enrichment(record_id, enricher.enricher_name, result)
+                    )
+                    enrichments_applied += 1
+                    log.debug(
+                        "enrich_collection_run: enrichment written",
+                        record_id=str(record_id),
+                        enricher=enricher.enricher_name,
+                    )
+                except Exception as exc:
+                    log.error(
+                        "enrich_collection_run: enrichment failed",
+                        record_id=str(record_id),
+                        enricher=enricher.enricher_name,
+                        error=str(exc),
+                        exc_info=True,
+                    )
+                    error_count += 1
+
+            records_processed += 1
+
+        offset += len(batch)
+        if len(batch) < 100:  # noqa: PLR2004 — batch size constant
+            break  # last partial batch; no more rows
+
+    summary = {
+        "records_processed": records_processed,
+        "enrichments_applied": enrichments_applied,
+        "error_count": error_count,
+    }
+    log.info("enrich_collection_run: complete", **summary)
+    try:
+        from issue_observatory.api.metrics import (  # noqa: PLC0415
+            celery_task_duration_seconds,
+            celery_tasks_total,
+        )
+        celery_tasks_total.labels(
+            task_name="enrich_collection_run", status="success"
+        ).inc()
+        celery_task_duration_seconds.labels(
+            task_name="enrich_collection_run"
+        ).observe(time.perf_counter() - _task_start)
+    except Exception as _metrics_exc:  # noqa: BLE001
+        _stdlib_logger.debug(
+            "enrich_collection_run: metrics recording failed: %s", _metrics_exc
         )
     return summary

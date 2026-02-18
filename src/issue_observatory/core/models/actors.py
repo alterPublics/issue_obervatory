@@ -1,6 +1,7 @@
 """Actor ORM models.
 
 Covers:
+- ActorType: enumeration of research-relevant actor categories.
 - Actor: a canonical cross-platform entity (person, organisation, outlet…).
 - ActorAlias: alternative name spellings / handles for an actor.
 - ActorPlatformPresence: a verified mapping of an actor to a specific
@@ -12,6 +13,7 @@ Owned by the DB Engineer.
 
 from __future__ import annotations
 
+import enum
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
@@ -21,6 +23,32 @@ from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from issue_observatory.core.models.base import Base
+
+
+class ActorType(str, enum.Enum):
+    """Research-relevant actor type categories for Danish public discourse.
+
+    These categories support the analytical needs of issue mapping and
+    discourse tracking in the Danish media landscape.  The enum inherits
+    from ``str`` so that values are stored as plain strings in the
+    database (no PostgreSQL ENUM type required, avoiding migration
+    complexity).
+
+    The ``unknown`` value is the default for actors whose type has not
+    been determined or does not fit other categories.
+    """
+
+    PERSON = "person"
+    ORGANIZATION = "organization"
+    POLITICAL_PARTY = "political_party"
+    EDUCATIONAL_INSTITUTION = "educational_institution"
+    TEACHERS_UNION = "teachers_union"
+    THINK_TANK = "think_tank"
+    MEDIA_OUTLET = "media_outlet"
+    GOVERNMENT_BODY = "government_body"
+    NGO = "ngo"
+    COMPANY = "company"
+    UNKNOWN = "unknown"
 
 if TYPE_CHECKING:
     from issue_observatory.core.models.query_design import ActorList

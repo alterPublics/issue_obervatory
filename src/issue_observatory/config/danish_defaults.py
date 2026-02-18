@@ -118,6 +118,41 @@ DANISH_RSS_FEEDS: dict[str, str] = {
     # Kristeligt Dagblad — Christian/ethical broadsheet (independent)
     # ------------------------------------------------------------------
     "kristeligt_dagblad_nyheder": "https://www.kristeligt-dagblad.dk/feed/rss.xml",
+    # ------------------------------------------------------------------
+    # Altinget — policy and political journalism (independent, subscription-supported)
+    # Altinget is the most important Danish policy-specific news outlet, covering
+    # all major policy areas with dedicated sections (e.g. uddannelse, sundhed,
+    # energi).  Critical for issue tracking in any Danish policy domain.
+    # URL verified pattern: altinget.dk/feed/rss.xml
+    # ------------------------------------------------------------------
+    "altinget_nyheder": "https://www.altinget.dk/feed/rss.xml",
+    # Added: IP2-009 (Altinget section feeds)
+    # Section-specific feeds follow the pattern altinget.dk/{section}/rss.
+    # These are critical for targeted issue tracking (education, climate).
+    # Unverified — needs manual check: exact section feed URL pattern.
+    "altinget_uddannelse": "https://www.altinget.dk/uddannelse/rss",
+    "altinget_klima": "https://www.altinget.dk/klima/rss",
+    # ------------------------------------------------------------------
+    # Education-sector media — Added: IP2-058 (education feeds)
+    # These feeds support the "AI og uddannelse" use case and broader
+    # education policy tracking.
+    # ------------------------------------------------------------------
+    # Folkeskolen — primary/lower-secondary education media (published by DLF,
+    # Danmarks Laererforening).  The most-read Danish teachers' media outlet.
+    # Unverified — needs manual check: exact RSS URL.
+    "folkeskolen_nyheder": "https://www.folkeskolen.dk/rss",
+    # Gymnasieskolen — upper-secondary education media (published by GL,
+    # Gymnasieskolernes Laererforening).
+    # Unverified — needs manual check: exact RSS URL.
+    "gymnasieskolen_nyheder": "https://gymnasieskolen.dk/feed",
+    # University news feeds — Danish universities typically publish news RSS.
+    # Unverified — needs manual check: all university feed URLs below.
+    "ku_nyheder": "https://nyheder.ku.dk/feed/",
+    "dtu_nyheder": "https://www.dtu.dk/nyheder/rss",
+    "cbs_nyheder": "https://www.cbs.dk/rss",
+    # Tænketanken DEA — education and research policy think tank.
+    # Unverified — needs manual check: DEA may not offer RSS.
+    # dea_nyheder: https://dea.nu/feed  # Commented out: DEA RSS availability is uncertain
 }
 """Curated Danish news outlet RSS feeds.
 
@@ -244,6 +279,94 @@ without a media-house subscription.
 
 VIA_RITZAU_DEFAULT_LANGUAGE: str = "da"
 """Default language filter for Via Ritzau press release queries."""
+
+# ---------------------------------------------------------------------------
+# Wikipedia
+# ---------------------------------------------------------------------------
+
+WIKIPEDIA_USER_AGENT: str = (
+    "IssueObservatory/1.0 (https://github.com/issue-observatory; contact@observatory.dk) python-httpx"
+)
+"""User-Agent header sent with all Wikimedia API requests.
+
+Wikimedia policy requires a meaningful User-Agent that identifies the tool and
+provides a contact address.  This value can be overridden by setting the
+``WIKIPEDIA_USER_AGENT`` environment variable, but the format must comply with
+Wikimedia's guidelines:
+https://www.mediawiki.org/wiki/API:Etiquette#The_User-Agent_header
+"""
+
+DANISH_WIKIPEDIA_SEED_ARTICLES: list[str] = []
+"""Seed article titles for the Wikipedia article watchlist mode.
+
+Populate this list with Danish Wikipedia article titles relevant to the
+current research domain.  These articles will be monitored for revision
+activity and pageview trends.
+
+Example (CO2 afgift research):
+    ["CO2-afgift", "Klimaaftale", "Grøn omstilling", "Parisaftalen"]
+
+Example (AI og uddannelse research):
+    ["Kunstig intelligens", "Chatbot", "Folkeskolen", "Gymnasiet"]
+
+Note: Leave empty to rely on term-based article discovery instead.
+"""
+
+DEFAULT_WIKI_PROJECTS: list[str] = ["da.wikipedia", "en.wikipedia"]
+"""Wikipedia projects (language editions) queried by the Wikipedia collector.
+
+``da.wikipedia`` is the Danish-language Wikipedia (da.wikipedia.org).
+``en.wikipedia`` is the English-language Wikipedia (en.wikipedia.org).
+
+Both are queried because international topics (NATO, AI, climate) often have
+more detailed coverage in English even when the research focus is Danish discourse.
+"""
+
+# ---------------------------------------------------------------------------
+# Discord
+# ---------------------------------------------------------------------------
+
+DANISH_DISCORD_SERVERS: list[dict[str, str | list[str]]] = []
+"""Curated Danish Discord servers and channels to monitor.
+
+Each entry is a dict with:
+    - ``guild_id`` (str): The server's snowflake ID.
+    - ``name`` (str): Human-readable server name for logs.
+    - ``channel_ids`` (list[str]): Channel snowflake IDs to monitor within
+      this server.  If empty, all accessible text channels are monitored.
+
+To add a server: invite the research bot, then add an entry here.
+Example:
+    {
+        "guild_id": "1234567890",
+        "name": "r/Denmark Discord",
+        "channel_ids": ["9876543210"],
+    }
+
+Note: The bot must be invited to each server manually before collection
+can begin.  See docs/arenas/discord.md section 4.12 for setup instructions.
+"""
+
+# ---------------------------------------------------------------------------
+# Twitch
+# ---------------------------------------------------------------------------
+
+DANISH_TWITCH_CHANNELS: list[str] = []
+"""Danish Twitch channel login names to monitor for live chat collection.
+
+Populate with the login names (not display names) of Danish-language or
+Denmark-focused Twitch channels.  These channels will be subscribed to via
+EventSub when the streaming worker is active.
+
+Example:
+    ["danishstreamer1", "denmarkgaming"]
+
+Discovery: Use ``GET /streams?language=da`` on the Twitch Helix API to
+find currently live Danish-language streams.
+
+Note: Chat data is only available in real time — the streaming worker
+must be running during a live stream to capture messages.
+"""
 
 # ---------------------------------------------------------------------------
 # GDPR / pseudonymization

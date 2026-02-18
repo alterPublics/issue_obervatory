@@ -139,6 +139,7 @@ def google_search_collect_terms(
     collection_run_id: str,
     terms: list[str],
     tier: str = "medium",
+    language_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     """Collect Google Search results for a list of terms.
 
@@ -152,6 +153,8 @@ def google_search_collect_terms(
         terms: Search terms to query.
         tier: Tier string — ``"medium"`` (Serper.dev) or ``"premium"`` (SerpAPI).
             Defaults to ``"medium"``.
+        language_filter: Optional list of ISO 639-1 language codes (IP2-052).
+            When provided, restricts results to the given language(s).
 
     Returns:
         Dict with:
@@ -243,6 +246,7 @@ def google_search_collect_terms(
                 terms=terms,
                 tier=tier_enum,
                 max_results=None,
+                language_filter=language_filter,
             )
         )
     except NoCredentialAvailableError as exc:

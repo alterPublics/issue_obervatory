@@ -96,6 +96,20 @@
                                class="text-sm text-gray-500 hover:text-green-700 transition-colors px-2 py-1 rounded hover:bg-gray-100">
                                 Collect
                             </a>
+                            {#
+                                IP2-051: Clone — creates a copy of the design and all its
+                                search terms.  The backend POST /query-designs/{id}/clone
+                                returns a 303 redirect to the new design's editor, so the
+                                browser navigates there automatically on success.
+                                hx-boost=false prevents HTMX from intercepting the redirect.
+                            #}
+                            <button type="button"
+                                    hx-post="/query-designs/{{ design.id }}/clone"
+                                    hx-confirm="Create a copy of '{{ design.name | default('this design') }}'?"
+                                    hx-boost="false"
+                                    class="text-sm text-gray-500 hover:text-purple-600 transition-colors px-2 py-1 rounded hover:bg-purple-50">
+                                Clone
+                            </button>
                             {# HTMX delete — confirms, then swaps the row out of the DOM #}
                             <button type="button"
                                     hx-delete="/query-designs/{{ design.id }}"

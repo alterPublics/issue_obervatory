@@ -1,0 +1,46 @@
+{
+  "search_metadata": {
+    "id": "test-serpapi-id-001",
+    "status": "Success",
+    "json_endpoint": "https://serpapi.com/searches/test/1234.json",
+    "total_time_taken": 0.61
+  },
+  "search_parameters": {
+    "engine": "google",
+    "q": "klimaforandringer",
+    "gl": "dk",
+    "hl": "da",
+    "start": 0,
+    "num": "10"
+  },
+  "organic_results": [
+    {
+      "position": 1,
+      "title": "Klimaforandringer — DR Videnskab",
+      "link": "https://www.dr.dk/viden/klima/klimaforandringer",
+      "snippet": "Klimaforandringer er de langsigtede ændringer i jordens klimasystem, herunder temperaturstigninger og ændrede nedbørsmønstre. Grøn omstilling er nøglen.",
+      "displayed_link": "dr.dk",
+      "date": "Jan 14, 2026"
+    },
+    {
+      "position": 2,
+      "title": "Velfærdsstatens fremtid i en opvarmet verden",
+      "link": "https://www.information.dk/debat/2026/01/vaelfaerdsstatens-fremtid-opvarmet-verden",
+      "snippet": "Eksperter advarer om at klimaforandringer vil koste Danmark milliarder. Søren Kierkegaard-instituttet i Ålborg udgiver ny rapport om bæredygtighed og velfærd.",
+      "displayed_link": "information.dk",
+      "date": "Jan 10, 2026"
+    },
+    {
+      "position": 3,
+      "title": "Arktisk klimapolitik: Grønland og Færøerne",
+      "link": "https://politiken.dk/klima/art9876543/arktisk-klimapolitik",
+      "snippet": "Grønlands iskappe smelter med rekordfart. Færøerne oplever ekstreme storme. Aarhus Universitet har analyseret konsekvenserne for det danske samfund.",
+      "displayed_link": "politiken.dk",
+      "date": "Jan 8, 2026"
+    }
+  ],
+  "search_information": {
+    "total_results": 48300000,
+    "time_taken_displayed": 0.61
+  }
+}

@@ -38,6 +38,7 @@ from typing import Any
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.query_builder import build_boolean_query_groups
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.threads.config import (
     DEFAULT_DANISH_THREADS_ACCOUNTS,
@@ -213,28 +214,34 @@ class ThreadsCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect Threads posts matching one or more search terms.
 
         FREE tier limitation: the Threads API has no global keyword search.
         This method logs a WARNING and falls back to collecting all posts from
-        ``DEFAULT_DANISH_THREADS_ACCOUNTS``, then filters client-side for any
-        term match in post text.  Returns an empty list if no accounts are
-        configured.
+        ``DEFAULT_DANISH_THREADS_ACCOUNTS``, then filters client-side.
+
+        When ``term_groups`` is provided, boolean AND/OR logic is applied
+        client-side: an entry matches when at least one group has ALL its
+        terms present in the post text.
 
         MEDIUM tier (MCL): raises ``NotImplementedError`` — global keyword
         search requires Meta Content Library access (Phase 2).
 
         Args:
-            terms: Search terms or phrases to match (case-insensitive).
+            terms: Search terms (used when ``term_groups`` is ``None``).
             tier: Operational tier.
             date_from: Earliest post date (inclusive).
             date_to: Latest post date (inclusive).
             max_results: Upper bound on returned records.
+            term_groups: Optional boolean AND/OR groups for client-side
+                filtering.
+            language_filter: Not used — Threads has no language filter.
 
         Returns:
-            List of normalized content record dicts whose text matches at
-            least one of the supplied terms.
+            List of normalized content record dicts whose text matches.
 
         Raises:
             NotImplementedError: When ``tier=Tier.MEDIUM`` (MCL not yet
@@ -264,9 +271,8 @@ class ThreadsCollector(ArenaCollector):
         logger.warning(
             "threads: collect_by_terms() at FREE tier — global keyword search "
             "is not available in the Threads API.  Collecting from %d configured "
-            "Danish accounts and filtering client-side for terms: %s",
+            "Danish accounts and filtering client-side.",
             len(DEFAULT_DANISH_THREADS_ACCOUNTS),
-            terms,
         )
 
         tier_config = self.get_tier_config(Tier.FREE)
@@ -285,11 +291,19 @@ class ThreadsCollector(ArenaCollector):
             max_results=effective_max * 10,  # over-collect before filtering
         )
 
-        lower_terms = [t.lower() for t in terms]
+        # Build lowercase boolean groups for client-side filtering.
+        if term_groups is not None:
+            lower_groups: list[list[str]] = [
+                [t.lower() for t in grp] for grp in term_groups if grp
+            ]
+        else:
+            lower_groups = [[t.lower()] for t in terms]
+
         matched: list[dict[str, Any]] = []
         for record in all_posts:
             text = (record.get("text_content") or "").lower()
-            if any(term in text for term in lower_terms):
+            # Match if at least one AND-group has all its terms present.
+            if any(all(t in text for t in grp) for grp in lower_groups):
                 matched.append(record)
             if len(matched) >= effective_max:
                 break

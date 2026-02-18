@@ -79,16 +79,18 @@
         <h2 class="text-sm font-semibold text-gray-900 border-b border-gray-200 pb-3 mb-4">System Information</h2>
         <dl class="grid grid-cols-2 gap-x-8 gap-y-3 text-sm">
             <div class="flex justify-between">
-                <dt class="text-gray-500">Version</dt>
-                <dd class="font-medium text-gray-900">0.1.0 (Phase 0)</dd>
-            </div>
-            <div class="flex justify-between">
-                <dt class="text-gray-500">Implementation Phase</dt>
-                <dd class="font-medium text-gray-900">Phase 0 — Infrastructure</dd>
+                <dt class="text-gray-500">Application</dt>
+                <dd class="font-medium text-gray-900">Issue Observatory</dd>
             </div>
             <div class="flex justify-between">
                 <dt class="text-gray-500">Active Arenas</dt>
-                <dd class="font-medium text-gray-900">Google Search</dd>
+                <dd class="font-medium text-gray-900">
+                    {% if health and health.arenas is defined %}
+                        {{ health.arenas | selectattr('status', 'eq', 'ok') | list | length }} configured
+                    {% else %}
+                        See arena status above
+                    {% endif %}
+                </dd>
             </div>
             <div class="flex justify-between">
                 <dt class="text-gray-500">Database Partitioning</dt>

@@ -30,6 +30,7 @@ from typing import Any
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.tiktok.config import (
     TIKTOK_DATE_FORMAT,
@@ -111,6 +112,8 @@ class TikTokCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect TikTok videos matching one or more search terms.
 
@@ -118,12 +121,20 @@ class TikTokCollector(ArenaCollector):
         longer than 30 days are split into 30-day windows to comply with
         the API's date range constraint.
 
+        TikTok does not support native boolean queries.  When ``term_groups``
+        is provided, each AND-group is searched as a separate space-joined
+        query.  Results are combined and deduplicated.
+
         Args:
-            terms: Keywords or phrases to search for.
+            terms: Keywords or phrases (used when ``term_groups`` is ``None``).
             tier: Operational tier. Only FREE is valid.
             date_from: Earliest video date (inclusive). Defaults to 30 days ago.
             date_to: Latest video date (inclusive). Defaults to today.
             max_results: Cap on total records. Defaults to tier max.
+            term_groups: Optional boolean AND/OR groups.  Each group issues a
+                separate query with terms space-joined.
+            language_filter: Not used — TikTok's ``region_code: "DK"`` filter
+                provides implicit language scoping.
 
         Returns:
             List of normalized content record dicts.
@@ -152,10 +163,20 @@ class TikTokCollector(ArenaCollector):
         cred = await self._get_credential()
         token = await self._get_access_token(cred)
 
+        # Build effective terms list from groups or plain terms.
+        if term_groups is not None:
+            effective_terms: list[str] = [
+                format_boolean_query_for_platform(groups=[grp], platform="bluesky")
+                for grp in term_groups
+                if grp
+            ]
+        else:
+            effective_terms = list(terms)
+
         all_records: list[dict[str, Any]] = []
 
         async with self._build_http_client() as client:
-            for term in terms:
+            for term in effective_terms:
                 if len(all_records) >= effective_max:
                     break
                 remaining = effective_max - len(all_records)

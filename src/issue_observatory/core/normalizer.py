@@ -32,6 +32,8 @@ import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 
+from issue_observatory.core.deduplication import compute_simhash
+
 logger = logging.getLogger(__name__)
 
 # Fields that every normalized record must contain.  Optional fields are
@@ -209,12 +211,19 @@ class Normalizer:
             ["comments", "comment_count", "comments_count", "num_comments", "reply_count"],
         )
 
-        # Content hash for deduplication
+        # Content hash for exact deduplication
         content_hash: str | None = None
         if text_content:
             content_hash = self.compute_content_hash(text_content)
         elif url:
             content_hash = self.compute_content_hash(url)
+
+        # SimHash fingerprint for near-duplicate detection (Item 15).
+        # Only computed when text_content is non-empty; URL-only records
+        # and records without text content are left as NULL.
+        simhash_value: int | None = None
+        if text_content:
+            simhash_value = compute_simhash(text_content)
 
         # Media URLs (list of strings)
         media_urls = self._extract_list(
@@ -246,7 +255,7 @@ class Normalizer:
             "likes_count": likes_count,
             "shares_count": shares_count,
             "comments_count": comments_count,
-            "engagement_score": None,  # computed by analysis layer
+            "engagement_score": raw_item.get("engagement_score"),  # may be set by collector or analysis layer
             # Collection context
             "collection_run_id": collection_run_id,
             "query_design_id": query_design_id,
@@ -257,6 +266,7 @@ class Normalizer:
             "media_urls": media_urls,
             # Deduplication
             "content_hash": content_hash,
+            "simhash": simhash_value,
         }
 
     def pseudonymize_author(self, platform: str, platform_user_id: str) -> str | None:

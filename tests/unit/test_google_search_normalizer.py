@@ -47,7 +47,7 @@ class TestGoogleSearchNormalize:
         raw = GoogleSearchResultFactory.build()
         result = collector.normalize(raw)
 
-        assert result["platform"] == "google"
+        assert result["platform"] == "google_search"
 
     def test_normalize_serper_result_arena_is_google_search(
         self, collector: GoogleSearchCollector
@@ -177,7 +177,7 @@ class TestGoogleSearchNormalize:
         raw = GoogleSearchResultFactory.build()
         result = collector.normalize(raw)
 
-        assert result["platform"] == "google"
+        assert result["platform"] == "google_search"
         assert result["arena"] == "google_search"
         assert result["content_type"] == "search_result"
         assert result["collected_at"] is not None
@@ -242,7 +242,7 @@ class TestGoogleSearchNormalizeEdgeCases:
         """An empty dict does not crash normalize() — all fields default gracefully."""
         result = collector.normalize({})
 
-        assert result["platform"] == "google"
+        assert result["platform"] == "google_search"
         assert result["arena"] == "google_search"
         assert result["content_type"] == "search_result"
         assert result["url"] is None

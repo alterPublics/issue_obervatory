@@ -28,7 +28,13 @@ Here are a number of considerations, some are concrete specifications and some a
 - What I currently have is access to the TikTok research API and Google Search and Autocomplete APIs. I have a standing application for the meta content library so it is worth considering a pipeline that implements this option as well. It will not be possible to use infomedia although it is ideal in a Danish context.
 - For the first iteration data analysis and export should be limited to simple descriptive statistics and network analysis (see issue_obervatory_search for inspiration here).
  
+ Later additions:
 
+ - I think we need to add a scraper to the codebase. Right now the arenas that encompass the general web (majestic, common crawl, wayback machine) only       
+  delivers relatively thin content data. There should be an option to select URLs or websites for additional scraping of content. Either based on manual      
+  selection or using some network criteria (e.g. all websites that have a relatively high backlink closeness to a selection of core issue actors, meaning     
+  websites that are prominent for the given query design). I really liked how the celery based scraper from the earlier Issue Observatory Search worked:      
+  https://github.com/dimelab/issue_observatory_search
 
-Create a team to plan and build the application proposed in init_prompt.txt.
-I need one agent to research, manage knowledge and plan development based on use cases. I need one agent engineer for core application code. I need one agent engineer for database and data processing. I need one for review, quality assurance and testing.
+  - I'd like to add one more Arena, AI chat search (or similar name). Essentially people have begun to increasingly use AI chat bots like chatgpt for conducting searches on topics if they want additional information. I'd like to simulate this information searching process. It should essentially work like the Google Search Arena which allows for researchers to link search phrases from the query design to actors (websites) that are returned when input into google search. The thing is however that AI. chat searches are likely more complex, so first the application needs to generate a sample of typical ways that users will use a chat bot to search for information on a topic. Let's say the search phrase is "CO2 afgift", with Google search this is simple because we will simply input the search phrase into google. But with chatbots we first need to create a sample of phrasings that typical users will use when wanting to know more about the topic. This could be generated freely using LLM models or guided by previously collected information corresponding to the search phrase. This arena needs to employ a AI chat api that allows for web search so that the results returned include both full text and the sources cited. Ideally it should work through the open router frame work.
+

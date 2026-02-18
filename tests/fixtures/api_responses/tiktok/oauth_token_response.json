@@ -1,0 +1,6 @@
+{
+  "access_token": "test-tiktok-access-token-abc123",
+  "expires_in": 7200,
+  "token_type": "Bearer",
+  "scope": "research.data.basic"
+}

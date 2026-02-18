@@ -108,6 +108,14 @@ class QueryDesign(Base):
         nullable=False,
         server_default=sa.text("'{}'::jsonb"),
     )
+    # Self-referential FK to track cloning lineage (IP2-051).
+    # ON DELETE SET NULL so that deleting a parent does not cascade to clones.
+    parent_design_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("query_designs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Relationships
     owner: Mapped[User] = relationship(
@@ -181,6 +189,15 @@ class SearchTerm(Base):
         TIMESTAMP(timezone=True),
         nullable=False,
         server_default=sa.text("NOW()"),
+    )
+    group_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        index=True,
+    )
+    group_label: Mapped[str | None] = mapped_column(
+        sa.String(200),
+        nullable=True,
     )
 
     # Relationships

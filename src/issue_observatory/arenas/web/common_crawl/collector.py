@@ -29,6 +29,7 @@ from typing import Any
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.web.common_crawl._fetcher import (
     build_page_params,
@@ -110,19 +111,26 @@ class CommonCrawlCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect CC index entries for Danish pages matching the search terms.
 
         Queries the CC Index for all ``.dk`` domain captures, then filters
-        results client-side by matching each term against the URL. Terms are
-        matched case-insensitively as substrings of the URL.
+        results client-side by matching each term against the URL.
+
+        No native boolean support.  When ``term_groups`` is provided each
+        AND-group is searched as a separate space-joined query.
 
         Args:
-            terms: Search terms matched as URL substrings.
+            terms: Search terms matched as URL substrings (used when
+                ``term_groups`` is ``None``).
             tier: Must be ``Tier.FREE``.
             date_from: Earliest capture timestamp (inclusive).
             date_to: Latest capture timestamp (inclusive).
             max_results: Upper bound on returned records.
+            term_groups: Optional boolean AND/OR groups.
+            language_filter: Not used — Common Crawl has no language filter.
 
         Returns:
             List of normalized content record dicts (web index entries).
@@ -139,13 +147,23 @@ class CommonCrawlCollector(ArenaCollector):
         cc_from = format_cc_timestamp(date_from)
         cc_to = format_cc_timestamp(date_to)
 
+        # Build effective terms: one per AND-group (space-joined) or plain list.
+        if term_groups is not None:
+            effective_terms: list[str] = [
+                format_boolean_query_for_platform(groups=[grp], platform="bluesky")
+                for grp in term_groups
+                if grp
+            ]
+        else:
+            effective_terms = list(terms)
+
         seen_keys: set[str] = set()
         all_records: list[dict[str, Any]] = []
 
         async with self._build_http_client() as client:
             semaphore = asyncio.Semaphore(CC_CONCURRENT_FETCH_LIMIT)
 
-            for term in terms:
+            for term in effective_terms:
                 if len(all_records) >= effective_max:
                     break
                 remaining = effective_max - len(all_records)
@@ -155,7 +173,7 @@ class CommonCrawlCollector(ArenaCollector):
                 all_records.extend(term_records)
 
         logger.info(
-            "common_crawl: collect_by_terms — %d records for %d terms",
+            "common_crawl: collect_by_terms — %d records for %d queries",
             len(all_records),
             len(terms),
         )

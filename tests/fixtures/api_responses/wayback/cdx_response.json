@@ -1,0 +1,7 @@
+[
+  ["urlkey", "timestamp", "original", "mimetype", "statuscode", "digest", "length"],
+  ["dk,dr)/nyheder/groen-omstilling", "20260115120000", "https://www.dr.dk/nyheder/groen-omstilling", "text/html", "200", "SHA1:AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555", "45820"],
+  ["dk,politiken)/baeredygtighed/vaelfaerd", "20260112093000", "https://politiken.dk/baeredygtighed/vaelfaerd", "text/html", "200", "SHA1:FFFF6666GGGG7777HHHH8888IIII9999JJJJ0000", "38210"],
+  ["dk,berlingske)/nyheder/aalborg-vaekstplan", "20260110154500", "https://berlingske.dk/nyheder/aalborg-vaekstplan", "text/html", "200", "SHA1:1234567890ABCDEF1234567890ABCDEF12345678", "29480"],
+  ["dk,tv2)/nyheder/klima", "20260108080000", "https://tv2.dk/nyheder/klima/havniveastigning-truer-kystbyer", "text/html", "200", "SHA1:ABCDEF1234567890ABCDEF1234567890ABCDEFAB", "33100"]
+]

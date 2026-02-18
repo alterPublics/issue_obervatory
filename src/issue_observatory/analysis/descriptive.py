@@ -36,6 +36,8 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from issue_observatory.analysis._filters import build_content_where
+
 logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -82,41 +84,20 @@ def _build_content_filters(
 ) -> str:
     """Build a SQL WHERE clause fragment for content_records filters.
 
+    Delegates to :func:`~issue_observatory.analysis._filters.build_content_where`
+    which centralises filter logic — including the duplicate exclusion clause
+    ``(raw_metadata->>'duplicate_of') IS NULL`` — so that both descriptive and
+    network analysis consistently exclude duplicate-flagged records.
+
     Appends bind parameter values to *params* in place.
 
     Returns:
-        A SQL string fragment starting with ``WHERE`` (or an empty string if no
-        filters are active).
+        A SQL string fragment starting with ``WHERE``.  Always non-empty
+        because the duplicate exclusion predicate is always present.
     """
-    clauses: list[str] = []
-
-    if query_design_id is not None:
-        clauses.append("query_design_id = :query_design_id")
-        params["query_design_id"] = str(query_design_id)
-
-    if run_id is not None:
-        clauses.append("collection_run_id = :run_id")
-        params["run_id"] = str(run_id)
-
-    if arena is not None:
-        clauses.append("arena = :arena")
-        params["arena"] = arena
-
-    if platform is not None:
-        clauses.append("platform = :platform")
-        params["platform"] = platform
-
-    if date_from is not None:
-        clauses.append("published_at >= :date_from")
-        params["date_from"] = date_from
-
-    if date_to is not None:
-        clauses.append("published_at <= :date_to")
-        params["date_to"] = date_to
-
-    if not clauses:
-        return ""
-    return "WHERE " + " AND ".join(clauses)
+    return build_content_where(
+        query_design_id, run_id, arena, platform, date_from, date_to, params
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +159,9 @@ async def get_volume_over_time(
     # as a bind parameter, because date_trunc requires a literal string for
     # the field argument.  It is safe here because we validated it against
     # _VALID_GRANULARITIES above.
-    extra = "AND published_at IS NOT NULL" if where else "WHERE published_at IS NOT NULL"
+    # _build_content_filters always returns a WHERE clause (at minimum the
+    # duplicate exclusion predicate), so additional conditions always use AND.
+    extra = "AND published_at IS NOT NULL"
 
     sql = text(
         f"""
@@ -224,6 +207,13 @@ async def get_top_actors(
     Engagement is defined as the sum of ``likes_count + shares_count +
     comments_count`` (all nullable; treated as 0 when NULL via COALESCE).
 
+    IP2-061: when a ``content_records.author_id`` FK exists and resolves to a
+    row in the ``actors`` table, the returned dict includes a non-null
+    ``resolved_name`` field containing ``actors.canonical_name``.  This
+    allows the front-end to prefer the canonical identity over the raw
+    ``author_display_name`` (which may be a pseudonymized hash) when
+    labelling the top-actors chart.
+
     Args:
         db: Active async database session.
         query_design_id: Restrict to records belonging to this query design.
@@ -240,6 +230,8 @@ async def get_top_actors(
               {
                 "author_display_name": "DR Nyheder",
                 "pseudonymized_author_id": "abc123…",
+                "resolved_name": "DR Nyheder",   # None when not resolved
+                "actor_id": "uuid-string",        # None when not resolved
                 "platform": "facebook",
                 "count": 150,
                 "total_engagement": 42000,
@@ -252,28 +244,33 @@ async def get_top_actors(
     where = _build_content_filters(
         query_design_id, run_id, None, platform, date_from, date_to, params
     )
-    null_filter = (
-        "AND pseudonymized_author_id IS NOT NULL"
-        if where
-        else "WHERE pseudonymized_author_id IS NOT NULL"
-    )
-
+    # _build_content_filters always returns a WHERE clause, so additional
+    # conditions always use AND.
+    #
+    # IP2-061: LEFT JOIN actors to retrieve canonical_name when author_id is
+    # populated (entity resolution has been performed for this content record).
+    # The MAX(a.canonical_name) aggregate is used because canonical_name is
+    # functionally determined by author_id; MAX() avoids the need to GROUP BY
+    # an extra text column.
     sql = text(
         f"""
         SELECT
-            pseudonymized_author_id,
-            author_display_name,
-            platform,
+            c.pseudonymized_author_id,
+            c.author_display_name,
+            c.platform,
+            c.author_id,
+            MAX(a.canonical_name) AS resolved_name,
             COUNT(*) AS cnt,
             SUM(
-                COALESCE(likes_count, 0)
-                + COALESCE(shares_count, 0)
-                + COALESCE(comments_count, 0)
+                COALESCE(c.likes_count, 0)
+                + COALESCE(c.shares_count, 0)
+                + COALESCE(c.comments_count, 0)
             ) AS total_engagement
-        FROM content_records
+        FROM content_records c
+        LEFT JOIN actors a ON a.id = c.author_id
         {where}
-        {null_filter}
-        GROUP BY pseudonymized_author_id, author_display_name, platform
+        AND c.pseudonymized_author_id IS NOT NULL
+        GROUP BY c.pseudonymized_author_id, c.author_display_name, c.platform, c.author_id
         ORDER BY cnt DESC
         LIMIT :limit
         """
@@ -286,6 +283,8 @@ async def get_top_actors(
         {
             "author_display_name": row.author_display_name,
             "pseudonymized_author_id": row.pseudonymized_author_id,
+            "resolved_name": row.resolved_name,
+            "actor_id": str(row.author_id) if row.author_id else None,
             "platform": row.platform,
             "count": row.cnt,
             "total_engagement": int(row.total_engagement or 0),
@@ -322,13 +321,10 @@ async def get_top_terms(
     """
     params: dict[str, Any] = {"limit": limit}
     # Build filters without arena/platform — terms span all arenas.
+    # _build_content_filters always returns a WHERE clause, so additional
+    # conditions always use AND.
     where = _build_content_filters(
         query_design_id, run_id, None, None, date_from, date_to, params
-    )
-    null_filter = (
-        "AND search_terms_matched IS NOT NULL"
-        if where
-        else "WHERE search_terms_matched IS NOT NULL"
     )
 
     sql = text(
@@ -339,7 +335,7 @@ async def get_top_terms(
         FROM content_records,
              unnest(search_terms_matched) AS term
         {where}
-        {null_filter}
+        AND search_terms_matched IS NOT NULL
         GROUP BY term
         ORDER BY cnt DESC
         LIMIT :limit
@@ -462,6 +458,219 @@ async def get_engagement_distribution(
             "max": _int_or_none(row.views_max),
         },
     }
+
+
+async def get_emergent_terms(
+    db: AsyncSession,
+    query_design_id: uuid.UUID | None = None,
+    run_id: uuid.UUID | None = None,
+    top_n: int = 50,
+    exclude_search_terms: bool = True,
+    min_doc_frequency: int = 2,
+) -> list[dict]:
+    """Extract frequently-occurring terms from collected text content using TF-IDF.
+
+    Uses scikit-learn TfidfVectorizer on ``text_content`` from matching
+    content_records.  Applies Danish tokenization regex ``[a-z0-9æøå]{2,}``.
+
+    Args:
+        db: Active async database session.
+        query_design_id: Restrict to records in this query design.
+        run_id: Restrict to records in this collection run.
+        top_n: Number of top terms to return.
+        exclude_search_terms: If True, exclude terms that match any of the
+            query design's existing search terms (case-insensitive).
+        min_doc_frequency: Minimum document frequency to include a term.
+
+    Returns:
+        List of dicts ordered by mean TF-IDF score descending::
+
+            [{"term": "etik", "score": 0.42, "document_frequency": 87}, ...]
+
+        Returns an empty list if scikit-learn is not installed, if fewer than
+        5 text records are available, or if no terms pass the frequency filter.
+    """
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore[import]
+    except ImportError:
+        logger.warning(
+            "get_emergent_terms: scikit-learn not installed; returning empty list"
+        )
+        return []
+
+    import numpy as np  # type: ignore[import]
+
+    params: dict[str, Any] = {}
+    where = _build_content_filters(
+        query_design_id, run_id, None, None, None, None, params
+    )
+
+    text_sql = text(
+        f"""
+        SELECT text_content
+        FROM content_records
+        {where}
+        AND text_content IS NOT NULL
+        AND length(text_content) > 20
+        LIMIT 10000
+        """
+    )
+
+    result = await db.execute(text_sql, params)
+    rows = result.fetchall()
+    texts = [row.text_content for row in rows if row.text_content]
+
+    if len(texts) < 5:
+        logger.info(
+            "get_emergent_terms: fewer than 5 text records; returning empty list",
+            record_count=len(texts),
+        )
+        return []
+
+    # Optionally exclude existing search terms for this query design.
+    stop_words: list[str] | None = None
+    if exclude_search_terms and query_design_id is not None:
+        term_sql = text(
+            """
+            SELECT term
+            FROM search_terms
+            WHERE query_design_id = :query_design_id
+            """
+        )
+        term_result = await db.execute(term_sql, {"query_design_id": str(query_design_id)})
+        existing_terms = [row.term.lower() for row in term_result.fetchall() if row.term]
+        if existing_terms:
+            stop_words = existing_terms
+
+    vectorizer = TfidfVectorizer(
+        analyzer="word",
+        token_pattern=r"[a-z0-9æøå]{2,}",
+        max_features=5000,
+        min_df=min_doc_frequency,
+        stop_words=stop_words,
+    )
+
+    try:
+        tfidf_matrix = vectorizer.fit_transform(texts)
+    except ValueError:
+        # Raised when vocabulary is empty after filtering.
+        logger.info("get_emergent_terms: empty vocabulary after filtering")
+        return []
+
+    feature_names: list[str] = vectorizer.get_feature_names_out().tolist()
+
+    # Mean TF-IDF score per term across all documents.
+    mean_scores = np.asarray(tfidf_matrix.mean(axis=0)).flatten()
+
+    # Document frequency: number of documents in which each term appears.
+    doc_freq = np.diff(tfidf_matrix.T.tocsr().indptr)
+
+    # Sort by mean score descending, take top_n.
+    top_indices = np.argsort(mean_scores)[::-1][:top_n]
+
+    results = [
+        {
+            "term": feature_names[idx],
+            "score": round(float(mean_scores[idx]), 6),
+            "document_frequency": int(doc_freq[idx]),
+        }
+        for idx in top_indices
+    ]
+
+    logger.info(
+        "get_emergent_terms: extracted terms",
+        doc_count=len(texts),
+        term_count=len(results),
+        query_design_id=str(query_design_id) if query_design_id else None,
+        run_id=str(run_id) if run_id else None,
+    )
+
+    return results
+
+
+async def get_top_actors_unified(
+    db: AsyncSession,
+    query_design_id: uuid.UUID | None = None,
+    run_id: uuid.UUID | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Top authors by post volume, grouped by canonical Actor identity.
+
+    Unlike :func:`get_top_actors` which groups by
+    ``(pseudonymized_author_id, platform)``, this function groups by
+    ``author_id`` (the UUID FK to the ``actors`` table) so that the same
+    real-world actor appearing on multiple platforms is counted once.
+
+    Only records where ``author_id IS NOT NULL`` (entity resolution has been
+    performed) are counted.  Falls back gracefully to an empty list if no
+    resolved actors exist.
+
+    Args:
+        db: Active async database session.
+        query_design_id: Restrict to records belonging to this query design.
+        run_id: Restrict to records collected in this collection run.
+        date_from: Inclusive lower bound on ``published_at``.
+        date_to: Inclusive upper bound on ``published_at``.
+        limit: Maximum number of actors to return (default 20).
+
+    Returns:
+        A list of dicts ordered by ``count`` descending::
+
+            [
+              {
+                "actor_id": "...",
+                "canonical_name": "DR Nyheder",
+                "platforms": ["facebook", "youtube"],
+                "count": 342,
+                "total_engagement": 98000,
+              },
+              ...
+            ]
+
+        Returns an empty list when no entity-resolved records match the filters.
+    """
+    params: dict[str, Any] = {"limit": limit}
+    where = _build_content_filters(
+        query_design_id, run_id, None, None, date_from, date_to, params
+    )
+
+    sql = text(
+        f"""
+        SELECT
+            c.author_id,
+            a.canonical_name,
+            array_agg(DISTINCT c.platform ORDER BY c.platform) AS platforms,
+            COUNT(c.id) AS cnt,
+            SUM(
+                COALESCE(c.likes_count, 0)
+                + COALESCE(c.shares_count, 0)
+                + COALESCE(c.comments_count, 0)
+            ) AS total_engagement
+        FROM content_records c
+        JOIN actors a ON a.id = c.author_id
+        {where}
+        AND c.author_id IS NOT NULL
+        GROUP BY c.author_id, a.canonical_name
+        ORDER BY cnt DESC
+        LIMIT :limit
+        """
+    )
+
+    result = await db.execute(sql, params)
+    rows = result.fetchall()
+
+    return [
+        {
+            "actor_id": str(row.author_id),
+            "canonical_name": row.canonical_name,
+            "platforms": list(row.platforms) if row.platforms else [],
+            "count": row.cnt,
+            "total_engagement": int(row.total_engagement or 0),
+        }
+        for row in rows
+    ]
 
 
 async def get_run_summary(

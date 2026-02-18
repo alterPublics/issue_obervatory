@@ -121,6 +121,7 @@ def x_twitter_collect_terms(
     date_from: str | None = None,
     date_to: str | None = None,
     max_results: int | None = None,
+    language_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     """Collect tweets matching a list of search terms.
 
@@ -173,6 +174,7 @@ def x_twitter_collect_terms(
                 date_from=date_from,
                 date_to=date_to,
                 max_results=max_results,
+                language_filter=language_filter,
             )
         )
     except NoCredentialAvailableError as exc:

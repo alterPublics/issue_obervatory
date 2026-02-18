@@ -130,6 +130,7 @@ def telegram_collect_terms(
     date_to: str | None = None,
     max_results: int | None = None,
     channel_ids: list[str] | None = None,
+    language_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     """Collect Telegram messages matching a list of search terms.
 
@@ -182,6 +183,7 @@ def telegram_collect_terms(
                 date_to=date_to,
                 max_results=max_results,
                 actor_ids=channel_ids,
+                language_filter=language_filter,
             )
         )
     except NoCredentialAvailableError as exc:

@@ -122,6 +122,7 @@ def majestic_collect_terms(
     date_from: str | None = None,
     date_to: str | None = None,
     max_results: int | None = None,
+    language_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     """Collect domain-level metrics for a list of domain names or URLs.
 
@@ -176,6 +177,7 @@ def majestic_collect_terms(
                 date_from=date_from,
                 date_to=date_to,
                 max_results=max_results,
+                language_filter=language_filter,
             )
         )
     except ArenaRateLimitError:

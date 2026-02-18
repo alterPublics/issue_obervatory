@@ -221,7 +221,9 @@ class CreditService:
 
         per_arena: dict[str, int] = {}
 
-        for arena_name, arena_tier_str in arenas_config.items():
+        # arenas_config keys are platform_name values (e.g. "youtube", "bluesky"),
+        # which is also the registry key since the fix to key _REGISTRY by platform_name.
+        for platform_name, arena_tier_str in arenas_config.items():
             resolved_tier_str: str = arena_tier_str or tier
             try:
                 resolved_tier = TierEnum(resolved_tier_str)
@@ -231,7 +233,7 @@ class CreditService:
             credits_for_arena: int = 0
 
             try:
-                collector_cls = _registry.get_arena(arena_name)
+                collector_cls = _registry.get_arena(platform_name)
                 collector = collector_cls()
                 credits_for_arena = await collector.estimate_credits(
                     tier=resolved_tier,
@@ -247,20 +249,20 @@ class CreditService:
                     else 0
                 )
                 logger.debug(
-                    "Arena '%s' not registered; TIER_DEFAULTS fallback gives %d credits",
-                    arena_name,
+                    "Platform '%s' not registered; TIER_DEFAULTS fallback gives %d credits",
+                    platform_name,
                     credits_for_arena,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "estimate_credits() failed for arena '%s' (tier=%s): %s; defaulting to 0",
-                    arena_name,
+                    "estimate_credits() failed for platform '%s' (tier=%s): %s; defaulting to 0",
+                    platform_name,
                     resolved_tier_str,
                     exc,
                 )
                 credits_for_arena = 0
 
-            per_arena[arena_name] = credits_for_arena
+            per_arena[platform_name] = credits_for_arena
 
         total_credits: int = sum(per_arena.values())
 

@@ -1,0 +1,67 @@
+[
+  {
+    "id": "112345678901234601",
+    "created_at": "2026-02-15T10:00:00.000Z",
+    "url": "https://gab.com/@politik_dk/112345678901234601",
+    "uri": "https://gab.com/users/politik_dk/statuses/112345678901234601",
+    "content": "<p>Danmarks folketing debatterer igen grøn omstilling. Mange partier er uenige om tempoet. #dkpol</p>",
+    "language": "da",
+    "account": {
+      "id": "9900021",
+      "username": "politik_dk",
+      "display_name": "Politik Danmark",
+      "acct": "politik_dk",
+      "url": "https://gab.com/@politik_dk",
+      "avatar": "https://gab.com/system/accounts/avatars/003/politik_dk.png",
+      "followers_count": 5600,
+      "following_count": 120,
+      "statuses_count": 12300
+    },
+    "reblogs_count": 78,
+    "favourites_count": 432,
+    "replies_count": 104,
+    "reblog": null,
+    "media_attachments": [],
+    "mentions": [],
+    "tags": [{"name": "dkpol", "url": "https://gab.com/tags/dkpol"}],
+    "sensitive": false,
+    "spoiler_text": "",
+    "visibility": "public",
+    "in_reply_to_id": null,
+    "in_reply_to_account_id": null
+  },
+  {
+    "id": "112345678901234602",
+    "created_at": "2026-02-14T16:30:00.000Z",
+    "url": "https://gab.com/@konservativ_dk/112345678901234602",
+    "uri": "https://gab.com/users/konservativ_dk/statuses/112345678901234602",
+    "content": "<p>Årets budget er vedtaget. Skattelettelser til erhvervslivet men skær i velfærd. Hvad synes I? #dkpol #økonomi</p>",
+    "language": "da",
+    "account": {
+      "id": "9900022",
+      "username": "konservativ_dk",
+      "display_name": "Konservativ DK",
+      "acct": "konservativ_dk",
+      "url": "https://gab.com/@konservativ_dk",
+      "avatar": "https://gab.com/system/accounts/avatars/004/konservativ_dk.png",
+      "followers_count": 2100,
+      "following_count": 88,
+      "statuses_count": 6789
+    },
+    "reblogs_count": 21,
+    "favourites_count": 99,
+    "replies_count": 45,
+    "reblog": null,
+    "media_attachments": [],
+    "mentions": [],
+    "tags": [
+      {"name": "dkpol", "url": "https://gab.com/tags/dkpol"},
+      {"name": "økonomi", "url": "https://gab.com/tags/økonomi"}
+    ],
+    "sensitive": false,
+    "spoiler_text": "",
+    "visibility": "public",
+    "in_reply_to_id": null,
+    "in_reply_to_account_id": null
+  }
+]

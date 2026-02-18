@@ -175,13 +175,13 @@ class TestArenaCollectorInterface:
 
 class TestArenaRegistry:
     def test_register_and_retrieve(self) -> None:
-        """@register stores a collector class and get_arena retrieves it."""
-        unique_name = "_test_registry_retrieval"
+        """@register stores a collector class and get_arena retrieves it by platform_name."""
+        unique_platform = "_test_registry_retrieval_platform"
 
         @register
         class _RegistryTestCollector(ArenaCollector):
-            arena_name = unique_name
-            platform_name = "_test"
+            arena_name = "_test_registry_retrieval_arena"
+            platform_name = unique_platform
             supported_tiers = [Tier.FREE]
 
             async def collect_by_terms(self, terms, tier, **kw):  # type: ignore[override]
@@ -196,25 +196,27 @@ class TestArenaRegistry:
             def normalize(self, raw_item):  # type: ignore[override]
                 return {}
 
-        retrieved = get_arena(unique_name)
+        # Registry is keyed by platform_name, not arena_name.
+        retrieved = get_arena(unique_platform)
         assert retrieved is _RegistryTestCollector
 
         # Cleanup to avoid leaking into other tests
-        _REGISTRY.pop(unique_name, None)
+        _REGISTRY.pop(unique_platform, None)
 
     def test_get_arena_raises_for_unknown_name(self) -> None:
-        """get_arena() raises KeyError for unregistered names."""
-        with pytest.raises(KeyError, match="is not registered"):
+        """get_arena() raises KeyError for unregistered platform names."""
+        with pytest.raises(KeyError, match="No collector registered"):
             get_arena("__definitely_not_registered__")
 
     def test_list_arenas_returns_metadata(self) -> None:
         """list_arenas() returns a list of dicts with required metadata keys."""
-        unique_name = "_test_list_arenas_meta"
+        unique_arena = "_test_list_arenas_meta"
+        unique_platform = "_test_platform_meta"
 
         @register
         class _ListArenaTestCollector(ArenaCollector):
-            arena_name = unique_name
-            platform_name = "_test_platform_meta"
+            arena_name = unique_arena
+            platform_name = unique_platform
             supported_tiers = [Tier.FREE, Tier.MEDIUM]
 
             async def collect_by_terms(self, terms, tier, **kw):  # type: ignore[override]
@@ -232,23 +234,23 @@ class TestArenaRegistry:
         arenas = list_arenas()
         arena_names = {a["arena_name"] for a in arenas}
 
-        assert unique_name in arena_names
-        matching = next(a for a in arenas if a["arena_name"] == unique_name)
+        assert unique_arena in arena_names
+        matching = next(a for a in arenas if a["arena_name"] == unique_arena)
 
-        assert matching["platform_name"] == "_test_platform_meta"
+        assert matching["platform_name"] == unique_platform
         assert set(matching["supported_tiers"]) == {"free", "medium"}
         assert "collector_class" in matching
 
-        # Cleanup
-        _REGISTRY.pop(unique_name, None)
+        # Cleanup — registry is keyed by platform_name, not arena_name.
+        _REGISTRY.pop(unique_platform, None)
 
     def test_register_overwrites_with_warning(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Registering an arena name twice overwrites the first and logs a warning."""
-        unique_name = "_test_overwrite_warning"
+        """Registering a platform_name twice overwrites the first and logs a warning."""
+        unique_platform = "_test_overwrite_warning_platform"
 
         class _Base(ArenaCollector):
-            arena_name = unique_name
-            platform_name = "_test"
+            arena_name = "_test_overwrite_warning_arena"
+            platform_name = unique_platform
             supported_tiers = [Tier.FREE]
 
             async def collect_by_terms(self, terms, tier, **kw):  # type: ignore[override]
@@ -277,10 +279,11 @@ class TestArenaRegistry:
         assert any("already registered" in rec.message for rec in caplog.records), (
             f"Expected overwrite warning in log records: {[r.message for r in caplog.records]}"
         )
-        assert get_arena(unique_name) is _Second
+        # Registry is keyed by platform_name.
+        assert get_arena(unique_platform) is _Second
 
-        # Cleanup
-        _REGISTRY.pop(unique_name, None)
+        # Cleanup — registry is keyed by platform_name, not arena_name.
+        _REGISTRY.pop(unique_platform, None)
 
     def test_list_arenas_is_sorted_alphabetically(self) -> None:
         """list_arenas() returns arenas sorted alphabetically by arena_name."""

@@ -71,6 +71,7 @@ MAX_COMMENTS_PER_POST: int = 100
 
 EXTRA_DANISH_SUBREDDITS: list[str] = [
     "dkfinance",
+    "dkpolitik",
     "scandinavia",
     "NORDVANSEN",
 ]
@@ -78,6 +79,9 @@ EXTRA_DANISH_SUBREDDITS: list[str] = [
 
 These supplement :data:`DANISH_SUBREDDITS` and are included in all collection
 runs unless overridden by a query design configuration.
+
+``dkfinance`` covers Danish economic and personal finance discourse.
+``dkpolitik`` covers Danish political discussion and debate.
 """
 
 ALL_DANISH_SUBREDDITS: list[str] = DANISH_SUBREDDITS + EXTRA_DANISH_SUBREDDITS

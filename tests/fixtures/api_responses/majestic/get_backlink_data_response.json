@@ -1,0 +1,76 @@
+{
+  "Code": "OK",
+  "FullError": "",
+  "GlobalVars": {
+    "SubscriptionType": "Developer",
+    "AnalysisResUnits": 3,
+    "AnalysisResUnitsLeft": 99999995
+  },
+  "DataTables": {
+    "BackLinks": {
+      "Headers": [
+        "SourceURL",
+        "TargetURL",
+        "SourceCitationFlow",
+        "SourceTrustFlow",
+        "SourceTopicalTrustFlow_Topic_0",
+        "FlagNoFollow",
+        "FlagRedirect",
+        "FirstIndexedDate",
+        "LastSeenDate",
+        "DateLost",
+        "ReasonLost",
+        "AnchorText"
+      ],
+      "Data": [
+        {
+          "SourceURL": "https://www.wikipedia.org/wiki/DR_(broadcaster)",
+          "TargetURL": "https://www.dr.dk/",
+          "SourceCitationFlow": 72,
+          "SourceTrustFlow": 89,
+          "SourceTopicalTrustFlow_Topic_0": "Reference",
+          "FlagNoFollow": "0",
+          "FlagRedirect": "0",
+          "FirstIndexedDate": "2019-03-15",
+          "LastSeenDate": "2026-01-20",
+          "DateLost": "",
+          "ReasonLost": "",
+          "AnchorText": "DR"
+        },
+        {
+          "SourceURL": "https://www.berlingske.dk/nyheder/grøn-omstilling-i-dk",
+          "TargetURL": "https://www.dr.dk/nyheder/",
+          "SourceCitationFlow": 55,
+          "SourceTrustFlow": 61,
+          "SourceTopicalTrustFlow_Topic_0": "News/Current Events",
+          "FlagNoFollow": "0",
+          "FlagRedirect": "0",
+          "FirstIndexedDate": "2025-04-10",
+          "LastSeenDate": "2026-01-18",
+          "DateLost": "",
+          "ReasonLost": "",
+          "AnchorText": "Grøn omstilling — DR Nyheder"
+        },
+        {
+          "SourceURL": "https://ens.dk/sites/ens.dk/files/velfaerd-og-bæredygtighed.pdf",
+          "TargetURL": "https://www.dr.dk/",
+          "SourceCitationFlow": 48,
+          "SourceTrustFlow": 57,
+          "SourceTopicalTrustFlow_Topic_0": "Government",
+          "FlagNoFollow": "1",
+          "FlagRedirect": "0",
+          "FirstIndexedDate": "2024-11-03",
+          "LastSeenDate": "2026-01-15",
+          "DateLost": "",
+          "ReasonLost": "",
+          "AnchorText": "Velfærd og bæredygtighed"
+        }
+      ],
+      "TableHeaders": [],
+      "Rows": 3,
+      "TotalRows": 3,
+      "StartIndex": 0,
+      "EndIndex": 3
+    }
+  }
+}

@@ -41,6 +41,7 @@ import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, Tier
 from issue_observatory.arenas.google_search._client import fetch_serper, fetch_serpapi
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.google_search.config import (
     DANISH_PARAMS,
     GOOGLE_SEARCH_TIERS,
@@ -71,7 +72,7 @@ class GoogleSearchCollector(ArenaCollector):
 
     Class Attributes:
         arena_name: ``"google_search"``
-        platform_name: ``"google"``
+        platform_name: ``"google_search"``
         supported_tiers: ``[Tier.MEDIUM, Tier.PREMIUM]``
 
     Args:
@@ -85,7 +86,7 @@ class GoogleSearchCollector(ArenaCollector):
     """
 
     arena_name: str = "google_search"
-    platform_name: str = "google"
+    platform_name: str = "google_search"
     supported_tiers: list[Tier] = [Tier.MEDIUM, Tier.PREMIUM]
 
     def __init__(
@@ -109,16 +110,29 @@ class GoogleSearchCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect Google Search results for each search term.
 
+        When ``term_groups`` is provided the groups are serialised into a
+        single boolean query string using implicit-AND (space-separated)
+        and explicit ``OR`` syntax supported by Serper.dev / SerpAPI.  One
+        query is issued per OR-group to maximise result diversity.
+
         Args:
-            terms: Search terms to query independently.
+            terms: Search terms to query independently (used when
+                ``term_groups`` is ``None``).
             tier: Operational tier.  FREE returns ``[]`` with a warning.
             date_from: Not used — Google Search has no API-level date filter.
             date_to: Not used — see ``date_from``.
             max_results: Upper bound on returned records.  ``None`` uses the
                 tier default.
+            term_groups: Optional boolean AND/OR group structure.  When
+                provided, one request is issued per group (group terms are
+                ANDed via implicit space syntax).
+            language_filter: Not used by this arena (Danish locale params
+                are always applied via DANISH_PARAMS).
 
         Returns:
             List of normalized content record dicts.
@@ -144,16 +158,27 @@ class GoogleSearchCollector(ArenaCollector):
         effective_max = max_results if max_results is not None else tier_config.max_results_per_run
         cred = await self._acquire_credential(tier)
 
+        # Build the list of query strings to issue.
+        # Boolean mode: one query per AND-group (groups are ORed by running separately).
+        # Simple mode: one query per term.
+        if term_groups is not None:
+            query_strings: list[str] = [
+                format_boolean_query_for_platform(groups=[grp], platform="google")
+                for grp in term_groups
+            ]
+        else:
+            query_strings = list(terms)
+
         all_records: list[dict[str, Any]] = []
 
         try:
             async with self._build_http_client() as client:
-                for term in terms:
+                for query in query_strings:
                     if len(all_records) >= effective_max:
                         break
                     records = await self._collect_term(
                         client=client,
-                        term=term,
+                        term=query,
                         tier=tier,
                         credential=cred,
                         max_results=effective_max - len(all_records),
@@ -164,9 +189,9 @@ class GoogleSearchCollector(ArenaCollector):
                 await self.credential_pool.release(credential_id=cred["id"])
 
         logger.info(
-            "google_search: collected %d records for %d terms at tier=%s",
+            "google_search: collected %d records for %d queries at tier=%s",
             len(all_records),
-            len(terms),
+            len(query_strings),
             tier.value,
         )
         return all_records

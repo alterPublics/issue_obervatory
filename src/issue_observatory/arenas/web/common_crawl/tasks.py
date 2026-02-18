@@ -118,6 +118,7 @@ def common_crawl_collect_terms(
     date_to: str | None = None,
     max_results: int | None = None,
     cc_index: str | None = None,
+    language_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     """Collect Common Crawl index entries for Danish pages matching the terms.
 
@@ -172,6 +173,7 @@ def common_crawl_collect_terms(
                 date_from=date_from,
                 date_to=date_to,
                 max_results=max_results,
+                language_filter=language_filter,
             )
         )
     except ArenaRateLimitError:

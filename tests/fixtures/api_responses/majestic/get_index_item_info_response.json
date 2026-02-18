@@ -1,0 +1,74 @@
+{
+  "Code": "OK",
+  "FullError": "",
+  "GlobalVars": {
+    "SubscriptionType": "Developer",
+    "AnalysisResUnits": 2,
+    "AnalysisResUnitsLeft": 99999998
+  },
+  "DataTables": {
+    "Results": {
+      "Headers": [
+        "Item",
+        "ItemType",
+        "Status",
+        "ResultCode",
+        "AnalysisResUnits",
+        "TrustFlow",
+        "CitationFlow",
+        "ExtBackLinks",
+        "RefDomains",
+        "RefSubNets",
+        "RefIPs",
+        "IndexedURLs",
+        "TopicalTrustFlow_Topic_0",
+        "TopicalTrustFlow_Value_0",
+        "TopicalTrustFlow_Topic_1",
+        "TopicalTrustFlow_Value_1"
+      ],
+      "Data": [
+        {
+          "Item": "dr.dk",
+          "ItemType": "RootDomain",
+          "Status": "Fresh",
+          "ResultCode": "Found",
+          "AnalysisResUnits": 1,
+          "TrustFlow": 68,
+          "CitationFlow": 52,
+          "ExtBackLinks": 4820150,
+          "RefDomains": 38750,
+          "RefSubNets": 22410,
+          "RefIPs": 19850,
+          "IndexedURLs": 2150000,
+          "TopicalTrustFlow_Topic_0": "Society/Politics",
+          "TopicalTrustFlow_Value_0": 45,
+          "TopicalTrustFlow_Topic_1": "Arts/Television",
+          "TopicalTrustFlow_Value_1": 38
+        },
+        {
+          "Item": "politiken.dk",
+          "ItemType": "RootDomain",
+          "Status": "Fresh",
+          "ResultCode": "Found",
+          "AnalysisResUnits": 1,
+          "TrustFlow": 62,
+          "CitationFlow": 48,
+          "ExtBackLinks": 2150380,
+          "RefDomains": 22180,
+          "RefSubNets": 13920,
+          "RefIPs": 12010,
+          "IndexedURLs": 980000,
+          "TopicalTrustFlow_Topic_0": "News/Current Events",
+          "TopicalTrustFlow_Value_0": 52,
+          "TopicalTrustFlow_Topic_1": "Society/Politics",
+          "TopicalTrustFlow_Value_1": 41
+        }
+      ],
+      "TableHeaders": [],
+      "Rows": 2,
+      "TotalRows": 2,
+      "StartIndex": 0,
+      "EndIndex": 2
+    }
+  }
+}

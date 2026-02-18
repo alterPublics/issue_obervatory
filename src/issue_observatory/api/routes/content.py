@@ -56,6 +56,8 @@ _EXPORT_CONTENT_TYPES: dict[str, str] = {
     "json": "application/x-ndjson",
     "parquet": "application/octet-stream",
     "gexf": "application/xml",
+    "ris": "application/x-research-info-systems",
+    "bibtex": "application/x-bibtex",
 }
 
 _EXPORT_EXTENSIONS: dict[str, str] = {
@@ -64,6 +66,8 @@ _EXPORT_EXTENSIONS: dict[str, str] = {
     "json": "ndjson",
     "parquet": "parquet",
     "gexf": "gexf",
+    "ris": "ris",
+    "bibtex": "bib",
 }
 
 
@@ -751,6 +755,81 @@ async def content_records_fragment(
 
 
 # ---------------------------------------------------------------------------
+# Search-term filter options (HTMX fragment for content browser dropdown)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/search-terms")
+async def get_search_terms_for_run(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    run_id: Optional[uuid.UUID] = Query(default=None, description="Collection run UUID."),
+) -> HTMLResponse:
+    """Return HTML ``<option>`` elements for the search-term filter dropdown.
+
+    Called by the content browser template via HTMX whenever the run selector
+    changes.  Queries ``content_records`` for every distinct value across all
+    ``search_terms_matched`` arrays that belong to the given run, then returns
+    a bare list of ``<option>`` tags that HTMX injects into the existing
+    ``<select>`` element.
+
+    Ownership scoping mirrors ``_build_browse_stmt``: non-admin users only see
+    terms from their own collection runs.
+
+    Args:
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        run_id: Optional UUID of the collection run to scope the query to.
+
+    Returns:
+        ``HTMLResponse`` containing a leading ``<option value="">All terms</option>``
+        followed by one ``<option>`` per distinct matched search term, or just
+        the "All terms" option when ``run_id`` is not provided or no terms are
+        found.
+    """
+    terms: list[str] = []
+
+    if run_id is not None:
+        if current_user.role == "admin":
+            ownership_filter = "TRUE"
+            ownership_params: dict[str, str] = {"run_id": str(run_id)}
+        else:
+            ownership_filter = (
+                "cr.collection_run_id IN ("
+                "  SELECT id FROM collection_runs WHERE initiated_by = :user_id"
+                ")"
+            )
+            ownership_params = {"run_id": str(run_id), "user_id": str(current_user.id)}
+
+        raw_sql = text(
+            f"""
+            SELECT DISTINCT unnest(cr.search_terms_matched) AS term
+            FROM content_records cr
+            WHERE cr.collection_run_id = :run_id
+              AND cr.search_terms_matched IS NOT NULL
+              AND {ownership_filter}
+            ORDER BY term
+            """
+        )
+
+        result = await db.execute(raw_sql, ownership_params)
+        terms = [row[0] for row in result.fetchall() if row[0]]
+
+    option_html = '<option value="">All terms</option>\n'
+    for term in terms:
+        # Escape HTML special characters in term text/value.
+        escaped = (
+            term.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+        )
+        option_html += f'<option value="{escaped}">{escaped}</option>\n'
+
+    return HTMLResponse(content=option_html, status_code=200)
+
+
+# ---------------------------------------------------------------------------
 # Detail — HTML panel or standalone page
 # ---------------------------------------------------------------------------
 
@@ -838,7 +917,14 @@ async def export_content_sync(  # type: ignore[misc]
     current_user: Annotated[User, Depends(get_current_active_user)],
     format: str = Query(
         default="csv",
-        description="Export format: csv, xlsx, json, parquet, gexf.",
+        description="Export format: csv, xlsx, json, parquet, gexf, ris, bibtex.",
+    ),
+    network_type: str = Query(
+        default="actor",
+        description=(
+            "GEXF network type (only used when format=gexf). "
+            "One of: actor, term, bipartite."
+        ),
     ),
     platform: Optional[str] = Query(default=None, description="Filter by platform name."),
     arena: Optional[str] = Query(default=None, description="Filter by arena name."),
@@ -875,6 +961,9 @@ async def export_content_sync(  # type: ignore[misc]
         current_user: The authenticated, active user making the request.
         format: Export format — one of ``csv``, ``xlsx``, ``json``,
             ``parquet``, ``gexf``.
+        network_type: GEXF network type (ignored for non-GEXF formats).
+            One of ``actor``, ``term``, ``bipartite``.  Defaults to
+            ``"actor"``.
         platform: Optional platform filter.
         arena: Optional arena filter.
         query_design_id: Optional query design UUID filter.
@@ -892,7 +981,8 @@ async def export_content_sync(  # type: ignore[misc]
         attachment`` header.
 
     Raises:
-        HTTPException 400: If the requested format is not supported.
+        HTTPException 400: If the requested format is not supported, or if
+            ``network_type`` is invalid for GEXF exports.
         HTTPException 500: If serialization fails due to a missing optional
             dependency (openpyxl / pyarrow not installed).
     """
@@ -900,6 +990,16 @@ async def export_content_sync(  # type: ignore[misc]
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsupported export format {format!r}. Choose from: {', '.join(_EXPORT_CONTENT_TYPES)}.",
+        )
+
+    _VALID_NETWORK_TYPES = {"actor", "term", "bipartite"}
+    if format == "gexf" and network_type not in _VALID_NETWORK_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Unsupported network_type {network_type!r} for GEXF export. "
+                f"Choose from: {', '.join(sorted(_VALID_NETWORK_TYPES))}."
+            ),
         )
 
     stmt = _build_content_stmt(
@@ -930,22 +1030,32 @@ async def export_content_sync(  # type: ignore[misc]
             file_bytes = await exporter.export_json(records)
         elif format == "parquet":
             file_bytes = await exporter.export_parquet(records)
+        elif format == "ris":
+            file_bytes = exporter.export_ris(records)
+        elif format == "bibtex":
+            file_bytes = exporter.export_bibtex(records)
         else:  # gexf
-            file_bytes = await exporter.export_gexf(records)
+            file_bytes = await exporter.export_gexf(records, network_type=network_type)
     except ImportError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(exc),
         ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
     ext = _EXPORT_EXTENSIONS[format]
-    filename = f"content_export.{ext}"
+    filename = f"content_export_{network_type}.{ext}" if format == "gexf" else f"content_export.{ext}"
     content_type = _EXPORT_CONTENT_TYPES[format]
 
     logger.info(
         "export.sync.complete",
         user_id=str(current_user.id),
         format=format,
+        network_type=network_type if format == "gexf" else None,
         record_count=len(records),
     )
 
@@ -971,6 +1081,13 @@ async def export_content_async(
         default="csv",
         description="Export format: csv, xlsx, json, parquet, gexf.",
     ),
+    network_type: str = Query(
+        default="actor",
+        description=(
+            "GEXF network type (only used when format=gexf). "
+            "One of: actor, term, bipartite."
+        ),
+    ),
     platform: Optional[str] = Query(default=None),
     arena: Optional[str] = Query(default=None),
     query_design_id: Optional[uuid.UUID] = Query(default=None),
@@ -993,6 +1110,9 @@ async def export_content_async(
         current_user: The authenticated, active user making the request.
         format: Export format — one of ``csv``, ``xlsx``, ``json``,
             ``parquet``, ``gexf``.
+        network_type: GEXF network type (ignored for non-GEXF formats).
+            One of ``actor``, ``term``, ``bipartite``.  Defaults to
+            ``"actor"``.
         platform: Optional platform filter.
         arena: Optional arena filter.
         query_design_id: Optional query design UUID.
@@ -1006,12 +1126,23 @@ async def export_content_async(
         ``{"job_id": "<uuid>", "status": "pending"}``
 
     Raises:
-        HTTPException 400: If the format is not supported.
+        HTTPException 400: If the format is not supported, or if
+            ``network_type`` is invalid for GEXF exports.
     """
     if format not in _EXPORT_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsupported export format {format!r}. Choose from: {', '.join(_EXPORT_CONTENT_TYPES)}.",
+        )
+
+    _VALID_NETWORK_TYPES = {"actor", "term", "bipartite"}
+    if format == "gexf" and network_type not in _VALID_NETWORK_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Unsupported network_type {network_type!r} for GEXF export. "
+                f"Choose from: {', '.join(sorted(_VALID_NETWORK_TYPES))}."
+            ),
         )
 
     job_id = str(uuid.uuid4())
@@ -1033,6 +1164,10 @@ async def export_content_async(
         filters["run_id"] = str(run_id)
     if search_term:
         filters["search_term"] = search_term
+    # Always store network_type in filters so the Celery task can pass it
+    # through to ContentExporter.export_gexf().  For non-GEXF formats the
+    # task ignores this key.
+    filters["network_type"] = network_type
 
     # Write initial pending status to Redis before dispatching the task
     # so that a status poll immediately after this response returns something

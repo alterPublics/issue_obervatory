@@ -1,0 +1,20 @@
+[
+  {
+    "id": "CC-MAIN-2025-51",
+    "name": "December 2025 Index",
+    "timegate": "https://web.archive.org/web/",
+    "cdx-api": "https://index.commoncrawl.org/CC-MAIN-2025-51/search"
+  },
+  {
+    "id": "CC-MAIN-2025-47",
+    "name": "November 2025 Index",
+    "timegate": "https://web.archive.org/web/",
+    "cdx-api": "https://index.commoncrawl.org/CC-MAIN-2025-47/search"
+  },
+  {
+    "id": "CC-MAIN-2025-42",
+    "name": "October 2025 Index",
+    "timegate": "https://web.archive.org/web/",
+    "cdx-api": "https://index.commoncrawl.org/CC-MAIN-2025-42/search"
+  }
+]

@@ -189,9 +189,9 @@ class TestNormalize:
         raw = _make_raw_post()
         result = collector.normalize(raw)
 
-        # Unix 1739620200 = 2026-02-15
+        # Unix 1739620200 = 2025-02-15
         assert result["published_at"] is not None
-        assert "2026-02-15" in result["published_at"]
+        assert "2025-02-15" in result["published_at"]
 
     def test_normalize_post_collection_tier_is_free(self) -> None:
         """normalize() sets collection_tier='free' (Reddit is free-only)."""
@@ -439,8 +439,10 @@ class TestCollectByTerms:
                 terms=["term1", "term2"], tier=Tier.FREE, max_results=20
             )
 
+        # platform_id is normalised from the URL (contains the post ID)
         post_ids = [r["platform_id"] for r in records]
-        assert post_ids.count("dup001") == 1, "Duplicate post should appear only once"
+        matching = [pid for pid in post_ids if pid and "dup001" in pid]
+        assert len(matching) == 1, "Duplicate post should appear only once"
 
     @pytest.mark.asyncio
     async def test_collect_by_terms_danish_text_preserved_in_records(self) -> None:
@@ -475,7 +477,7 @@ class TestCollectByTerms:
         assert len(records) >= 1
         assert records[0]["title"] == danish_title
         assert "ø" in records[0]["title"]
-        assert "å" in records[0]["title"]
+        assert "Å" in records[0]["title"]
 
 
 # ---------------------------------------------------------------------------

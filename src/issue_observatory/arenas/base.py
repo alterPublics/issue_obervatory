@@ -104,6 +104,8 @@ class ArenaCollector(ABC):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict]:  # type: ignore[type-arg]
         """Collect content matching one or more search terms.
 
@@ -111,8 +113,19 @@ class ArenaCollector(ABC):
         platform supports them (e.g. ``gl=dk&hl=da`` for Google,
         ``lang:da`` for Bluesky).
 
+        When ``term_groups`` is provided, it encodes boolean AND/OR logic:
+        each inner list is a set of terms to be ANDed together, and the
+        groups themselves are ORed.  Implementations that support native
+        boolean query syntax should use :func:`~arenas.query_builder.
+        format_boolean_query_for_platform` to build the query string.
+        Implementations that do not support native boolean should issue one
+        request per group and combine results (deduplicating by
+        ``content_hash``).  When ``term_groups`` is ``None`` the plain
+        ``terms`` list is used as before.
+
         Args:
-            terms: List of search terms or phrases to query.
+            terms: List of search terms or phrases to query.  Used as a
+                flat list when ``term_groups`` is ``None``.
             tier: Operational tier controlling which API provider is used.
             date_from: Earliest publication date (inclusive). Accepts ISO
                 8601 string or ``datetime`` object.  ``None`` means no lower
@@ -121,6 +134,13 @@ class ArenaCollector(ABC):
                 upper bound (collect up to now).
             max_results: Upper bound on returned records. ``None`` means
                 use the tier default.
+            term_groups: Optional boolean group structure produced by
+                :func:`~arenas.query_builder.build_boolean_query_groups`.
+                When provided, the collector uses this instead of the flat
+                ``terms`` list.
+            language_filter: Optional list of ISO 639-1 language codes
+                (e.g. ``["da", "en"]``) to restrict collected content.
+                When ``None`` the arena's default locale applies.
 
         Returns:
             List of normalized content record dicts matching the
@@ -271,6 +291,21 @@ class ArenaCollector(ABC):
 
     def _validate_tier(self, tier: Tier) -> None:
         """Assert that *tier* is in ``self.supported_tiers``.
+
+        Tier Precedence Rule (IP2-022):
+        When an arena worker resolves which tier to use for a collection run,
+        it must follow this priority order (highest priority first):
+
+        1. Per-arena tier in ``CollectionRun.arenas_config`` (saved from the
+           query design's ``arenas_config`` at launch time).
+        2. Per-arena tier in the launcher request's ``arenas_config``.
+        3. Global default ``CollectionRun.tier`` field.
+
+        Celery tasks and orchestration workers are responsible for reading
+        the merged ``CollectionRun.arenas_config`` and passing the resolved
+        per-arena tier to each collector's ``collect_by_terms()`` /
+        ``collect_by_actors()`` call.  Workers must NOT fall back to the
+        global tier without first checking the per-arena config.
 
         Args:
             tier: Tier to validate.

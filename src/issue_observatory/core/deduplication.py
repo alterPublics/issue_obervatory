@@ -4,24 +4,227 @@ Task 3.8 — implements URL-normalisation-based and content-hash-based
 duplicate detection across different arenas, plus a mark-and-sweep pass
 that stamps duplicates with ``raw_metadata['duplicate_of']``.
 
+Item 15 — adds SimHash-based near-duplicate detection.  SimHash is a
+64-bit locality-sensitive hash: two records with Hamming distance <= 3
+over their SimHash fingerprints are considered near-duplicates and stamped
+with ``raw_metadata['near_duplicate_of']`` (distinct from exact-duplicate
+``raw_metadata['duplicate_of']``).
+
 No new dependencies are required: URL normalisation uses ``urllib.parse``
-from the standard library.
+and SimHash computation uses ``hashlib`` — both from the standard library.
 
 Owned by the DB Engineer.
 """
 
 from __future__ import annotations
 
-import logging
+import hashlib
 import uuid
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
+import structlog
 from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from issue_observatory.core.models.content import UniversalContentRecord
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# SimHash — 64-bit locality-sensitive hashing for near-duplicate detection
+# ---------------------------------------------------------------------------
+
+_SIMHASH_BITS: int = 64
+_SIMHASH_MOD: int = 1 << _SIMHASH_BITS  # 2^64, used to keep values unsigned
+
+
+def compute_simhash(text_content: str) -> int:
+    """Compute a 64-bit SimHash fingerprint for *text_content*.
+
+    Algorithm (Charikar 2002, adapted for 64 bits using MD5 truncation):
+
+    1. Tokenize the text into overlapping character 2-grams (bigrams).
+       Bigrams are robust to minor typos, reorderings of short words, and
+       minor rephrasing.
+    2. For each token, compute the MD5 digest of the UTF-8 encoded token and
+       take the first 8 bytes as an unsigned 64-bit integer (the "token hash").
+    3. Accumulate a 64-element integer weight vector ``v``.  For each token
+       hash, for each bit position ``i`` (0–63):
+       - If bit ``i`` of the token hash is 1, add +1 to ``v[i]``.
+       - Otherwise add -1 to ``v[i]``.
+    4. Reduce ``v`` to a 64-bit fingerprint: set bit ``i`` of the result if
+       ``v[i] > 0``, else clear it.
+
+    Args:
+        text_content: The raw text to fingerprint.  Whitespace normalisation
+            is applied before tokenisation (strip and collapse).
+
+    Returns:
+        An unsigned 64-bit integer representing the SimHash fingerprint.
+        Returns 0 for empty strings after normalisation.
+    """
+    normalized = " ".join(text_content.lower().split())
+    if not normalized:
+        return 0
+
+    # Build 2-gram token list
+    tokens: list[str] = []
+    for i in range(len(normalized) - 1):
+        tokens.append(normalized[i : i + 2])
+    if not tokens:
+        # Single-character text — use the character itself as the only token.
+        tokens = [normalized]
+
+    # Accumulate weight vector
+    v: list[int] = [0] * _SIMHASH_BITS
+    for token in tokens:
+        digest = hashlib.md5(token.encode("utf-8")).digest()  # noqa: S324
+        # Take first 8 bytes as unsigned big-endian 64-bit integer.
+        token_hash = int.from_bytes(digest[:8], byteorder="big", signed=False)
+        for bit in range(_SIMHASH_BITS):
+            if (token_hash >> bit) & 1:
+                v[bit] += 1
+            else:
+                v[bit] -= 1
+
+    # Reduce to fingerprint
+    fingerprint: int = 0
+    for bit in range(_SIMHASH_BITS):
+        if v[bit] > 0:
+            fingerprint |= 1 << bit
+
+    return fingerprint
+
+
+def hamming_distance(a: int, b: int) -> int:
+    """Return the Hamming distance (bit-flip count) between two SimHash values.
+
+    Args:
+        a: First 64-bit SimHash fingerprint.
+        b: Second 64-bit SimHash fingerprint.
+
+    Returns:
+        The number of bit positions at which ``a`` and ``b`` differ (0–64).
+    """
+    return bin(a ^ b).count("1")
+
+
+async def find_near_duplicates(
+    db: AsyncSession,
+    run_id: uuid.UUID | None = None,
+    query_design_id: uuid.UUID | None = None,
+    hamming_threshold: int = 3,
+) -> list[dict]:
+    """Find content records whose SimHash fingerprints are within *hamming_threshold* bits.
+
+    Loads all records with a non-NULL simhash (scoped to the optional
+    ``run_id`` / ``query_design_id`` filters) and groups them by Hamming
+    distance.  Records within the threshold form a near-duplicate cluster.
+
+    Args:
+        db: Active async database session.
+        run_id: Restrict the search to a specific collection run.
+        query_design_id: Restrict the search to a specific query design.
+        hamming_threshold: Maximum Hamming distance (inclusive) for two records
+            to be considered near-duplicates.  Defaults to 3.
+
+    Returns:
+        A list of dicts, each representing a near-duplicate cluster::
+
+            [
+                {
+                    "canonical_id": "...",      # lowest UUID in the cluster
+                    "near_duplicate_ids": [...], # UUIDs of the other members
+                    "members": [                # all cluster members
+                        {"id": "...", "platform": "...", "simhash": 12345},
+                        ...
+                    ],
+                },
+                ...
+            ]
+
+        Only clusters with two or more members are returned.
+    """
+    stmt = select(
+        UniversalContentRecord.id,
+        UniversalContentRecord.platform,
+        UniversalContentRecord.arena,
+        UniversalContentRecord.simhash,
+    ).where(UniversalContentRecord.simhash.isnot(None))
+
+    if run_id is not None:
+        stmt = stmt.where(UniversalContentRecord.collection_run_id == run_id)
+    if query_design_id is not None:
+        stmt = stmt.where(UniversalContentRecord.query_design_id == query_design_id)
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    if not rows:
+        return []
+
+    # Union-Find to group records into near-duplicate clusters.
+    # O(n^2) in record count — suitable for per-run batches (typically < 50K).
+    parent: dict[str, str] = {str(row.id): str(row.id) for row in rows}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]  # path compression
+            x = parent[x]
+        return x
+
+    def union(x: str, y: str) -> None:
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            # Elect the lexicographically smaller UUID as the cluster root.
+            if rx < ry:
+                parent[ry] = rx
+            else:
+                parent[rx] = ry
+
+    records_by_id = {str(row.id): row for row in rows}
+    ids = list(records_by_id.keys())
+
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            a_hash = records_by_id[ids[i]].simhash
+            b_hash = records_by_id[ids[j]].simhash
+            if a_hash is not None and b_hash is not None:
+                if hamming_distance(a_hash, b_hash) <= hamming_threshold:
+                    union(ids[i], ids[j])
+
+    # Group by cluster root
+    from collections import defaultdict
+
+    clusters: dict[str, list[str]] = defaultdict(list)
+    for record_id in ids:
+        root = find(record_id)
+        clusters[root].append(record_id)
+
+    output = []
+    for root, member_ids in clusters.items():
+        if len(member_ids) < 2:
+            continue
+        canonical_id = root
+        near_duplicate_ids = [mid for mid in member_ids if mid != canonical_id]
+        output.append(
+            {
+                "canonical_id": canonical_id,
+                "near_duplicate_ids": near_duplicate_ids,
+                "members": [
+                    {
+                        "id": mid,
+                        "platform": records_by_id[mid].platform,
+                        "arena": records_by_id[mid].arena,
+                        "simhash": records_by_id[mid].simhash,
+                    }
+                    for mid in member_ids
+                ],
+            }
+        )
+
+    return output
+
 
 # ---------------------------------------------------------------------------
 # Tracking query-parameter names to strip during URL normalisation
@@ -301,6 +504,83 @@ class DeduplicationService:
             marked=count,
         )
         return count
+
+    # ------------------------------------------------------------------
+    # SimHash near-duplicate detection
+    # ------------------------------------------------------------------
+
+    async def detect_and_mark_near_duplicates(
+        self,
+        db: AsyncSession,
+        run_id: uuid.UUID,
+        hamming_threshold: int = 3,
+    ) -> int:
+        """Detect and mark near-duplicate records for a collection run.
+
+        Fetches all records for *run_id* that have a non-NULL ``simhash``,
+        groups them into near-duplicate clusters using Hamming distance, then
+        stamps each non-canonical member with
+        ``raw_metadata['near_duplicate_of'] = str(canonical_id)``.
+
+        This is distinct from exact-duplicate marking (``duplicate_of``):
+        near-duplicates have similar but not identical text content and share
+        the same SimHash cluster, while exact duplicates share the same
+        ``content_hash``.
+
+        Args:
+            db: Active async database session.  The caller is responsible for
+                committing after this method returns.
+            run_id: UUID of the collection run to process.
+            hamming_threshold: Maximum Hamming distance (inclusive) for two
+                records to be considered near-duplicates.  Defaults to 3.
+
+        Returns:
+            The total number of records marked as near-duplicates.
+        """
+        clusters = await find_near_duplicates(
+            db, run_id=run_id, hamming_threshold=hamming_threshold
+        )
+        if not clusters:
+            logger.info(
+                "dedup.near_duplicates.none_found",
+                run_id=str(run_id),
+                threshold=hamming_threshold,
+            )
+            return 0
+
+        total_marked = 0
+        for cluster in clusters:
+            canonical_id = uuid.UUID(cluster["canonical_id"])
+            duplicate_ids = [uuid.UUID(did) for did in cluster["near_duplicate_ids"]]
+            if not duplicate_ids:
+                continue
+
+            stmt = (
+                update(UniversalContentRecord)
+                .where(UniversalContentRecord.id.in_(duplicate_ids))
+                .values(
+                    raw_metadata=func.jsonb_set(
+                        func.coalesce(
+                            UniversalContentRecord.raw_metadata,
+                            text("'{}'::jsonb"),
+                        ),
+                        text("'{near_duplicate_of}'"),
+                        func.to_jsonb(str(canonical_id)),
+                    )
+                )
+                .execution_options(synchronize_session=False)
+            )
+            result = await db.execute(stmt)
+            total_marked += result.rowcount
+
+        logger.info(
+            "dedup.near_duplicates.marked",
+            run_id=str(run_id),
+            clusters=len(clusters),
+            marked=total_marked,
+            threshold=hamming_threshold,
+        )
+        return total_marked
 
     # ------------------------------------------------------------------
     # Full dedup pass

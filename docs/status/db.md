@@ -4,6 +4,12 @@
 
 - [x] `001_initial_schema` — all core tables, indexes, and initial content_records partitions
 - [x] `002_add_arenas_config_to_query_designs` — adds `arenas_config JSONB NOT NULL DEFAULT '{}'` to `query_designs`; arena-config API endpoints now read/write this column directly instead of the `collection_runs` workaround
+- [x] `003_add_suspended_at_to_collection_runs` — adds `suspended_at TIMESTAMPTZ` column to `collection_runs`
+- [x] `004_add_scraping_jobs` — creates `scraping_jobs` table and `idx_content_collection_run` index on `content_records`
+- [x] `005_add_content_annotations` — creates `content_annotations` table (IP2-043)
+- [x] `006_add_search_term_groups` — adds `group_id UUID NULL` and `group_label VARCHAR(200) NULL` to `search_terms` with `idx_search_term_group` B-tree index (Item 14)
+- [x] `007_add_simhash_to_content_records` — adds `simhash BIGINT NULL` to `content_records` (partitioned; uses raw ALTER TABLE DDL) with `idx_content_records_simhash` B-tree index (Item 15)
+- [x] `008_add_query_design_cloning` — adds `parent_design_id UUID NULL REFERENCES query_designs(id) ON DELETE SET NULL` with `idx_query_design_parent` B-tree index (IP2-051)
 
 ## Models (Task 0.2 — COMPLETE)
 
@@ -14,8 +20,71 @@
 - [x] `core/models/query_design.py` — `QueryDesign`, `SearchTerm`, `ActorList`
 - [x] `core/models/collection.py` — `CollectionRun`, `CollectionTask`, `CreditTransaction`
 - [x] `core/models/credentials.py` — `ApiCredential`
+- [x] `core/models/annotations.py` — `ContentAnnotation` (IP2-043)
 - [x] `core/models/__init__.py` — all models exported for Alembic discovery and application use
 - [x] `core/database.py` — async engine, `AsyncSessionLocal`, `get_db()` FastAPI dependency
+
+## Content Annotation Layer (IP2-043 — COMPLETE)
+
+### Deliverables
+
+- [x] `core/models/annotations.py` — `ContentAnnotation` ORM model
+- [x] `core/models/__init__.py` — `ContentAnnotation` exported
+- [x] `alembic/versions/005_add_content_annotations.py` — reversible migration
+- [x] `api/routes/annotations.py` — GET / POST / DELETE endpoints under `/annotations`
+- [x] `api/main.py` — annotations router registered at `/annotations`
+- [x] `api/templates/content/record_detail.html` — annotation panel widget
+
+### Schema design notes
+
+**No FK to `content_records`**: `content_records` is range-partitioned with a
+composite PK `(id, published_at)`.  PostgreSQL requires FK references to match
+the full composite PK.  A FK on just `content_record_id` would fail; a FK on
+both columns would couple `content_annotations` tightly to the partitioning
+scheme.  Instead, `(content_record_id, content_published_at)` are stored as a
+logical reference without a DB-level constraint.  The unique constraint on
+`(created_by, content_record_id, content_published_at)` is the integrity
+mechanism — orphaned annotations are detectable by a maintenance query.
+
+**`created_by` uses `ON DELETE SET NULL`**: Unlike `ScrapingJob` (which uses
+`CASCADE`), annotations survive user deletion.  This preserves the research
+data produced by a researcher account even after that account is removed,
+which is important for shared study datasets and audit trails.
+
+**`TimestampMixin` without `UserOwnedMixin`**: `UserOwnedMixin` adds `owner_id`
+with `ON DELETE RESTRICT`, which prevents user deletion while annotations exist.
+The annotation model uses `TimestampMixin` + an explicit `created_by` column
+with `SET NULL` instead, following the same pattern as `ScrapingJob`.
+
+**`tags` as JSONB array**: A GIN index (`idx_annotation_tags`) supports fast
+containment queries (`tags @> '["climate"]'`).  Stored as `list[str]` in the ORM.
+
+**Stance vocabulary**: Validated at the application layer (not a DB CHECK
+constraint) so that the allowed terms can evolve without a schema migration.
+Current vocabulary: `positive`, `negative`, `neutral`, `contested`, `irrelevant`.
+
+### Indexes on `content_annotations`
+
+| Index | Type | Column(s) |
+|-------|------|-----------|
+| `uq_annotation_user_record` (UNIQUE) | B-tree | `created_by, content_record_id, content_published_at` |
+| `idx_annotation_created_by` | B-tree | `created_by` |
+| `idx_annotation_content_record` | B-tree | `content_record_id` |
+| `idx_annotation_published_at` | B-tree | `content_published_at` |
+| `idx_annotation_run` | B-tree | `collection_run_id` |
+| `idx_annotation_qd` | B-tree | `query_design_id` |
+| `idx_annotation_tags` | GIN | `tags` |
+
+### API endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/annotations/{record_id}?published_at=...` | GET | Returns current user's annotation or `{"annotation": null}` |
+| `/annotations/{record_id}` | POST | Upsert annotation (body: stance, frame, is_relevant, notes, tags, published_at, ...) |
+| `/annotations/{record_id}?published_at=...` | DELETE | Delete current user's annotation |
+
+All routes require `get_current_active_user`.  Researchers can only read/modify
+their own annotations.  Admins can delete any annotation.
 
 ## Schema Notes
 
@@ -144,6 +213,18 @@ job (`0 2 * * * docker compose --profile backup run --rm backup`) — see
 - [x] Export: CSV, XLSX, GEXF, JSON (NDJSON), Parquet (`analysis/export.py`) — Task 3.3 COMPLETE
 - [x] Cross-arena near-duplicate deduplication (`core/deduplication.py`) — Task 3.8 COMPLETE
 - [x] Entity resolution: fuzzy actor matching + merge/split (`core/entity_resolver.py`) — Task 3.9 COMPLETE
+- [x] B-02 FIXED: GEXF export extended to support three network types — Task 3.3 Phase-3 fix COMPLETE
+- [x] IP2-004 / IP2-024: Shared filter builder `_filters.py` created; duplicate exclusion added to all analysis queries — Phase A COMPLETE
+- [x] IP2-005: `_FLAT_COLUMNS` extended with `pseudonymized_author_id`, `content_hash`, `collection_run_id`, `query_design_id` — Phase A COMPLETE
+- [x] IP2-006: `_COLUMN_HEADERS` dict added; CSV/XLSX header rows now use human-readable labels; JSON format relabelled to "NDJSON (one record per line)" in analysis template — Phase A COMPLETE
+- [x] IP2-025: GEXF builders refactored to consume graph dicts from `network.py` rather than reconstructing networks from flat records — Phase A COMPLETE
+- [x] IP2-047: Per-arena GEXF export — `arena` parameter added to `get_actor_co_occurrence()`, `get_term_co_occurrence()`, `build_bipartite_network()` in `network.py`; corresponding `?arena=` query parameters added to `/network/actors`, `/network/terms`, and `/network/bipartite` API endpoints; `export_gexf()` docstring updated — Phase C COMPLETE
+- [x] IP2-049: Named entity extraction stub (Step 1) — `NamedEntityExtractor` stub class created in `analysis/enrichments/named_entity_extractor.py`; storage contract defined (`raw_metadata.enrichments.actor_roles`); `nlp-ner` optional dependency group added to `pyproject.toml`; enricher exported from `enrichments/__init__.py` — Phase C Step 1 COMPLETE
+- [x] Item 15: SimHash near-duplicate detection — `compute_simhash()`, `hamming_distance()`, `find_near_duplicates()` added to `core/deduplication.py`; `detect_and_mark_near_duplicates()` added to `DeduplicationService`; `simhash` field added to `UniversalContentRecord` ORM model and normalizer output — Phase D COMPLETE
+- [x] IP2-051: Query design cloning — `parent_design_id` added to `QueryDesign` model; `POST /query-designs/{design_id}/clone` endpoint added with deep-copy of search terms and actor lists — Phase D COMPLETE
+- [x] IP2-055: Filtered export — `GET /analysis/{run_id}/filtered-export` endpoint with format/platform/arena/date/search_term/top_actors/min_engagement filters; "Export filtered records" section added to analysis dashboard — Phase D COMPLETE
+- [x] IP2-056: RIS/BibTeX export — `export_ris()` and `export_bibtex()` methods added to `ContentExporter`; both formats added to `/content/export` and `/analysis/{run_id}/filtered-export`; format selector in analysis dashboard now shows RIS and BibTeX options with tooltips — Phase D COMPLETE
+- [x] IP2-053: Suggested terms — `GET /analysis/{run_id}/suggested-terms` endpoint added returning emergent terms not yet in query design; "Suggested terms" panel with "Add to query design" HTMX button added to analysis dashboard — Phase D COMPLETE
 
 ## Descriptive Statistics (Task 3.1 — COMPLETE)
 
@@ -224,9 +305,36 @@ All five serialization methods are `async` and return raw `bytes`:
 | `export_xlsx()` | XLSX (openpyxl) | Danish-safe (æøå); bold/frozen header; auto-sized columns; `openpyxl>=3.1` required |
 | `export_json()` | NDJSON | One JSON object per line; UUID and datetime serialized; suitable for streaming |
 | `export_parquet()` | Parquet (pyarrow) | Schema-typed: string/int64/timestamp columns; `pyarrow>=15.0` required |
-| `export_gexf()` | GEXF 1.3 XML | Actor co-occurrence network; nodes = `pseudonymized_author_id`; edges = shared collection run; `weight` and `shared_terms` edge attributes |
+| `export_gexf(graph, network_type="actor")` | GEXF 1.3 XML | Accepts a graph dict from `network.py`; dispatches to one of three GEXF serializers (IP2-025 refactor; see B-02 fix below) |
 
-Column set (CSV/XLSX/Parquet flat columns): `platform, arena, content_type, title, text_content, url, author_display_name, published_at, views_count, likes_count, shares_count, comments_count, language, collection_tier, search_terms_matched`.
+#### B-02 Fix — Three GEXF network types (2026-02-17)
+
+`export_gexf()` now accepts a `network_type` parameter with three values:
+
+| `network_type` | Description | GEXF nodes | GEXF edges |
+|----------------|-------------|-----------|-----------|
+| `"actor"` (default) | Actor co-occurrence: authors linked by shared search terms | `id=pseudonymized_author_id`, attrs: `display_name`, `platform`, `total_posts` | `weight=distinct_shared_terms`, attr: `shared_terms` (pipe-joined) |
+| `"term"` | Term co-occurrence: search terms linked by same-record co-appearance | `id=term_string`, attrs: `type="term"`, `frequency` | `weight=co_occurrence_count` |
+| `"bipartite"` | Bipartite actor-term: authors linked to terms they matched | Actor nodes: `type="actor"`; Term nodes: `id="term:{term}"`, `type="term"` | `source=author_id`, `target="term:{term}"`, `weight=record_count` |
+
+All three types:
+- Use GEXF 1.3 namespace (`xmlns="http://gexf.net/1.3"`)
+- Include `<meta>` block with `creator`, `description`, `lastmodifieddate`
+- Declare `<attributes class="node">` and `<attributes class="edge">` with typed attribute declarations
+- Produce valid, indented UTF-8 XML with `<?xml version="1.0" encoding="UTF-8"?>` declaration
+
+Internal structure refactored: `_make_gexf_root()` and `_serialize_gexf()` are shared static helpers; `_build_actor_gexf()`, `_build_term_gexf()`, and `_build_bipartite_gexf()` are the three private constructors; `export_gexf()` dispatches based on `network_type`.
+
+Both export endpoints (`GET /content/export` and `POST /content/export/async`) now accept a `network_type` query parameter (default: `"actor"`).  The Celery task reads `network_type` from the `filters` dict and passes it through.  Invalid `network_type` values for GEXF format raise HTTP 400 before the task is dispatched.
+
+The three download buttons in `analysis/index.html` now use distinct hrefs:
+- Actor: `?format=gexf&network_type=actor&run_id=...`
+- Term: `?format=gexf&network_type=term&run_id=...`
+- Bipartite: `?format=gexf&network_type=bipartite&run_id=...`
+
+Column set (CSV/XLSX/Parquet flat columns — updated Phase A IP2-005): `platform, arena, content_type, title, text_content, url, author_display_name, pseudonymized_author_id, published_at, views_count, likes_count, shares_count, comments_count, language, collection_tier, search_terms_matched, content_hash, collection_run_id, query_design_id`.
+
+Human-readable headers (IP2-006): CSV and XLSX header rows are written from `_COLUMN_HEADERS` — e.g. `author_display_name` → "Author", `pseudonymized_author_id` → "Author ID (Pseudonymized)", `search_terms_matched` → "Matched Search Terms".
 
 ### Export Endpoints (`api/routes/content.py`)
 

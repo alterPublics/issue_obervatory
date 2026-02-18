@@ -39,6 +39,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.reddit.config import (
     ALL_DANISH_SUBREDDITS,
     DANISH_SUBREDDIT_SEARCH_STRING,
@@ -117,6 +118,8 @@ class RedditCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect Reddit posts matching one or more search terms.
 
@@ -125,15 +128,22 @@ class RedditCollector(ArenaCollector):
         Optionally collects top-level comments for each matched post when
         ``include_comments=True`` was passed to the constructor.
 
+        When ``term_groups`` is provided, Reddit's ``+`` join syntax is used
+        to AND terms within a group.  One search request is issued per group;
+        the results are merged and deduplicated.
+
         Args:
-            terms: Search terms to query.
+            terms: Search terms (used when ``term_groups`` is ``None``).
             tier: Operational tier.  Only ``Tier.FREE`` is supported.
             date_from: Not used — Reddit's search API has no date-range
-                parameter.  Use time-windowed queries in batch mode for
-                historical collection.
+                parameter.
             date_to: Not used — see ``date_from``.
             max_results: Upper bound on returned records.  ``None`` uses
                 :data:`~config.DEFAULT_MAX_RESULTS`.
+            term_groups: Optional boolean AND/OR groups.  Each group is
+                joined with ``+`` (Reddit AND syntax) and queried separately.
+            language_filter: Not used — Reddit Danish subreddits provide
+                implicit language scoping.
 
         Returns:
             List of normalized content record dicts (posts and optionally
@@ -161,15 +171,25 @@ class RedditCollector(ArenaCollector):
         all_records: list[dict[str, Any]] = []
         seen_post_ids: set[str] = set()
 
+        # Build query strings: boolean groups use Reddit's + syntax for AND.
+        if term_groups is not None:
+            query_strings: list[str] = [
+                format_boolean_query_for_platform(groups=[grp], platform="reddit")
+                for grp in term_groups
+                if grp
+            ]
+        else:
+            query_strings = list(terms)
+
         try:
             async with reddit:
-                for term in terms:
+                for query in query_strings:
                     if len(all_records) >= effective_max:
                         break
                     remaining = effective_max - len(all_records)
                     new_records, new_seen = await self._search_term(
                         reddit=reddit,
-                        term=term,
+                        term=query,
                         max_results=min(remaining, MAX_RESULTS_PER_SEARCH),
                         seen_post_ids=seen_post_ids,
                         credential_id=cred.get("id", "default"),
@@ -181,9 +201,9 @@ class RedditCollector(ArenaCollector):
                 await self.credential_pool.release(credential_id=cred.get("id", "default"))
 
         logger.info(
-            "reddit: collect_by_terms completed — %d records for %d terms",
+            "reddit: collect_by_terms completed — %d records for %d queries",
             len(all_records),
-            len(terms),
+            len(query_strings),
         )
         return all_records
 

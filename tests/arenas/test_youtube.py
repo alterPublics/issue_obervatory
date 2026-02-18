@@ -408,7 +408,7 @@ class TestHealthCheck:
         cred_pool = _mock_cred_pool()
 
         with patch(
-            "issue_observatory.arenas.youtube.collector.make_api_request",
+            "issue_observatory.arenas.youtube._client.make_api_request",
             new=AsyncMock(
                 return_value={
                     "items": [
@@ -433,7 +433,7 @@ class TestHealthCheck:
         cred_pool = _mock_cred_pool()
 
         with patch(
-            "issue_observatory.arenas.youtube.collector.make_api_request",
+            "issue_observatory.arenas.youtube._client.make_api_request",
             new=AsyncMock(return_value={"items": []}),
         ):
             collector = YouTubeCollector(credential_pool=cred_pool)

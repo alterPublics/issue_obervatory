@@ -47,6 +47,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.telegram.config import (
     DANISH_TELEGRAM_CHANNELS,
@@ -126,6 +127,8 @@ class TelegramCollector(ArenaCollector):
         date_to: datetime | str | None = None,
         max_results: int | None = None,
         actor_ids: list[str] | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect Telegram messages matching one or more search terms.
 
@@ -134,21 +137,21 @@ class TelegramCollector(ArenaCollector):
         the ``search`` parameter of ``client.get_messages()``.  Results are
         deduplicated by ``{channel_id}_{message_id}``.
 
-        Note: Telegram does not support cross-channel search.  Each term is
-        searched independently within each monitored channel.
+        Telegram does not support boolean query syntax.  When ``term_groups``
+        is provided, each AND-group is searched as a space-joined phrase (one
+        request per group).  Results from all groups are merged.
 
         Args:
-            terms: Search terms.  Each term is sent as-is to the Telegram
-                ``get_messages(search=...)`` parameter.
+            terms: Search terms (used when ``term_groups`` is ``None``).
             tier: Operational tier — only ``Tier.FREE`` is accepted.
-            date_from: Earliest message date (inclusive).  Pagination stops
-                when ``message.date`` falls before this value.
-            date_to: Latest message date (inclusive).  Messages newer than
-                this value are skipped (not counted toward ``max_results``).
-            max_results: Upper bound on total records.  ``None`` uses the
-                tier default (10,000).
+            date_from: Earliest message date (inclusive).
+            date_to: Latest message date (inclusive).
+            max_results: Upper bound on total records.
             actor_ids: Additional channel usernames or numeric IDs to search.
-                Combined with :data:`~config.DANISH_TELEGRAM_CHANNELS`.
+            term_groups: Optional boolean AND/OR groups.  Each group issues
+                a separate search with terms space-joined as a phrase.
+            language_filter: Not used — Telegram channels are pre-selected
+                for Danish content.
 
         Returns:
             List of normalized content record dicts.
@@ -177,11 +180,22 @@ class TelegramCollector(ArenaCollector):
 
         channels = _build_channel_list(self._default_channels, actor_ids)
 
+        # Telegram has no boolean support; for groups, search each group as a
+        # space-joined phrase (one query per group).
+        if term_groups is not None:
+            effective_terms: list[str] = [
+                format_boolean_query_for_platform(groups=[grp], platform="bluesky")
+                for grp in term_groups
+                if grp
+            ]
+        else:
+            effective_terms = list(terms)
+
         cred = await self._acquire_credential()
         try:
             records = await self._collect_terms_with_credential(
                 cred=cred,
-                terms=terms,
+                terms=effective_terms,
                 channels=channels,
                 date_from=date_from_dt,
                 date_to=date_to_dt,
@@ -192,9 +206,9 @@ class TelegramCollector(ArenaCollector):
                 await self.credential_pool.release(credential_id=cred["id"])
 
         logger.info(
-            "telegram: collect_by_terms collected %d records for %d terms across %d channels",
+            "telegram: collect_by_terms collected %d records for %d queries across %d channels",
             len(records),
-            len(terms),
+            len(effective_terms),
             len(channels),
         )
         return records

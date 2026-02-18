@@ -8,17 +8,31 @@ requesting user must have initiated the referenced collection run, or hold
 the ``admin`` role.
 
 Routes:
-    GET /analysis/                              — redirect to collections list
-    GET /analysis/{run_id}                      — HTML analysis dashboard
-    GET /analysis/{run_id}/summary              — JSON run summary stats
-    GET /analysis/{run_id}/volume               — JSON volume over time
-    GET /analysis/{run_id}/actors               — JSON top actors
-    GET /analysis/{run_id}/terms                — JSON top terms
-    GET /analysis/{run_id}/engagement           — JSON engagement distribution
-    GET /analysis/{run_id}/network/actors       — JSON actor co-occurrence graph
-    GET /analysis/{run_id}/network/terms        — JSON term co-occurrence graph
-    GET /analysis/{run_id}/network/cross-platform  — JSON cross-platform actors
-    GET /analysis/{run_id}/network/bipartite    — JSON bipartite actor-term graph
+    GET /analysis/                                      — redirect to collections list
+    GET /analysis/{run_id}                              — HTML analysis dashboard
+    GET /analysis/{run_id}/summary                      — JSON run summary stats
+    GET /analysis/{run_id}/volume                       — JSON volume over time
+    GET /analysis/{run_id}/actors                       — JSON top actors
+    GET /analysis/{run_id}/actors-unified               — JSON top actors by canonical identity
+    GET /analysis/{run_id}/terms                        — JSON top terms
+    GET /analysis/{run_id}/emergent-terms               — JSON TF-IDF emergent terms
+    GET /analysis/{run_id}/engagement                   — JSON engagement distribution
+    GET /analysis/{run_id}/network/actors               — JSON actor co-occurrence graph (supports ?arena=)
+    GET /analysis/{run_id}/network/terms                — JSON term co-occurrence graph (supports ?arena=)
+    GET /analysis/{run_id}/network/cross-platform       — JSON cross-platform actors
+    GET /analysis/{run_id}/network/bipartite            — JSON bipartite actor-term graph (supports ?arena=)
+    GET /analysis/{run_id}/network/temporal             — JSON temporal network snapshots
+    GET /analysis/{run_id}/network/enhanced-bipartite   — JSON enhanced bipartite network
+    GET /analysis/{run_id}/network/{type}/temporal      — JSON temporal index (path alias)
+    GET /analysis/{run_id}/network/{type}/temporal/{period} — JSON single-period graph
+
+Per-arena GEXF export (IP2-047):
+    The ``/network/actors``, ``/network/terms``, and ``/network/bipartite``
+    endpoints all accept an optional ``arena`` query parameter.  Passing
+    ``?arena=<arena_slug>`` restricts the underlying co-occurrence query to
+    records from that arena only.  The response graph dict can then be passed
+    directly to ``ContentExporter.export_gexf()`` to produce an arena-scoped
+    GEXF file for cross-arena comparison in Gephi.
 """
 
 from __future__ import annotations
@@ -29,26 +43,33 @@ from typing import Annotated, Any, Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from fastapi.responses import RedirectResponse, Response
+from sqlalchemy import distinct, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from issue_observatory.analysis.descriptive import (
+    get_emergent_terms,
     get_engagement_distribution,
     get_run_summary,
     get_top_actors,
+    get_top_actors_unified,
     get_top_terms,
     get_volume_over_time,
 )
+from issue_observatory.analysis.export import ContentExporter
 from issue_observatory.analysis.network import (
     build_bipartite_network,
+    build_enhanced_bipartite_network,
     get_actor_co_occurrence,
     get_cross_platform_actors,
+    get_temporal_network_snapshots,
     get_term_co_occurrence,
 )
 from issue_observatory.api.dependencies import get_current_active_user, ownership_guard
 from issue_observatory.core.database import get_db
 from issue_observatory.core.models.collection import CollectionRun
+from issue_observatory.core.models.content import UniversalContentRecord
+from issue_observatory.core.models.query_design import QueryDesign, SearchTerm
 from issue_observatory.core.models.users import User
 
 logger = structlog.get_logger(__name__)
@@ -388,7 +409,8 @@ async def network_actors(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    platform: Optional[str] = Query(default=None),
+    platform: Optional[str] = Query(default=None, description="Filter by platform."),
+    arena: Optional[str] = Query(default=None, description="Filter to a specific arena."),
     date_from: Optional[datetime] = Query(default=None),
     date_to: Optional[datetime] = Query(default=None),
     min_co_occurrences: int = Query(default=2, ge=1, description="Minimum edge weight."),
@@ -398,11 +420,15 @@ async def network_actors(
     Two actors co-occur when their posts share at least one search term.
     The edge weight is the number of distinct content record pairs.
 
+    Pass ``arena`` to restrict both sides of the co-occurrence join to a single
+    arena, enabling per-arena GEXF export for cross-arena comparison.
+
     Args:
         run_id: UUID of the collection run.
         db: Injected async database session.
         current_user: The authenticated, active user making the request.
         platform: Optional platform filter applied to both sides of the join.
+        arena: Optional arena filter applied to both sides of the join.
         date_from: Optional lower bound on ``published_at``.
         date_to: Optional upper bound on ``published_at``.
         min_co_occurrences: Minimum edge weight to include (default 2).
@@ -419,6 +445,7 @@ async def network_actors(
         db,
         run_id=run_id,
         platform=platform,
+        arena=arena,
         date_from=date_from,
         date_to=date_to,
         min_co_occurrences=min_co_occurrences,
@@ -435,6 +462,7 @@ async def network_terms(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
+    arena: Optional[str] = Query(default=None, description="Filter to a specific arena."),
     min_co_occurrences: int = Query(default=2, ge=1, description="Minimum shared records."),
 ) -> dict[str, Any]:
     """Return the term co-occurrence graph for the given collection run.
@@ -442,10 +470,14 @@ async def network_terms(
     Two terms co-occur when they appear together in the same content record's
     ``search_terms_matched`` array.
 
+    Pass ``arena`` to restrict co-occurrence computation to records from a
+    single arena, enabling per-arena GEXF export for cross-arena comparison.
+
     Args:
         run_id: UUID of the collection run.
         db: Injected async database session.
         current_user: The authenticated, active user making the request.
+        arena: Optional arena filter.
         min_co_occurrences: Minimum number of shared records (default 2).
 
     Returns:
@@ -459,6 +491,7 @@ async def network_terms(
     return await get_term_co_occurrence(
         db,
         run_id=run_id,
+        arena=arena,
         min_co_occurrences=min_co_occurrences,
     )
 
@@ -512,6 +545,7 @@ async def network_bipartite(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
+    arena: Optional[str] = Query(default=None, description="Filter to a specific arena."),
     limit: int = Query(default=500, ge=1, le=2000, description="Max edges to return."),
 ) -> dict[str, Any]:
     """Return the bipartite actor-term graph for the given collection run.
@@ -520,10 +554,14 @@ async def network_bipartite(
     The edge weight is the number of content records where that author matched
     that term.
 
+    Pass ``arena`` to restrict the graph to records from a single arena,
+    enabling per-arena GEXF export for cross-arena comparison.
+
     Args:
         run_id: UUID of the collection run.
         db: Injected async database session.
         current_user: The authenticated, active user making the request.
+        arena: Optional arena filter.
         limit: Maximum number of edges to return (default 500, max 2000).
 
     Returns:
@@ -538,5 +576,739 @@ async def network_bipartite(
     return await build_bipartite_network(
         db,
         run_id=run_id,
+        arena=arena,
         limit=limit,
     )
+
+
+# ---------------------------------------------------------------------------
+# Emergent terms (IP2-038)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{run_id}/emergent-terms")
+async def emergent_terms(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    top_n: int = Query(default=50, ge=5, le=200, description="Number of top terms to return."),
+    exclude_search_terms: bool = Query(
+        default=True,
+        description="Exclude terms already present as query design search terms.",
+    ),
+    min_doc_frequency: int = Query(
+        default=2, ge=1, description="Minimum document frequency to include a term."
+    ),
+) -> list[dict[str, Any]]:
+    """Extract frequently-occurring terms from text content using TF-IDF.
+
+    Uses scikit-learn's TfidfVectorizer with Danish tokenization.  Returns the
+    top-N terms ordered by mean TF-IDF score, optionally excluding existing
+    search terms so that the results surface genuinely novel vocabulary.
+
+    Requires scikit-learn to be installed.  Returns an empty list when fewer
+    than 5 text records are available or the vocabulary is empty.
+
+    Args:
+        run_id: UUID of the collection run.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        top_n: Number of top terms to return (5–200, default 50).
+        exclude_search_terms: Whether to exclude terms from the query design's
+            search term list (default True).
+        min_doc_frequency: Minimum document frequency threshold (default 2).
+
+    Returns:
+        List of dicts ``{"term": str, "score": float, "document_frequency": int}``
+        ordered by TF-IDF score descending.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the current user does not own the run.
+    """
+    run = await _get_run_or_raise(run_id, db, current_user)
+    query_design_id: uuid.UUID | None = getattr(run, "query_design_id", None)
+    return await get_emergent_terms(
+        db,
+        query_design_id=query_design_id,
+        run_id=run_id,
+        top_n=top_n,
+        exclude_search_terms=exclude_search_terms,
+        min_doc_frequency=min_doc_frequency,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Top actors unified (IP2-039)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{run_id}/actors-unified")
+async def top_actors_unified(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    date_from: Optional[datetime] = Query(default=None),
+    date_to: Optional[datetime] = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=200, description="Maximum actors to return."),
+) -> list[dict[str, Any]]:
+    """Return top authors by post volume, grouped by canonical Actor identity.
+
+    Unlike ``/actors`` which groups by ``(pseudonymized_author_id, platform)``,
+    this endpoint groups by the resolved ``author_id`` FK so that the same
+    real-world actor appearing across multiple platforms is counted once.
+
+    Only records where entity resolution has been performed (``author_id`` is
+    non-null) are considered.  Returns an empty list when no resolved actors
+    exist.
+
+    Args:
+        run_id: UUID of the collection run.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        date_from: Optional lower bound on ``published_at``.
+        date_to: Optional upper bound on ``published_at``.
+        limit: Maximum number of actors to return (1–200, default 20).
+
+    Returns:
+        List of dicts with ``actor_id``, ``canonical_name``, ``platforms``,
+        ``count``, and ``total_engagement``, ordered by post count descending.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the current user does not own the run.
+    """
+    run = await _get_run_or_raise(run_id, db, current_user)
+    query_design_id: uuid.UUID | None = getattr(run, "query_design_id", None)
+    return await get_top_actors_unified(
+        db,
+        query_design_id=query_design_id,
+        run_id=run_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Temporal network snapshots (IP2-044)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{run_id}/network/temporal")
+async def network_temporal(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    interval: str = Query(
+        default="week",
+        description="Time bucket size: 'day', 'week', or 'month'.",
+    ),
+    network_type: str = Query(
+        default="actor",
+        description="Network type: 'actor' or 'term'.",
+    ),
+    limit_per_snapshot: int = Query(
+        default=100,
+        ge=10,
+        le=500,
+        description="Maximum edges per snapshot.",
+    ),
+) -> list[dict[str, Any]]:
+    """Return a time-series of network snapshots for the given collection run.
+
+    Each snapshot covers one time bucket (day/week/month) and contains a graph
+    dict representing the network built from records in that bucket only.
+    Intervals are auto-upgraded (day→week→month) when the date range would
+    produce more than 52 buckets.
+
+    Args:
+        run_id: UUID of the collection run.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        interval: Time bucket size — one of ``"day"``, ``"week"``,
+            ``"month"`` (default ``"week"``).
+        network_type: Network to compute — ``"actor"`` for actor co-occurrence
+            or ``"term"`` for term co-occurrence (default ``"actor"``).
+        limit_per_snapshot: Maximum number of edges per snapshot (10–500,
+            default 100).
+
+    Returns:
+        List of dicts ``{"period": str, "node_count": int, "edge_count": int,
+        "graph": {...}}`` ordered by period ascending.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the current user does not own the run.
+        HTTPException 422: If ``interval`` or ``network_type`` is invalid.
+    """
+    await _get_run_or_raise(run_id, db, current_user)
+    try:
+        return await get_temporal_network_snapshots(
+            db,
+            run_id=run_id,
+            interval=interval,
+            network_type=network_type,
+            limit_per_snapshot=limit_per_snapshot,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Enhanced bipartite network (IP2-040)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{run_id}/network/enhanced-bipartite")
+async def network_enhanced_bipartite(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    limit: int = Query(
+        default=500, ge=1, le=2000, description="Max edges in the base bipartite graph."
+    ),
+    top_emergent: int = Query(
+        default=30,
+        ge=5,
+        le=100,
+        description="Number of emergent terms to add (from TF-IDF extraction).",
+    ),
+) -> dict[str, Any]:
+    """Return an enhanced bipartite actor-term graph with emergent topic nodes.
+
+    Combines the standard bipartite graph (actors linked to search terms they
+    matched) with additional term nodes discovered via TF-IDF extraction.
+    Term nodes carry a ``term_type`` attribute:
+
+    - ``"search_term"`` — came from the ``search_terms_matched`` array.
+    - ``"emergent_term"`` — discovered via TF-IDF extraction.
+
+    Requires scikit-learn for emergent term extraction.  Falls back to the
+    plain bipartite graph (all terms as ``"search_term"``) when scikit-learn
+    is unavailable or no text records exist.
+
+    Args:
+        run_id: UUID of the collection run.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        limit: Maximum number of edges in the base bipartite graph
+            (default 500, max 2000).
+        top_emergent: Number of emergent terms to extract and add as term nodes
+            (5–100, default 30).
+
+    Returns:
+        Graph dict ``{"nodes": [...], "edges": [...]}`` with term nodes
+        carrying a ``"term_type"`` attribute.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the current user does not own the run.
+    """
+    run = await _get_run_or_raise(run_id, db, current_user)
+    query_design_id: uuid.UUID | None = getattr(run, "query_design_id", None)
+
+    # Extract emergent terms first (returns [] gracefully if sklearn unavailable).
+    emergent = await get_emergent_terms(
+        db,
+        query_design_id=query_design_id,
+        run_id=run_id,
+        top_n=top_emergent,
+        exclude_search_terms=True,
+    )
+
+    return await build_enhanced_bipartite_network(
+        db,
+        emergent_terms=emergent,
+        query_design_id=query_design_id,
+        run_id=run_id,
+        limit=limit,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Temporal network snapshots — type-path aliases (IP2-044 frontend alignment)
+# Frontend expects /network/{type}/temporal and /network/{type}/temporal/{period}
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{run_id}/network/{network_type}/temporal")
+async def network_temporal_by_type(
+    run_id: uuid.UUID,
+    network_type: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    interval: str = Query(default="week", description="Time bucket: day, week, month."),
+    limit_per_snapshot: int = Query(default=100, ge=10, le=500),
+) -> list[dict[str, Any]]:
+    """Temporal network snapshots — path alias with network_type in URL.
+
+    Delegates to :func:`network_temporal` with ``network_type`` extracted from
+    the URL path instead of a query parameter.  This matches the URL convention
+    used by the analysis dashboard frontend.
+
+    Args:
+        run_id: UUID of the collection run.
+        network_type: One of ``"actor"``, ``"term"``, or ``"bipartite"``.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        interval: Time bucket size (default ``"week"``).
+        limit_per_snapshot: Maximum edges per snapshot (default 100).
+
+    Returns:
+        List of ``{"period", "node_count", "edge_count", "graph"}`` dicts
+        ordered by period ascending.  Omits the ``"graph"`` key for the index
+        listing so callers can request individual period graphs separately.
+    """
+    await _get_run_or_raise(run_id, db, current_user)
+    try:
+        snapshots = await get_temporal_network_snapshots(
+            db,
+            run_id=run_id,
+            interval=interval,
+            network_type=network_type,
+            limit_per_snapshot=limit_per_snapshot,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    # Return index without full graph payloads (frontend fetches per-period below).
+    return [
+        {"period": s["period"], "node_count": s["node_count"], "edge_count": s["edge_count"]}
+        for s in snapshots
+    ]
+
+
+@router.get("/{run_id}/network/{network_type}/temporal/{period}")
+async def network_temporal_period(
+    run_id: uuid.UUID,
+    network_type: str,
+    period: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    interval: str = Query(default="week", description="Time bucket: day, week, month."),
+    limit_per_snapshot: int = Query(default=200, ge=10, le=500),
+) -> dict[str, Any]:
+    """Return the network graph for a single temporal period.
+
+    The *period* path parameter must match one of the ISO 8601 period strings
+    returned by the temporal index endpoint (e.g. ``"2026-02-01T00:00:00"``).
+    URL-encoding is applied by the browser automatically.
+
+    Args:
+        run_id: UUID of the collection run.
+        network_type: One of ``"actor"``, ``"term"``.
+        period: ISO 8601 period string matching a snapshot period key.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        interval: Must match the interval used for the index request.
+        limit_per_snapshot: Maximum edges in the returned snapshot.
+
+    Returns:
+        Graph dict ``{"nodes": [...], "edges": [...]}`` for the requested period.
+
+    Raises:
+        HTTPException 404: If the period is not found in the temporal index.
+    """
+    await _get_run_or_raise(run_id, db, current_user)
+    try:
+        snapshots = await get_temporal_network_snapshots(
+            db,
+            run_id=run_id,
+            interval=interval,
+            network_type=network_type,
+            limit_per_snapshot=limit_per_snapshot,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+    # Find the requested period — match on ISO string prefix to tolerate TZ variants.
+    for snapshot in snapshots:
+        snap_period = str(snapshot.get("period", ""))
+        if snap_period.startswith(period) or period.startswith(snap_period):
+            return snapshot.get("graph", {"nodes": [], "edges": []})
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Period '{period}' not found in temporal snapshots for this run.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Filter options — distinct platforms and arenas for a run
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{run_id}/filter-options")
+async def get_filter_options(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> dict[str, list[str]]:
+    """Return distinct platform and arena values for the given collection run.
+
+    Called by the analysis dashboard to populate the platform and arena filter
+    dropdowns before any chart is rendered.  Returns empty lists rather than
+    HTTP 404 when the run does not exist, so the UI degrades gracefully.
+
+    Ownership scoping is enforced: non-admin users can only query runs they
+    initiated.
+
+    Args:
+        run_id: UUID of the collection run.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        ``{"platforms": [...], "arenas": [...]}`` with sorted, deduplicated
+        string lists.  Either list may be empty when no content has been
+        collected yet.
+    """
+    # Verify ownership; return empty lists if the run is not found rather than
+    # propagating 404 — the analysis dashboard renders gracefully without data.
+    try:
+        await _get_run_or_raise(run_id, db, current_user)
+    except Exception:  # noqa: BLE001
+        return {"platforms": [], "arenas": []}
+
+    platform_stmt = (
+        select(distinct(UniversalContentRecord.platform))
+        .where(UniversalContentRecord.collection_run_id == run_id)
+        .order_by(UniversalContentRecord.platform)
+    )
+    arena_stmt = (
+        select(distinct(UniversalContentRecord.arena))
+        .where(UniversalContentRecord.collection_run_id == run_id)
+        .order_by(UniversalContentRecord.arena)
+    )
+
+    platform_result = await db.execute(platform_stmt)
+    arena_result = await db.execute(arena_stmt)
+
+    platforms: list[str] = [row[0] for row in platform_result.fetchall() if row[0]]
+    arenas: list[str] = [row[0] for row in arena_result.fetchall() if row[0]]
+
+    logger.info(
+        "analysis.filter_options",
+        run_id=str(run_id),
+        platform_count=len(platforms),
+        arena_count=len(arenas),
+    )
+
+    return {"platforms": platforms, "arenas": arenas}
+
+
+# ---------------------------------------------------------------------------
+# Filtered export (IP2-055)
+# ---------------------------------------------------------------------------
+
+_EXPORT_CONTENT_TYPES: dict[str, str] = {
+    "csv": "text/csv; charset=utf-8",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "ndjson": "application/x-ndjson",
+    "parquet": "application/octet-stream",
+    "ris": "application/x-research-info-systems",
+    "bibtex": "application/x-bibtex",
+}
+
+_EXPORT_EXTENSIONS: dict[str, str] = {
+    "csv": "csv",
+    "xlsx": "xlsx",
+    "ndjson": "ndjson",
+    "parquet": "parquet",
+    "ris": "ris",
+    "bibtex": "bib",
+}
+
+
+def _record_to_dict(r: UniversalContentRecord) -> dict[str, Any]:
+    """Convert an ORM row to a plain dict suitable for export functions.
+
+    Args:
+        r: A ``UniversalContentRecord`` ORM instance.
+
+    Returns:
+        A dict with all scalar columns serialized.  UUID and datetime values
+        are kept as Python objects so that the exporters can format them.
+    """
+    return {
+        "id": str(r.id) if r.id else None,
+        "platform": r.platform,
+        "arena": r.arena,
+        "platform_id": r.platform_id,
+        "content_type": r.content_type,
+        "url": r.url,
+        "text_content": r.text_content,
+        "title": r.title,
+        "language": r.language,
+        "published_at": r.published_at,
+        "collected_at": r.collected_at,
+        "author_platform_id": r.author_platform_id,
+        "author_display_name": r.author_display_name,
+        "author_id": str(r.author_id) if r.author_id else None,
+        "pseudonymized_author_id": r.pseudonymized_author_id,
+        "views_count": r.views_count,
+        "likes_count": r.likes_count,
+        "shares_count": r.shares_count,
+        "comments_count": r.comments_count,
+        "engagement_score": r.engagement_score,
+        "collection_run_id": str(r.collection_run_id) if r.collection_run_id else None,
+        "query_design_id": str(r.query_design_id) if r.query_design_id else None,
+        "search_terms_matched": r.search_terms_matched or [],
+        "collection_tier": r.collection_tier,
+        "raw_metadata": r.raw_metadata or {},
+        "media_urls": r.media_urls or [],
+        "content_hash": r.content_hash,
+    }
+
+
+@router.get("/{run_id}/filtered-export")
+async def filtered_export(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    format: str = Query(
+        default="csv",
+        description=(
+            "Export format: csv, xlsx, ndjson, parquet, ris, bibtex."
+        ),
+    ),
+    platform: Optional[str] = Query(default=None, description="Filter by platform name."),
+    arena: Optional[str] = Query(default=None, description="Filter by arena name."),
+    date_from: Optional[datetime] = Query(
+        default=None, description="Inclusive lower bound on published_at (ISO 8601)."
+    ),
+    date_to: Optional[datetime] = Query(
+        default=None, description="Inclusive upper bound on published_at (ISO 8601)."
+    ),
+    search_term: Optional[str] = Query(
+        default=None,
+        description="Only include records matching this search term in search_terms_matched.",
+    ),
+    top_actors: Optional[str] = Query(
+        default=None,
+        description="Comma-separated list of author_display_name values to filter by.",
+    ),
+    min_engagement: Optional[float] = Query(
+        default=None, description="Minimum engagement_score to include."
+    ),
+    limit: int = Query(
+        default=10_000,
+        ge=1,
+        le=10_000,
+        description="Maximum number of records to export (hard cap: 10 000).",
+    ),
+) -> Response:
+    """Export filtered content records from a collection run as a file download.
+
+    Applies the specified filters to the ``content_records`` table, scoped to
+    the given collection run.  The result is returned synchronously as a file
+    with the appropriate ``Content-Disposition: attachment`` header.
+
+    Supported formats: ``csv``, ``xlsx``, ``ndjson``, ``parquet``, ``ris``,
+    ``bibtex``.  Use ``GET /content/export/async`` for datasets larger than
+    10 000 records.
+
+    Args:
+        run_id: UUID of the collection run to export from.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        format: Output format — one of csv, xlsx, ndjson, parquet, ris, bibtex.
+        platform: Optional platform name filter.
+        arena: Optional arena name filter.
+        date_from: Optional lower bound on ``published_at``.
+        date_to: Optional upper bound on ``published_at``.
+        search_term: Optional term that must appear in ``search_terms_matched``.
+        top_actors: Optional comma-separated list of ``author_display_name``
+            values to restrict the export to.
+        min_engagement: Optional minimum ``engagement_score``.
+        limit: Maximum records to include (1–10 000; default 10 000).
+
+    Returns:
+        A ``Response`` with the file bytes and a ``Content-Disposition:
+        attachment`` header.
+
+    Raises:
+        HTTPException 400: If the requested format is not supported.
+        HTTPException 403: If the current user does not own the run.
+        HTTPException 404: If the run does not exist.
+    """
+    run = await _get_run_or_raise(run_id, db, current_user)
+
+    if format not in _EXPORT_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Unsupported export format {format!r}. "
+                f"Choose from: {', '.join(_EXPORT_CONTENT_TYPES)}."
+            ),
+        )
+
+    # Build query with ownership scope (run already verified) and all filters.
+    stmt = (
+        select(UniversalContentRecord)
+        .where(UniversalContentRecord.collection_run_id == run_id)
+        .order_by(UniversalContentRecord.collected_at.desc())
+        .limit(limit)
+    )
+
+    if platform:
+        stmt = stmt.where(UniversalContentRecord.platform == platform)
+    if arena:
+        stmt = stmt.where(UniversalContentRecord.arena == arena)
+    if date_from:
+        stmt = stmt.where(UniversalContentRecord.published_at >= date_from)
+    if date_to:
+        stmt = stmt.where(UniversalContentRecord.published_at <= date_to)
+    if search_term:
+        # Use PostgreSQL array containment (@>) to match exact term in the array.
+        stmt = stmt.where(
+            UniversalContentRecord.search_terms_matched.contains([search_term])
+        )
+    if min_engagement is not None:
+        stmt = stmt.where(
+            UniversalContentRecord.engagement_score >= min_engagement
+        )
+    if top_actors:
+        actor_names = [a.strip() for a in top_actors.split(",") if a.strip()]
+        if actor_names:
+            stmt = stmt.where(
+                UniversalContentRecord.author_display_name.in_(actor_names)
+            )
+
+    db_result = await db.execute(stmt)
+    orm_rows = list(db_result.scalars().all())
+    records = [_record_to_dict(r) for r in orm_rows]
+
+    exporter = ContentExporter()
+
+    try:
+        if format == "csv":
+            file_bytes = await exporter.export_csv(records)
+        elif format == "xlsx":
+            file_bytes = await exporter.export_xlsx(records)
+        elif format == "ndjson":
+            file_bytes = await exporter.export_json(records)
+        elif format == "parquet":
+            file_bytes = await exporter.export_parquet(records)
+        elif format == "ris":
+            file_bytes = exporter.export_ris(records)
+        else:  # bibtex
+            file_bytes = exporter.export_bibtex(records)
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
+
+    ext = _EXPORT_EXTENSIONS[format]
+    filename = f"run_{run_id}_{format}_export.{ext}"
+    content_type = _EXPORT_CONTENT_TYPES[format]
+
+    logger.info(
+        "analysis.filtered_export",
+        run_id=str(run_id),
+        user_id=str(current_user.id),
+        format=format,
+        record_count=len(records),
+    )
+
+    return Response(
+        content=file_bytes,
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Suggested terms (IP2-053)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{run_id}/suggested-terms")
+async def suggested_terms(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    top_n: int = Query(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum number of suggested terms to return.",
+    ),
+    min_doc_frequency: int = Query(
+        default=2,
+        ge=1,
+        description="Minimum document frequency for a term to be suggested.",
+    ),
+) -> list[dict[str, Any]]:
+    """Return emergent terms from collected data that are not already in the query design.
+
+    Calls ``get_emergent_terms()`` with TF-IDF extraction scoped to the given
+    run, then fetches the existing search terms from the associated query design
+    and removes any overlap, so only genuinely novel vocabulary is returned.
+
+    Args:
+        run_id: UUID of the collection run.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        top_n: Maximum number of suggestions to return (1–50, default 10).
+        min_doc_frequency: Minimum document frequency for a suggested term
+            (default 2).
+
+    Returns:
+        List of dicts ``{"term": str, "score": float, "document_frequency": int}``
+        ordered by TF-IDF score descending, excluding terms already present in
+        the query design.
+
+    Raises:
+        HTTPException 403: If the current user does not own the run.
+        HTTPException 404: If the run does not exist.
+    """
+    run = await _get_run_or_raise(run_id, db, current_user)
+    query_design_id: uuid.UUID | None = getattr(run, "query_design_id", None)
+
+    # Fetch all emergent terms (more than top_n so we can filter after exclusion).
+    all_emergent = await get_emergent_terms(
+        db,
+        query_design_id=query_design_id,
+        run_id=run_id,
+        top_n=top_n * 4,  # over-fetch to survive exclusion filtering
+        exclude_search_terms=True,
+        min_doc_frequency=min_doc_frequency,
+    )
+
+    # Build a set of existing search term strings for this query design.
+    existing_terms: set[str] = set()
+    if query_design_id is not None:
+        term_stmt = select(SearchTerm.term).where(
+            SearchTerm.query_design_id == query_design_id,
+            SearchTerm.is_active.is_(True),
+        )
+        term_result = await db.execute(term_stmt)
+        existing_terms = {row[0].lower() for row in term_result.fetchall()}
+
+    # Exclude terms already in the query design (case-insensitive).
+    suggestions = [
+        item
+        for item in all_emergent
+        if item["term"].lower() not in existing_terms
+    ][:top_n]
+
+    logger.info(
+        "analysis.suggested_terms",
+        run_id=str(run_id),
+        query_design_id=str(query_design_id) if query_design_id else None,
+        existing_count=len(existing_terms),
+        suggestion_count=len(suggestions),
+    )
+
+    return suggestions

@@ -39,12 +39,18 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from issue_observatory.api.dependencies import (
     get_current_active_user,
     get_optional_user,
     require_admin,
 )
+from issue_observatory.core.database import get_db
+from issue_observatory.core.models.collection import CollectionRun
+from issue_observatory.core.models.query_design import QueryDesign, SearchTerm
 from issue_observatory.core.models.users import User
 
 router = APIRouter(include_in_schema=False)
@@ -254,21 +260,77 @@ async def collections_detail(
     request: Request,
     run_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> HTMLResponse:
     """Render the collection run live status / detail page.
+
+    Queries the ``CollectionRun`` record and its associated ``QueryDesign``
+    and ``SearchTerm`` rows so the template can display the query design name
+    and the search terms that were used in this collection.
 
     Args:
         request: The current HTTP request.
         run_id: UUID of the collection run.
         current_user: The authenticated, active user.
+        db: Injected async database session.
 
     Returns:
-        Rendered ``collections/detail.html`` template.
+        Rendered ``collections/detail.html`` template with an enriched
+        ``run`` context dict containing ``query_design_name`` and
+        ``search_terms``.
     """
     tpl = _templates(request)
+
+    # Load the collection run, eagerly joining its query design.
+    result = await db.execute(
+        select(CollectionRun)
+        .where(CollectionRun.id == run_id)
+        .options(selectinload(CollectionRun.query_design))
+    )
+    collection_run = result.scalar_one_or_none()
+
+    run_context: dict = {"id": str(run_id)}
+
+    if collection_run is not None:
+        run_context["status"] = collection_run.status
+        run_context["mode"] = collection_run.mode
+        run_context["query_design_id"] = (
+            str(collection_run.query_design_id)
+            if collection_run.query_design_id
+            else ""
+        )
+
+        query_design: Optional[QueryDesign] = collection_run.query_design
+        if query_design is not None:
+            run_context["query_design_name"] = query_design.name
+
+            # Load search terms for the associated query design.
+            terms_result = await db.execute(
+                select(SearchTerm)
+                .where(
+                    SearchTerm.query_design_id == query_design.id,
+                    SearchTerm.is_active.is_(True),
+                )
+                .order_by(SearchTerm.created_at)
+            )
+            run_context["search_terms"] = [
+                {"term": t.term, "term_type": t.term_type}
+                for t in terms_result.scalars().all()
+            ]
+        else:
+            run_context["query_design_name"] = ""
+            run_context["search_terms"] = []
+    else:
+        run_context["search_terms"] = []
+
     return tpl.TemplateResponse(
         "collections/detail.html",
-        {"request": request, "user": current_user, "run_id": str(run_id)},
+        {
+            "request": request,
+            "user": current_user,
+            "run_id": str(run_id),
+            "run": run_context,
+        },
     )
 
 

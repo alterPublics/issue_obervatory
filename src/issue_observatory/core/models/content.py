@@ -231,6 +231,10 @@ class UniversalContentRecord(Base):
         sa.String(64),
         nullable=True,
     )
+    simhash: Mapped[Optional[int]] = mapped_column(
+        sa.BigInteger,
+        nullable=True,
+    )
 
     # ------------------------------------------------------------------
     # Table-level constraints and indexes.

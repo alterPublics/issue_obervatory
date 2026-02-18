@@ -98,18 +98,18 @@ TWITTERAPIIO_QUERY_TYPE: str = "Latest"
 
 XTWITTER_TIERS: dict[Tier, TierConfig] = {
     Tier.MEDIUM: TierConfig(
-        provider="twitterapi_io",
+        tier=Tier.MEDIUM,
         max_results_per_run=10_000,
-        requires_credentials=True,
-        credits_per_result=1,
-        requests_per_minute=MEDIUM_RATE_LIMIT_MAX_CALLS * 60,
+        rate_limit_per_minute=MEDIUM_RATE_LIMIT_MAX_CALLS * 60,
+        requires_credential=True,
+        estimated_credits_per_1k=1,
     ),
     Tier.PREMIUM: TierConfig(
-        provider="x_twitter_v2",
+        tier=Tier.PREMIUM,
         max_results_per_run=50_000,
-        requires_credentials=True,
-        credits_per_result=1,
-        requests_per_minute=PREMIUM_RATE_LIMIT_MAX_CALLS,
+        rate_limit_per_minute=PREMIUM_RATE_LIMIT_MAX_CALLS,
+        requires_credential=True,
+        estimated_credits_per_1k=1,
     ),
 }
 """Tier configuration objects for the X/Twitter arena."""

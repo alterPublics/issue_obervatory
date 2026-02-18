@@ -283,12 +283,16 @@ def export_content_records(
         from issue_observatory.analysis.export import ContentExporter
 
         exporter = ContentExporter()
+        # Extract network_type for GEXF exports.  Defaults to "actor" so that
+        # jobs dispatched before this parameter was added continue to work.
+        gexf_network_type: str = filters.get("network_type", "actor")
+
         format_method = {
             "csv": lambda: asyncio.run(exporter.export_csv(records)),
             "xlsx": lambda: asyncio.run(exporter.export_xlsx(records)),
             "json": lambda: asyncio.run(exporter.export_json(records)),
             "parquet": lambda: asyncio.run(exporter.export_parquet(records)),
-            "gexf": lambda: asyncio.run(exporter.export_gexf(records)),
+            "gexf": lambda: asyncio.run(exporter.export_gexf(records, network_type=gexf_network_type)),
         }
         if export_format not in format_method:
             raise ValueError(f"Unsupported export format: {export_format!r}")

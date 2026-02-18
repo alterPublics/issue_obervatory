@@ -68,7 +68,7 @@ class GoogleAutocompleteCollector(ArenaCollector):
 
     Class Attributes:
         arena_name: ``"google_autocomplete"``
-        platform_name: ``"google"``
+        platform_name: ``"google_autocomplete"``
         supported_tiers: ``[Tier.FREE, Tier.MEDIUM, Tier.PREMIUM]``
 
     Args:
@@ -81,7 +81,7 @@ class GoogleAutocompleteCollector(ArenaCollector):
     """
 
     arena_name: str = "google_autocomplete"
-    platform_name: str = "google"
+    platform_name: str = "google_autocomplete"
     supported_tiers: list[Tier] = [Tier.FREE, Tier.MEDIUM, Tier.PREMIUM]
 
     def __init__(
@@ -105,12 +105,20 @@ class GoogleAutocompleteCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect autocomplete suggestions for each search term.
 
         For each term, the collector fetches autocomplete suggestions from
         the configured tier's provider.  Each suggestion becomes one
         normalized content record with ``content_type="autocomplete_suggestion"``.
+
+        Autocomplete does not support boolean AND/OR logic — each term is
+        queried independently.  When ``term_groups`` is provided, all terms
+        from all groups are flattened and queried one by one.  The
+        ``language_filter`` parameter is accepted but not applied (autocomplete
+        always uses Danish locale parameters as configured).
 
         Args:
             terms: Search terms to get suggestions for.
@@ -119,6 +127,12 @@ class GoogleAutocompleteCollector(ArenaCollector):
             date_to: Not used.
             max_results: Upper bound on total records returned.  ``None``
                 uses the tier default.
+            term_groups: Optional boolean AND/OR groups.  When provided,
+                all terms across all groups are queried individually (no
+                boolean combining is possible for autocomplete).
+            language_filter: Accepted for interface compatibility but not
+                applied — autocomplete always uses Danish locale (``gl=dk``,
+                ``hl=da``).
 
         Returns:
             List of normalized content record dicts.
@@ -141,6 +155,19 @@ class GoogleAutocompleteCollector(ArenaCollector):
             max_results if max_results is not None else tier_config.max_results_per_run
         )
 
+        # Autocomplete does not support boolean group syntax — flatten all
+        # group terms into a single deduplicated list of individual queries.
+        if term_groups is not None:
+            seen: set[str] = set()
+            effective_terms: list[str] = []
+            for grp in term_groups:
+                for t in grp:
+                    if t not in seen:
+                        seen.add(t)
+                        effective_terms.append(t)
+        else:
+            effective_terms = list(terms)
+
         cred: dict[str, Any] | None = None
         if tier != Tier.FREE:
             cred = await self._acquire_credential(tier)
@@ -148,7 +175,7 @@ class GoogleAutocompleteCollector(ArenaCollector):
         all_records: list[dict[str, Any]] = []
 
         async with self._build_http_client() as client:
-            for term in terms:
+            for term in effective_terms:
                 if len(all_records) >= effective_max:
                     break
                 try:
@@ -170,7 +197,7 @@ class GoogleAutocompleteCollector(ArenaCollector):
         logger.info(
             "google_autocomplete: collected %d suggestions for %d terms at tier=%s",
             len(all_records),
-            len(terms),
+            len(effective_terms),
             tier.value,
         )
         return all_records[:effective_max]

@@ -1,0 +1,40 @@
+{
+  "id": "gen-01JM4XYZABCDEFGHIJKLMNOP",
+  "provider": "Perplexity",
+  "model": "perplexity/sonar-pro",
+  "object": "chat.completion",
+  "created": 1739750800,
+  "choices": [
+    {
+      "logprobs": null,
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Grønland er verdens største ø og er en autonom del af Kongeriget Danmark. Øen har en befolkning på ca. 56.000 mennesker, hvoraf størstedelen er inuit. Grønlands geografi er domineret af den massive indlandsis, der dækker ca. 80 procent af øens overflade. Klimaforandringerne rammer Grønland særligt hårdt: ismassen smelter med accelererende hastighed, hvilket bidrager til global havstigning.\n\nPolitisk nyder Grønland selvstyre, hvilket betyder, at øen styrer sine egne anliggender inden for en række områder, mens Danmark fortsat varetager udenrigs- og forsvarspolitik. Debatten om grønlandsk selvstændighed er aktuel og kompleks, idet økonomi, sikkerhedspolitik og kulturel identitet alle spiller ind.\n\nGrønlands naturressourcer, herunder fisk, mineraler og potentielle olie- og gasforekomster, gør øen til et geopolitisk omdrejningspunkt, særligt i lyset af arktiske klimaforandringer og øget skibsfart i Arktis.",
+        "citations": [
+          {
+            "url": "https://www.dr.dk/nyheder/seneste/groenland-klimaforandringer-issmeltning",
+            "title": "Grønlands indlandsis smelter hurtigere end frygtet",
+            "snippet": "Ny forskning viser, at Grønlands indlandsis smelter med en hastighed, der overstiger tidligere prognoser, med alvorlige konsekvenser for det globale havniveau."
+          },
+          {
+            "url": "https://www.information.dk/udland/2024/groenland-selvstaendighed-okonomi",
+            "title": "Grønlands vej til selvstændighed: økonomi og geopolitik",
+            "snippet": "Spørgsmålet om grønlandsk selvstændighed er uløseligt knyttet til øens økonomi, der fortsat er stærkt afhængig af bloktilskud fra Danmark."
+          },
+          {
+            "url": "https://naalakkersuisut.gl/da/Naalakkersuisut/Groenland",
+            "title": "Om Grønland — Naalakkersuisut",
+            "snippet": "Grønland har ca. 56.000 indbyggere og et selvstyre siden 2009. Naalakkersuisut er den grønlandske regering."
+          }
+        ]
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 102,
+    "completion_tokens": 287,
+    "total_tokens": 389
+  }
+}

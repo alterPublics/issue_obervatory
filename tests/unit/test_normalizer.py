@@ -74,7 +74,7 @@ class TestPseudonymization:
         platform = "reddit"
         user_id = "u_testuser"
         expected = hashlib.sha256(
-            f"{platform}{user_id}{TEST_SALT}".encode("utf-8")
+            f"{platform}:{user_id}:{TEST_SALT}".encode("utf-8")
         ).hexdigest()
 
         result = norm.pseudonymize_author(platform, user_id)
@@ -416,14 +416,16 @@ class TestEngagementMetrics:
 
 
 class TestNormalizerConstruction:
-    def test_empty_salt_raises_value_error(self) -> None:
-        """An empty pseudonymization salt must raise ValueError at construction.
+    def test_empty_salt_logs_warning_and_pseudonymize_returns_none(self) -> None:
+        """An empty pseudonymization salt logs a warning at construction and
+        causes pseudonymize_author() to return None for all records.
 
-        An empty salt would make all records from all platforms trivially
-        re-identifiable by brute-forcing an empty string.
+        This graceful degradation allows the application to run in environments
+        where the salt is not yet configured, while flagging the misconfiguration.
         """
-        with pytest.raises(ValueError, match="PSEUDONYMIZATION_SALT must not be empty"):
-            Normalizer(pseudonymization_salt="")
+        norm = Normalizer(pseudonymization_salt="")
+        result = norm.pseudonymize_author("bluesky", "user123")
+        assert result is None
 
     def test_explicit_salt_overrides_settings(self) -> None:
         """An explicitly passed salt does not read from settings."""

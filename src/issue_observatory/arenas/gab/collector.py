@@ -33,6 +33,7 @@ from typing import Any
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.gab.config import (
     GAB_ACCOUNT_LOOKUP_ENDPOINT,
     GAB_ACCOUNT_STATUSES_ENDPOINT,
@@ -104,6 +105,8 @@ class GabCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect Gab posts matching one or more search terms or hashtags.
 
@@ -111,18 +114,18 @@ class GabCollector(ArenaCollector):
         Falls back to ``GET /api/v1/timelines/tag/{hashtag}`` for hashtag
         terms (those starting with ``#``) if the search endpoint returns 422.
 
-        Note: No native language filter is available. Apply client-side
-        language detection for Danish content filtering if needed.
-
-        Note: Date filtering is applied client-side (Mastodon API provides
-        no server-side date filter on search endpoints).
+        Gab has no native boolean support.  When ``term_groups`` is provided
+        each AND-group is searched as a space-joined phrase.
 
         Args:
-            terms: Keywords or hashtags (``#tag``) to search for.
+            terms: Keywords or hashtags (used when ``term_groups`` is ``None``).
             tier: Operational tier. Only FREE is valid.
             date_from: Earliest post date (inclusive, client-side filter).
             date_to: Latest post date (inclusive, client-side filter).
             max_results: Cap on total records. Defaults to tier max.
+            term_groups: Optional boolean AND/OR groups.  Each group issues
+                a separate query with terms space-joined.
+            language_filter: Not used — Gab has no language filter parameter.
 
         Returns:
             List of normalized content record dicts.
@@ -159,10 +162,20 @@ class GabCollector(ArenaCollector):
                 platform=self.platform_name,
             )
 
+        # Build effective terms: one per AND-group (space-joined), or use plain list.
+        if term_groups is not None:
+            effective_terms: list[str] = [
+                format_boolean_query_for_platform(groups=[grp], platform="bluesky")
+                for grp in term_groups
+                if grp
+            ]
+        else:
+            effective_terms = list(terms)
+
         all_records: list[dict[str, Any]] = []
 
         async with self._build_http_client() as client:
-            for term in terms:
+            for term in effective_terms:
                 if len(all_records) >= effective_max:
                     break
                 remaining = effective_max - len(all_records)
@@ -195,9 +208,9 @@ class GabCollector(ArenaCollector):
 
         await self._release_credential(cred)
         logger.info(
-            "gab: collected %d posts for %d terms",
+            "gab: collected %d posts for %d queries",
             len(all_records),
-            len(terms),
+            len(effective_terms),
         )
         return all_records
 

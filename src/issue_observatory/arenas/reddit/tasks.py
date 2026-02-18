@@ -128,6 +128,7 @@ def reddit_collect_terms(
     terms: list[str],
     tier: str = "free",
     include_comments: bool = False,
+    language_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     """Collect Reddit posts (and optionally comments) for a list of search terms.
 
@@ -186,6 +187,7 @@ def reddit_collect_terms(
                 terms=terms,
                 tier=tier_enum,
                 max_results=None,
+                language_filter=language_filter,
             )
         )
     except NoCredentialAvailableError as exc:

@@ -31,6 +31,7 @@ from typing import Any
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.x_twitter.config import (
     DANISH_LANG_OPERATOR,
@@ -105,6 +106,8 @@ class XTwitterCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect tweets matching one or more search terms.
 
@@ -112,14 +115,20 @@ class XTwitterCollector(ArenaCollector):
         up to *max_results*. For MEDIUM tier uses TwitterAPI.io cursor pagination;
         for PREMIUM tier uses X API v2 ``next_token`` pagination.
 
+        When ``term_groups`` is provided, X/Twitter's native boolean syntax is
+        used: ``(term1 term2) OR (term3 term4)`` — space = AND, ``OR`` = OR.
+        One request is issued per AND-group to maximise result diversity.
+
         Args:
-            terms: Search terms or X operator query strings.
-            tier: :attr:`Tier.MEDIUM` (TwitterAPI.io) or :attr:`Tier.PREMIUM`
-                (X API v2 Pro).
+            terms: Search terms (used when ``term_groups`` is ``None``).
+            tier: :attr:`Tier.MEDIUM` (TwitterAPI.io) or :attr:`Tier.PREMIUM`.
             date_from: Earliest publication date (inclusive).
             date_to: Latest publication date (inclusive).
-            max_results: Upper bound on returned records. ``None`` uses the
-                tier default.
+            max_results: Upper bound on returned records.
+            term_groups: Optional boolean AND/OR groups.  Twitter supports
+                native boolean with space-AND and ``OR`` operators.
+            language_filter: Optional language codes.  The first code
+                replaces the default ``lang:da`` operator appended to queries.
 
         Returns:
             List of normalized content record dicts.
@@ -140,10 +149,20 @@ class XTwitterCollector(ArenaCollector):
         date_from_str = _to_date_str(date_from)
         date_to_str = _to_date_str(date_to)
 
+        # Build query strings using Twitter boolean syntax.
+        if term_groups is not None:
+            query_strings: list[str] = [
+                format_boolean_query_for_platform(groups=[grp], platform="twitter")
+                for grp in term_groups
+                if grp
+            ]
+        else:
+            query_strings = list(terms)
+
         all_records: list[dict[str, Any]] = []
 
         async with self._build_http_client() as client:
-            for term in terms:
+            for term in query_strings:
                 if len(all_records) >= effective_max:
                     break
                 remaining = effective_max - len(all_records)
@@ -158,9 +177,9 @@ class XTwitterCollector(ArenaCollector):
                 all_records.extend(records)
 
         logger.info(
-            "x_twitter: collect_by_terms completed — tier=%s terms=%d records=%d",
+            "x_twitter: collect_by_terms completed — tier=%s queries=%d records=%d",
             tier.value,
-            len(terms),
+            len(query_strings),
             len(all_records),
         )
         return all_records

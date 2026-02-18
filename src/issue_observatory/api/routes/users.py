@@ -251,6 +251,7 @@ async def generate_api_key(
     "/me/api-key",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Revoke the calling user's API key",
+    response_model=None,
 )
 async def revoke_api_key(
     db: AsyncSession = Depends(get_db),

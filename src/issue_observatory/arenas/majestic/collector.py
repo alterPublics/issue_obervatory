@@ -39,6 +39,7 @@ from urllib.parse import urlparse
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.majestic.config import (
     CMD_GET_BACKLINK_DATA,
     CMD_GET_INDEX_ITEM_INFO,
@@ -118,28 +119,32 @@ class MajesticCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect domain-level metrics for a list of domain names or URLs.
 
         Each term is treated as a domain name.  If a term looks like a full
         URL (contains ``://``), the domain is extracted automatically.
 
-        Calls ``GetIndexItemInfo`` for each domain in batches of up to 100.
-        Returns ``content_type="domain_metrics"`` records.
+        Majestic operates on domain names, not boolean text queries.  When
+        ``term_groups`` is provided, all terms from all groups are flattened
+        into a single domain list (since domain metrics do not have boolean
+        logic).
 
         Only ``Tier.PREMIUM`` is supported.  ``Tier.FREE`` or ``Tier.MEDIUM``
         raise ``NotImplementedError``.
 
         Args:
-            terms: List of domain names or URLs to analyse.
-                Example: ``["dr.dk", "tv2.dk", "https://politiken.dk/"]``.
+            terms: List of domain names or URLs (used when ``term_groups``
+                is ``None``).
             tier: Must be ``Tier.PREMIUM``.
-            date_from: Unused — Majestic does not support date-filtered
-                domain-metric queries.
-            date_to: Unused — Majestic does not support date-filtered
-                domain-metric queries.
-            max_results: Upper bound on returned records.  ``None`` uses the
-                tier default.
+            date_from: Unused — Majestic does not support date filtering.
+            date_to: Unused — Majestic does not support date filtering.
+            max_results: Upper bound on returned records.
+            term_groups: Optional groups; all terms across groups are merged
+                into the domain list (boolean logic does not apply to domains).
+            language_filter: Not used.
 
         Returns:
             List of normalized ``content_type="domain_metrics"`` records.
@@ -161,7 +166,11 @@ class MajesticCollector(ArenaCollector):
         api_key: str = credential["api_key"]
         credential_id: str = credential.get("id", "unknown")
 
-        domains = [_extract_domain(term) for term in terms]
+        # For Majestic, flatten all groups into a single term list.
+        effective_terms: list[str] = (
+            [t for grp in term_groups for t in grp] if term_groups is not None else list(terms)
+        )
+        domains = [_extract_domain(term) for term in effective_terms]
         domains = [d for d in domains if d][:effective_max]
 
         all_records: list[dict[str, Any]] = []

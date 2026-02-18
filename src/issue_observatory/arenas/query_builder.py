@@ -1,0 +1,280 @@
+"""Shared boolean query building utilities for arena collectors.
+
+Terms within a QueryDesign can be grouped for boolean AND/OR logic:
+
+- Terms sharing the same ``group_id`` are ANDed together (they form one group).
+- Different groups are ORed against each other.
+- Terms with ``group_id=None`` are treated as individual single-term OR groups.
+
+This module provides two public helpers:
+
+``build_boolean_query_groups``
+    Converts a list of ``SearchTerm``-like dicts (with ``"term"`` and
+    ``"group_id"`` keys) into a ``list[list[str]]`` where each inner list
+    is one AND-group that will be ORed with the others.
+
+``format_boolean_query_for_platform``
+    Serialises the group structure into a platform-native query string.
+    For platforms that have no native boolean support the groups should be
+    queried separately and their results combined; this function is only
+    needed for the platforms that *do* support native boolean syntax.
+
+Calling convention note
+-----------------------
+``ArenaCollector.collect_by_terms()`` receives plain ``list[str]`` terms.
+To transport boolean group information the callers (Celery tasks / API
+endpoints) pass an extra ``term_groups: list[list[str]] | None`` keyword
+argument.  When ``term_groups`` is not ``None`` the collector uses those
+groups directly and ignores the flat ``terms`` list (which acts as a
+compatibility fallback for callers that have not been updated yet).
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections import OrderedDict
+from typing import Any
+
+import structlog
+
+logger = structlog.get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Public type aliases
+# ---------------------------------------------------------------------------
+
+# A "term group spec" is the minimal dict needed to carry grouping metadata.
+# Arena tasks build these from SearchTerm ORM rows, then pass them to
+# build_boolean_query_groups().
+TermSpec = dict[str, Any]  # {"term": str, "group_id": uuid.UUID | str | None}
+
+
+# ---------------------------------------------------------------------------
+# Public helpers
+# ---------------------------------------------------------------------------
+
+
+def build_boolean_query_groups(
+    term_specs: list[TermSpec],
+) -> list[list[str]]:
+    """Group term dicts into AND/OR groups.
+
+    Each term dict must have at minimum a ``"term"`` key (str) and a
+    ``"group_id"`` key (``uuid.UUID | str | None``).
+
+    Terms that share the same ``group_id`` are placed into the same AND-group.
+    Terms with ``group_id=None`` each form their own single-item group (treated
+    as independent OR terms, consistent with the SearchTerm schema design).
+
+    Args:
+        term_specs: List of dicts with ``"term"`` and ``"group_id"`` keys.
+
+    Returns:
+        A list of groups.  Each group is a list of term strings to be ANDed.
+        The groups themselves are ORed.  Empty input returns an empty list.
+
+    Example::
+
+        specs = [
+            {"term": "klimaforandringer", "group_id": "g1"},
+            {"term": "IPCC", "group_id": "g1"},
+            {"term": "folketing", "group_id": None},
+        ]
+        groups = build_boolean_query_groups(specs)
+        # → [["klimaforandringer", "IPCC"], ["folketing"]]
+    """
+    if not term_specs:
+        return []
+
+    # Preserve insertion order so that groups are processed deterministically.
+    grouped: OrderedDict[str, list[str]] = OrderedDict()
+    null_counter = 0
+
+    for spec in term_specs:
+        term: str = spec.get("term", "").strip()
+        if not term:
+            continue
+
+        raw_group_id = spec.get("group_id")
+
+        if raw_group_id is None:
+            # Each ungrouped term becomes its own synthetic group key so it
+            # stays independent.
+            key = f"__null_{null_counter}__"
+            null_counter += 1
+            grouped[key] = [term]
+        else:
+            # Normalise to string so UUID objects and string UUIDs both match.
+            key = str(raw_group_id)
+            if key not in grouped:
+                grouped[key] = []
+            grouped[key].append(term)
+
+    return list(grouped.values())
+
+
+def format_boolean_query_for_platform(
+    groups: list[list[str]],
+    platform: str,
+) -> str:
+    """Format boolean groups into a platform-native query string.
+
+    Only use this function for arenas that have *native* boolean query support.
+    For arenas without native support, iterate over groups and issue one
+    request per group, then combine the results.
+
+    Platform-specific syntax:
+
+    - ``"generic"`` — ``(term1 AND term2) OR (term3 AND term4)``
+    - ``"google"`` — ``(term1 term2) OR (term3 term4)``  [implicit AND]
+    - ``"bluesky"`` — ``term1 term2 OR term3 term4``  [space = AND; multi-group
+      not natively supported, each group becomes a separate request]
+    - ``"reddit"`` — ``title:term1+term2 OR title:term3+term4``
+    - ``"youtube"`` — ``term1 term2|term3 term4``  [``|`` = OR, space = AND]
+    - ``"gdelt"`` — ``(term1 AND term2) OR (term3 AND term4)``
+    - ``"twitter"`` / ``"x_twitter"`` — ``(term1 term2) OR (term3 term4)``
+    - ``"event_registry"`` — returns the first group's AND string only; the
+      caller must use the ``$query`` structure for full boolean logic.
+
+    For a single-term group no parentheses are added.
+
+    Args:
+        groups: Output of :func:`build_boolean_query_groups`.
+        platform: Lower-case platform identifier string.
+
+    Returns:
+        A query string ready for the platform's search parameter.  Returns
+        ``""`` for an empty groups list.
+    """
+    if not groups:
+        return ""
+
+    platform_lower = platform.lower()
+
+    # Flatten single-group, single-term case — no operators needed.
+    if len(groups) == 1 and len(groups[0]) == 1:
+        return groups[0][0]
+
+    if platform_lower == "google":
+        return _format_google(groups)
+    if platform_lower in ("twitter", "x_twitter"):
+        return _format_twitter(groups)
+    if platform_lower == "reddit":
+        return _format_reddit(groups)
+    if platform_lower == "youtube":
+        return _format_youtube(groups)
+    if platform_lower == "gdelt":
+        return _format_gdelt(groups)
+    if platform_lower == "bluesky":
+        return _format_bluesky(groups)
+    # Fallback: generic boolean with explicit AND/OR
+    return _format_generic(groups)
+
+
+# ---------------------------------------------------------------------------
+# Private per-platform formatters
+# ---------------------------------------------------------------------------
+
+
+def _format_generic(groups: list[list[str]]) -> str:
+    """Format groups as ``(term1 AND term2) OR (term3 AND term4)``."""
+    parts: list[str] = []
+    for grp in groups:
+        if len(grp) == 1:
+            parts.append(grp[0])
+        else:
+            parts.append("(" + " AND ".join(grp) + ")")
+    return " OR ".join(parts)
+
+
+def _format_google(groups: list[list[str]]) -> str:
+    """Format groups for Google (implicit AND via space, OR via ``OR``)."""
+    parts: list[str] = []
+    for grp in groups:
+        if len(grp) == 1:
+            parts.append(grp[0])
+        else:
+            # Parenthesise multi-term groups; space implies AND.
+            parts.append("(" + " ".join(grp) + ")")
+    return " OR ".join(parts)
+
+
+def _format_twitter(groups: list[list[str]]) -> str:
+    """Format groups for Twitter/X (space = AND, ``OR`` = OR)."""
+    parts: list[str] = []
+    for grp in groups:
+        if len(grp) == 1:
+            parts.append(grp[0])
+        else:
+            parts.append("(" + " ".join(grp) + ")")
+    return " OR ".join(parts)
+
+
+def _format_reddit(groups: list[list[str]]) -> str:
+    """Format groups for asyncpraw search (``+`` = AND, space-separated OR).
+
+    Reddit's Lucene query parser uses ``+`` to join AND terms.
+    """
+    parts: list[str] = []
+    for grp in groups:
+        if len(grp) == 1:
+            parts.append(grp[0])
+        else:
+            parts.append("+".join(grp))
+    return " OR ".join(parts)
+
+
+def _format_youtube(groups: list[list[str]]) -> str:
+    """Format groups for YouTube Data API (space = AND, ``|`` = OR).
+
+    YouTube treats space as AND and pipe as OR in the ``q`` parameter.
+    For AND-groups we join with space; groups are joined with ``|``.
+    """
+    parts: list[str] = []
+    for grp in groups:
+        if len(grp) == 1:
+            parts.append(grp[0])
+        else:
+            parts.append(" ".join(grp))
+    return "|".join(parts)
+
+
+def _format_gdelt(groups: list[list[str]]) -> str:
+    """Format groups for GDELT (explicit ``AND``/``OR`` keywords)."""
+    return _format_generic(groups)
+
+
+def _format_bluesky(groups: list[list[str]]) -> str:
+    """Format a single Bluesky AND-group (space = AND).
+
+    The Bluesky search API treats space-separated terms as AND.  Full OR
+    across multiple groups requires separate API calls; this function returns
+    only the first group's query string.  Callers should iterate over groups
+    and merge results when handling boolean Bluesky queries.
+
+    Args:
+        groups: All boolean groups; only the first is used.
+
+    Returns:
+        Space-joined terms from ``groups[0]``, or ``""`` if groups is empty.
+    """
+    if not groups:
+        return ""
+    return " ".join(groups[0])
+
+
+# ---------------------------------------------------------------------------
+# Convenience helper used by arena tasks
+# ---------------------------------------------------------------------------
+
+
+def has_boolean_groups(term_specs: list[TermSpec]) -> bool:
+    """Return True if any term has a non-None group_id.
+
+    Args:
+        term_specs: List of term dicts with ``"group_id"`` keys.
+
+    Returns:
+        ``True`` when at least one term belongs to a named group.
+    """
+    return any(spec.get("group_id") is not None for spec in term_specs)

@@ -1,0 +1,30 @@
+{
+  "id": "gen-01JM4ABCDEFGHIJKLMNOPQRST",
+  "provider": "Perplexity",
+  "model": "perplexity/sonar",
+  "object": "chat.completion",
+  "created": 1739750400,
+  "choices": [
+    {
+      "logprobs": null,
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "CO2-afgiften i Danmark er en skat på udledning af kuldioxid, der primært pålægges virksomheder og industrier. Afgiften blev indført som en del af Danmarks grønne omstilling og er en central del af klimapolitikken. Den aktuelle sats for CO2-afgiften varierer afhængigt af sektor, men regeringen har planer om at øge den markant frem mod 2030 for at nå klimamålene. Afgiften påvirker særligt energiintensive brancher som cement, stål og landbrug.\n\nDen grønne skattereform fra 2022 medførte, at CO2-afgiften for erhvervslivet gradvist hæves til 750 kr. per ton CO2 i 2030. Dette er et afgørende skridt i retning af at reducere Danmarks samlede CO2-udledning med 70 procent i 2030 sammenlignet med 1990-niveauet.\n\nBorgere mærker primært CO2-afgiften indirekte via energipriser, varme og transport. Ældre borgere og lavindkomstgrupper kan opleve afgiften som en belastning, hvilket har ført til diskussioner om kompensationsordninger."
+      }
+    }
+  ],
+  "citations": [
+    "https://www.dr.dk/nyheder/seneste/co2-afgift-denmark-climate",
+    "https://www.berlingske.dk/business/co2-afgiften-stiger-markant",
+    "https://www.information.dk/indland/2023/klimaafgift-erhvervslivet",
+    "https://www.ft.dk/samling/20221/lovforslag/l5/index.htm",
+    "https://ens.dk/ansvarsomraader/energiafgifter-og-co2/co2-afgift"
+  ],
+  "usage": {
+    "prompt_tokens": 85,
+    "completion_tokens": 231,
+    "total_tokens": 316
+  }
+}

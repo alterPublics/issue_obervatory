@@ -28,6 +28,7 @@ from typing import Any
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.bluesky.config import (
     BLUESKY_TIERS,
     BSKY_AUTHOR_FEED_ENDPOINT,
@@ -96,6 +97,8 @@ class BlueskyCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect Bluesky posts matching one or more search terms.
 
@@ -103,18 +106,26 @@ class BlueskyCollector(ArenaCollector):
         cursor-based pagination.  Supports ISO 8601 ``since``/``until``
         date bounds via *date_from* / *date_to*.
 
+        When ``term_groups`` is provided, each AND-group is serialised as a
+        space-joined query (space = AND in Bluesky's search API) and executed
+        as a separate request.  Results from all groups are combined and
+        deduplicated by ``content_hash``.
+
         Only ``Tier.FREE`` is accepted.  Passing MEDIUM or PREMIUM logs a
         warning and falls back to FREE since no paid tier exists.
 
         Args:
-            terms: Search terms.  Lucene operators (AND, OR, NOT, quotes)
-                are supported and passed directly to the API.
+            terms: Search terms (used when ``term_groups`` is ``None``).
             tier: Operational tier — only FREE is meaningful.
-            date_from: Earliest post date (inclusive).  Accepts ISO 8601
-                string or ``datetime`` object.
+            date_from: Earliest post date (inclusive).
             date_to: Latest post date (inclusive).
             max_results: Upper bound on returned records.  ``None`` uses
-                tier default (300,000).
+                tier default.
+            term_groups: Optional boolean AND/OR groups.  Each group issues
+                a separate request with terms space-joined (AND).
+            language_filter: Optional language codes.  Bluesky's ``lang``
+                parameter accepts a single code; the first code in the list
+                is used (default ``"da"`` from DANISH_LANG config).
 
         Returns:
             List of normalized content record dicts.
@@ -140,26 +151,43 @@ class BlueskyCollector(ArenaCollector):
         since_str = _to_iso_string(date_from)
         until_str = _to_iso_string(date_to)
 
+        # Build query strings: boolean groups each become a space-joined query.
+        if term_groups is not None:
+            query_strings: list[str] = [
+                format_boolean_query_for_platform(groups=[grp], platform="bluesky")
+                for grp in term_groups
+                if grp
+            ]
+        else:
+            query_strings = list(terms)
+
         all_records: list[dict[str, Any]] = []
+        seen_hashes: set[str] = set()
 
         async with self._build_http_client() as client:
-            for term in terms:
+            for query in query_strings:
                 if len(all_records) >= effective_max:
                     break
                 remaining = effective_max - len(all_records)
                 records = await self._search_term(
                     client=client,
-                    term=term,
+                    term=query,
                     max_results=remaining,
                     since=since_str,
                     until=until_str,
                 )
-                all_records.extend(records)
+                for rec in records:
+                    h = rec.get("content_hash", "")
+                    if h and h in seen_hashes:
+                        continue
+                    if h:
+                        seen_hashes.add(h)
+                    all_records.append(rec)
 
         logger.info(
-            "bluesky: collected %d posts for %d terms",
+            "bluesky: collected %d posts for %d queries",
             len(all_records),
-            len(terms),
+            len(query_strings),
         )
         return all_records
 
@@ -537,6 +565,17 @@ class BlueskyCollector(ArenaCollector):
                     created_at = _parse_datetime(created_at_str)
                     if created_at and created_at > date_to:
                         continue
+
+                # Apply client-side language filter to restrict posts to Danish.
+                # The AT Protocol getAuthorFeed endpoint does not support a lang
+                # query parameter (unlike searchPosts), so filtering must happen
+                # here after retrieval.  BCP-47 language tags are in the record's
+                # "langs" array.  Posts with no "langs" field are included because
+                # their language is undeclared and may be Danish; posts with a
+                # "langs" list that does not contain "da" are excluded.
+                post_langs = record_data.get("langs")
+                if post_langs and DANISH_LANG not in post_langs:
+                    continue
 
                 if len(records) >= max_results:
                     break

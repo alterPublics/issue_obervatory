@@ -69,7 +69,7 @@ class TestNormalize:
         raw = {"suggestion": "folkeskolen reform", "query": "folkeskolen", "rank": 0, "tier": "free"}
         result = collector.normalize(raw)
 
-        assert result["platform"] == "google"
+        assert result["platform"] == "google_autocomplete"
         assert result["arena"] == "google_autocomplete"
         assert result["content_type"] == "autocomplete_suggestion"
 
@@ -222,7 +222,7 @@ class TestCollectByTermsFree:
         )
 
         for record in records:
-            assert record["platform"] == "google"
+            assert record["platform"] == "google_autocomplete"
             assert record["arena"] == "google_autocomplete"
             assert record["content_type"] == "autocomplete_suggestion"
             assert record["collection_tier"] == "free"
@@ -342,7 +342,7 @@ class TestHealthCheck:
 
         assert result["status"] == "ok"
         assert result["arena"] == "google_autocomplete"
-        assert result["platform"] == "google"
+        assert result["platform"] == "google_autocomplete"
         assert "checked_at" in result
 
     @pytest.mark.asyncio

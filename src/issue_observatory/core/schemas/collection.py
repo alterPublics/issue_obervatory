@@ -48,10 +48,11 @@ class CollectionRunRead(BaseModel):
         initiated_by: UUID of the user who launched the run.
         mode: ``'batch'`` or ``'live'``.
         status: Current status — ``'pending'``, ``'running'``, ``'completed'``,
-            or ``'failed'``.
+            ``'failed'``, or ``'suspended'`` (live runs only).
         tier: Default collection tier.
         started_at: Timestamp when the run transitioned to ``'running'``.
         completed_at: Timestamp when the run reached a terminal state.
+        suspended_at: Timestamp when the run was suspended (live mode only).
         date_from: Batch mode start timestamp.
         date_to: Batch mode end timestamp.
         estimated_credits: Credits reserved at run start (pre-flight estimate).
@@ -67,6 +68,7 @@ class CollectionRunRead(BaseModel):
     tier: str
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
+    suspended_at: Optional[datetime]
     date_from: Optional[datetime]
     date_to: Optional[datetime]
     estimated_credits: int

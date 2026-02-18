@@ -26,12 +26,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.instagram.config import (
     BRIGHTDATA_INSTAGRAM_POSTS_URL,
     BRIGHTDATA_MAX_POLL_ATTEMPTS,
@@ -100,6 +103,8 @@ class InstagramCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect Instagram posts matching one or more search terms or hashtags.
 
@@ -154,11 +159,21 @@ class InstagramCollector(ArenaCollector):
         cred_id: str = cred["id"]
         api_token: str = cred.get("api_token") or cred.get("api_key", "")
 
+        # Build effective terms from groups or use plain list.
+        if term_groups is not None:
+            effective_terms: list[str] = [
+                format_boolean_query_for_platform(groups=[grp], platform="bluesky")
+                for grp in term_groups
+                if grp
+            ]
+        else:
+            effective_terms = list(terms)
+
         all_records: list[dict[str, Any]] = []
 
         try:
             async with self._build_http_client() as client:
-                for term in terms:
+                for term in effective_terms:
                     if len(all_records) >= effective_max:
                         break
                     remaining = effective_max - len(all_records)
@@ -847,15 +862,18 @@ class InstagramCollector(ArenaCollector):
     # HTTP client builder
     # ------------------------------------------------------------------
 
-    def _build_http_client(self) -> httpx.AsyncClient:
-        """Return an :class:`httpx.AsyncClient` for use as a context manager.
+    @asynccontextmanager
+    async def _build_http_client(self) -> AsyncIterator[httpx.AsyncClient]:
+        """Async context manager yielding an HTTP client.
 
-        Returns:
-            A new or injected :class:`httpx.AsyncClient`.
+        Yields the injected client directly (for testing, without re-entering);
+        otherwise creates a new client with a generous timeout.
         """
         if self._http_client is not None:
-            return self._http_client  # type: ignore[return-value]
-        return httpx.AsyncClient(timeout=60.0)
+            yield self._http_client
+            return
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            yield client
 
 
 # ---------------------------------------------------------------------------

@@ -125,25 +125,25 @@ async def system_health() -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 
-async def _arena_health(arena_name: str, cls: type) -> tuple[str, dict]:
+async def _arena_health(platform_name: str, cls: type) -> tuple[str, dict]:
     """Run ``health_check()`` for a single arena collector class.
 
     Args:
-        arena_name: Registry key for the arena.
+        platform_name: Unique platform key for the collector (registry key).
         cls: The ``ArenaCollector`` subclass.
 
     Returns:
-        Tuple of ``(arena_name, health_dict)``.
+        Tuple of ``(platform_name, health_dict)``.
     """
     try:
         collector = cls()
         result: dict = await collector.health_check()
-        return arena_name, result
+        return platform_name, result
     except Exception:
-        logger.exception("Arena health check failed", extra={"arena": arena_name})
-        return arena_name, {
+        logger.exception("Arena health check failed", extra={"arena": platform_name})
+        return platform_name, {
             "status": "error",
-            "arena": arena_name,
+            "arena": platform_name,
             "error": "health_check raised an exception",
             "checked_at": datetime.now(UTC).isoformat(),
         }
@@ -164,7 +164,7 @@ async def arenas_health() -> JSONResponse:
     Always returns HTTP 200.
 
     Returns:
-        JSON with keys: ``arenas`` (dict keyed by arena name) and
+        JSON with keys: ``arenas`` (dict keyed by platform_name) and
         ``overall`` (aggregate status string).
     """
     autodiscover()
@@ -173,7 +173,7 @@ async def arenas_health() -> JSONResponse:
     from issue_observatory.arenas.registry import get_arena  # noqa: PLC0415
 
     tasks = [
-        _arena_health(info["arena_name"], get_arena(info["arena_name"]))
+        _arena_health(info["platform_name"], get_arena(info["platform_name"]))
         for info in arenas
     ]
     results: list[tuple[str, dict]] = await asyncio.gather(*tasks)

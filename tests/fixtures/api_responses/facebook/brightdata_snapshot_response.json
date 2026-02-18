@@ -1,0 +1,91 @@
+[
+  {
+    "post_id": "fb_post_001",
+    "page_id": "page_drdk",
+    "page_name": "DR Nyheder",
+    "message": "Grøn omstilling er på dagsordenen i Folketing. Regeringen præsenterer ny klimaplan med mål for 2030. Ålborg kommune er allerede i gang med at reducere CO2-udledning.",
+    "url": "https://www.facebook.com/permalink.php?story_fbid=fb_post_001&id=page_drdk",
+    "created_time": "2026-02-15T10:00:00+0000",
+    "post_type": "status",
+    "reactions": {
+      "like": 450,
+      "love": 120,
+      "haha": 15,
+      "wow": 30,
+      "sad": 5,
+      "angry": 8,
+      "total": 628
+    },
+    "shares": 89,
+    "comments": 134,
+    "image_url": "https://scontent.facebook.com/v/klimaplan_2030.jpg",
+    "images": []
+  },
+  {
+    "post_id": "fb_post_002",
+    "page_id": "page_tv2",
+    "page_name": "TV 2 Nyheder",
+    "message": "Velfærdsstatens fremtid er omdiskuteret: Ældre danskere frygter nedskæringer i ældrepleje. Statistik viser at 40% er bekymrede for pensions-systemet.",
+    "url": "https://www.facebook.com/permalink.php?story_fbid=fb_post_002&id=page_tv2",
+    "created_time": "2026-02-15T08:30:00+0000",
+    "post_type": "link",
+    "reactions": {
+      "like": 210,
+      "love": 45,
+      "total": 255
+    },
+    "shares": 67,
+    "comments": 88,
+    "image_url": null,
+    "images": []
+  },
+  {
+    "post_id": "fb_post_003",
+    "page_id": "page_berlingske",
+    "page_name": "Berlingske",
+    "message": "Øresundsbroen fejrer 25 år: Forbindelsen har forandret Øresundsregionen fundamentalt.",
+    "url": "https://www.facebook.com/permalink.php?story_fbid=fb_post_003&id=page_berlingske",
+    "created_time": "2026-02-14T12:00:00+0000",
+    "post_type": "photo",
+    "reactions": {
+      "like": 890,
+      "love": 320,
+      "total": 1210
+    },
+    "shares": 234,
+    "comments": 312,
+    "image_url": "https://scontent.facebook.com/v/oresund25.jpg",
+    "images": [
+      {"src": "https://scontent.facebook.com/v/oresund25_alt.jpg"}
+    ]
+  },
+  {
+    "post_id": "fb_post_004",
+    "page_id": "page_drdk",
+    "page_name": "DR Nyheder",
+    "message": "",
+    "url": null,
+    "created_time": "2026-02-13T09:00:00+0000",
+    "post_type": "status",
+    "reactions": {},
+    "shares": null,
+    "comments": null,
+    "image_url": null,
+    "images": []
+  },
+  {
+    "post_id": "fb_comment_001",
+    "comment_id": "c_001",
+    "page_id": "page_drdk",
+    "page_name": "DR Nyheder",
+    "message": "Dette er en kommentar om klimaet.",
+    "url": "https://www.facebook.com/permalink.php?story_fbid=fb_post_001&id=page_drdk&comment_id=c_001",
+    "created_time": "2026-02-15T11:00:00+0000",
+    "post_type": "comment",
+    "reactions": {"like": 5, "total": 5},
+    "shares": 0,
+    "comments": 1,
+    "image_url": null,
+    "images": []
+  }
+]

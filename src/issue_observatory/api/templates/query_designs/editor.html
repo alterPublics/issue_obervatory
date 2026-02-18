@@ -13,12 +13,16 @@
         - design_id (str|None): UUID string (also derivable from design.id)
         - terms (list): existing search terms (dicts with id, term, term_type, is_active)
         - actors (list): existing actor list members (dicts with id, name, type)
+        - parent_design_id (str|None): set when this design was cloned from another (IP2-051)
+        - parent_design_name (str|None): human-readable name of the source design, if available
 #}
 {% set is_edit = design_id is defined and design_id %}
 {% set action_url = '/query-designs/' + design_id if is_edit else '/query-designs/' %}
 {% set design = design | default({}) %}
 {% set terms = terms | default([]) %}
 {% set actors = actors | default([]) %}
+{% set parent_design_id = parent_design_id | default(design.parent_design_id | default(None)) %}
+{% set parent_design_name = parent_design_name | default(design.parent_design_name | default(None)) %}
 
 <div class="max-w-4xl mx-auto space-y-6" x-data="queryEditor()">
 
@@ -32,9 +36,42 @@
                 <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
             </svg>
         </a>
-        <h1 class="text-xl font-bold text-gray-900">
-            {% if is_edit %}Edit Query Design{% else %}New Query Design{% endif %}
-        </h1>
+        <div class="flex-1">
+            <h1 class="text-xl font-bold text-gray-900">
+                {% if is_edit %}Edit Query Design{% else %}New Query Design{% endif %}
+            </h1>
+            {#
+                IP2-051: If this design was cloned from another, show a provenance note
+                so researchers can trace the lineage of their query designs.
+            #}
+            {% if parent_design_id %}
+            <p class="text-xs text-gray-400 mt-0.5">
+                Cloned from:
+                {% if parent_design_name %}
+                <a href="/query-designs/{{ parent_design_id }}"
+                   class="text-blue-500 hover:text-blue-700 hover:underline">{{ parent_design_name }}</a>
+                {% else %}
+                <a href="/query-designs/{{ parent_design_id }}"
+                   class="text-blue-500 hover:text-blue-700 hover:underline font-mono">{{ parent_design_id | truncate(8, true, '') }}</a>
+                {% endif %}
+            </p>
+            {% endif %}
+        </div>
+        {# Clone action — only shown when editing an existing design (IP2-051) #}
+        {% if is_edit %}
+        <button type="button"
+                hx-post="/query-designs/{{ design_id }}/clone"
+                hx-confirm="Create a copy of '{{ design.name | default('this design') }}'?"
+                hx-boost="false"
+                class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-purple-700 border border-purple-200 rounded-md hover:bg-purple-50 transition-colors">
+            <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+            </svg>
+            Clone
+        </button>
+        {% endif %}
     </div>
 
     {# Metadata form #}
@@ -153,47 +190,94 @@
 
     {% if is_edit %}
 
+    {# Predefined group name suggestions for the group autocomplete input #}
+    <datalist id="term-group-suggestions">
+        <option value="Primary terms">
+        <option value="Discourse associations">
+        <option value="Actor discovery terms">
+        <option value="English variants">
+        <option value="Related concepts">
+    </datalist>
+
     {# Search terms panel #}
-    <div class="bg-white rounded-lg shadow p-6">
+    <div class="bg-white rounded-lg shadow p-6" x-data="termGroupManager()">
         <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4">
             <h2 class="text-sm font-semibold text-gray-900">Search Terms</h2>
-            <span class="text-xs text-gray-400" id="term-count">{{ terms | length }} term{% if terms | length != 1 %}er{% endif %}</span>
+            <span class="text-xs text-gray-400" id="term-count">{{ terms | length }} term{% if terms | length != 1 %}s{% endif %}</span>
         </div>
 
-        {# Add term form #}
+        {# Add term form — primary row: type + term input + add button #}
         <form hx-post="/query-designs/{{ design_id }}/terms"
               hx-target="#terms-list"
               hx-swap="beforeend"
               hx-on::after-request="if(event.detail.successful){ this.reset(); document.getElementById('new-term-input').focus(); }"
-              class="flex gap-2 mb-4">
-            <select name="term_type"
-                    class="border border-gray-300 rounded px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white flex-shrink-0">
-                <option value="keyword">Keyword</option>
-                <option value="phrase">Phrase</option>
-                <option value="hashtag">Hashtag</option>
-                <option value="url_pattern">URL pattern</option>
-            </select>
-            <input type="text"
-                   id="new-term-input"
-                   name="term"
-                   required
-                   placeholder="Add search term..."
-                   autocomplete="off"
-                   class="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-            <button type="submit"
-                    class="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded hover:bg-gray-200 transition-colors flex-shrink-0">
-                <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                     stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-                </svg>
-                Add
-            </button>
+              class="space-y-1.5 mb-2">
+            <div class="flex gap-2">
+                <select name="term_type"
+                        class="border border-gray-300 rounded px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white flex-shrink-0">
+                    <option value="keyword">Keyword</option>
+                    <option value="phrase">Phrase</option>
+                    <option value="hashtag">Hashtag</option>
+                    <option value="url_pattern">URL pattern</option>
+                </select>
+                <input type="text"
+                       id="new-term-input"
+                       name="term"
+                       required
+                       placeholder="Add search term..."
+                       autocomplete="off"
+                       class="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                <button type="submit"
+                        class="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded hover:bg-gray-200 transition-colors flex-shrink-0">
+                    <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                         stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+                    </svg>
+                    Add
+                </button>
+            </div>
+            {# Secondary row: optional group input (visually subordinate) #}
+            <div class="flex items-center gap-2 pl-px">
+                <label for="new-term-group"
+                       class="text-xs text-gray-400 flex-shrink-0 w-28">
+                    Group (optional)
+                </label>
+                <input type="text"
+                       id="new-term-group"
+                       name="group_label"
+                       list="term-group-suggestions"
+                       maxlength="200"
+                       placeholder="e.g. Primary terms, English variants"
+                       autocomplete="off"
+                       class="flex-1 border border-gray-200 rounded px-2 py-1 text-xs text-gray-600 placeholder-gray-300 focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-transparent bg-gray-50">
+            </div>
         </form>
 
-        {# Terms list — HTMX appends new rows, delete removes them #}
+        {# Term type help text #}
+        <div class="mb-4 rounded-md bg-gray-50 border border-gray-100 px-3 py-2.5 text-xs text-gray-600 space-y-1">
+            <p><span class="font-medium">Keyword</span> — Match any content containing this word.</p>
+            <p><span class="font-medium">Phrase</span> — Match exact multi-word phrase (use for names, compound terms).</p>
+            <p><span class="font-medium">Hashtag</span> — Match the specific hashtag across social platforms.</p>
+            <p><span class="font-medium">URL pattern</span> — Match URLs containing this string (useful for tracking specific domains or articles).</p>
+        </div>
+
+        {#
+            Terms list — HTMX appends new <li> rows via hx-swap="beforeend".
+            Alpine's termGroupManager (on the parent div) injects group header
+            <li> elements on init() and after every DOM mutation, so no
+            group-header markup is emitted here.
+
+            Terms are sorted so grouped ones appear first (stable sort by
+            group_label, with None/empty last), which gives Alpine a
+            predictable order to work with on initial page load.
+        #}
         {% if terms %}
         <ul class="space-y-1.5" id="terms-list">
-            {% for term in terms %}
+            {# Grouped terms first, ungrouped last #}
+            {% for term in terms if term.group_label %}
+                {% include '_fragments/term_row.html' %}
+            {% endfor %}
+            {% for term in terms if not term.group_label %}
                 {% include '_fragments/term_row.html' %}
             {% endfor %}
         </ul>
@@ -224,9 +308,16 @@
             <select name="actor_type"
                     class="border border-gray-300 rounded px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white flex-shrink-0">
                 <option value="person">Person</option>
-                <option value="organisation">Organisation</option>
+                <option value="organization">Organization</option>
+                <option value="political_party">Political party</option>
+                <option value="educational_institution">Educational institution</option>
+                <option value="teachers_union">Teachers' union</option>
+                <option value="think_tank">Think tank</option>
                 <option value="media_outlet">Media outlet</option>
-                <option value="account">Account</option>
+                <option value="government_body">Government body</option>
+                <option value="ngo">NGO</option>
+                <option value="company">Company</option>
+                <option value="unknown">Unknown</option>
             </select>
             <input type="text"
                    id="new-actor-input"
@@ -295,9 +386,10 @@
     </div>
 
     {#
-        Arena configuration grid — Alpine-powered, Phase 1.14.
-        The arena list is hardcoded here; no server discovery needed for Phase 1.
-        Each row: arena name, enabled toggle (Alpine x-model), tier selector.
+        Arena configuration grid — Alpine-powered.
+        The arena list is fetched dynamically from GET /api/arenas/ on init.
+        Each row: arena name (with credential indicator + description), enabled toggle, tier selector.
+        Tiers not in arena.supported_tiers are disabled and visually greyed out.
         Credit estimate fires via HTMX debounced 400ms on any change.
     #}
     <div class="bg-white rounded-lg shadow p-6"
@@ -350,10 +442,22 @@
             </template>
         </form>
 
-        <table class="min-w-full text-sm">
+        {# Loading state while fetching arena list from API #}
+        <div x-show="arenas.length === 0 && !_loadError"
+             class="py-6 text-center text-sm text-gray-400 animate-pulse">
+            Loading arenas...
+        </div>
+
+        {# Error state if arena fetch failed #}
+        <div x-show="_loadError"
+             class="py-4 px-3 rounded-md bg-red-50 border border-red-200 text-sm text-red-700"
+             x-text="_loadError">
+        </div>
+
+        <table x-show="arenas.length > 0" class="min-w-full text-sm">
             <thead>
                 <tr class="text-left">
-                    <th class="pb-2 pr-4 text-xs font-medium text-gray-500 uppercase tracking-wider w-48">Arena</th>
+                    <th class="pb-2 pr-4 text-xs font-medium text-gray-500 uppercase tracking-wider w-52">Arena</th>
                     <th class="pb-2 pr-4 text-xs font-medium text-gray-500 uppercase tracking-wider w-20">Enabled</th>
                     <th class="pb-2 pr-4 text-xs font-medium text-gray-500 uppercase tracking-wider">Tier</th>
                     <th class="pb-2 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">Est. Credits</th>
@@ -362,12 +466,31 @@
             <tbody class="divide-y divide-gray-100">
                 <template x-for="arena in arenas" :key="arena.id">
                     <tr :class="arena.enabled ? '' : 'opacity-50'">
-                        {# Arena name + platform label #}
+                        {#
+                            Arena name cell.
+                            - Credential status dot: green if has_credentials=true, gray otherwise.
+                            - Description shown as a single muted line below the arena name.
+                            - The title attribute on the row provides a hover tooltip with the description.
+                        #}
                         <td class="py-3 pr-4">
-                            <div class="flex items-center gap-2">
-                                <span class="text-sm font-medium text-gray-800 capitalize"
-                                      x-text="arena.label"></span>
-                                <span class="text-xs text-gray-400 font-mono" x-text="arena.id"></span>
+                            <div class="flex items-start gap-2">
+                                {# Credential status indicator #}
+                                <span class="mt-1 flex-shrink-0 w-2 h-2 rounded-full"
+                                      :class="arena.hasCredentials ? 'bg-green-500' : 'bg-gray-300'"
+                                      :title="arena.hasCredentials
+                                          ? 'Credentials configured'
+                                          : 'Credentials not configured — this arena will be skipped during collection'">
+                                </span>
+                                <div class="min-w-0">
+                                    <span class="block text-sm font-medium text-gray-800"
+                                          x-text="arena.label"></span>
+                                    {# Compact description line (IP2-003) #}
+                                    <span x-show="arena.description"
+                                          class="block text-xs text-gray-400 truncate max-w-xs"
+                                          :title="arena.description"
+                                          x-text="arena.description"></span>
+                                    <span class="block text-xs text-gray-300 font-mono" x-text="arena.id"></span>
+                                </div>
                             </div>
                         </td>
 
@@ -386,21 +509,28 @@
                             </button>
                         </td>
 
-                        {# Tier radio buttons — only active when arena is enabled #}
+                        {#
+                            Tier radio buttons (IP2-002).
+                            Tiers not in arena.supportedTiers are disabled and visually greyed out.
+                            A title tooltip explains why a tier is unavailable.
+                            The pointer-events-none class is applied when the arena is disabled.
+                        #}
                         <td class="py-3 pr-4">
                             <div class="flex items-center gap-3" :class="arena.enabled ? '' : 'pointer-events-none'">
                                 <template x-for="t in ['free', 'medium', 'premium']" :key="t">
-                                    <label class="flex items-center gap-1 cursor-pointer">
+                                    <label class="flex items-center gap-1"
+                                           :class="arena.supportedTiers.includes(t) ? 'cursor-pointer' : 'cursor-not-allowed opacity-40'"
+                                           :title="arena.supportedTiers.includes(t) ? '' : unsupportedTierTitle(arena)">
                                         <input type="radio"
                                                :name="'tier_' + arena.id"
                                                :value="t"
                                                x-model="arena.tier"
                                                @change="scheduleEstimate()"
-                                               :disabled="!arena.enabled"
+                                               :disabled="!arena.enabled || !arena.supportedTiers.includes(t)"
                                                class="text-blue-600 focus:ring-blue-500">
                                         <span class="text-xs capitalize"
                                               :class="{
-                                                'text-green-700': t === 'free',
+                                                'text-green-700':  t === 'free',
                                                 'text-yellow-700': t === 'medium',
                                                 'text-purple-700': t === 'premium'
                                               }"
@@ -432,13 +562,31 @@
             </div>
         </div>
 
-        {# Save arena config button #}
-        <div class="mt-4 flex justify-end">
+        {# Save arena config button with success feedback #}
+        <div class="mt-4 flex items-center justify-end gap-3"
+             x-data="{ saved: false, saveError: false }">
+            <span x-show="saved"
+                  x-cloak
+                  x-transition:enter="transition ease-out duration-150"
+                  x-transition:enter-start="opacity-0"
+                  x-transition:enter-end="opacity-100"
+                  x-transition:leave="transition ease-in duration-300"
+                  x-transition:leave-start="opacity-100"
+                  x-transition:leave-end="opacity-0"
+                  class="text-sm text-green-700 font-medium">
+                Saved
+            </span>
+            <span x-show="saveError"
+                  x-cloak
+                  class="text-sm text-red-600">
+                Save failed — please try again.
+            </span>
             <button type="button"
                     hx-post="/query-designs/{{ design_id }}/arena-config"
                     hx-include="#arena-config-form"
                     hx-swap="none"
                     hx-indicator="#save-arena-spinner"
+                    hx-on::after-settle="if(event.detail.successful){ saved = true; saveError = false; setTimeout(() => { saved = false; }, 3000); } else { saveError = true; saved = false; }"
                     class="inline-flex items-center gap-2 px-4 py-2 bg-gray-800 text-white text-sm font-medium rounded-md hover:bg-gray-700 transition-colors">
                 <span id="save-arena-spinner" class="htmx-indicator">
                     <svg class="animate-spin w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg"
@@ -460,63 +608,94 @@
 /**
  * Alpine component for the arena configuration grid.
  *
- * The arena list is defined statically here — Phase 1 arenas only.
- * The `defaultTier` parameter comes from the server-rendered default_tier field.
- * Per-arena saved configuration would ideally be loaded from the server
- * via an API call in `init()`, but for Phase 1 we start from the design default.
+ * On init(), fetches the live arena list from GET /api/arenas/ to populate
+ * the grid dynamically. Each arena entry from the API includes:
+ *   - arena_name (string): unique arena identifier
+ *   - platform_name (string): underlying platform
+ *   - supported_tiers (string[]): which tiers this arena supports
+ *   - description (string): human-readable description
+ *   - has_credentials (boolean): whether API credentials are configured
  *
- * API contract needed (Phase 1.14 backend):
- *   GET  /query-designs/{id}/arena-config   → { arenas: [{id, enabled, tier}] }
- *   POST /query-designs/{id}/arena-config   → 200
+ * After fetching the arena list, the saved per-design config is loaded from
+ * GET /api/query-designs/{id}/arena-config and merged in. If a saved tier
+ * is no longer in supported_tiers, it is auto-corrected to the first
+ * supported tier.
+ *
+ * API contracts:
+ *   GET  /api/arenas/                        → ArenaInfo[]
+ *   GET  /api/query-designs/{id}/arena-config → { arenas: [{id, enabled, tier}] }
+ *   POST /api/query-designs/{id}/arena-config → 200
  */
 function arenaConfigGrid(defaultTier) {
-    // Phase 1 arena registry — hardcoded for stability (no dynamic discovery needed)
-    const ARENAS = [
-        { id: 'google_search',      label: 'Google Search',      platform: 'google' },
-        { id: 'google_autocomplete',label: 'Google Autocomplete', platform: 'google' },
-        { id: 'bluesky',            label: 'Bluesky',            platform: 'bluesky' },
-        { id: 'reddit',             label: 'Reddit',             platform: 'reddit' },
-        { id: 'youtube',            label: 'YouTube',            platform: 'youtube' },
-        { id: 'rss_feeds',          label: 'RSS Feeds',          platform: 'rss' },
-        { id: 'gdelt',              label: 'GDELT',              platform: 'gdelt' },
-        { id: 'telegram',           label: 'Telegram',           platform: 'telegram' },
-        { id: 'tiktok',             label: 'TikTok',             platform: 'tiktok' },
-        { id: 'ritzau_via',         label: 'Ritzau Infostream',  platform: 'ritzau' },
-        { id: 'gab',                label: 'Gab',                platform: 'gab' },
-    ];
-
     return {
-        arenas: ARENAS.map(a => ({
-            ...a,
-            enabled: false,
-            tier: defaultTier || 'free',
-            estimatedCredits: null,
-        })),
+        arenas: [],
         _estimateTimer: null,
+        _loadError: null,
 
-        init() {
-            // Load existing arena config from server if editing
-            const designId = document.querySelector('input[name="design_id"]')?.value;
-            if (designId) {
-                fetch('/api/query-designs/' + designId + '/arena-config')
-                    .then(r => r.ok ? r.json() : null)
-                    .then(data => {
-                        if (!data || !data.arenas) return;
-                        // Merge server state into local arena list
-                        data.arenas.forEach(saved => {
-                            const arena = this.arenas.find(a => a.id === saved.id);
-                            if (arena) {
-                                arena.enabled = saved.enabled;
-                                arena.tier = saved.tier || arena.tier;
-                            }
-                        });
-                    })
-                    .catch(() => {
-                        // Silently ignore — server config not yet saved, defaults are fine
-                    });
+        async init() {
+            // Step 1: Fetch the live arena list from the backend.
+            let fetchedArenas = [];
+            try {
+                const resp = await fetch('/api/arenas/');
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const data = await resp.json();
+                // Normalise to a consistent internal shape.
+                fetchedArenas = data.map(a => ({
+                    // Use arena_name as the stable identifier (matches saved config id).
+                    id: a.arena_name,
+                    label: _arenaLabel(a.arena_name),
+                    platform: a.platform_name,
+                    description: a.description || '',
+                    hasCredentials: a.has_credentials === true,
+                    supportedTiers: Array.isArray(a.supported_tiers) && a.supported_tiers.length > 0
+                        ? a.supported_tiers
+                        : ['free'],
+                    enabled: false,
+                    // Default tier: use the design default if it is supported, else the first supported tier.
+                    tier: defaultTier || 'free',
+                    estimatedCredits: null,
+                }));
+                // Correct initial tier if the design default is not supported by this arena.
+                fetchedArenas.forEach(a => {
+                    if (!a.supportedTiers.includes(a.tier)) {
+                        a.tier = a.supportedTiers[0];
+                    }
+                });
+            } catch (err) {
+                this._loadError = 'Could not load arena list: ' + err.message;
+                return;
             }
 
-            // Listen for estimate results from the credit_estimate fragment
+            this.arenas = fetchedArenas;
+
+            // Step 2: Load existing per-design arena config and merge it in.
+            const designId = document.querySelector('input[name="design_id"]')?.value;
+            if (designId) {
+                try {
+                    const configResp = await fetch('/api/query-designs/' + designId + '/arena-config');
+                    if (configResp.ok) {
+                        const configData = await configResp.json();
+                        if (configData && Array.isArray(configData.arenas)) {
+                            configData.arenas.forEach(saved => {
+                                const arena = this.arenas.find(a => a.id === saved.id);
+                                if (arena) {
+                                    arena.enabled = saved.enabled;
+                                    // Auto-correct saved tier if it is no longer supported.
+                                    if (arena.supportedTiers.includes(saved.tier)) {
+                                        arena.tier = saved.tier;
+                                    } else {
+                                        arena.tier = arena.supportedTiers[0];
+                                    }
+                                }
+                            });
+                        }
+                    }
+                } catch (_) {
+                    // Silently ignore — saved config not available, defaults apply.
+                }
+            }
+
+            // Step 3: Listen for estimate results from the credit_estimate fragment.
             document.addEventListener('estimate:result', (evt) => {
                 this.applyEstimateResult(evt.detail);
             });
@@ -545,7 +724,7 @@ function arenaConfigGrid(defaultTier) {
         },
 
         applyEstimateResult(detail) {
-            // The estimate fragment may provide per-arena breakdown in detail.arenas
+            // The estimate fragment may provide per-arena breakdown in detail.arenas.
             if (detail.arenas) {
                 detail.arenas.forEach(est => {
                     const arena = this.arenas.find(a => a.id === est.id);
@@ -553,7 +732,36 @@ function arenaConfigGrid(defaultTier) {
                 });
             }
         },
+
+        /**
+         * Compute the tooltip text for a disabled tier radio button.
+         * Returns a string like "This arena only supports free tier(s)".
+         */
+        unsupportedTierTitle(arena) {
+            return 'This arena only supports ' + arena.supportedTiers.join(', ') + ' tier(s)';
+        },
     };
+}
+
+/**
+ * Convert a snake_case arena_name to a human-readable label.
+ * Falls back gracefully for unknown arenas.
+ */
+function _arenaLabel(arenaName) {
+    const labels = {
+        'google_search':       'Google Search',
+        'google_autocomplete': 'Google Autocomplete',
+        'bluesky':             'Bluesky',
+        'reddit':              'Reddit',
+        'youtube':             'YouTube',
+        'rss_feeds':           'RSS Feeds',
+        'gdelt':               'GDELT',
+        'telegram':            'Telegram',
+        'tiktok':              'TikTok',
+        'ritzau_via':          'Ritzau Infostream',
+        'gab':                 'Gab',
+    };
+    return labels[arenaName] || arenaName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
 /**
@@ -568,5 +776,164 @@ Alpine.data('queryEditor', () => ({
         }
     },
 }));
+
+/**
+ * Alpine component that manages visual group headers in the terms list.
+ *
+ * Terms are stored as <li data-group="Group name"> rows appended by HTMX.
+ * This component observes DOM mutations on #terms-list and re-renders the
+ * group header <li> elements so the visual grouping stays consistent after
+ * every add/remove.
+ *
+ * Group rename works client-side only — it updates the data-group attributes
+ * and re-renders headers.  A future endpoint (PATCH /terms/{id}/group) could
+ * persist the rename.
+ */
+function termGroupManager() {
+    return {
+        _observer: null,
+
+        init() {
+            this._rebuildHeaders();
+
+            // Watch for DOM changes caused by HTMX appends/removes.
+            const list = document.getElementById('terms-list');
+            if (list) {
+                this._observer = new MutationObserver(() => this._rebuildHeaders());
+                this._observer.observe(list, { childList: true, subtree: false });
+            }
+        },
+
+        destroy() {
+            if (this._observer) this._observer.disconnect();
+        },
+
+        /**
+         * Re-render group header <li> elements before the first term in each
+         * group.  Existing header elements are removed and re-inserted to
+         * handle reordering and additions.
+         */
+        _rebuildHeaders() {
+            const list = document.getElementById('terms-list');
+            if (!list) return;
+
+            // Remove all existing group header <li> nodes.
+            list.querySelectorAll('.term-group-header').forEach(el => el.remove());
+
+            // Walk the current term rows and inject a header before the first
+            // row of each group transition.
+            let lastGroup = null;
+            const rows = list.querySelectorAll('li[id^="term-"]');
+            rows.forEach(row => {
+                const group = row.dataset.group || null;
+                if (group && group !== lastGroup) {
+                    const header = this._makeGroupHeader(group);
+                    list.insertBefore(header, row);
+                }
+                lastGroup = group;
+            });
+        },
+
+        /**
+         * Create a group header <li> element for the given group label.
+         *
+         * @param {string} label - The group display name.
+         * @returns {HTMLLIElement}
+         */
+        _makeGroupHeader(label) {
+            const li = document.createElement('li');
+            li.className = 'term-group-header pt-3';
+            li.dataset.groupHeader = label;
+
+            // Wrapper div with label + divider line.
+            const wrapper = document.createElement('div');
+            wrapper.className = 'flex items-center gap-1.5';
+
+            const span = document.createElement('span');
+            span.className = 'text-xs font-semibold text-gray-500 uppercase tracking-wide cursor-pointer hover:text-gray-700';
+            span.title = 'Click to rename group';
+            span.textContent = label;
+
+            // Clicking the label opens an inline rename input.
+            span.addEventListener('click', () => this._startRename(li, label, span));
+
+            const line = document.createElement('span');
+            line.className = 'flex-1 border-b border-gray-100';
+
+            wrapper.appendChild(span);
+            wrapper.appendChild(line);
+            li.appendChild(wrapper);
+            return li;
+        },
+
+        /**
+         * Replace the group label span with a text input for inline renaming.
+         *
+         * @param {HTMLLIElement} headerLi - The group header element.
+         * @param {string} oldLabel        - Current group label.
+         * @param {HTMLSpanElement} span   - The label span to replace.
+         */
+        _startRename(headerLi, oldLabel, span) {
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = oldLabel;
+            input.className = 'text-xs font-semibold text-gray-600 border border-blue-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400 w-44';
+
+            const commit = () => {
+                const newLabel = input.value.trim();
+                if (newLabel && newLabel !== oldLabel) {
+                    this.renameGroup(oldLabel, newLabel);
+                }
+                // _rebuildHeaders will replace the input with a fresh header.
+                this._rebuildHeaders();
+            };
+
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') { e.preventDefault(); commit(); }
+                if (e.key === 'Escape') { this._rebuildHeaders(); }
+            });
+            input.addEventListener('blur', commit);
+
+            span.replaceWith(input);
+            input.focus();
+            input.select();
+        },
+
+        /**
+         * Rename all term rows that carry oldLabel as their data-group value.
+         * This is a client-side-only operation — the server-side group_label is
+         * not updated here.  A future PATCH endpoint would persist this change.
+         *
+         * @param {string} oldLabel
+         * @param {string} newLabel
+         */
+        renameGroup(oldLabel, newLabel) {
+            if (!newLabel || newLabel === oldLabel) return;
+            const list = document.getElementById('terms-list');
+            if (!list) return;
+            // Use direct DOM iteration instead of a CSS attribute selector so
+            // that group label values with quotes or special chars are safe.
+            list.querySelectorAll('li[data-group]').forEach(row => {
+                if (row.dataset.group === oldLabel) {
+                    row.dataset.group = newLabel;
+                }
+            });
+            this._rebuildHeaders();
+        },
+    };
+}
+
+/**
+ * Global helper called by the HTMX afterRequest handler to trigger a
+ * group header rebuild after a new term is appended.
+ */
+function rebuildGroups() {
+    const list = document.getElementById('terms-list');
+    if (!list) return;
+    // Dispatch a synthetic mutation-like event that the Alpine observer picks up.
+    // Since Alpine's MutationObserver already handles this, this is a no-op safety
+    // call for cases where the observer fires before the DOM settles.
+    list.dispatchEvent(new Event('terms:updated', { bubbles: true }));
+}
 </script>
 {% endblock %}

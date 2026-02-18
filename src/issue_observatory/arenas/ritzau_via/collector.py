@@ -25,6 +25,7 @@ from typing import Any
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.ritzau_via.config import (
     RITZAU_DEFAULT_LANGUAGE,
@@ -90,18 +91,28 @@ class RitzauViaCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect Via Ritzau press releases matching one or more search terms.
 
         Uses ``GET /json/v2/releases?query={term}&language=da`` with
         offset-based pagination. Applies ``language=da`` by default.
 
+        Via Ritzau does not support boolean syntax.  When ``term_groups``
+        is provided each AND-group is searched as a separate space-joined
+        query.
+
         Args:
-            terms: Keywords to search across release titles and bodies.
+            terms: Keywords (used when ``term_groups`` is ``None``).
             tier: Operational tier. Only FREE is valid.
             date_from: Earliest publication date (inclusive).
             date_to: Latest publication date (inclusive).
             max_results: Cap on total records. Defaults to tier max.
+            term_groups: Optional boolean AND/OR groups.  Each group issues
+                a separate query with terms space-joined.
+            language_filter: Optional language codes.  The first code
+                overrides the default ``language=da`` parameter.
 
         Returns:
             List of normalized content record dicts.
@@ -126,17 +137,28 @@ class RitzauViaCollector(ArenaCollector):
 
         date_from_str = _to_date_str(date_from)
         date_to_str = _to_date_str(date_to)
+        lang_code = (language_filter[0] if language_filter else None) or RITZAU_DEFAULT_LANGUAGE
+
+        # Build effective terms list from groups or plain terms.
+        if term_groups is not None:
+            effective_terms: list[str] = [
+                format_boolean_query_for_platform(groups=[grp], platform="bluesky")
+                for grp in term_groups
+                if grp
+            ]
+        else:
+            effective_terms = list(terms)
 
         all_records: list[dict[str, Any]] = []
 
         async with self._build_http_client() as client:
-            for term in terms:
+            for term in effective_terms:
                 if len(all_records) >= effective_max:
                     break
                 remaining = effective_max - len(all_records)
                 params: dict[str, Any] = {
                     "query": term,
-                    "language": RITZAU_DEFAULT_LANGUAGE,
+                    "language": lang_code,
                     "limit": RITZAU_PAGE_SIZE,
                 }
                 if date_from_str:
@@ -152,9 +174,9 @@ class RitzauViaCollector(ArenaCollector):
                 all_records.extend(records)
 
         logger.info(
-            "ritzau_via: collected %d press releases for %d terms",
+            "ritzau_via: collected %d press releases for %d queries",
             len(all_records),
-            len(terms),
+            len(effective_terms),
         )
         return all_records
 

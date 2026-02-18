@@ -673,7 +673,8 @@ class TestHelperFunctions:
 
         assert "grøn" in tokens
         assert "omstilling" in tokens
-        assert "er" not in tokens  # too short (2 chars min)
+        assert "er" in tokens  # exactly 2 chars, meets the min length requirement
+        assert "vigtig" in tokens
 
     def test_tokenize_handles_danish_chars(self) -> None:
         """_tokenize() preserves æ, ø, å in token matching."""

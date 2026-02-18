@@ -121,24 +121,31 @@
                 </select>
             </div>
 
-            {# Search terms matched #}
-            <div>
-                <label for="search_term" class="block text-xs font-medium text-gray-700 mb-1 uppercase tracking-wider">Search Term</label>
-                <input type="text"
-                       id="search_term"
-                       name="search_term"
-                       value="{{ filter.search_term | default('') }}"
-                       placeholder="Matched term..."
-                       autocomplete="off"
-                       class="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                <p class="text-xs text-gray-400 mt-0.5">Filter by matched search term</p>
-            </div>
+            {#
+                Collection run — changing this also reloads the search term dropdown.
 
-            {# Collection run #}
+                BACKEND GAP (IP2-029): The HTMX call below uses hx-get="/content/search-terms"
+                which does NOT yet exist in content.py. The endpoint must be added to serve an
+                HTML fragment (<option> elements) for the #search-term-filter select.
+
+                Required endpoint:
+                    GET /content/search-terms?run_id={uuid}
+                    Returns: HTML <option> fragments listing the distinct search terms matched
+                             in the content records for that collection run.
+                    Query params: run_id (UUID, optional) — filter terms to this run's records.
+
+                Until this endpoint is implemented, selecting a run will trigger a 404 on
+                the HTMX call, which HTMX will silently ignore (the dropdown stays empty).
+            #}
             <div>
                 <label for="run_id" class="block text-xs font-medium text-gray-700 mb-1 uppercase tracking-wider">Collection Run</label>
                 <select id="run_id"
                         name="run_id"
+                        hx-get="/content/search-terms"
+                        hx-trigger="change"
+                        hx-target="#search-term-filter"
+                        hx-swap="innerHTML"
+                        hx-include="[name='search_term']"
                         class="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
                     <option value="">All runs</option>
                     {% for run in recent_runs %}
@@ -149,6 +156,24 @@
                     </option>
                     {% endfor %}
                 </select>
+            </div>
+
+            {# Search terms matched — populated from the selected run's query design via HTMX #}
+            <div>
+                <label for="search_term" class="block text-xs font-medium text-gray-700 mb-1 uppercase tracking-wider">Search Term</label>
+                <div id="search-term-filter">
+                    <select id="search_term"
+                            name="search_term"
+                            class="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                        <option value="" {% if not filter.search_term | default('') %}selected{% endif %}>All terms</option>
+                        {% if filter.search_term | default('') %}
+                        <option value="{{ filter.search_term }}" selected>{{ filter.search_term }}</option>
+                        {% endif %}
+                    </select>
+                </div>
+                <p class="text-xs text-gray-400 mt-0.5">
+                    Select a collection run above to filter by search term.
+                </p>
             </div>
 
             {# Reset filters button #}
@@ -242,8 +267,11 @@
                             <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Content</th>
                             <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden lg:table-cell">Author</th>
                             <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden md:table-cell">Published</th>
-                            <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden xl:table-cell">Arena</th>
-                            <th class="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden md:table-cell">Engagement</th>
+                            <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Arena</th>
+                            <th class="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden md:table-cell">
+                                <span title="Composite engagement score (likes + shares + comments). Not comparable across platforms — each platform weights metrics differently."
+                                      class="cursor-help border-b border-dashed border-gray-400">Engagement</span>
+                            </th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-100 bg-white" id="records-tbody"
@@ -297,7 +325,7 @@
                             </td>
 
                             {# Arena #}
-                            <td class="px-4 py-3 hidden xl:table-cell">
+                            <td class="px-4 py-3">
                                 <span class="text-xs text-gray-400 font-mono">{{ record.arena | default('') }}</span>
                             </td>
 

@@ -21,12 +21,14 @@
 {% set tasks = tasks | default([]) %}
 {% set run_id = run_id | default(run.id | default('')) %}
 {% set status = run.status | default('running') %}
+{% set mode = run.mode | default('batch') %}
+{% set is_live = mode == 'live' %}
 {% set is_terminal = status in ('completed', 'failed', 'cancelled') %}
 
 <div class="max-w-5xl mx-auto space-y-6">
 
     {# Back navigation + page title #}
-    <div class="flex items-center gap-3">
+    <div class="flex items-center gap-3 flex-wrap">
         <a href="/collections"
            class="text-gray-400 hover:text-gray-600 transition-colors"
            aria-label="Back to collections">
@@ -35,9 +37,34 @@
                 <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
             </svg>
         </a>
-        <h1 class="text-xl font-bold text-gray-900">Collection Run</h1>
-        <span class="text-gray-300 text-xs font-mono">{{ run_id | truncate(8, true, '') }}</span>
+        <div>
+            <h1 class="text-xl font-bold text-gray-900">
+                {% if run.query_design_name | default('') %}
+                    {{ run.query_design_name }}
+                {% else %}
+                    Collection Run
+                {% endif %}
+            </h1>
+            <p class="text-xs text-gray-400 font-mono mt-0.5">Run ID: {{ run_id | truncate(8, true, '') }}</p>
+        </div>
     </div>
+
+    {# Search terms summary — shown when terms are available on the run context #}
+    {% if run.search_terms | default([]) | length > 0 %}
+    <div class="bg-gray-50 border border-gray-200 rounded-lg px-5 py-3">
+        <p class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Search terms used in this collection</p>
+        <div class="flex flex-wrap gap-1.5">
+            {% for term in run.search_terms %}
+            <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-white border border-gray-300 text-gray-700">
+                {% if term.term_type | default('') %}
+                <span class="text-gray-400 mr-1">{{ term.term_type }}:</span>
+                {% endif %}
+                {{ term.term | default(term) }}
+            </span>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
 
     {#
         SSE container — wraps everything that receives live updates.
@@ -61,6 +88,118 @@
             {% include '_fragments/run_summary.html' %}
         {% endwith %}
 
+        {# ---- Live Tracking Schedule panel --------------------------------- #}
+        {#
+            Only shown for live-mode runs. Fetches schedule info from
+            GET /collections/{run_id}/schedule which returns:
+              { mode, status, next_run_at, timezone, suspended_at }
+        #}
+        {% if is_live %}
+        <div class="bg-white rounded-lg shadow px-6 py-5"
+             x-data="liveSchedulePanel('{{ run_id }}', '{{ status }}')"
+             x-init="init()">
+
+            <div class="flex items-start justify-between gap-4">
+                <div>
+                    <h2 class="text-sm font-semibold text-gray-900 mb-1">Live Tracking Schedule</h2>
+                    <div x-show="loadingSchedule" class="text-xs text-gray-400 animate-pulse">
+                        Loading schedule...
+                    </div>
+                    <div x-show="!loadingSchedule" class="space-y-1.5">
+                        <p class="text-sm text-gray-700">
+                            <span class="font-medium text-gray-500 text-xs uppercase tracking-wider">Next scheduled run:</span>
+                            <span x-text="nextRunDisplay"
+                                  class="ml-2 font-medium text-gray-900"></span>
+                        </p>
+                        <p x-show="suspendedAt" class="text-sm text-amber-700">
+                            Suspended on
+                            <span x-text="suspendedAt" class="font-medium"></span>
+                        </p>
+                    </div>
+                </div>
+
+                {# Status indicator badge #}
+                <div x-show="!loadingSchedule" class="flex-shrink-0">
+                    <span x-show="scheduleStatus === 'active'"
+                          class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                        <span class="w-1.5 h-1.5 rounded-full bg-green-500 inline-block"></span>
+                        Active — collecting daily
+                    </span>
+                    <span x-show="scheduleStatus === 'suspended'"
+                          class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+                        <span class="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block"></span>
+                        Suspended — collection paused
+                    </span>
+                </div>
+            </div>
+
+            {# Suspend / Resume / Cancel controls #}
+            {% if not is_terminal %}
+            <div class="mt-4 flex flex-wrap items-center gap-2 pt-4 border-t border-gray-100">
+
+                {# Suspend button — shown when active #}
+                <button type="button"
+                        x-show="scheduleStatus === 'active'"
+                        hx-post="/collections/{{ run_id }}/suspend"
+                        hx-confirm="Suspend this live tracking run? Collection will pause but your data will be preserved. You can resume at any time."
+                        hx-target="#run-summary-card"
+                        hx-swap="outerHTML"
+                        @htmx:after-request="scheduleStatus = 'suspended'; suspendedAt = new Date().toLocaleDateString('en-GB')"
+                        class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium
+                               text-amber-700 border border-amber-300 bg-amber-50 rounded-md
+                               hover:bg-amber-100 transition-colors">
+                    <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                         viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M10 9v6m4-6v6"/>
+                    </svg>
+                    Suspend Tracking
+                </button>
+
+                {# Resume button — shown when suspended #}
+                <button type="button"
+                        x-show="scheduleStatus === 'suspended'"
+                        hx-post="/collections/{{ run_id }}/resume"
+                        hx-confirm="Resume this live tracking run? Daily collection will restart from the next scheduled run."
+                        hx-target="#run-summary-card"
+                        hx-swap="outerHTML"
+                        @htmx:after-request="scheduleStatus = 'active'; suspendedAt = null"
+                        class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium
+                               text-green-700 border border-green-300 bg-green-50 rounded-md
+                               hover:bg-green-100 transition-colors">
+                    <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                         viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                              d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+                    </svg>
+                    Resume Tracking
+                </button>
+
+                {# Cancel & Delete — always visible for non-terminal live runs #}
+                <button type="button"
+                        hx-post="/api/collections/{{ run_id }}/cancel"
+                        hx-confirm="Cancel and permanently delete this live tracking run? All collected data will be retained but the run cannot be restarted. This cannot be undone."
+                        hx-target="#run-summary-card"
+                        hx-swap="outerHTML"
+                        class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium
+                               text-red-600 border border-red-200 rounded-md hover:bg-red-50 transition-colors">
+                    <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                         viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                    Cancel &amp; Delete Run
+                </button>
+
+                {# Inline explanation of suspend vs. cancel #}
+                <span class="text-xs text-gray-400 ml-1">
+                    Suspend pauses daily collection without deleting your data. Cancel permanently ends the run.
+                </span>
+
+            </div>
+            {% endif %}
+
+        </div>
+        {% endif %}{# /is_live #}
+
         {# Per-arena task table #}
         <div class="bg-white rounded-lg shadow overflow-hidden">
             <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
@@ -76,7 +215,9 @@
                         Live
                     </span>
 
-                    {# Cancel button — HTMX POST to cancel the run #}
+                    {# For batch runs: show the standard cancel button here.
+                       Live runs have their cancel button in the schedule panel above. #}
+                    {% if not is_live %}
                     <button type="button"
                             hx-post="/api/collections/{{ run_id }}/cancel"
                             hx-confirm="Cancel this collection run?"
@@ -89,6 +230,7 @@
                         </svg>
                         Cancel run
                     </button>
+                    {% endif %}
                 </div>
                 {% endif %}
             </div>
@@ -167,4 +309,71 @@
     </div>{# /sse-container #}
 
 </div>
+
+<script>
+// ---- Live schedule panel Alpine component ---------------------------------
+// Fetches GET /collections/{runId}/schedule and exposes schedule state.
+// Also reacts to HTMX suspend/resume requests to update the badge optimistically.
+function liveSchedulePanel(runId, initialStatus) {
+    return {
+        runId,
+        // scheduleStatus mirrors run.status but is also updated optimistically
+        // when the researcher clicks Suspend or Resume before the page reloads.
+        scheduleStatus: initialStatus,
+        loadingSchedule: false,
+        nextRunDisplay: '—',
+        suspendedAt: null,
+
+        async init() {
+            this.loadingSchedule = true;
+            try {
+                const res = await fetch(`/collections/${runId}/schedule`, {
+                    credentials: 'include',
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+
+                // Update schedule status from the server — supersedes the
+                // template-injected initial value once the fetch completes.
+                if (data.status) this.scheduleStatus = data.status;
+
+                // Format next run timestamp with timezone context.
+                if (data.next_run_at) {
+                    const tz = data.timezone || 'Europe/Copenhagen';
+                    try {
+                        const d = new Date(data.next_run_at);
+                        this.nextRunDisplay = d.toLocaleString('en-GB', {
+                            timeZone: tz,
+                            dateStyle: 'medium',
+                            timeStyle: 'short',
+                        }) + ' (' + tz + ')';
+                    } catch {
+                        this.nextRunDisplay = data.next_run_at;
+                    }
+                } else {
+                    // Fallback: communicate the known fixed schedule.
+                    this.nextRunDisplay = 'Daily at midnight Copenhagen time (00:00 CET/CEST)';
+                }
+
+                // suspended_at comes as an ISO string or null.
+                if (data.suspended_at) {
+                    try {
+                        const sd = new Date(data.suspended_at);
+                        this.suspendedAt = sd.toLocaleDateString('en-GB', {
+                            dateStyle: 'medium',
+                        });
+                    } catch {
+                        this.suspendedAt = data.suspended_at;
+                    }
+                }
+            } catch {
+                // Non-fatal: show the static fallback schedule text.
+                this.nextRunDisplay = 'Daily at midnight Copenhagen time (00:00 CET/CEST)';
+            } finally {
+                this.loadingSchedule = false;
+            }
+        },
+    };
+}
+</script>
 {% endblock %}

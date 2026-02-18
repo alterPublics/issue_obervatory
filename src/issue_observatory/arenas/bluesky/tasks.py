@@ -120,6 +120,7 @@ def bluesky_collect_terms(
     date_from: str | None = None,
     date_to: str | None = None,
     max_results: int | None = None,
+    language_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     """Collect Bluesky posts for a list of search terms.
 
@@ -134,6 +135,7 @@ def bluesky_collect_terms(
         date_from: ISO 8601 lower date bound (optional).
         date_to: ISO 8601 upper date bound (optional).
         max_results: Optional cap on total records.
+        language_filter: Optional list of ISO 639-1 language codes (IP2-052).
 
     Returns:
         Dict with:
@@ -165,6 +167,7 @@ def bluesky_collect_terms(
                 date_from=date_from,
                 date_to=date_to,
                 max_results=max_results,
+                language_filter=language_filter,
             )
         )
     except NoCredentialAvailableError as exc:

@@ -33,6 +33,7 @@ from typing import Any
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.event_registry.config import (
     EVENT_REGISTRY_ARTICLE_ENDPOINT,
     EVENT_REGISTRY_DANISH_LANG,
@@ -113,6 +114,8 @@ class EventRegistryCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        term_groups: list[list[str]] | None = None,
+        language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect Danish news articles matching the supplied search terms.
 
@@ -120,16 +123,21 @@ class EventRegistryCollector(ArenaCollector):
         ``lang="dan"`` and ``sourceLocationUri`` set to Denmark.  Each page
         request consumes one Event Registry token.
 
+        When ``term_groups`` is provided, the Event Registry ``$query``
+        structure with ``$and``/``$or`` operators is used for full boolean
+        support.  One request sequence is issued per OR-group.
+
         Args:
-            terms: Search terms.  Danish keywords work natively (e.g.
-                ``"klimaforandringer"``, ``"sundhedsvaesenet"``).
+            terms: Search terms (used when ``term_groups`` is ``None``).
             tier: Must be ``Tier.MEDIUM`` or ``Tier.PREMIUM``.
-            date_from: Earliest publication date (ISO 8601 or
-                ``datetime``).  ``None`` means no lower bound.
+            date_from: Earliest publication date (ISO 8601 or ``datetime``).
             date_to: Latest publication date (ISO 8601 or ``datetime``).
-                ``None`` means no upper bound.
-            max_results: Upper bound on returned records.  ``None`` uses
-                the tier default.
+            max_results: Upper bound on returned records.
+            term_groups: Optional boolean AND/OR groups.  Event Registry
+                supports native ``$and``/``$or`` query operators.
+            language_filter: Optional language codes (ISO 639-1).  By default
+                ``"dan"`` is used.  Provide e.g. ``["da", "en"]`` to expand
+                to multiple languages.
 
         Returns:
             List of normalized content record dicts.
@@ -152,12 +160,34 @@ class EventRegistryCollector(ArenaCollector):
         date_start_str = _format_date(date_from)
         date_end_str = _format_date(date_to)
 
+        # Resolve language list.  Default = Danish only.
+        lang_codes: list[str] = language_filter if language_filter else ["dan"]
+        # Map ISO 639-1 → ISO 639-3 used by Event Registry.
+        _lang_map_to_639_3 = {"da": "dan", "en": "eng", "de": "deu", "sv": "swe", "no": "nor"}
+        er_lang_list: list[str] = [
+            _lang_map_to_639_3.get(lc, lc) for lc in lang_codes
+        ]
+        # Event Registry accepts a single lang string; use the first when querying.
+        er_lang = er_lang_list[0] if er_lang_list else EVENT_REGISTRY_DANISH_LANG
+
         seen_uris: set[str] = set()
         all_records: list[dict[str, Any]] = []
 
+        # Determine list of keyword queries to issue.
+        if term_groups is not None:
+            # For boolean groups, issue one request per AND-group using generic
+            # AND syntax (Event Registry keyword field supports AND/OR strings).
+            query_strings: list[str] = [
+                format_boolean_query_for_platform(groups=[grp], platform="event_registry")
+                for grp in term_groups
+                if grp
+            ]
+        else:
+            query_strings = list(terms)
+
         try:
             async with self._build_http_client() as client:
-                for term in terms:
+                for term in query_strings:
                     if len(all_records) >= effective_max:
                         break
 
@@ -176,6 +206,9 @@ class EventRegistryCollector(ArenaCollector):
                                 effective_max - len(all_records),
                             ),
                         )
+                        # Override language if expanded
+                        if er_lang != EVENT_REGISTRY_DANISH_LANG:
+                            payload["lang"] = er_lang
 
                         raw_resp = await self._post(
                             client=client,
@@ -209,9 +242,9 @@ class EventRegistryCollector(ArenaCollector):
                 )
 
         logger.info(
-            "event_registry: collect_by_terms — %d records for %d terms",
+            "event_registry: collect_by_terms — %d records for %d queries",
             len(all_records),
-            len(terms),
+            len(query_strings),
         )
         return all_records
 

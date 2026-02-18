@@ -47,7 +47,12 @@ async def fetch_live_tracking_designs() -> list[dict[str, Any]]:
 
     Returns:
         List of dicts with keys: ``query_design_id``, ``owner_id``,
-        ``arenas_config``, ``default_tier``, ``run_id``, ``run_status``.
+        ``arenas_config``, ``default_tier``, ``language``,
+        ``run_id``, ``run_status``.
+        The ``language`` field holds the raw comma-separated language string
+        from ``QueryDesign.language`` (e.g. ``"da"`` or ``"da,en"``).
+        Use :func:`~issue_observatory.core.schemas.query_design.parse_language_codes`
+        to convert it to a list.
     """
     async with AsyncSessionLocal() as db:
         stmt = (
@@ -56,6 +61,7 @@ async def fetch_live_tracking_designs() -> list[dict[str, Any]]:
                 QueryDesign.owner_id,
                 QueryDesign.arenas_config,
                 QueryDesign.default_tier,
+                QueryDesign.language,
                 CollectionRun.id.label("run_id"),
                 CollectionRun.status.label("run_status"),
             )

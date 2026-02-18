@@ -194,15 +194,58 @@ async def create_collection_run(  # type: ignore[misc]
         )
     ownership_guard(query_design.owner_id, current_user)
 
+    # -----------------------------------------------------------------------
+    # Tier precedence resolution (IP2-022)
+    #
+    # Tier selection follows a strict three-level hierarchy (highest priority
+    # first):
+    #
+    #   1. Per-arena override in the QUERY DESIGN's ``arenas_config``
+    #      (``query_designs.arenas_config``).  These are the researcher's saved
+    #      preferences and represent the most specific configuration.
+    #
+    #   2. Per-arena override in the LAUNCHER REQUEST's ``arenas_config``
+    #      (``payload.arenas_config``).  Explicitly provided at launch time
+    #      and can supplement arenas not configured in the query design.
+    #
+    #   3. Global default ``tier`` in the LAUNCHER REQUEST (``payload.tier``).
+    #      Applies to any arena not covered by levels 1 or 2.
+    #
+    # The merged config is stored on ``collection_runs.arenas_config`` as an
+    # immutable snapshot so that re-running historical reports is reproducible.
+    # -----------------------------------------------------------------------
+
+    # Build the merged arenas_config for the run.
+    # Start from the query design's saved preferences (level 1), then apply
+    # any launcher-level overrides for arenas not already in the design config
+    # (level 2).
+    design_arena_config: dict = query_design.arenas_config or {}
+    launcher_arena_config: dict = payload.arenas_config or {}
+
+    # Merge: query design config takes precedence; launcher config fills gaps.
+    merged_arenas_config: dict = {**launcher_arena_config, **design_arena_config}
+
+    logger.debug(
+        "tier_precedence_resolved",
+        run_global_tier=payload.tier,
+        design_arenas_count=len(design_arena_config),
+        launcher_arenas_count=len(launcher_arena_config),
+        merged_arenas_count=len(merged_arenas_config),
+    )
+
     run = CollectionRun(
         query_design_id=payload.query_design_id,
         initiated_by=current_user.id,
         mode=payload.mode,
+        # Global default tier — used for arenas not present in merged_arenas_config.
         tier=payload.tier,
         status="pending",
         date_from=payload.date_from,
         date_to=payload.date_to,
-        arenas_config=payload.arenas_config,
+        # Immutable snapshot of the merged per-arena config for this run.
+        # Per-arena tier overrides in this dict always take precedence over the
+        # global ``tier`` field above (enforced by arena orchestration workers).
+        arenas_config=merged_arenas_config,
         estimated_credits=0,
         credits_spent=0,
         records_collected=0,
@@ -377,6 +420,172 @@ async def cancel_collection_run(
     )
 
     return run
+
+
+# ---------------------------------------------------------------------------
+# Suspend / Resume (live tracking runs)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{run_id}/suspend", response_model=CollectionRunRead)
+async def suspend_collection_run(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> CollectionRun:
+    """Suspend an active live-tracking collection run.
+
+    Sets ``CollectionRun.status`` to ``'suspended'`` and records
+    ``suspended_at`` to the current UTC time.  Only valid on runs with
+    ``mode='live'`` and ``status='active'``.
+
+    Args:
+        run_id: UUID of the collection run to suspend.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        The updated ``CollectionRunRead`` with status ``'suspended'``.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the caller did not initiate the run (and is not admin).
+        HTTPException 409: If the run is not a live run in active status.
+    """
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    run = await _get_run_or_404(run_id, db)
+    ownership_guard(run.initiated_by, current_user)
+
+    if run.mode != "live" or run.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Cannot suspend run with mode='{run.mode}' status='{run.status}'. "
+                "Only live runs with status='active' can be suspended."
+            ),
+        )
+
+    run.status = "suspended"
+    run.suspended_at = datetime.now(tz=timezone.utc)
+    await db.commit()
+    await db.refresh(run)
+
+    logger.info(
+        "collection_run_suspended",
+        run_id=str(run_id),
+        user_id=str(current_user.id),
+    )
+    return run
+
+
+@router.post("/{run_id}/resume", response_model=CollectionRunRead)
+async def resume_collection_run(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> CollectionRun:
+    """Resume a suspended live-tracking collection run.
+
+    Sets ``CollectionRun.status`` back to ``'active'`` and clears
+    ``suspended_at``.  Only valid on runs with ``mode='live'`` and
+    ``status='suspended'``.
+
+    Args:
+        run_id: UUID of the collection run to resume.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        The updated ``CollectionRunRead`` with status ``'active'``.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the caller did not initiate the run (and is not admin).
+        HTTPException 409: If the run is not suspended.
+    """
+    run = await _get_run_or_404(run_id, db)
+    ownership_guard(run.initiated_by, current_user)
+
+    if run.mode != "live" or run.status != "suspended":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Cannot resume run with mode='{run.mode}' status='{run.status}'. "
+                "Only live runs with status='suspended' can be resumed."
+            ),
+        )
+
+    run.status = "active"
+    run.suspended_at = None
+    await db.commit()
+    await db.refresh(run)
+
+    logger.info(
+        "collection_run_resumed",
+        run_id=str(run_id),
+        user_id=str(current_user.id),
+    )
+    return run
+
+
+# ---------------------------------------------------------------------------
+# Schedule info (live tracking runs)
+# ---------------------------------------------------------------------------
+
+#: Next run time derived from the daily_collection beat entry (hour=0, minute=0,
+#: Copenhagen time).  Exposed as a human-readable string.
+_DAILY_COLLECTION_NEXT_RUN = "00:00 Copenhagen time"
+_DAILY_COLLECTION_TIMEZONE = "Europe/Copenhagen"
+
+
+@router.get("/{run_id}/schedule")
+async def get_collection_schedule(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> dict:
+    """Return schedule information for a live-tracking collection run.
+
+    Derives next-run timing from the ``daily_collection`` Celery Beat entry
+    defined in ``workers/beat_schedule.py`` (00:00 Copenhagen time).
+
+    Args:
+        run_id: UUID of the collection run.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        A dict with keys:
+        - ``mode``: always ``"live"`` for valid requests.
+        - ``status``: current run status (``"active"`` or ``"suspended"``).
+        - ``next_run_at``: human-readable next-trigger time string.
+        - ``timezone``: IANA timezone name for the schedule.
+        - ``last_triggered_at``: ``started_at`` of the run, or ``None``.
+        - ``suspended_at``: timestamp the run was suspended, or ``None``.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the caller did not initiate the run (and is not admin).
+        HTTPException 400: If the run is not a live-tracking run.
+    """
+    run = await _get_run_or_404(run_id, db)
+    ownership_guard(run.initiated_by, current_user)
+
+    if run.mode != "live":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Schedule information is only available for live tracking runs.",
+        )
+
+    return {
+        "mode": run.mode,
+        "status": run.status,
+        "next_run_at": _DAILY_COLLECTION_NEXT_RUN,
+        "timezone": _DAILY_COLLECTION_TIMEZONE,
+        "last_triggered_at": run.started_at.isoformat() if run.started_at else None,
+        "suspended_at": run.suspended_at.isoformat() if run.suspended_at else None,
+    }
 
 
 # ---------------------------------------------------------------------------

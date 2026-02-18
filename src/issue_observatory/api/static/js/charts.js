@@ -126,11 +126,17 @@ window.initVolumeChart = function initVolumeChart(canvasId, data, options = {}) 
         x: {
           ticks: { color: '#6b7280', font: { size: 11 }, maxRotation: 45 },
           grid: { display: false },
+          title: data.xLabel
+            ? { display: true, text: data.xLabel, color: '#6b7280', font: { size: 11 } }
+            : { display: false },
         },
         y: {
           beginAtZero: true,
           ticks: { color: '#6b7280', font: { size: 11 }, precision: 0 },
           grid: { color: 'rgba(0,0,0,0.05)' },
+          title: data.yLabel
+            ? { display: true, text: data.yLabel, color: '#6b7280', font: { size: 11 } }
+            : { display: false },
         },
       },
       ...options,
@@ -210,9 +216,19 @@ window.initEngagementChart = function initEngagementChart(canvasId, data, option
 /**
  * Render a horizontal bar chart of top actors by post count.
  *
+ * IP2-061: callers should prefer resolved_name over display_name before building
+ * the labels array.  The canonical label-resolution pattern used in the
+ * actorsChart Alpine component is:
+ *   const label = actor.resolved_name
+ *       || actor.author_display_name
+ *       || (actor.pseudonymized_author_id?.substring(0, 8) + '...')
+ *       || '?';
+ * A confirmed identity (resolved_name present) should be visually flagged by
+ * appending a Unicode check character (\u2713) to the label.
+ *
  * @param {string} canvasId - Target canvas element ID.
  * @param {Object} data - Chart data.
- * @param {string[]} data.labels  - Actor display names.
+ * @param {string[]} data.labels  - Actor display names (pre-resolved by the caller).
  * @param {number[]} data.values  - Post counts per actor.
  * @param {Object}  [options]     - Additional Chart.js options (merged in).
  * @returns {Chart|null}
@@ -243,10 +259,16 @@ window.initActorsChart = function initActorsChart(canvasId, data, options = {}) 
           beginAtZero: true,
           ticks: { color: '#6b7280', font: { size: 11 }, precision: 0 },
           grid: { color: 'rgba(0,0,0,0.05)' },
+          title: data.xLabel
+            ? { display: true, text: data.xLabel, color: '#6b7280', font: { size: 11 } }
+            : { display: false },
         },
         y: {
           ticks: { color: '#374151', font: { size: 11 } },
           grid: { display: false },
+          title: data.yLabel
+            ? { display: true, text: data.yLabel, color: '#6b7280', font: { size: 11 } }
+            : { display: false },
         },
       },
       ...options,
@@ -294,10 +316,16 @@ window.initTermsChart = function initTermsChart(canvasId, data, options = {}) {
           beginAtZero: true,
           ticks: { color: '#6b7280', font: { size: 11 }, precision: 0 },
           grid: { color: 'rgba(0,0,0,0.05)' },
+          title: data.xLabel
+            ? { display: true, text: data.xLabel, color: '#6b7280', font: { size: 11 } }
+            : { display: false },
         },
         y: {
           ticks: { color: '#374151', font: { size: 11 } },
           grid: { display: false },
+          title: data.yLabel
+            ? { display: true, text: data.yLabel, color: '#6b7280', font: { size: 11 } }
+            : { display: false },
         },
       },
       ...options,
@@ -329,6 +357,10 @@ window.initEngagementStatsChart = function initEngagementStatsChart(canvasId, da
 
   const metrics = Object.keys(data);
   if (metrics.length === 0) return null;
+
+  // Extract axis label strings from the options object before spreading it into
+  // Chart.js options (xLabel/yLabel are not native Chart.js keys).
+  const { xLabel, yLabel, ...remainingOptions } = options;
 
   return new Chart(canvas, {
     type: 'bar',
@@ -367,14 +399,20 @@ window.initEngagementStatsChart = function initEngagementStatsChart(canvasId, da
         x: {
           ticks: { color: '#374151', font: { size: 12 } },
           grid: { display: false },
+          title: xLabel
+            ? { display: true, text: xLabel, color: '#6b7280', font: { size: 11 } }
+            : { display: false },
         },
         y: {
           beginAtZero: true,
           ticks: { color: '#6b7280', font: { size: 11 }, precision: 1 },
           grid: { color: 'rgba(0,0,0,0.05)' },
+          title: yLabel
+            ? { display: true, text: yLabel, color: '#6b7280', font: { size: 11 } }
+            : { display: false },
         },
       },
-      ...options,
+      ...remainingOptions,
     },
   });
 };
@@ -399,7 +437,7 @@ window.initMultiArenaVolumeChart = function initMultiArenaVolumeChart(canvasId, 
   if (!canvas) return null;
   _destroyExisting(canvas);
 
-  const { labels, rows, arenaNames } = data;
+  const { labels, rows, arenaNames, xLabel, yLabel } = data;
 
   const datasets = arenaNames.length > 0
     ? arenaNames.map((arena, i) => ({
@@ -432,11 +470,17 @@ window.initMultiArenaVolumeChart = function initMultiArenaVolumeChart(canvasId, 
         x: {
           ticks: { color: '#6b7280', font: { size: 11 }, maxRotation: 45 },
           grid: { display: false },
+          title: xLabel
+            ? { display: true, text: xLabel, color: '#6b7280', font: { size: 11 } }
+            : { display: false },
         },
         y: {
           beginAtZero: true,
           ticks: { color: '#6b7280', font: { size: 11 }, precision: 0 },
           grid: { color: 'rgba(0,0,0,0.05)' },
+          title: yLabel
+            ? { display: true, text: yLabel, color: '#6b7280', font: { size: 11 } }
+            : { display: false },
         },
       },
       ...options,
@@ -446,6 +490,81 @@ window.initMultiArenaVolumeChart = function initMultiArenaVolumeChart(canvasId, 
 
 // ---------------------------------------------------------------------------
 // 8. Arena breakdown — doughnut chart
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 9. Emergent terms — horizontal bar chart (green palette, high-precision x axis)
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a horizontal bar chart of emergent terms by emergence score.
+ *
+ * Data comes from GET /analysis/{run_id}/emergent-terms:
+ *   [{ term: string, score: number, document_frequency: number, is_search_term: boolean }]
+ *
+ * The inline Alpine fallback in the template also renders this chart directly
+ * via Chart.js when this helper is not yet present.  Both paths produce the
+ * same visual output — this helper is the canonical implementation.
+ *
+ * @param {string} canvasId - Target canvas element ID.
+ * @param {Object} data - Chart data.
+ * @param {string[]} data.labels  - Term strings.
+ * @param {number[]} data.values  - Emergence scores per term.
+ * @param {string}  [data.xLabel] - X-axis label (default: 'Emergence score').
+ * @param {Object}  [options]     - Additional Chart.js options (merged in).
+ * @returns {Chart|null}
+ */
+window.initEmergentTermsChart = function initEmergentTermsChart(canvasId, data, options = {}) {
+  const canvas = _getCanvas(canvasId);
+  if (!canvas) return null;
+  _destroyExisting(canvas);
+
+  return new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: data.labels || [],
+      datasets: [{
+        label: 'Emergence score',
+        data: data.values || [],
+        // Green-600 distinguishes this chart from the regular terms chart (amber).
+        backgroundColor: 'rgba(22, 163, 74, 0.7)',
+        borderColor: '#16a34a',
+        borderWidth: 0,
+        borderRadius: 3,
+      }],
+    },
+    options: {
+      ..._CHART_DEFAULTS,
+      indexAxis: 'y',
+      plugins: {
+        ..._CHART_DEFAULTS.plugins,
+        legend: { display: false },
+      },
+      scales: {
+        x: {
+          beginAtZero: true,
+          // Four decimal places for small TF-IDF / BM25-style scores.
+          ticks: { color: '#6b7280', font: { size: 11 }, precision: 4 },
+          grid: { color: 'rgba(0,0,0,0.05)' },
+          title: data.xLabel
+            ? { display: true, text: data.xLabel, color: '#6b7280', font: { size: 11 } }
+            : { display: true, text: 'Emergence score', color: '#6b7280', font: { size: 11 } },
+        },
+        y: {
+          ticks: { color: '#374151', font: { size: 11 } },
+          grid: { display: false },
+          title: data.yLabel
+            ? { display: true, text: data.yLabel, color: '#6b7280', font: { size: 11 } }
+            : { display: false },
+        },
+      },
+      ...options,
+    },
+  });
+};
+
+// ---------------------------------------------------------------------------
+// 10. Arena breakdown — doughnut chart
 // ---------------------------------------------------------------------------
 
 window.initArenaBreakdownChart = function initArenaBreakdownChart(canvasId, data, options = {}) {
