@@ -263,6 +263,12 @@ class GoogleSearchCollector(ArenaCollector):
         set on the raw item before normalization.  Raw item is preserved in
         ``raw_metadata``.
 
+        When ``self._public_figure_ids`` is non-empty (set by the Celery task
+        via :meth:`~arenas.base.ArenaCollector.set_public_figure_ids`), the
+        public-figure ID set is forwarded to the normalizer so that records
+        authored by known public officials bypass SHA-256 pseudonymization
+        (GR-14 — GDPR Art. 89(1) research exemption).
+
         Expected input fields (Serper.dev):
         - ``title``, ``link`` (URL), ``snippet`` (text), ``position``, ``date``.
 
@@ -279,6 +285,7 @@ class GoogleSearchCollector(ArenaCollector):
             platform=self.platform_name,
             arena=self.arena_name,
             collection_tier="medium",  # overwritten by Celery tasks with actual tier
+            public_figure_ids=self._public_figure_ids or None,
         )
 
     async def health_check(self) -> dict[str, Any]:

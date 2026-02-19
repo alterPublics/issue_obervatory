@@ -114,6 +114,7 @@ class DiscordCollector(ArenaCollector):
         term_groups: list[list[str]] | None = None,
         language_filter: list[str] | None = None,
         channel_ids: list[str] | None = None,
+        extra_channel_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect Discord messages matching any of the supplied terms.
 
@@ -142,6 +143,10 @@ class DiscordCollector(ArenaCollector):
                 field. Language detection happens downstream.
             channel_ids: List of Discord channel snowflake IDs to fetch
                 messages from. Required — Discord bots have no global search.
+            extra_channel_ids: Optional list of additional channel snowflake
+                IDs supplied by the researcher via
+                ``arenas_config["discord"]["custom_channel_ids"]`` (GR-04).
+                These are merged with ``channel_ids`` before fetching.
 
         Returns:
             List of normalized content record dicts.
@@ -156,7 +161,11 @@ class DiscordCollector(ArenaCollector):
         self._validate_tier(tier)
         effective_max = max_results if max_results is not None else DEFAULT_MAX_RESULTS
 
-        if not channel_ids:
+        # GR-04: merge researcher-supplied extra channel IDs with explicitly
+        # provided channel_ids (deduplicating by snowflake string value).
+        effective_channel_ids = _merge_channel_ids(channel_ids, extra_channel_ids)
+
+        if not effective_channel_ids:
             raise ArenaCollectionError(
                 "Discord requires explicit channel_ids — there is no global keyword "
                 "search for bot accounts. Pass channel_ids=[...] with the snowflake "
@@ -167,7 +176,7 @@ class DiscordCollector(ArenaCollector):
 
         logger.info(
             "discord: collect_by_terms — channels=%d terms=%d tier=%s",
-            len(channel_ids),
+            len(effective_channel_ids),
             len(terms),
             tier.value,
         )
@@ -190,7 +199,7 @@ class DiscordCollector(ArenaCollector):
         all_records: list[dict[str, Any]] = []
 
         async with self._build_http_client(bot_token) as client:
-            for channel_id in channel_ids:
+            for channel_id in effective_channel_ids:
                 if len(all_records) >= effective_max:
                     break
 
@@ -223,7 +232,7 @@ class DiscordCollector(ArenaCollector):
         logger.info(
             "discord: collect_by_terms complete — matched=%d across %d channel(s)",
             len(all_records),
-            len(channel_ids),
+            len(effective_channel_ids),
         )
         return all_records
 
@@ -235,6 +244,7 @@ class DiscordCollector(ArenaCollector):
         date_to: datetime | str | None = None,
         max_results: int | None = None,
         channel_ids: list[str] | None = None,
+        extra_channel_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect Discord messages authored by specific users.
 
@@ -250,6 +260,10 @@ class DiscordCollector(ArenaCollector):
             max_results: Upper bound on returned records.
             channel_ids: Channel snowflake IDs to search. Required — Discord
                 bots cannot enumerate all messages by user globally.
+            extra_channel_ids: Optional list of additional channel snowflake
+                IDs supplied by the researcher via
+                ``arenas_config["discord"]["custom_channel_ids"]`` (GR-04).
+                These are merged with ``channel_ids`` before fetching.
 
         Returns:
             List of normalized content record dicts.
@@ -263,7 +277,10 @@ class DiscordCollector(ArenaCollector):
         self._validate_tier(tier)
         effective_max = max_results if max_results is not None else DEFAULT_MAX_RESULTS
 
-        if not channel_ids:
+        # GR-04: merge researcher-supplied extra channel IDs.
+        effective_channel_ids = _merge_channel_ids(channel_ids, extra_channel_ids)
+
+        if not effective_channel_ids:
             raise ArenaCollectionError(
                 "Discord collect_by_actors requires explicit channel_ids — the bot "
                 "cannot enumerate all messages by user across all servers without a "
@@ -277,7 +294,7 @@ class DiscordCollector(ArenaCollector):
 
         logger.info(
             "discord: collect_by_actors — channels=%d actors=%d tier=%s",
-            len(channel_ids),
+            len(effective_channel_ids),
             len(actor_ids),
             tier.value,
         )
@@ -289,7 +306,7 @@ class DiscordCollector(ArenaCollector):
         all_records: list[dict[str, Any]] = []
 
         async with self._build_http_client(bot_token) as client:
-            for channel_id in channel_ids:
+            for channel_id in effective_channel_ids:
                 if len(all_records) >= effective_max:
                     break
 
@@ -318,7 +335,7 @@ class DiscordCollector(ArenaCollector):
         logger.info(
             "discord: collect_by_actors complete — matched=%d across %d channel(s)",
             len(all_records),
-            len(channel_ids),
+            len(effective_channel_ids),
         )
         return all_records
 
@@ -559,3 +576,35 @@ class DiscordCollector(ArenaCollector):
                 exc,
             )
             return {}
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+
+def _merge_channel_ids(
+    channel_ids: list[str] | None,
+    extra_channel_ids: list[str] | None,
+) -> list[str]:
+    """Merge explicit and researcher-supplied Discord channel snowflake IDs.
+
+    Deduplicates by string value while preserving insertion order (explicit
+    ``channel_ids`` first, then ``extra_channel_ids``).
+
+    Args:
+        channel_ids: Channel IDs explicitly provided to the collector method.
+        extra_channel_ids: Optional additional IDs from
+            ``arenas_config["discord"]["custom_channel_ids"]`` (GR-04).
+
+    Returns:
+        Deduplicated list of channel ID strings.
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    for cid in (channel_ids or []) + (extra_channel_ids or []):
+        s = str(cid).strip()
+        if s and s not in seen:
+            seen.add(s)
+            result.append(s)
+    return result

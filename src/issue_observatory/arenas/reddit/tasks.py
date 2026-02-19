@@ -108,6 +108,43 @@ def _update_task_status(
 
 
 # ---------------------------------------------------------------------------
+# arenas_config helper
+# ---------------------------------------------------------------------------
+
+
+def _load_arenas_config(query_design_id: str) -> dict:
+    """Load ``arenas_config`` from the QueryDesign row identified by *query_design_id*.
+
+    Uses a synchronous SQLAlchemy session (Celery worker context).  Returns an
+    empty dict if the design is not found or on any DB error.
+
+    Args:
+        query_design_id: UUID string of the owning query design.
+
+    Returns:
+        The ``arenas_config`` JSONB dict, or ``{}`` on failure.
+    """
+    try:
+        from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+        from sqlalchemy import text  # noqa: PLC0415
+
+        with get_sync_session() as session:
+            row = session.execute(
+                text("SELECT arenas_config FROM query_designs WHERE id = :id"),
+                {"id": query_design_id},
+            ).fetchone()
+            if row and row[0]:
+                return dict(row[0])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "reddit: failed to load arenas_config for design %s: %s",
+            query_design_id,
+            exc,
+        )
+    return {}
+
+
+# ---------------------------------------------------------------------------
 # Tasks
 # ---------------------------------------------------------------------------
 
@@ -167,6 +204,15 @@ def reddit_collect_terms(
     )
     _update_task_status(collection_run_id, "social_media", "running")
 
+    # GR-03: read researcher-configured extra subreddits from arenas_config.
+    arenas_config = _load_arenas_config(query_design_id)
+    extra_subreddits: list[str] | None = None
+    reddit_config = arenas_config.get("reddit") or {}
+    if isinstance(reddit_config, dict):
+        raw_subreddits = reddit_config.get("custom_subreddits")
+        if isinstance(raw_subreddits, list) and raw_subreddits:
+            extra_subreddits = [str(s) for s in raw_subreddits if s]
+
     try:
         tier_enum = Tier(tier)
     except ValueError:
@@ -188,6 +234,7 @@ def reddit_collect_terms(
                 tier=tier_enum,
                 max_results=None,
                 language_filter=language_filter,
+                extra_subreddits=extra_subreddits,
             )
         )
     except NoCredentialAvailableError as exc:

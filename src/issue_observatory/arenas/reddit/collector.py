@@ -120,6 +120,7 @@ class RedditCollector(ArenaCollector):
         max_results: int | None = None,
         term_groups: list[list[str]] | None = None,
         language_filter: list[str] | None = None,
+        extra_subreddits: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect Reddit posts matching one or more search terms.
 
@@ -144,6 +145,11 @@ class RedditCollector(ArenaCollector):
                 joined with ``+`` (Reddit AND syntax) and queried separately.
             language_filter: Not used — Reddit Danish subreddits provide
                 implicit language scoping.
+            extra_subreddits: Optional list of subreddit names (without the
+                ``r/`` prefix) supplied by the researcher via
+                ``arenas_config["reddit"]["custom_subreddits"]`` (GR-03).
+                These are merged with :data:`ALL_DANISH_SUBREDDITS` before
+                building the multireddit search string.
 
         Returns:
             List of normalized content record dicts (posts and optionally
@@ -181,6 +187,9 @@ class RedditCollector(ArenaCollector):
         else:
             query_strings = list(terms)
 
+        # GR-03: build effective subreddit search string including extra subreddits.
+        effective_subreddit_string = _build_subreddit_string(extra_subreddits)
+
         try:
             async with reddit:
                 for query in query_strings:
@@ -193,6 +202,7 @@ class RedditCollector(ArenaCollector):
                         max_results=min(remaining, MAX_RESULTS_PER_SEARCH),
                         seen_post_ids=seen_post_ids,
                         credential_id=cred.get("id", "default"),
+                        subreddit_string=effective_subreddit_string,
                     )
                     seen_post_ids.update(new_seen)
                     all_records.extend(new_records)
@@ -459,6 +469,7 @@ class RedditCollector(ArenaCollector):
         max_results: int,
         seen_post_ids: set[str],
         credential_id: str,
+        subreddit_string: str | None = None,
     ) -> tuple[list[dict[str, Any]], set[str]]:
         """Search Reddit for a single term across Danish subreddits.
 
@@ -468,6 +479,10 @@ class RedditCollector(ArenaCollector):
             max_results: Maximum number of new posts to return.
             seen_post_ids: Set of already-seen post IDs for deduplication.
             credential_id: Credential ID for rate limiting.
+            subreddit_string: Optional multireddit ``+``-joined string to search.
+                When ``None``, falls back to :data:`DANISH_SUBREDDIT_SEARCH_STRING`.
+                Overridden by the GR-03 extra-subreddits merge in
+                :meth:`collect_by_terms`.
 
         Returns:
             Tuple of (list of normalized records, set of new post IDs seen).
@@ -482,9 +497,11 @@ class RedditCollector(ArenaCollector):
         records: list[dict[str, Any]] = []
         new_seen: set[str] = set()
 
+        effective_subreddit_string = subreddit_string or DANISH_SUBREDDIT_SEARCH_STRING
+
         try:
             await self._wait_for_rate_limit(credential_id)
-            subreddit = await reddit.subreddit(DANISH_SUBREDDIT_SEARCH_STRING)
+            subreddit = await reddit.subreddit(effective_subreddit_string)
             search_gen = subreddit.search(
                 term,
                 limit=min(max_results, MAX_RESULTS_PER_SEARCH),
@@ -804,3 +821,41 @@ class RedditCollector(ArenaCollector):
             "parent_post_id": getattr(parent_post, "id", None),
             "parent_post_title": getattr(parent_post, "title", None),
         }
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_subreddit_string(extra_subreddits: list[str] | None) -> str:
+    """Build a Reddit multireddit ``+``-joined search string.
+
+    Merges :data:`~config.ALL_DANISH_SUBREDDITS` with any researcher-supplied
+    extra subreddit names (GR-03).  Duplicate names are removed while
+    preserving the insertion order (defaults first, extras appended).
+
+    Args:
+        extra_subreddits: Optional list of additional subreddit names
+            (without the ``r/`` prefix) from
+            ``arenas_config["reddit"]["custom_subreddits"]``.
+
+    Returns:
+        A ``+``-joined multireddit string suitable for
+        ``asyncpraw.Reddit.subreddit()``.  Falls back to
+        :data:`DANISH_SUBREDDIT_SEARCH_STRING` when ``extra_subreddits``
+        is ``None`` or empty.
+    """
+    if not extra_subreddits:
+        return DANISH_SUBREDDIT_SEARCH_STRING
+
+    seen: set[str] = set()
+    merged: list[str] = []
+    for name in ALL_DANISH_SUBREDDITS + [
+        s.strip().lstrip("r/") for s in extra_subreddits if s and s.strip()
+    ]:
+        if name and name not in seen:
+            seen.add(name)
+            merged.append(name)
+
+    return "+".join(merged) if merged else DANISH_SUBREDDIT_SEARCH_STRING

@@ -8,18 +8,30 @@
     Main area: paginated content table with HTMX infinite scroll (capped at 2000 rows).
     Detail panel: HTMX-loaded record detail on row click.
 
+    GR-17: Quick-add actor modal — clickable author names open a "Quick-Add Source" modal
+    that pre-fills platform + author and lets the researcher add to a query design's actor list.
+
     Context:
         - records (list): initial page of content records
         - total_count (int): total matching records for the current filter
         - recent_runs (list): [{id, status, query_design_name, created_at}] for run selector
         - filter (dict): currently active filter values (from query params)
         - cursor (str|None): pagination cursor for next page
+        - active_query_design_id (str|None): query design in scope, used by GR-17 actor-list fetch.
+
+    BACKEND GAP (GR-17): The browser route in content.py does not yet pass
+    `active_query_design_id` to the template context. Until the route is updated to include:
+        "active_query_design_id": str(query_design_id) if query_design_id else "",
+    the actor-list dropdown in the Quick-Add modal will remain empty (no options fetched).
+    The route parameter `query_design_id` already exists in the route signature; the fix is
+    purely adding the key to the TemplateResponse context dict.
 #}
 {% set filter = filter | default({}) %}
 {% set records = records | default([]) %}
 {% set recent_runs = recent_runs | default([]) %}
 {% set total_count = total_count | default(0) %}
 {% set cursor = cursor | default('') %}
+{% set active_query_design_id = active_query_design_id | default('') %}
 
 {# Two-column layout: sidebar + main #}
 <div class="flex gap-0 h-full" x-data="contentBrowser()">
@@ -187,7 +199,7 @@
         </form>{# /filter-form #}
 
         {# Export section at bottom of sidebar #}
-        <div class="px-4 py-4 border-t border-gray-200">
+        <div class="px-4 py-4 border-t border-gray-200 space-y-2">
             <button type="button"
                     hx-get="/content/export"
                     hx-include="#filter-form"
@@ -201,6 +213,17 @@
                 </svg>
                 Export CSV
             </button>
+
+            {# GR-22: Discovered Sources link #}
+            <a href="/content/discovered-links"
+               class="w-full inline-flex items-center justify-center gap-2 px-3 py-2 bg-gray-50 text-gray-700 text-xs font-medium border border-gray-200 rounded hover:bg-gray-100 transition-colors">
+                <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+                </svg>
+                Discovered Sources
+            </a>
         </div>
     </aside>
 
@@ -314,9 +337,22 @@
                                 {% endif %}
                             </td>
 
-                            {# Author #}
+                            {# Author — GR-17: clickable to open quick-add modal #}
                             <td class="px-4 py-3 text-xs text-gray-600 whitespace-nowrap hidden lg:table-cell">
-                                {{ record.author | default('—') | truncate(24, true, '…') }}
+                                {% if record.author | default('') %}
+                                <button type="button"
+                                        @click.stop="openQuickAdd({
+                                            author: '{{ record.author | replace("'", "\\'") | truncate(64, true, '') }}',
+                                            platform: '{{ record.platform | default('') }}',
+                                            authorId: '{{ record.author_id | default('') | replace("'", "\\'") }}'
+                                        })"
+                                        class="text-blue-600 hover:text-blue-800 hover:underline transition-colors text-left"
+                                        title="Quick-add {{ record.author | truncate(40, true, '…') }} to actor collection">
+                                    {{ record.author | truncate(24, true, '…') }}
+                                </button>
+                                {% else %}
+                                <span class="text-gray-400">—</span>
+                                {% endif %}
                             </td>
 
                             {# Published at #}
@@ -396,10 +432,178 @@
 
 </div>{# /two-column layout #}
 
+{# ====================================================================== #}
+{# GR-17: Quick-Add Source modal                                          #}
+{# ====================================================================== #}
+{#
+    This modal is triggered by clicking any author name in the content table.
+    It pre-fills platform, display name, and platform username from the clicked row.
+
+    Backend contracts expected:
+        GET  /query-designs/{design_id}/actor-lists
+             Returns: JSON array of { id, name } actor lists for the given query design.
+             Used here via HTMX to populate the "Add to actor list" dropdown.
+
+        POST /actors/quick-add
+             Body (JSON): {
+                 display_name: str,
+                 platform: str,
+                 platform_username: str,
+                 actor_type: "Individual" | "Organization" | "Bot",
+                 actor_list_id: str | null
+             }
+             Returns: { was_created: bool, actor_id: str }
+             When was_created is false: actor already existed — still added to actor list.
+#}
+<div x-data="quickAddModal('{{ active_query_design_id }}')"
+     @quick-add-author.window="openFromEvent($event)"
+     x-show="open"
+     x-cloak
+     class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40"
+     @keydown.escape.window="open && close()">
+
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-md mx-4"
+         @click.stop>
+
+        {# Modal header #}
+        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+            <h2 class="text-base font-semibold text-gray-900">Quick-Add Source</h2>
+            <button type="button"
+                    @click="close()"
+                    class="text-gray-400 hover:text-gray-600 transition-colors">
+                <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+
+        {# Success / already-exists banners #}
+        <div x-show="successMsg"
+             x-cloak
+             class="mx-6 mt-4 flex items-center gap-2 bg-green-50 border border-green-200 rounded-md px-4 py-2.5">
+            <svg class="w-4 h-4 text-green-600 flex-shrink-0" xmlns="http://www.w3.org/2000/svg"
+                 fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+            </svg>
+            <p class="text-sm text-green-800" x-text="successMsg"></p>
+        </div>
+
+        <div x-show="errorMsg"
+             x-cloak
+             class="mx-6 mt-4 flex items-center gap-2 bg-red-50 border border-red-200 rounded-md px-4 py-2.5">
+            <svg class="w-4 h-4 text-red-500 flex-shrink-0" xmlns="http://www.w3.org/2000/svg"
+                 fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <p class="text-sm text-red-700" x-text="errorMsg"></p>
+        </div>
+
+        {# Form fields #}
+        <div class="px-6 py-5 space-y-4">
+
+            {# Display name #}
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">
+                    Author name <span class="text-red-500">*</span>
+                </label>
+                <input type="text"
+                       x-model="form.displayName"
+                       placeholder="e.g. Mette Frederiksen"
+                       class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+
+            {# Platform (read-only, pre-filled) #}
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Platform</label>
+                <input type="text"
+                       x-model="form.platform"
+                       placeholder="e.g. telegram"
+                       class="w-full border border-gray-300 rounded px-3 py-2 text-sm bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+
+            {# Platform username #}
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Platform username</label>
+                <input type="text"
+                       x-model="form.platformUsername"
+                       placeholder="Platform-specific identifier"
+                       class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <p class="text-xs text-gray-400 mt-0.5">Used to look up the account. Leave as author name if unsure.</p>
+            </div>
+
+            {# Actor type #}
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Actor type</label>
+                <select x-model="form.actorType"
+                        class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                    <option value="Individual">Individual</option>
+                    <option value="Organization">Organization</option>
+                    <option value="Bot">Bot</option>
+                </select>
+            </div>
+
+            {# Add to actor list dropdown — populated via fetch when modal opens #}
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Add to actor list</label>
+                <div x-show="listsLoading" class="flex items-center gap-2 text-xs text-gray-400 py-1.5">
+                    <svg class="animate-spin w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg"
+                         fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    Loading actor lists...
+                </div>
+                <select x-show="!listsLoading"
+                        x-model="form.actorListId"
+                        class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                    <option value="">— No list (registry only) —</option>
+                    <template x-for="list in actorLists" :key="list.id">
+                        <option :value="list.id" x-text="list.name"></option>
+                    </template>
+                </select>
+                <p x-show="!listsLoading && actorLists.length === 0 && queryDesignId"
+                   class="text-xs text-gray-400 mt-0.5">
+                    No actor lists found for this query design.
+                </p>
+                <p x-show="!queryDesignId"
+                   class="text-xs text-amber-600 mt-0.5">
+                    No query design in scope — actor will be added to the registry only.
+                </p>
+            </div>
+
+        </div>
+
+        {# Modal footer actions #}
+        <div class="px-6 py-4 border-t border-gray-200 flex items-center justify-between">
+            <button type="button"
+                    @click="close()"
+                    class="text-sm text-gray-500 hover:text-gray-700 transition-colors">
+                Cancel
+            </button>
+            <button type="button"
+                    @click="submit()"
+                    :disabled="submitting || !form.displayName.trim()"
+                    class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                <svg x-show="submitting"
+                     class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg"
+                     fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+                <span x-text="submitting ? 'Adding...' : 'Add to Collection'"></span>
+            </button>
+        </div>
+
+    </div>
+</div>
+
 <script>
 /**
  * Alpine component for the content browser.
- * Manages detail panel show/hide state and row count for the 2000-row cap.
+ * Manages detail panel show/hide state, row count for the 2000-row cap,
+ * and dispatches the quick-add author event for GR-17.
  */
 function contentBrowser() {
     return {
@@ -410,6 +614,15 @@ function contentBrowser() {
         openDetail(id) {
             this.selectedId = id;
             this.showDetail = true;
+        },
+
+        /**
+         * GR-17: dispatch a custom event that the quickAddModal component listens to.
+         * Stops row-click propagation to prevent the detail panel opening simultaneously.
+         * @param {Object} data - { author, platform, authorId }
+         */
+        openQuickAdd(data) {
+            this.$dispatch('quick-add-author', data);
         },
 
         updateRowCount() {
@@ -425,6 +638,144 @@ function contentBrowser() {
             if (!form) return;
             const params = new URLSearchParams(new FormData(form)).toString();
             window.location.href = '/content/export?' + params;
+        },
+    };
+}
+
+/**
+ * GR-17: Quick-Add Source modal Alpine component.
+ *
+ * On open, fetches actor lists for the active query design from
+ * GET /query-designs/{design_id}/actor-lists.
+ *
+ * On submit, POSTs to POST /actors/quick-add with the form payload.
+ *
+ * @param {string} queryDesignId - Jinja-injected active query design UUID (may be empty string).
+ */
+function quickAddModal(queryDesignId) {
+    return {
+        open: false,
+        queryDesignId: queryDesignId || '',
+        submitting: false,
+        listsLoading: false,
+        actorLists: [],
+        successMsg: null,
+        errorMsg: null,
+
+        form: {
+            displayName: '',
+            platform: '',
+            platformUsername: '',
+            actorType: 'Individual',
+            actorListId: '',
+        },
+
+        /**
+         * Receives the custom event dispatched by contentBrowser.openQuickAdd().
+         * Pre-fills form fields from the clicked author row.
+         */
+        openFromEvent(event) {
+            const { author, platform, authorId } = event.detail;
+            this.form.displayName = author || '';
+            this.form.platform = platform || '';
+            // Use authorId as platform username if available; fall back to display name.
+            this.form.platformUsername = (authorId && authorId.trim()) ? authorId : (author || '');
+            this.form.actorType = 'Individual';
+            this.form.actorListId = '';
+            this.successMsg = null;
+            this.errorMsg = null;
+            this.open = true;
+            this.fetchActorLists();
+        },
+
+        close() {
+            this.open = false;
+            this.successMsg = null;
+            this.errorMsg = null;
+        },
+
+        /**
+         * Fetch actor lists for the active query design so the researcher can
+         * pick which list to add the new actor to.
+         *
+         * Endpoint: GET /query-designs/{design_id}/actor-lists
+         * Expected response shape: [{ id: string, name: string }, ...]
+         *
+         * When queryDesignId is empty (backend gap — see template comment at top),
+         * the fetch is skipped and the dropdown shows only the "registry only" option.
+         */
+        async fetchActorLists() {
+            if (!this.queryDesignId) {
+                this.actorLists = [];
+                return;
+            }
+            this.listsLoading = true;
+            try {
+                const res = await fetch(`/query-designs/${this.queryDesignId}/actor-lists`, {
+                    credentials: 'include',
+                    headers: { 'Accept': 'application/json' },
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                // Accept both array root or { results: [...] } wrapper.
+                this.actorLists = Array.isArray(data) ? data : (data.results || data.items || []);
+            } catch (_e) {
+                // Non-fatal: researcher can still add to registry without a list.
+                this.actorLists = [];
+            } finally {
+                this.listsLoading = false;
+            }
+        },
+
+        /**
+         * POST to /actors/quick-add with the current form state.
+         * On success: show a brief "Added!" toast then close after 1.5s.
+         * On was_created=false: show "Already in registry — added to list" message.
+         */
+        async submit() {
+            if (!this.form.displayName.trim() || this.submitting) return;
+
+            this.submitting = true;
+            this.successMsg = null;
+            this.errorMsg = null;
+
+            try {
+                const payload = {
+                    display_name: this.form.displayName.trim(),
+                    platform: this.form.platform.trim(),
+                    platform_username: this.form.platformUsername.trim() || this.form.displayName.trim(),
+                    actor_type: this.form.actorType,
+                    actor_list_id: this.form.actorListId || null,
+                };
+
+                const res = await fetch('/actors/quick-add', {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    throw new Error(data.detail || `HTTP ${res.status}: ${res.statusText}`);
+                }
+
+                const result = await res.json();
+
+                if (result.was_created === false) {
+                    this.successMsg = 'Already in registry — added to actor list.';
+                } else {
+                    this.successMsg = 'Added to collection!';
+                }
+
+                // Auto-close after 1.5 seconds so the researcher can keep browsing.
+                setTimeout(() => { this.close(); }, 1500);
+
+            } catch (e) {
+                this.errorMsg = e.message || 'An unexpected error occurred. Please try again.';
+            } finally {
+                this.submitting = false;
+            }
         },
     };
 }

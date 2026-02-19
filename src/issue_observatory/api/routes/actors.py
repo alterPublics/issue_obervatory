@@ -12,6 +12,8 @@ Access rules:
 Routes:
     GET    /actors/                               list actors (paginated, searchable)
     POST   /actors/                               create actor
+    POST   /actors/quick-add                      single-step actor creation from Content Browser
+    POST   /actors/quick-add-bulk                 bulk create actors from discovered links
     GET    /actors/search                         HTMX search fragment
     GET    /actors/resolution                     entity resolution UI page
     GET    /actors/resolution-candidates          cross-platform resolution candidates
@@ -25,6 +27,9 @@ Routes:
     DELETE /actors/{actor_id}/presences/{pid}     remove platform presence
     POST   /actors/{actor_id}/merge/{other_actor_id}  merge other actor into actor
     POST   /actors/lists/{list_id}/members/bulk   bulk-add actors to a list
+    POST   /actors/{actor_id}/similar/platform    platform recommendations (GR-18)
+    POST   /actors/{actor_id}/similar/content     content-similar actors (GR-18)
+    POST   /actors/{actor_id}/similar/cross-platform  cross-platform name search (GR-18)
 """
 
 from __future__ import annotations
@@ -73,6 +78,98 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
+# Pydantic schemas for quick-add endpoints (GR-17)
+# ---------------------------------------------------------------------------
+
+
+class QuickAddRequest(BaseModel):
+    """Request body for the Content Browser quick-add actor endpoint.
+
+    Attributes:
+        display_name: Human-readable author name as it appears in collected
+            content.  Used as the canonical name of any newly created Actor.
+        platform: Platform slug (e.g. ``"telegram"``, ``"bluesky"``).
+        platform_username: The platform's username / handle / channel name.
+        actor_type: Actor category string matching ``ActorType`` values
+            (e.g. ``"individual"``, ``"organization"``).  Stored verbatim;
+            unknown values are accepted without error so the API stays
+            flexible as new actor types are added.
+        source_content_id: Optional UUID of the content record in which this
+            author was discovered.  Not stored directly, but included for
+            client-side correlation.
+        actor_list_id: Optional UUID of an ``ActorList``.  When provided the
+            actor is immediately added to that list as a ``"quick_add"``
+            member.
+    """
+
+    display_name: str
+    platform: str
+    platform_username: str
+    actor_type: str = "individual"
+    source_content_id: Optional[uuid.UUID] = None
+    actor_list_id: Optional[uuid.UUID] = None
+
+
+class QuickAddResponse(BaseModel):
+    """Response body for the quick-add endpoint.
+
+    Attributes:
+        actor_id: UUID of the canonical actor (existing or newly created).
+        platform_presence_id: UUID of the ``ActorPlatformPresence`` row.
+        was_created: ``True`` when a new Actor record was created;
+            ``False`` when an existing one was reused.
+        actor_list_member_id: UUID of the ``ActorListMember`` composite-PK
+            pair serialised as ``"{list_id}:{actor_id}"``, or ``None``
+            when no ``actor_list_id`` was provided.
+    """
+
+    actor_id: uuid.UUID
+    platform_presence_id: uuid.UUID
+    was_created: bool
+    actor_list_member_id: Optional[str] = None
+
+
+class QuickAddBulkItem(BaseModel):
+    """One item in a bulk quick-add request derived from discovered links.
+
+    Attributes:
+        url: The discovered URL (used for logging / traceability).
+        platform: Platform slug inferred from the URL by ``LinkMiner``.
+        target_identifier: Channel name, username, subreddit, etc. extracted
+            from the URL — used as the ``platform_username`` for the new
+            ``ActorPlatformPresence``.
+        display_name: Optional human-readable name for the actor.  Falls back
+            to ``target_identifier`` when omitted.
+        actor_list_id: Optional ``ActorList`` UUID to add the actor to.
+    """
+
+    url: str
+    platform: str
+    target_identifier: str
+    display_name: Optional[str] = None
+    actor_list_id: Optional[uuid.UUID] = None
+
+
+class QuickAddBulkResponse(BaseModel):
+    """Response body for the bulk quick-add endpoint.
+
+    Attributes:
+        results: Per-item outcome.  Each entry contains the original ``url``
+            plus the ``QuickAddResponse`` fields.
+        total: Total items processed.
+        created: Number of new Actor records created.
+        reused: Number of existing Actor records reused.
+        errors: Number of items that failed (with ``error`` key per entry).
+    """
+
+    results: list[dict]
+    total: int
+    created: int
+    reused: int
+    errors: int
+
+
+# ---------------------------------------------------------------------------
 # Pydantic schemas for snowball sampling and bulk-member endpoints
 # ---------------------------------------------------------------------------
 
@@ -87,6 +184,11 @@ class SnowballRequest(BaseModel):
         max_actors_per_step: Maximum novel actors added per wave.
         add_to_actor_list_id: When provided, discovered actors are added to
             this ``ActorList`` as ``'snowball'`` members.
+        auto_create_actors: When ``True`` (the default), automatically create
+            ``Actor`` and ``ActorPlatformPresence`` records for any discovered
+            account that does not yet exist in the database.  Auto-created
+            records are marked with ``metadata_["auto_created_by"]`` set to
+            ``"snowball_sampling"`` for later review.
     """
 
     seed_actor_ids: list[uuid.UUID]
@@ -94,6 +196,7 @@ class SnowballRequest(BaseModel):
     max_depth: int = 2
     max_actors_per_step: int = 20
     add_to_actor_list_id: Optional[uuid.UUID] = None
+    auto_create_actors: bool = True
 
 
 class SnowballWaveEntry(BaseModel):
@@ -134,12 +237,18 @@ class SnowballResponse(BaseModel):
         max_depth_reached: Deepest expansion level actually completed.
         wave_log: Per-wave summary entries.
         actors: All discovered actors in order of discovery.
+        newly_created_actors: Number of ``Actor`` database records that were
+            automatically created for accounts discovered during this run
+            that had no pre-existing record.  Zero when ``auto_create_actors``
+            was ``False`` in the request or when all discovered accounts were
+            already in the database.
     """
 
     total_actors: int
     max_depth_reached: int
     wave_log: list[SnowballWaveEntry]
     actors: list[SnowballActorEntry]
+    newly_created_actors: int = 0
 
 
 class BulkMemberRequest(BaseModel):
@@ -162,6 +271,50 @@ class BulkMemberResponse(BaseModel):
 
     added: int
     already_present: int
+
+
+# ---------------------------------------------------------------------------
+# Pydantic schemas for similarity discovery endpoints (GR-18)
+# ---------------------------------------------------------------------------
+
+
+class SimilarPlatformRequest(BaseModel):
+    """Request body for platform-based actor recommendations.
+
+    Attributes:
+        platforms: Platform slugs to search on (e.g. ``["bluesky", "reddit"]``).
+            Only ``"bluesky"``, ``"reddit"``, and ``"youtube"`` have first-class
+            similarity implementations; others are silently skipped.
+        max_results: Maximum number of candidates to return per platform.
+    """
+
+    platforms: list[str]
+    max_results: int = 20
+
+
+class SimilarContentRequest(BaseModel):
+    """Request body for content-similarity actor discovery.
+
+    Attributes:
+        max_results: Maximum number of similar actors to return.
+        min_similarity: Minimum similarity score threshold (0.0–1.0).
+            Results below this value are excluded from the response.
+    """
+
+    max_results: int = 20
+    min_similarity: float = 0.3
+
+
+class SimilarCrossPlatformRequest(BaseModel):
+    """Request body for cross-platform name search.
+
+    Attributes:
+        platforms: Platforms to search across.
+        max_results: Maximum candidates per platform.
+    """
+
+    platforms: list[str]
+    max_results: int = 10
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +631,23 @@ async def run_snowball_sampling(
         max_actors_per_step=payload.max_actors_per_step,
     )
 
+    # GR-20: Auto-create Actor records for newly discovered accounts that are
+    # not yet in the database.  This mutates result.actors in place (adding
+    # actor_uuid keys) and populates result.auto_created_actor_ids.
+    if payload.auto_create_actors:
+        await sampler.auto_create_actor_records(
+            result=result,
+            db=db,
+            created_by=current_user.id,
+        )
+        if result.auto_created_actor_ids:
+            logger.info(
+                "snowball_auto_created_actors",
+                count=len(result.auto_created_actor_ids),
+                actor_ids=[str(uid) for uid in result.auto_created_actor_ids],
+                user_id=str(current_user.id),
+            )
+
     elapsed = time.monotonic() - t_start
     if elapsed > 30.0:
         _py_logger.warning(
@@ -488,7 +658,8 @@ async def run_snowball_sampling(
             total_actors=result.total_actors,
         )
 
-    # Optionally add resolved actors to the requested list.
+    # Optionally add resolved actors to the requested list.  Auto-created
+    # actors now carry actor_uuid so they will be included in this step.
     if payload.add_to_actor_list_id is not None:
         added_count = await _bulk_add_to_list(
             actor_dicts=result.actors,
@@ -531,6 +702,7 @@ async def run_snowball_sampling(
         total_actors=result.total_actors,
         max_depth_reached=result.max_depth_reached,
         elapsed_seconds=round(elapsed, 1),
+        newly_created_actors=len(result.auto_created_actor_ids),
         user_id=str(current_user.id),
     )
 
@@ -539,6 +711,7 @@ async def run_snowball_sampling(
         max_depth_reached=result.max_depth_reached,
         wave_log=wave_log,
         actors=actors_out,
+        newly_created_actors=len(result.auto_created_actor_ids),
     )
 
 
@@ -604,6 +777,249 @@ async def _bulk_add_to_list(
         await db.commit()
 
     return added
+
+
+# ---------------------------------------------------------------------------
+# Quick-add — Content Browser single-step actor creation (GR-17)
+# Must be declared before parametric /{actor_id} routes.
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/quick-add",
+    response_model=QuickAddResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Quick-add actor from Content Browser",
+)
+async def quick_add_actor(
+    payload: QuickAddRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> QuickAddResponse:
+    """Create or reuse an Actor and ActorPlatformPresence in one request.
+
+    Designed for the Content Browser "quick-add" flow where a researcher
+    spots an interesting author and wants to add them to the actor library
+    with minimal friction.
+
+    Idempotent: if an ``ActorPlatformPresence`` already exists for the given
+    ``(platform, platform_username)`` pair, the existing actor is returned
+    without modification.  The endpoint is therefore safe to call multiple
+    times for the same author.
+
+    Processing order:
+    1. Look up ``ActorPlatformPresence`` by ``(platform, platform_username)``.
+    2. If found, use the linked Actor (``was_created=False``).
+    3. If not found, create a new Actor then create the presence.
+    4. If ``actor_list_id`` is provided, add the actor to the list (idempotent).
+
+    Args:
+        payload: Validated ``QuickAddRequest`` body.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        ``QuickAddResponse`` with actor UUID, presence UUID, creation flag, and
+        optional list-member identifier.
+
+    Raises:
+        HTTPException 404: If ``actor_list_id`` is provided but the list does
+            not exist.
+    """
+    # ------------------------------------------------------------------
+    # Step 1: Check for existing ActorPlatformPresence.
+    # ------------------------------------------------------------------
+    presence_result = await db.execute(
+        select(ActorPlatformPresence).where(
+            ActorPlatformPresence.platform == payload.platform,
+            ActorPlatformPresence.platform_username == payload.platform_username,
+        )
+    )
+    existing_presence = presence_result.scalar_one_or_none()
+
+    was_created = False
+
+    if existing_presence is not None:
+        # Reuse the existing actor and presence.
+        actor_id = existing_presence.actor_id
+        presence_id = existing_presence.id
+    else:
+        # ------------------------------------------------------------------
+        # Step 2: Create a new Actor.
+        # ------------------------------------------------------------------
+        new_actor = Actor(
+            canonical_name=payload.display_name,
+            actor_type=payload.actor_type,
+            description="Auto-created via Content Browser quick-add",
+            created_by=current_user.id,
+            is_shared=False,
+        )
+        db.add(new_actor)
+        await db.flush()  # populate new_actor.id
+
+        # ------------------------------------------------------------------
+        # Step 3: Create the ActorPlatformPresence.
+        # ------------------------------------------------------------------
+        new_presence = ActorPlatformPresence(
+            actor_id=new_actor.id,
+            platform=payload.platform,
+            platform_username=payload.platform_username,
+        )
+        db.add(new_presence)
+        await db.flush()
+
+        actor_id = new_actor.id
+        presence_id = new_presence.id
+        was_created = True
+
+    # ------------------------------------------------------------------
+    # Step 4: Optionally add to an actor list.
+    # ------------------------------------------------------------------
+    actor_list_member_id: Optional[str] = None
+
+    if payload.actor_list_id is not None:
+        from issue_observatory.core.models.query_design import ActorList  # noqa: PLC0415
+
+        list_result = await db.execute(
+            select(ActorList).where(ActorList.id == payload.actor_list_id)
+        )
+        actor_list = list_result.scalar_one_or_none()
+        if actor_list is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"ActorList '{payload.actor_list_id}' not found.",
+            )
+
+        # Check if already a member.
+        existing_member_result = await db.execute(
+            select(ActorListMember).where(
+                ActorListMember.actor_list_id == payload.actor_list_id,
+                ActorListMember.actor_id == actor_id,
+            )
+        )
+        existing_member = existing_member_result.scalar_one_or_none()
+
+        if existing_member is None:
+            new_member = ActorListMember(
+                actor_list_id=payload.actor_list_id,
+                actor_id=actor_id,
+                added_by="quick_add",
+            )
+            db.add(new_member)
+
+        actor_list_member_id = f"{payload.actor_list_id}:{actor_id}"
+
+    await db.commit()
+
+    logger.info(
+        "quick_add_actor",
+        actor_id=str(actor_id),
+        platform=payload.platform,
+        platform_username=payload.platform_username,
+        was_created=was_created,
+        actor_list_id=str(payload.actor_list_id) if payload.actor_list_id else None,
+        user_id=str(current_user.id),
+    )
+
+    return QuickAddResponse(
+        actor_id=actor_id,
+        platform_presence_id=presence_id,
+        was_created=was_created,
+        actor_list_member_id=actor_list_member_id,
+    )
+
+
+@router.post(
+    "/quick-add-bulk",
+    response_model=QuickAddBulkResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Bulk quick-add actors from discovered links",
+)
+async def quick_add_bulk(
+    items: list[QuickAddBulkItem],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> QuickAddBulkResponse:
+    """Bulk-create Actor and ActorPlatformPresence records from discovered links.
+
+    Accepts a list of ``QuickAddBulkItem`` objects (typically originating from
+    the Discovered Sources UI panel which calls ``GET /content/discovered-links``).
+    Each item is processed identically to ``POST /actors/quick-add``:
+    idempotent by ``(platform, target_identifier)``.
+
+    Individual item failures are caught and recorded; they do not abort the
+    rest of the batch.
+
+    Args:
+        items: List of ``QuickAddBulkItem`` objects to process.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        ``QuickAddBulkResponse`` with per-item results and summary counts.
+    """
+    results: list[dict] = []
+    created_count = 0
+    reused_count = 0
+    error_count = 0
+
+    for item in items:
+        display_name = item.display_name or item.target_identifier
+        try:
+            # Reuse quick-add logic by constructing a QuickAddRequest.
+            qa_request = QuickAddRequest(
+                display_name=display_name,
+                platform=item.platform,
+                platform_username=item.target_identifier,
+                actor_type="individual",
+                actor_list_id=item.actor_list_id,
+            )
+            qa_response = await quick_add_actor(
+                payload=qa_request,
+                db=db,
+                current_user=current_user,
+            )
+            results.append(
+                {
+                    "url": item.url,
+                    "actor_id": str(qa_response.actor_id),
+                    "platform_presence_id": str(qa_response.platform_presence_id),
+                    "was_created": qa_response.was_created,
+                    "actor_list_member_id": qa_response.actor_list_member_id,
+                }
+            )
+            if qa_response.was_created:
+                created_count += 1
+            else:
+                reused_count += 1
+        except Exception as exc:  # noqa: BLE001
+            results.append({"url": item.url, "error": str(exc)})
+            error_count += 1
+            logger.warning(
+                "quick_add_bulk_item_failed",
+                url=item.url,
+                platform=item.platform,
+                target_identifier=item.target_identifier,
+                error=str(exc),
+                user_id=str(current_user.id),
+            )
+
+    logger.info(
+        "quick_add_bulk_complete",
+        total=len(items),
+        created=created_count,
+        reused=reused_count,
+        errors=error_count,
+        user_id=str(current_user.id),
+    )
+
+    return QuickAddBulkResponse(
+        results=results,
+        total=len(items),
+        created=created_count,
+        reused=reused_count,
+        errors=error_count,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -846,6 +1262,7 @@ async def create_actor(
         description=payload.description,
         created_by=current_user.id,
         is_shared=payload.is_shared,
+        public_figure=payload.public_figure,
     )
     db.add(actor)
     await db.flush()  # populate actor.id before inserting presence
@@ -1609,3 +2026,270 @@ async def merge_actors(
         "list_members_moved": list_members_moved,
         "records_updated": records_updated,
     }
+
+
+# ---------------------------------------------------------------------------
+# Similarity Discovery — GR-18
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{actor_id}/similar/platform", response_model=None)
+async def similar_by_platform(
+    actor_id: uuid.UUID,
+    payload: SimilarPlatformRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    request: Request,
+    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
+) -> list[dict] | HTMLResponse:
+    """Find actors similar to *actor_id* using platform recommendation APIs.
+
+    Calls ``SimilarityFinder.find_similar_by_platform()`` for each requested
+    platform in sequence.  Results from all platforms are concatenated and
+    returned together.  Only ``"bluesky"``, ``"reddit"``, and ``"youtube"``
+    have first-class similarity implementations; other platform slugs are
+    silently ignored by the underlying finder.
+
+    When the ``HX-Request`` header is present the response is rendered as the
+    ``_partials/similarity_platform.html`` template fragment; otherwise a JSON
+    list is returned.
+
+    Args:
+        actor_id: UUID of the target actor.
+        payload: Validated ``SimilarPlatformRequest`` body.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        request: The current HTTP request (used to resolve the template engine).
+        hx_request: HTMX header; when set, the response is an HTML fragment.
+
+    Returns:
+        List of actor-similarity dicts, or an HTML fragment for HTMX.
+
+    Raises:
+        HTTPException 404: If the actor does not exist.
+        HTTPException 403: If the actor is not accessible.
+    """
+    from issue_observatory.sampling.similarity_finder import SimilarityFinder  # noqa: PLC0415
+
+    actor = await _get_actor_or_404(actor_id, db, load_presences=True)
+    _check_actor_readable(actor, current_user)
+
+    finder = SimilarityFinder()
+    all_candidates: list[dict] = []
+
+    for platform in payload.platforms:
+        candidates = await finder.find_similar_by_platform(
+            actor_id=actor_id,
+            platform=platform,
+            db=db,
+            top_n=payload.max_results,
+        )
+        all_candidates.extend(candidates)
+
+    # Deduplicate by (platform, platform_username).
+    seen: set[tuple[str, str]] = set()
+    unique: list[dict] = []
+    for c in all_candidates:
+        key = (c.get("platform", ""), c.get("platform_username", ""))
+        if key not in seen:
+            seen.add(key)
+            unique.append(c)
+
+    results = unique[: payload.max_results]
+
+    logger.info(
+        "similarity_platform_complete",
+        actor_id=str(actor_id),
+        platforms=payload.platforms,
+        result_count=len(results),
+        user_id=str(current_user.id),
+    )
+
+    if hx_request:
+        tpl = request.app.state.templates
+        return tpl.TemplateResponse(
+            "_partials/similarity_platform.html",
+            {
+                "request": request,
+                "actor_id": str(actor_id),
+                "candidates": results,
+            },
+        )
+
+    return results
+
+
+@router.post("/{actor_id}/similar/content", response_model=None)
+async def similar_by_content(
+    actor_id: uuid.UUID,
+    payload: SimilarContentRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    request: Request,
+    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
+) -> list[dict] | HTMLResponse:
+    """Find actors posting about similar topics to *actor_id*.
+
+    Calls ``SimilarityFinder.find_similar_by_content()``, which performs
+    TF-IDF cosine similarity (or Jaccard word-overlap when scikit-learn is
+    unavailable) over collected ``text_content`` in ``content_records``.
+
+    Results are filtered by ``min_similarity`` before being returned.  Actors
+    with no collected content, or whose combined content has fewer than five
+    tokens, are automatically excluded by the finder.
+
+    When the ``HX-Request`` header is present the response is rendered as the
+    ``_partials/similarity_content.html`` template fragment; otherwise a JSON
+    list is returned.
+
+    Args:
+        actor_id: UUID of the target actor.
+        payload: Validated ``SimilarContentRequest`` body.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        request: The current HTTP request (used to resolve the template engine).
+        hx_request: HTMX header; when set, the response is an HTML fragment.
+
+    Returns:
+        List of actor-similarity dicts ordered by ``similarity_score`` desc,
+        or an HTML fragment for HTMX.
+
+    Raises:
+        HTTPException 404: If the actor does not exist.
+        HTTPException 403: If the actor is not accessible.
+    """
+    from issue_observatory.sampling.similarity_finder import SimilarityFinder  # noqa: PLC0415
+
+    actor = await _get_actor_or_404(actor_id, db)
+    _check_actor_readable(actor, current_user)
+
+    finder = SimilarityFinder()
+    raw_results = await finder.find_similar_by_content(
+        actor_id=actor_id,
+        db=db,
+        top_n=payload.max_results,
+    )
+
+    # Apply minimum similarity filter.
+    results = [
+        r for r in raw_results
+        if r.get("similarity_score", 0.0) >= payload.min_similarity
+    ]
+
+    # Enrich results with canonical_name where the actor_id resolves in the DB.
+    actor_uuid_strs = [r["actor_id"] for r in results if r.get("actor_id")]
+    canonical_names: dict[str, str] = {}
+    if actor_uuid_strs:
+        try:
+            resolved_uuids = [uuid.UUID(s) for s in actor_uuid_strs]
+            name_result = await db.execute(
+                select(Actor.id, Actor.canonical_name).where(
+                    Actor.id.in_(resolved_uuids)
+                )
+            )
+            canonical_names = {str(row.id): row.canonical_name for row in name_result.all()}
+        except Exception:
+            _py_logger.warning("similar_by_content: failed to resolve canonical names")
+
+    for r in results:
+        r["canonical_name"] = canonical_names.get(r.get("actor_id", ""), "")
+
+    logger.info(
+        "similarity_content_complete",
+        actor_id=str(actor_id),
+        result_count=len(results),
+        min_similarity=payload.min_similarity,
+        user_id=str(current_user.id),
+    )
+
+    if hx_request:
+        tpl = request.app.state.templates
+        return tpl.TemplateResponse(
+            "_partials/similarity_content.html",
+            {
+                "request": request,
+                "actor_id": str(actor_id),
+                "candidates": results,
+            },
+        )
+
+    return results
+
+
+@router.post("/{actor_id}/similar/cross-platform", response_model=None)
+async def similar_cross_platform(
+    actor_id: uuid.UUID,
+    payload: SimilarCrossPlatformRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    request: Request,
+    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
+) -> list[dict] | HTMLResponse:
+    """Search for the actor's name on other platforms.
+
+    Looks up the actor's ``canonical_name`` in the database and passes it to
+    ``SimilarityFinder.cross_platform_match()``, which searches each requested
+    platform for accounts whose name or handle closely matches.  Results are
+    sorted by ``confidence_score`` descending.
+
+    Only ``"bluesky"``, ``"reddit"``, and ``"youtube"`` have first-class search
+    implementations; other platform slugs are silently ignored by the finder.
+
+    When the ``HX-Request`` header is present the response is rendered as the
+    ``_partials/similarity_cross_platform.html`` template fragment; otherwise
+    a JSON list is returned.
+
+    Args:
+        actor_id: UUID of the target actor.
+        payload: Validated ``SimilarCrossPlatformRequest`` body.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        request: The current HTTP request (used to resolve the template engine).
+        hx_request: HTMX header; when set, the response is an HTML fragment.
+
+    Returns:
+        List of actor-similarity dicts with ``confidence_score``, sorted
+        descending, or an HTML fragment for HTMX.
+
+    Raises:
+        HTTPException 404: If the actor does not exist.
+        HTTPException 403: If the actor is not accessible.
+    """
+    from issue_observatory.sampling.similarity_finder import SimilarityFinder  # noqa: PLC0415
+
+    actor = await _get_actor_or_404(actor_id, db)
+    _check_actor_readable(actor, current_user)
+
+    finder = SimilarityFinder()
+    results = await finder.cross_platform_match(
+        name_or_handle=actor.canonical_name,
+        platforms=payload.platforms,
+        top_n=payload.max_results,
+    )
+
+    # Sort by confidence_score descending.
+    results.sort(key=lambda r: r.get("confidence_score", 0.0), reverse=True)
+    results = results[: payload.max_results]
+
+    logger.info(
+        "similarity_cross_platform_complete",
+        actor_id=str(actor_id),
+        actor_name=actor.canonical_name,
+        platforms=payload.platforms,
+        result_count=len(results),
+        user_id=str(current_user.id),
+    )
+
+    if hx_request:
+        tpl = request.app.state.templates
+        return tpl.TemplateResponse(
+            "_partials/similarity_cross_platform.html",
+            {
+                "request": request,
+                "actor_id": str(actor_id),
+                "actor_name": actor.canonical_name,
+                "candidates": results,
+            },
+        )
+
+    return results

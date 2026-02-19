@@ -47,6 +47,11 @@ class SnowballResult:
             (int) and ``methods`` (list of discovery method strings used).
         total_actors: Total number of unique actors in the result.
         max_depth_reached: The deepest level that was actually expanded.
+        auto_created_actor_ids: UUIDs of ``Actor`` records that were
+            automatically created for newly discovered accounts that had no
+            pre-existing database entry.  Populated by
+            ``SnowballSampler.auto_create_actor_records()``; empty until
+            that method is called.
     """
 
     def __init__(self) -> None:
@@ -54,11 +59,13 @@ class SnowballResult:
         self.wave_log: dict[int, dict[str, Any]] = {}
         self.total_actors: int = 0
         self.max_depth_reached: int = 0
+        self.auto_created_actor_ids: list[uuid.UUID] = []
 
     def __repr__(self) -> str:
         return (
             f"<SnowballResult total_actors={self.total_actors} "
-            f"max_depth={self.max_depth_reached}>"
+            f"max_depth={self.max_depth_reached} "
+            f"auto_created={len(self.auto_created_actor_ids)}>"
         )
 
 
@@ -252,6 +259,177 @@ class SnowballSampler:
             result.max_depth_reached,
         )
         return result
+
+    # ------------------------------------------------------------------
+    # Auto-creation of Actor records for newly discovered accounts
+    # ------------------------------------------------------------------
+
+    async def auto_create_actor_records(
+        self,
+        result: SnowballResult,
+        db: Any,
+        created_by: Optional[uuid.UUID] = None,
+    ) -> list[uuid.UUID]:
+        """Create ``Actor`` and ``ActorPlatformPresence`` records for new discoveries.
+
+        After a snowball run, some discovered actors exist only as raw
+        username strings returned by the network expander.  This method
+        creates minimal ``Actor`` + ``ActorPlatformPresence`` rows for every
+        entry in ``result.actors`` that:
+
+        1. Carries a non-empty ``platform`` and ``platform_user_id``, **and**
+        2. Does not yet have a matching ``ActorPlatformPresence`` row in the
+           database.
+
+        Auto-created actors are marked with ``metadata_["auto_created_by"]``
+        set to ``"snowball_sampling"`` so that researchers can identify and
+        review them later.  The UUIDs of all newly created ``Actor`` rows are
+        appended to ``result.auto_created_actor_ids`` and also returned.
+
+        Seed actors (``discovery_depth == 0``) are skipped because they must
+        already exist in the database.
+
+        Args:
+            result: The ``SnowballResult`` from a completed ``run()`` call.
+                Modified in place: the UUIDs of newly created actors are
+                appended to ``result.auto_created_actor_ids``, and each
+                corresponding entry in ``result.actors`` receives an
+                ``"actor_uuid"`` key with the new UUID string.
+            db: An open ``AsyncSession``.  When ``None``, no records are
+                created and an empty list is returned.
+            created_by: Optional UUID of the user who triggered the run.
+                Stored as ``Actor.created_by`` on newly created records.
+
+        Returns:
+            List of UUIDs of newly created ``Actor`` rows (same as
+            ``result.auto_created_actor_ids`` after this call).
+        """
+        if db is None:
+            logger.warning(
+                "auto_create_actor_records: no DB session — skipping auto-creation"
+            )
+            return []
+
+        try:
+            from sqlalchemy import select
+
+            from issue_observatory.core.models.actors import Actor, ActorPlatformPresence
+        except ImportError:
+            logger.exception(
+                "auto_create_actor_records: failed to import ORM models"
+            )
+            return []
+
+        created_ids: list[uuid.UUID] = []
+
+        for actor_dict in result.actors:
+            # Skip seed actors — they are guaranteed to already exist.
+            if actor_dict.get("discovery_depth", 1) == 0:
+                continue
+
+            platform = actor_dict.get("platform", "").strip()
+            user_id = actor_dict.get("platform_user_id", "").strip()
+            username = actor_dict.get("platform_username", "").strip()
+            canonical_name = actor_dict.get("canonical_name", "").strip()
+            profile_url = actor_dict.get("profile_url", "").strip()
+
+            if not platform or not user_id:
+                continue
+
+            # Check whether a presence already exists for this (platform, user_id).
+            try:
+                stmt = select(ActorPlatformPresence.actor_id).where(
+                    ActorPlatformPresence.platform == platform,
+                    ActorPlatformPresence.platform_user_id == user_id,
+                )
+                existing_result = await db.execute(stmt)
+                existing_actor_id = existing_result.scalar_one_or_none()
+            except Exception:
+                logger.exception(
+                    "auto_create_actor_records: presence lookup failed for "
+                    "%s@%s — skipping",
+                    user_id,
+                    platform,
+                )
+                continue
+
+            if existing_actor_id is not None:
+                # Already exists — update the actor_uuid in the dict so the
+                # API response can return a valid actor_id.
+                actor_dict["actor_uuid"] = str(existing_actor_id)
+                continue
+
+            # Create a new Actor record.
+            display_name = canonical_name or username or user_id
+            new_actor = Actor(
+                canonical_name=display_name,
+                actor_type="unknown",
+                is_shared=False,
+                created_by=created_by,
+                metadata_={
+                    "auto_created_by": "snowball_sampling",
+                    "notes": "Auto-created by snowball sampling",
+                },
+            )
+
+            try:
+                db.add(new_actor)
+                # Flush to obtain the generated UUID without committing the
+                # whole transaction yet.
+                await db.flush()
+                new_actor_id: uuid.UUID = new_actor.id
+
+                # Create the associated platform presence.
+                new_presence = ActorPlatformPresence(
+                    actor_id=new_actor_id,
+                    platform=platform,
+                    platform_user_id=user_id,
+                    platform_username=username or user_id,
+                    profile_url=profile_url or None,
+                    verified=False,
+                )
+                db.add(new_presence)
+                await db.flush()
+
+            except Exception:
+                logger.exception(
+                    "auto_create_actor_records: failed to create Actor for "
+                    "%s@%s — rolling back this record",
+                    user_id,
+                    platform,
+                )
+                await db.rollback()
+                continue
+
+            # Annotate the actor dict with its new UUID.
+            actor_dict["actor_uuid"] = str(new_actor_id)
+            created_ids.append(new_actor_id)
+            logger.debug(
+                "auto_create_actor_records: created Actor %s for %s@%s",
+                new_actor_id,
+                user_id,
+                platform,
+            )
+
+        # Commit all successfully flushed records in one transaction.
+        if created_ids:
+            try:
+                await db.commit()
+            except Exception:
+                logger.exception(
+                    "auto_create_actor_records: final commit failed — "
+                    "%d actor(s) NOT persisted",
+                    len(created_ids),
+                )
+                await db.rollback()
+                return []
+
+        result.auto_created_actor_ids.extend(created_ids)
+        logger.info(
+            "auto_create_actor_records: created %d new Actor record(s)",
+            len(created_ids),
+        )
+        return created_ids
 
     # ------------------------------------------------------------------
     # Private helpers

@@ -10,6 +10,18 @@ over their SimHash fingerprints are considered near-duplicates and stamped
 with ``raw_metadata['near_duplicate_of']`` (distinct from exact-duplicate
 ``raw_metadata['duplicate_of']``).
 
+GR-08 — adds ``run_propagation_analysis()`` which groups all records that
+carry a ``near_duplicate_cluster_id`` into clusters, runs
+``PropagationEnricher.enrich_cluster()`` on each multi-arena cluster, and
+persists the resulting enrichment into ``raw_metadata.enrichments.propagation``
+for every record in the cluster.
+
+GR-11 — adds ``run_coordination_analysis()`` which groups records into the
+same near-duplicate clusters and runs ``CoordinationDetector.enrich_cluster()``
+to flag potential coordinated inauthentic behaviour (CIB).  The coordination
+score is normalised across all clusters in the batch and persisted into
+``raw_metadata.enrichments.coordination``.
+
 No new dependencies are required: URL normalisation uses ``urllib.parse``
 and SimHash computation uses ``hashlib`` — both from the standard library.
 
@@ -19,7 +31,9 @@ Owned by the DB Engineer.
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
+from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import structlog
@@ -642,6 +656,527 @@ class DeduplicationService:
         }
         logger.info("dedup.run_complete", run_id=str(run_id), **summary)
         return summary
+
+
+    # ------------------------------------------------------------------
+    # GR-08: Propagation analysis
+    # ------------------------------------------------------------------
+
+    async def run_propagation_analysis(
+        self,
+        db: AsyncSession,
+        run_id: uuid.UUID | None = None,
+        query_design_id: uuid.UUID | None = None,
+        min_distinct_arenas: int = 2,
+    ) -> dict:
+        """Compute cross-arena temporal propagation for all near-duplicate clusters.
+
+        Queries all content records that have a non-NULL
+        ``near_duplicate_cluster_id`` (set by a prior SimHash deduplication
+        pass), groups them by cluster, and for each cluster that spans at
+        least *min_distinct_arenas* distinct arenas runs
+        :class:`~issue_observatory.analysis.enrichments.propagation_detector.PropagationEnricher`
+        to compute the temporal propagation sequence.
+
+        The enrichment result is written into
+        ``raw_metadata.enrichments.propagation`` for every record in the
+        qualifying clusters.  Existing enrichment keys are preserved via the
+        PostgreSQL JSONB merge operator ``||``.
+
+        Callers are responsible for committing the transaction after this
+        method returns.
+
+        Args:
+            db: Active async database session.
+            run_id: Restrict the analysis to records from a specific collection
+                run.  When ``None`` all records with a cluster id are included.
+            query_design_id: Restrict to a specific query design.
+            min_distinct_arenas: Minimum number of distinct arenas a cluster
+                must span to qualify for propagation analysis.  Defaults to 2
+                (at least one cross-arena propagation event).
+
+        Returns:
+            A summary dict with keys:
+
+            - ``clusters_found`` (int): Total clusters with ≥ 2 records.
+            - ``clusters_analysed`` (int): Clusters that met the
+              *min_distinct_arenas* threshold and were enriched.
+            - ``records_enriched`` (int): Total records updated.
+        """
+        # Lazy import to avoid a circular dependency at module load time.
+        from issue_observatory.analysis.enrichments.propagation_detector import (  # noqa: PLC0415
+            PropagationEnricher,
+        )
+
+        # Fetch all records that belong to a near-duplicate cluster.
+        stmt = select(
+            UniversalContentRecord.id,
+            UniversalContentRecord.arena,
+            UniversalContentRecord.platform,
+            UniversalContentRecord.published_at,
+            UniversalContentRecord.raw_metadata,
+        ).where(
+            # The cluster id is stored in raw_metadata->>'near_duplicate_cluster_id'
+            # by detect_and_mark_near_duplicates, OR as the canonical_id root
+            # from the Union-Find process.  We query records that carry either
+            # the 'near_duplicate_of' marker or are the canonical member (whose
+            # UUID is the root).  In practice the safest approach is to query
+            # all records whose raw_metadata contains 'near_duplicate_of', plus
+            # the canonical records identified by find_near_duplicates().
+            #
+            # For GR-08 we take the approach of re-running find_near_duplicates
+            # to obtain fresh cluster membership, then enriching in Python.
+            UniversalContentRecord.simhash.isnot(None)
+        )
+
+        if run_id is not None:
+            stmt = stmt.where(UniversalContentRecord.collection_run_id == run_id)
+        if query_design_id is not None:
+            stmt = stmt.where(UniversalContentRecord.query_design_id == query_design_id)
+
+        result = await db.execute(stmt)
+        all_rows = result.all()
+
+        if not all_rows:
+            logger.info(
+                "dedup.propagation.no_records",
+                run_id=str(run_id) if run_id else None,
+                query_design_id=str(query_design_id) if query_design_id else None,
+            )
+            return {"clusters_found": 0, "clusters_analysed": 0, "records_enriched": 0}
+
+        # Re-derive clusters using find_near_duplicates so we have consistent
+        # cluster membership without relying on a pre-populated cluster_id column.
+        clusters = await find_near_duplicates(
+            db, run_id=run_id, query_design_id=query_design_id
+        )
+
+        # Build a lookup of row data keyed by id string.
+        rows_by_id: dict[str, object] = {str(row.id): row for row in all_rows}
+
+        enricher = PropagationEnricher()
+        clusters_found = len(clusters)
+        clusters_analysed = 0
+        records_enriched = 0
+
+        for cluster in clusters:
+            member_ids: list[str] = [
+                cluster["canonical_id"],
+                *cluster["near_duplicate_ids"],
+            ]
+
+            # Build record dicts for members that are in our fetched rows.
+            member_records: list[dict] = []
+            for mid in member_ids:
+                row = rows_by_id.get(mid)
+                if row is None:
+                    continue
+                member_records.append(
+                    {
+                        "id": str(row.id),
+                        "arena": row.arena,
+                        "platform": row.platform,
+                        "published_at": row.published_at,
+                        # Store the canonical cluster root id as the cluster id.
+                        "near_duplicate_cluster_id": cluster["canonical_id"],
+                        "raw_metadata": row.raw_metadata or {},
+                    }
+                )
+
+            if len(member_records) < 2:
+                continue
+
+            # Check distinct arenas.
+            distinct_arenas: set[str] = {r["arena"] for r in member_records}
+            if len(distinct_arenas) < min_distinct_arenas:
+                continue
+
+            clusters_analysed += 1
+
+            # Run the propagation enricher.
+            try:
+                enrichment_by_id = await enricher.enrich_cluster(member_records)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "dedup.propagation.enrichment_error",
+                    cluster_id=cluster["canonical_id"],
+                    error=str(exc),
+                )
+                continue
+
+            # Persist enrichment into raw_metadata for each record.
+            for rec in member_records:
+                rec_id_str = rec["id"]
+                rec_uuid = uuid.UUID(rec_id_str)
+                enrichment_data = enrichment_by_id.get(rec_id_str)
+                if enrichment_data is None:
+                    continue
+
+                # Write the propagation enrichment into the nested JSONB path:
+                #   raw_metadata -> 'enrichments' -> 'propagation'
+                #
+                # Using a raw parameterised UPDATE so that the JSON value is
+                # passed as a bind parameter (avoiding any quoting/injection
+                # issues).  jsonb_set with create_missing=true creates the
+                # intermediate 'enrichments' key if absent, preserving sibling
+                # keys (e.g. 'language_detection') already stored there.
+                propagation_json_str = json.dumps(enrichment_data)
+
+                raw_sql = text(
+                    """
+                    UPDATE content_records
+                    SET raw_metadata = jsonb_set(
+                        COALESCE(raw_metadata, '{}'::jsonb),
+                        '{enrichments,propagation}',
+                        :prop_json::jsonb,
+                        true
+                    )
+                    WHERE id = :record_id
+                    """
+                )
+                await db.execute(
+                    raw_sql,
+                    {
+                        "prop_json": propagation_json_str,
+                        "record_id": str(rec_uuid),
+                    },
+                )
+                records_enriched += 1
+
+        summary = {
+            "clusters_found": clusters_found,
+            "clusters_analysed": clusters_analysed,
+            "records_enriched": records_enriched,
+        }
+        logger.info(
+            "dedup.propagation.complete",
+            run_id=str(run_id) if run_id else None,
+            query_design_id=str(query_design_id) if query_design_id else None,
+            **summary,
+        )
+        return summary
+
+    # ------------------------------------------------------------------
+    # GR-11: Coordination analysis
+    # ------------------------------------------------------------------
+
+    async def run_coordination_analysis(
+        self,
+        db: AsyncSession,
+        run_id: uuid.UUID | None = None,
+        query_design_id: uuid.UUID | None = None,
+        min_cluster_size: int = 3,
+        coordination_threshold: int = 5,
+        time_window_hours: float = 1.0,
+    ) -> dict:
+        """Compute coordinated inauthentic behaviour signals for near-duplicate clusters.
+
+        Queries all content records that share near-duplicate SimHash clusters,
+        groups them by cluster, and for each cluster with at least
+        *min_cluster_size* records runs
+        :class:`~issue_observatory.analysis.enrichments.coordination_detector.CoordinationDetector`
+        to detect potential coordinated posting patterns.
+
+        The coordination score is normalised across all processed clusters so
+        that the cluster with the highest distinct-author count in a time window
+        receives score 1.0.
+
+        The enrichment result is written into
+        ``raw_metadata.enrichments.coordination`` for every record in all
+        qualifying clusters (both flagged and non-flagged).  Existing enrichment
+        keys are preserved via the PostgreSQL JSONB merge operator.
+
+        Callers are responsible for committing the transaction after this
+        method returns.
+
+        Args:
+            db: Active async database session.
+            run_id: Restrict the analysis to records from a specific collection
+                run.  When ``None`` all records with a simhash are included.
+            query_design_id: Restrict to a specific query design.
+            min_cluster_size: Minimum number of records a cluster must contain
+                to qualify for coordination analysis.  Defaults to 3.
+            coordination_threshold: Distinct-author count within the time window
+                that triggers a coordination flag.  Passed to
+                :class:`~issue_observatory.analysis.enrichments.coordination_detector.CoordinationDetector`.
+                Defaults to 5.
+            time_window_hours: Width of the sliding time window in hours.
+                Defaults to 1.0.
+
+        Returns:
+            A summary dict with keys:
+
+            - ``clusters_found`` (int): Total clusters with >= *min_cluster_size*
+              records.
+            - ``clusters_analysed`` (int): Clusters that were passed to the
+              enricher (same as clusters_found here — all qualifying clusters
+              are analysed regardless of flagging outcome).
+            - ``clusters_flagged`` (int): Clusters where coordination was
+              flagged.
+            - ``records_enriched`` (int): Total records updated.
+        """
+        # Lazy import to avoid a circular dependency at module load time.
+        from issue_observatory.analysis.enrichments.coordination_detector import (  # noqa: PLC0415
+            CoordinationDetector,
+        )
+
+        # Fetch all records that have a simhash (proxy for cluster membership).
+        stmt = select(
+            UniversalContentRecord.id,
+            UniversalContentRecord.arena,
+            UniversalContentRecord.platform,
+            UniversalContentRecord.published_at,
+            UniversalContentRecord.author_id,
+            UniversalContentRecord.raw_metadata,
+        ).where(UniversalContentRecord.simhash.isnot(None))
+
+        if run_id is not None:
+            stmt = stmt.where(UniversalContentRecord.collection_run_id == run_id)
+        if query_design_id is not None:
+            stmt = stmt.where(UniversalContentRecord.query_design_id == query_design_id)
+
+        result = await db.execute(stmt)
+        all_rows = result.all()
+
+        if not all_rows:
+            logger.info(
+                "dedup.coordination.no_records",
+                run_id=str(run_id) if run_id else None,
+                query_design_id=str(query_design_id) if query_design_id else None,
+            )
+            return {
+                "clusters_found": 0,
+                "clusters_analysed": 0,
+                "clusters_flagged": 0,
+                "records_enriched": 0,
+            }
+
+        # Re-derive clusters via find_near_duplicates for consistent membership.
+        clusters = await find_near_duplicates(
+            db, run_id=run_id, query_design_id=query_design_id
+        )
+
+        rows_by_id: dict[str, object] = {str(row.id): row for row in all_rows}
+
+        enricher = CoordinationDetector(
+            coordination_threshold=coordination_threshold,
+            time_window_hours=time_window_hours,
+        )
+
+        # Inline datetime coercion used only in the normalisation pre-pass.
+        # Mirrors _parse_published_at in coordination_detector without importing
+        # from the enricher module at this stage (the enricher is lazy-imported
+        # below to avoid circular imports at load time).
+        def _coerce_dt(value: object) -> datetime | None:
+            if value is None:
+                return None
+            if isinstance(value, datetime):
+                return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+            if isinstance(value, str):
+                stripped = value.strip()
+                if not stripped:
+                    return None
+                try:
+                    parsed = datetime.fromisoformat(stripped)
+                    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+                except ValueError:
+                    return None
+            return None
+
+        # First pass: collect best distinct-author count per cluster so we can
+        # normalise coordination_score across all clusters in this batch.
+        qualifying_clusters: list[tuple[list[str], list[dict]]] = []
+        for cluster in clusters:
+            member_ids: list[str] = [
+                cluster["canonical_id"],
+                *cluster["near_duplicate_ids"],
+            ]
+            member_records: list[dict] = []
+            for mid in member_ids:
+                row = rows_by_id.get(mid)
+                if row is None:
+                    continue
+                member_records.append(
+                    {
+                        "id": str(row.id),
+                        "arena": row.arena,
+                        "platform": row.platform,
+                        "published_at": row.published_at,
+                        "author_id": str(row.author_id) if row.author_id else None,
+                        "near_duplicate_cluster_id": cluster["canonical_id"],
+                        "raw_metadata": row.raw_metadata or {},
+                    }
+                )
+            if len(member_records) >= min_cluster_size:
+                qualifying_clusters.append((member_ids, member_records))
+
+        clusters_found = len(qualifying_clusters)
+
+        # Determine max distinct authors across all qualifying clusters for
+        # cross-cluster score normalisation.
+        max_distinct: int = 0
+        cluster_best_counts: list[int] = []
+        for _, member_records in qualifying_clusters:
+            best_count, _, _, _ = enricher._find_best_window(
+                sorted(
+                    [
+                        (
+                            _coerce_dt(r.get("published_at")),
+                            r.get("author_id"),
+                            str(r.get("platform") or ""),
+                        )
+                        for r in member_records
+                        if _coerce_dt(r.get("published_at")) is not None
+                    ],
+                    key=lambda t: t[0],  # type: ignore[arg-type]
+                )
+            )
+            cluster_best_counts.append(best_count)
+            if best_count > max_distinct:
+                max_distinct = best_count
+
+        # Second pass: enrich each cluster with the normalised score.
+        clusters_analysed = 0
+        clusters_flagged = 0
+        records_enriched = 0
+
+        for (member_ids, member_records), best_count in zip(
+            qualifying_clusters, cluster_best_counts
+        ):
+            clusters_analysed += 1
+            try:
+                enrichment_by_id = await enricher.enrich_cluster(
+                    member_records,
+                    max_distinct_authors=max_distinct if max_distinct > 0 else None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "dedup.coordination.enrichment_error",
+                    cluster_id=member_records[0].get("near_duplicate_cluster_id"),
+                    error=str(exc),
+                )
+                continue
+
+            # Check if this cluster was flagged (all records share the same flag).
+            first_payload = next(iter(enrichment_by_id.values()), {})
+            if first_payload.get("flagged"):
+                clusters_flagged += 1
+
+            # Persist enrichment into raw_metadata for each record.
+            for rec in member_records:
+                rec_id_str = rec["id"]
+                rec_uuid = uuid.UUID(rec_id_str)
+                enrichment_data = enrichment_by_id.get(rec_id_str)
+                if enrichment_data is None:
+                    continue
+
+                coordination_json_str = json.dumps(enrichment_data)
+
+                raw_sql = text(
+                    """
+                    UPDATE content_records
+                    SET raw_metadata = jsonb_set(
+                        COALESCE(raw_metadata, '{}'::jsonb),
+                        '{enrichments,coordination}',
+                        :coord_json::jsonb,
+                        true
+                    )
+                    WHERE id = :record_id
+                    """
+                )
+                await db.execute(
+                    raw_sql,
+                    {
+                        "coord_json": coordination_json_str,
+                        "record_id": str(rec_uuid),
+                    },
+                )
+                records_enriched += 1
+
+        summary = {
+            "clusters_found": clusters_found,
+            "clusters_analysed": clusters_analysed,
+            "clusters_flagged": clusters_flagged,
+            "records_enriched": records_enriched,
+        }
+        logger.info(
+            "dedup.coordination.complete",
+            run_id=str(run_id) if run_id else None,
+            query_design_id=str(query_design_id) if query_design_id else None,
+            **summary,
+        )
+        return summary
+
+
+# ---------------------------------------------------------------------------
+# Module-level convenience wrapper
+# ---------------------------------------------------------------------------
+
+
+async def run_propagation_analysis(
+    db: AsyncSession,
+    run_id: uuid.UUID | None = None,
+    query_design_id: uuid.UUID | None = None,
+    min_distinct_arenas: int = 2,
+) -> dict:
+    """Module-level wrapper around :meth:`DeduplicationService.run_propagation_analysis`.
+
+    Convenience entry point so callers do not need to instantiate
+    ``DeduplicationService`` when they only need propagation analysis.
+
+    Args:
+        db: Active async database session.
+        run_id: Restrict analysis to a specific collection run.
+        query_design_id: Restrict analysis to a specific query design.
+        min_distinct_arenas: Minimum distinct arenas for a cluster to qualify.
+
+    Returns:
+        Summary dict — see :meth:`DeduplicationService.run_propagation_analysis`
+        for the full key description.
+    """
+    service = DeduplicationService()
+    return await service.run_propagation_analysis(
+        db,
+        run_id=run_id,
+        query_design_id=query_design_id,
+        min_distinct_arenas=min_distinct_arenas,
+    )
+
+
+async def run_coordination_analysis(
+    db: AsyncSession,
+    run_id: uuid.UUID | None = None,
+    query_design_id: uuid.UUID | None = None,
+    min_cluster_size: int = 3,
+    coordination_threshold: int = 5,
+    time_window_hours: float = 1.0,
+) -> dict:
+    """Module-level wrapper around :meth:`DeduplicationService.run_coordination_analysis`.
+
+    Convenience entry point so callers do not need to instantiate
+    ``DeduplicationService`` when they only need coordination analysis.
+
+    Args:
+        db: Active async database session.
+        run_id: Restrict analysis to a specific collection run.
+        query_design_id: Restrict analysis to a specific query design.
+        min_cluster_size: Minimum cluster size to qualify for analysis.
+        coordination_threshold: Distinct-author count that triggers a CIB flag.
+        time_window_hours: Width of the sliding time window in hours.
+
+    Returns:
+        Summary dict — see :meth:`DeduplicationService.run_coordination_analysis`
+        for the full key description.
+    """
+    service = DeduplicationService()
+    return await service.run_coordination_analysis(
+        db,
+        run_id=run_id,
+        query_design_id=query_design_id,
+        min_cluster_size=min_cluster_size,
+        coordination_threshold=coordination_threshold,
+        time_window_hours=time_window_hours,
+    )
 
 
 # ---------------------------------------------------------------------------

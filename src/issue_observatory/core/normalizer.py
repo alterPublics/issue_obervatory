@@ -114,6 +114,9 @@ class Normalizer:
         collection_run_id: str | None = None,
         query_design_id: str | None = None,
         search_terms_matched: list[str] | None = None,
+        is_public_figure: bool = False,
+        platform_username: str | None = None,
+        public_figure_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         """Map a raw platform record to the universal ``content_records`` schema.
 
@@ -123,6 +126,13 @@ class Normalizer:
         downstream code can always rely on key presence.
 
         Author identifiers are pseudonymized via SHA-256 before storage.
+        When ``is_public_figure`` is ``True`` (GR-14), or when
+        ``public_figure_ids`` is supplied and the record's
+        ``author_platform_id`` is a member of that set, the plain
+        ``platform_username`` (or ``author_platform_id`` as fallback) is
+        stored instead of the hash.  An audit note is added to
+        ``raw_metadata`` in both cases.
+
         The ``content_hash`` is computed from the normalized text content for
         cross-platform deduplication.
 
@@ -137,6 +147,24 @@ class Normalizer:
             collection_run_id: UUID string of the owning collection run.
             query_design_id: UUID string of the owning query design.
             search_terms_matched: Query terms that matched this record.
+            is_public_figure: When ``True``, bypass SHA-256 pseudonymization
+                for this record (GR-14 — GDPR Art. 89(1) research exemption).
+                The plain ``platform_username`` is stored as
+                ``pseudonymized_author_id`` instead of the hash.  Defaults to
+                ``False`` — existing callers are unaffected.
+            platform_username: Plain-text platform handle to use as the
+                ``pseudonymized_author_id`` when ``is_public_figure=True``.
+                If not supplied, ``author_platform_id`` is used as fallback.
+                Ignored when ``is_public_figure=False``.
+            public_figure_ids: Optional pre-built set of platform user IDs
+                known to be public figures.  When provided, the normalizer
+                automatically sets ``is_public_figure=True`` for any record
+                whose ``author_platform_id`` appears in this set, without
+                requiring the caller to perform a per-record lookup.
+                Takes precedence over the ``is_public_figure`` argument only
+                when the author is found in the set; if the author is *not*
+                in the set, the explicit ``is_public_figure`` argument still
+                applies.
 
         Returns:
             Dict with all ``content_records`` columns populated. Optional
@@ -189,12 +217,28 @@ class Normalizer:
             ],
         )
 
-        # Pseudonymize the author if we have an identifier
+        # GR-14: resolve whether this author is a known public figure.
+        # The public_figure_ids set (built at run-dispatch time from the DB)
+        # takes priority: if the author's platform_user_id appears in the set
+        # we override is_public_figure to True regardless of the caller's
+        # explicit argument.
+        effective_is_public_figure = is_public_figure
+        if (
+            public_figure_ids is not None
+            and author_platform_id is not None
+            and author_platform_id in public_figure_ids
+        ):
+            effective_is_public_figure = True
+
+        # Pseudonymize the author if we have an identifier.
+        # For public figures (GR-14) the plain handle is stored instead.
         pseudonymized_author_id: str | None = None
         if author_platform_id:
             pseudonymized_author_id = self.pseudonymize_author(
                 platform=platform,
                 platform_user_id=author_platform_id,
+                is_public_figure=effective_is_public_figure,
+                platform_username=platform_username or author_display_name,
             )
 
         # Engagement metrics
@@ -231,6 +275,20 @@ class Normalizer:
             ["media_urls", "media", "images", "attachments"],
         )
 
+        # GR-14: Build the raw_metadata dict.  When the public-figure bypass
+        # was applied, annotate the record so the DPO audit trail is complete.
+        raw_metadata: dict[str, Any] = dict(raw_item)
+        if effective_is_public_figure:
+            raw_metadata["public_figure_bypass"] = True
+            raw_metadata["bypass_reason"] = (
+                "Actor flagged as public figure per GDPR Art. 89(1) research exemption"
+            )
+            logger.debug(
+                "normalizer: GR-14 bypass applied — author_platform_id=%s platform=%s",
+                author_platform_id,
+                platform,
+            )
+
         return {
             # Core identifiers
             "platform": platform,
@@ -261,33 +319,61 @@ class Normalizer:
             "query_design_id": query_design_id,
             "search_terms_matched": search_terms_matched or [],
             "collection_tier": collection_tier,
-            # Platform-specific passthrough
-            "raw_metadata": raw_item,
+            # Platform-specific passthrough (with optional GR-14 audit annotation)
+            "raw_metadata": raw_metadata,
             "media_urls": media_urls,
             # Deduplication
             "content_hash": content_hash,
             "simhash": simhash_value,
         }
 
-    def pseudonymize_author(self, platform: str, platform_user_id: str) -> str | None:
-        """Compute a pseudonymized author identifier.
+    def pseudonymize_author(
+        self,
+        platform: str,
+        platform_user_id: str,
+        is_public_figure: bool = False,
+        platform_username: str | None = None,
+    ) -> str | None:
+        """Compute a pseudonymized (or plain) author identifier.
 
-        Uses SHA-256(platform + ":" + platform_user_id + ":" + salt) as
-        mandated by the DPIA.  The colon separators prevent collisions between
-        platform values with common prefixes.  The salt is the
-        ``PSEUDONYMIZATION_SALT`` application secret.
+        Default behaviour: returns ``SHA-256(platform + ":" +
+        platform_user_id + ":" + salt)`` as mandated by the DPIA.  The colon
+        separators prevent collisions between platform values with common
+        prefixes.  The salt is the ``PSEUDONYMIZATION_SALT`` application
+        secret.
 
-        Returns ``None`` when the salt is empty (misconfigured environment) to
-        avoid storing insecure pseudo-IDs that could be trivially reversed.
+        GR-14 bypass (``is_public_figure=True``): returns the plain
+        ``platform_username`` so that content by publicly elected or
+        appointed officials can be attributed by name.  Falls back to
+        ``platform_user_id`` when ``platform_username`` is not supplied.
+        This path bypasses the salt check — a plain identifier is always
+        returned regardless of salt configuration.
+
+        Returns ``None`` when ``is_public_figure=False`` and the salt is
+        empty (misconfigured environment), to avoid storing insecure
+        pseudo-IDs that could be trivially reversed.
 
         Args:
             platform: Platform identifier (e.g. ``"bluesky"``).
             platform_user_id: Native platform user ID (not the display name).
+            is_public_figure: When ``True``, skip hashing and return the
+                plain ``platform_username`` (or ``platform_user_id`` as
+                fallback).  Defaults to ``False`` — existing callers are
+                unaffected.
+            platform_username: Plain-text handle to return when
+                ``is_public_figure=True``.  Ignored when
+                ``is_public_figure=False``.
 
         Returns:
-            64-character lowercase hex SHA-256 digest, or ``None`` if the
-            pseudonymization salt is not configured.
+            When ``is_public_figure=True``: plain ``platform_username`` or
+            ``platform_user_id`` string.
+            When ``is_public_figure=False`` and salt is configured:
+            64-character lowercase hex SHA-256 digest.
+            When ``is_public_figure=False`` and salt is empty: ``None``.
         """
+        if is_public_figure:
+            # GR-14: return raw handle so the actor can be attributed by name.
+            return platform_username or platform_user_id
         if not self._salt:
             return None
         payload = f"{platform}:{platform_user_id}:{self._salt}"

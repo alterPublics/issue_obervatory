@@ -1,5 +1,19 @@
 # Core Application Engineer — Status
 
+## Greenland Roadmap
+
+- [x] GR-01 backend complete (2026-02-19): Researcher-configurable RSS feed list via `arenas_config["rss"]["custom_feeds"]`. Added `extra_feed_urls` param to `collect_by_terms()`/`collect_by_actors()` in RSS collector, `_merge_extra_feeds()` helper deduplicates URLs, tasks.py loads arenas_config and passes extra feeds.
+- [x] GR-02 backend complete (2026-02-19): Researcher-configurable Telegram channel list via `arenas_config["telegram"]["custom_channels"]`. Added `extra_channel_ids` param to Telegram `collect_by_terms()`, merged into channel list alongside actor_ids. Tasks.py wired accordingly.
+- [x] GR-03 backend complete (2026-02-19): Researcher-configurable Reddit subreddit list via `arenas_config["reddit"]["custom_subreddits"]`. Added `extra_subreddits` param to `collect_by_terms()`, `_build_subreddit_string()` helper merges with Danish defaults to produce `+`-joined multireddit string. `_search_term()` accepts optional `subreddit_string`. Tasks.py wired accordingly.
+- [x] GR-04 backend complete (2026-02-19): Discord channel IDs via `arenas_config["discord"]["custom_channel_ids"]` and Wikipedia seed articles via `arenas_config["wikipedia"]["seed_articles"]`. `_merge_channel_ids()` deduplicates Discord channel lists. Wikipedia `collect_by_terms()` collects revisions+pageviews directly for seed article titles (bypassing search). Both tasks.py files load and pass arenas_config values.
+- [x] GR-05 backend complete (2026-02-19): Language list via `arenas_config["languages"]` takes priority over `query_design.language` in `trigger_daily_collection` in `workers/tasks.py`. Falls back to single-language field if arenas_config languages not set.
+- [x] GR-05 PATCH endpoint complete (2026-02-19): `PATCH /query-designs/{design_id}/arena-config/{arena_name}` deep-merges payload into `arenas_config[arena_name]` sub-dict. `arena_name == "global"` writes to arenas_config root (for languages list). Response: `ArenaCustomConfigResponse(arena_name, arenas_config_section)`.
+- [x] GR-17 backend complete (2026-02-19): `POST /actors/quick-add`, `POST /actors/quick-add-bulk`, `GET /query-designs/{id}/actor-lists` — single-step actor creation from Content Browser, idempotent by (platform, platform_username), optional actor-list membership.
+- [x] GR-22 backend complete (2026-02-19): `analysis/link_miner.py` (LinkMiner class with regex URL extraction, platform classification, source-count aggregation, DiscoveredLink dataclass), `GET /content/discovered-links` endpoint (grouped by platform, filterable, min_source_count threshold), `POST /actors/quick-add-bulk` (bulk import from Discovered Sources panel).
+- [x] GR-14 normalizer bypass complete (2026-02-19): Public-figure pseudonymization exception. `Normalizer.pseudonymize_author()` extended with `is_public_figure: bool = False` and `platform_username: str | None = None` — when `True`, returns the raw handle instead of the SHA-256 hash. `Normalizer.normalize()` extended with `is_public_figure`, `platform_username`, and `public_figure_ids: set[str] | None` params; when `public_figure_ids` is supplied the normalizer auto-detects matching authors. Audit annotation (`public_figure_bypass: true`, `bypass_reason`) added to `raw_metadata` on every bypassed record. `ArenaCollector` base class gains `_public_figure_ids: set[str]` attribute and `set_public_figure_ids(ids)` method. `GoogleSearchCollector.normalize()` forwards `self._public_figure_ids` to the normalizer. New `fetch_public_figure_ids_for_design()` async helper in `workers/_task_helpers.py` queries `actor_platform_presences` via `actor_list_members` → `actor_lists` for all `public_figure=True` actors in a query design. `trigger_daily_collection` calls the helper once per design, converts the result to a list, and passes it as `public_figure_ids` to every arena's `collect_by_terms` Celery task. Google Search task accepts `public_figure_ids: list[str] | None = None` and calls `collector.set_public_figure_ids()` before collection. Default behaviour (no bypass) is unchanged for all existing callers.
+- [x] GR-11 backend complete (2026-02-19): Coordinated posting detection enricher. New `CoordinationDetector(ContentEnricher)` in `analysis/enrichments/coordination_detector.py` — sliding-window algorithm finds the 1-hour window with the most distinct authors in a near-duplicate cluster, flags clusters where distinct_authors >= threshold (default 5), computes coordination_score normalised 0-1 across all clusters in a batch. New `analysis/coordination.py` with `get_coordination_events()` async query function (DISTINCT ON cluster_id, filtered by flagged=true and min_score). `DeduplicationService.run_coordination_analysis()` added to `core/deduplication.py` (two-pass: pre-pass for cross-cluster normalisation, second pass to persist enrichment via JSONB SET). Module-level `run_coordination_analysis()` wrapper added. `CoordinationDetector` exported from `analysis/enrichments/__init__.py`.
+- [x] GR-12 backend complete (2026-02-19): Optional Wayback Machine content retrieval. Added `fetch_content: bool = False` parameter to `collect_by_terms()` and `collect_by_actors()` in `WaybackCollector`. New `_fetch_single_record_content()` fetches archived page via playback URL, handles 503 with single retry, enforces 500 KB size guard, extracts text with `extract_from_html()` (trafilatura primary, fallback tag-strip). New `_fetch_content_for_records()` orchestrates batch with per-tier cap (FREE: 50, MEDIUM: 200) and `asyncio.Semaphore(1)` + 4 s sleep to enforce 15 req/min limit. On success: sets `text_content`, `content_type="web_page"`, `raw_metadata["content_fetched"]=true`, `content_fetch_url`, `content_fetched_at`, `extractor`. On failure: sets `raw_metadata["content_fetch_error"]` and continues. Config: added `WB_CONTENT_FETCH_SIZE_LIMIT`, `WB_CONTENT_FETCH_RATE_LIMIT`, `WB_MAX_CONTENT_FETCHES` to `config.py`. Tasks: `arenas_config["wayback"]["fetch_content"]` pass-through added. Router: `fetch_content` field added to both request models.
+
 ## Phase 0
 - [ ] Project bootstrap (pyproject.toml, Docker Compose, Makefile)
 - [ ] FastAPI application shell with middleware
@@ -977,6 +991,50 @@ institutional approval is granted.
 
 ---
 
+### GR-07 — Generalised Language Detector (2026-02-19) — Complete
+
+| File | Change |
+|------|--------|
+| `src/issue_observatory/analysis/enrichments/language_detector.py` | `DanishLanguageDetector` renamed to `LanguageDetector`; `DanishLanguageDetector` kept as backwards-compat alias |
+| `src/issue_observatory/analysis/enrichments/__init__.py` | Both `LanguageDetector` and `DanishLanguageDetector` exported; `__all__` updated; module docstring updated |
+| `src/issue_observatory/workers/tasks.py` | `enrich_collection_run` now instantiates `LanguageDetector(expected_languages=language_codes)`; new optional `language_codes` task parameter |
+
+**Changes**:
+
+1. **Renamed class** — `DanishLanguageDetector` → `LanguageDetector`. The old
+   name is retained as a module-level alias so any existing import continues to
+   resolve without modification.
+
+2. **`expected_languages` constructor param** — `LanguageDetector` accepts an
+   optional `list[str]` of ISO 639-1 codes.  When provided, every enrichment
+   result carries an `"expected"` boolean field (`True` if detected language is
+   in the list, `False` otherwise).  When omitted, `"expected"` is `None`.
+
+3. **Neutral fallback** — the Danish-character heuristic (`_DANISH_CHARS`,
+   `_HEURISTIC_THRESHOLD`) is removed.  When langdetect is unavailable:
+   - If exactly one `expected_languages` code is configured, that code is
+     assumed with `confidence=None, detector="heuristic_single_lang"`.  This
+     restores the original Danish-only behaviour for Danish-only collections.
+   - Otherwise, returns `language=None, confidence=None, detector="none"`.
+
+4. **Output schema** — enrichment result dict gains the `"expected"` field.
+   All existing fields (`language`, `confidence`, `detector`) are unchanged.
+
+5. **Task wiring** — `enrich_collection_run` in `workers/tasks.py` now accepts
+   an optional `language_codes: list[str] | None` parameter and passes it to
+   `LanguageDetector(expected_languages=language_codes)`.  Callers that
+   dispatch `enrich_collection_run` can now supply the query design's language
+   codes (already available via `parse_language_codes()` in
+   `trigger_daily_collection`).  Existing callers that do not pass the argument
+   get `LanguageDetector(expected_languages=None)`, which is equivalent to the
+   previous unconfigured `DanishLanguageDetector()`.
+
+**Backwards compatibility**: existing imports of `DanishLanguageDetector` from
+either `language_detector` or `enrichments` continue to work.
+`DanishLanguageDetector()` (no args) → `LanguageDetector(expected_languages=None)`.
+
+---
+
 ### Task 0.4 (remaining) — Content Browser Routes (2026-02-16) — Ready for QA
 
 | File | Status |
@@ -1230,4 +1288,265 @@ Four operations documentation files written:
 - `resolved_name`: `actors.canonical_name` when entity resolution is complete, `None` otherwise
 - `actor_id`: UUID string of the resolved actor, `None` otherwise
 
+---
+
+## GR-19 — Co-mention Fallback in Network Expander (2026-02-19) — Complete
+
+| File | Change |
+|------|--------|
+| `src/issue_observatory/sampling/network_expander.py` | Implemented `_expand_via_comention()` method; hooked into `expand_from_actor()` `else` branch |
+
+**Implementation details:**
+
+- `_expand_via_comention(actor_id, platform, presence, db, top_n=50, min_records=2)` — new async method on `NetworkExpander`.
+- **Step 1 (SQL)**: queries `content_records` (platform-scoped) for rows whose `text_content` contains the seed actor's `@username` or `@user_id` via PostgreSQL `ILIKE` (case-insensitive substring), capped at 5 000 rows.
+- **Step 2 (Python regex)**: applies `_COMENTION_MENTION_RE` (`(?<!\w)@([A-Za-z0-9_](?:[A-Za-z0-9_.%-]{0,48}[A-Za-z0-9_])?)`) to re-validate that the seed actor is genuinely mentioned (eliminates false-positive substrings), then extracts all other `@mention` patterns from those records.
+- **Step 3 (filter + rank)**: retains only co-mentioned usernames present in >= 2 distinct content records; returns top 50 ordered by frequency descending.
+- **Dispatch integration**: the `else` branch of `expand_from_actor()` now calls `_expand_via_comention()` for all platforms without a dedicated expander (Telegram, Discord, TikTok, Gab, X/Twitter, Threads, Instagram, Facebook, etc.).
+- **Regex coverage**: the combined `@`-pattern covers Twitter/X, Threads, Instagram, Gab, Mastodon, TikTok (plain handles) and Bluesky/AT Protocol (handles with dots).
+- `discovery_method` on returned dicts: `"comention_fallback"`.
+- Module constants added: `_COMENTION_MENTION_RE`, `_COMENTION_MIN_RECORDS = 2`, `_COMENTION_TOP_N = 50`.
+
+---
+
+## GR-20 — Auto-create Actor Records for Snowball-discovered Accounts (2026-02-19) — Complete
+
+| File | Change |
+|------|--------|
+| `src/issue_observatory/sampling/snowball.py` | Added `auto_created_actor_ids` field to `SnowballResult`; added `auto_create_actor_records()` method to `SnowballSampler` |
+| `src/issue_observatory/api/routes/actors.py` | Updated `SnowballRequest` (`auto_create_actors: bool = True`), `SnowballResponse` (`newly_created_actors: int`), and `run_snowball_sampling` route handler |
+
+**Implementation details:**
+
+- `SnowballResult.auto_created_actor_ids: list[uuid.UUID]` — new attribute (empty list until `auto_create_actor_records()` is called).
+- `SnowballSampler.auto_create_actor_records(result, db, created_by)` — async method that:
+  1. Iterates `result.actors`, skipping seed actors (`discovery_depth == 0`) which are guaranteed to already exist.
+  2. For each non-seed actor with `platform` + `platform_user_id`, checks `actor_platform_presences` for a pre-existing row.
+  3. If none exists: creates `Actor(canonical_name, actor_type="unknown", is_shared=False, metadata_={"auto_created_by": "snowball_sampling", "notes": "Auto-created by snowball sampling"})` and `ActorPlatformPresence(platform, platform_user_id, platform_username, profile_url, verified=False)`.
+  4. Uses `db.flush()` per record to obtain the generated UUID, then a single `db.commit()` at the end.
+  5. On per-record DB error: rolls back that record and continues (error isolation).
+  6. Annotates each created `actor_dict` with `"actor_uuid"` so `_bulk_add_to_list` can add them to an actor list in the same request.
+  7. Returns the list of newly created UUIDs and appends them to `result.auto_created_actor_ids`.
+- **API changes**:
+  - `SnowballRequest.auto_create_actors: bool = True` — opt-out flag for callers that want discovery-only without DB writes.
+  - `SnowballResponse.newly_created_actors: int = 0` — count of auto-created Actor records in the response body.
+  - The route handler calls `auto_create_actor_records()` before `_bulk_add_to_list()` so that auto-created actors (now carrying `actor_uuid`) are included when populating an actor list.
+  - `snowball_sampling_complete` log event now includes `newly_created_actors` count.
+
 The front-end in `analysis/index.html` `actorsChart()` function already used `r.resolved_name` (written in anticipation of this feature); no template changes required.
+
+---
+
+## GR-21 — Telegram Forwarding Chain Expander (2026-02-19) — Complete
+
+| File | Change |
+|------|--------|
+| `src/issue_observatory/sampling/network_expander.py` | Added `_expand_via_telegram_forwarding()` method; wired into `expand_from_actor()` `elif platform == "telegram"` branch |
+
+**Implementation details:**
+
+- `_expand_via_telegram_forwarding(actor_id, platform, presence, db, top_n=20, min_forwards=2, depth=1)` — queries `content_records` for Telegram messages from the seed actor's channel that contain forwarded-message metadata (`raw_metadata ->> 'is_forwarded' = 'true'`), extracts `fwd_from_channel_id` values using PostgreSQL JSONB operators, counts their frequency, and returns the top-`top_n` source channels as discovery candidates.
+- The query uses a PostgreSQL `GROUP BY ... HAVING COUNT(*) >= :min_forwards` clause so that only channels from which the seed forwarded at least `min_forwards` messages are returned. The count is done server-side to avoid fetching large result sets into Python.
+- Author filtering uses `(author_platform_id = :user_id OR author_id = :actor_id::uuid)` so that both the numeric Telegram channel ID and the Actor UUID FK are tried. When only the actor UUID is available (no `platform_user_id`), only the UUID FK path is used.
+- Returns empty list immediately when `db is None` (graceful no-DB handling).
+- Returns empty list when neither `platform_user_id` nor `platform_username` is present in the actor presence (cannot scope the query).
+- Each returned dict contains the standard `ActorDict` fields (`canonical_name`, `platform`, `platform_user_id`, `platform_username`, `profile_url`, `discovery_method`) plus extra keys `forward_count` and `depth` for downstream use.
+- `discovery_method` is set to `"telegram_forwarding_chain"`.
+- **Fallback ordering in `expand_from_actor()`**: the `elif platform == "telegram"` branch calls `_expand_via_telegram_forwarding()` first. If it returns an empty list (no forwarding data collected yet for that channel), it falls through to `_expand_via_comention()`. This `elif`/fallback ordering ensures that the forwarding-chain strategy takes priority while still providing useful results for new or low-activity channels.
+
+See the GR-19 section for co-mention fallback context. The `elif` ordering in `expand_from_actor()` ensures the Telegram forwarding strategy is always tried first.
+
+---
+
+## GR-09 — Volume Spike Alerting (2026-02-19) — Complete
+
+Threshold-based alerting that detects when collection volume for an arena
+exceeds 2x the rolling 7-day average and sends an email notification to the
+query design owner.
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/analysis/alerting.py` | Done — spike detection, persistence, email notification, fetch helper |
+| `src/issue_observatory/workers/_alerting_helpers.py` | Done — async DB helper bridging Celery sync context |
+| `src/issue_observatory/workers/tasks.py` | Updated — Task 7 `check_volume_spikes_task` added; `settle_pending_credits` dispatches it once per completed run |
+| `src/issue_observatory/workers/_task_helpers.py` | Updated — `fetch_unsettled_reservations` now also returns `query_design_id` |
+| `src/issue_observatory/api/routes/query_designs.py` | Updated — `GET /query-designs/{design_id}/alerts` endpoint added |
+
+**Design notes:**
+
+- `detect_volume_spikes()` in `analysis/alerting.py`:
+  - Queries `content_records` for the current run's per-arena/platform counts.
+  - Fetches the 7 most-recent prior *completed* runs for the same query design (by `completed_at DESC`), not a calendar window, so scheduling gaps do not distort the baseline.
+  - Computes the per-arena/platform mean across those 7 runs.
+  - Flags arenas where `current_count > 2.0 * rolling_avg` AND `current_count >= 10` (minimum absolute guard).
+  - For each spiking arena, fetches the top-3 matched search terms by frequency.
+  - Returns an empty list (no alert) when fewer than 7 prior runs exist — insufficient history logged at INFO, never raises.
+
+- `store_volume_spikes()`: persists spike data to `collection_runs.arenas_config["_volume_spikes"]` via `jsonb_set` with `create_missing=true`. Uses the underscore prefix `"_volume_spikes"` to distinguish from real arena name keys. No DB migration required.
+
+- `fetch_recent_volume_spikes()`: reads `arenas_config->'_volume_spikes'` across completed runs within the configured window (default 30 days).
+
+- **Celery task** `check_volume_spikes_task` (`issue_observatory.workers.tasks.check_volume_spikes`):
+  - Dispatched by `settle_pending_credits` once per completed run that has a `query_design_id` (deduped by `spike_checked_runs` set).
+  - Runs fire-and-forget — failure does not block collection or settlement.
+  - Pattern: `asyncio.run(run_spike_detection(...))`.
+
+- **Hook point**: `settle_pending_credits` now carries `query_design_id` in the row dict (via `CollectionRun.query_design_id` added to `fetch_unsettled_reservations` SELECT) and dispatches `check_volume_spikes` alongside the completion email for each newly-settled run.
+
+- **API endpoint** `GET /query-designs/{design_id}/alerts?days=30`:
+  - Enforces ownership (owner or admin).
+  - Returns list of alert dicts ordered by `completed_at` descending.
+  - Each dict: `{run_id, completed_at, volume_spikes: [{arena_name, platform, current_count, rolling_7d_average, ratio, top_terms}]}`.
+  - Returns `[]` when no spikes have been recorded in the window.
+
+- **Email**: uses existing `EmailService._send()` (plain-text, fastapi-mail). Subject: `[Issue Observatory] Volume spike detected in {name}`. Body lists each spiking arena with counts, ratio, top terms, and a dashboard link. Silently no-ops when SMTP is not configured.
+
+- **QA notes**:
+  - Unit tests should mock `AsyncSession` and verify the SQL queries in `detect_volume_spikes()`.
+  - The rolling-window SQL uses a literal UUID tuple (not a bind-parameter list) to avoid SQLAlchemy/asyncpg type casting issues with `IN (:ids)`. Safe because IDs are UUID strings, not user input.
+  - The `_volume_spikes` key in `arenas_config` is reserved and must not collide with arena names (all real arena names use alphanumeric/underscore without leading underscore).
+
+---
+
+## GR-08 — Cross-arena Temporal Propagation Detection (2026-02-19) — Complete
+
+| File | Change |
+|------|--------|
+| `src/issue_observatory/analysis/enrichments/propagation_detector.py` | New file — `PropagationEnricher(ContentEnricher)` class |
+| `src/issue_observatory/core/deduplication.py` | Added `DeduplicationService.run_propagation_analysis()` method and module-level `run_propagation_analysis()` convenience wrapper |
+| `src/issue_observatory/analysis/propagation.py` | New file — `get_propagation_flows()` query function |
+| `src/issue_observatory/analysis/enrichments/__init__.py` | `PropagationEnricher` exported; module docstring updated |
+| `src/issue_observatory/analysis/__init__.py` | `PropagationEnricher` and `get_propagation_flows` exported |
+
+**Implementation details:**
+
+### PropagationEnricher (`propagation_detector.py`)
+
+- `enricher_name = "propagation"`.
+- Primary entry point: `enrich_cluster(records: list[dict]) -> dict[str, dict]` — returns a mapping of record id → propagation enrichment payload for every record in a near-duplicate cluster.
+- `is_applicable(record)`: returns `True` when `near_duplicate_cluster_id` is non-None.
+- `enrich(record)`: raises `EnrichmentError` — propagation is inherently cluster-scoped; callers must use `enrich_cluster()`.
+- **Ordering**: records sorted by `published_at` ascending; records with `published_at=None` sorted to the end using a sentinel `datetime.max` value.
+- **Origin election**: first record with a non-None `published_at` is the origin; falls back to the first sorted record if all timestamps are absent.
+- **Propagation sequence**: lists distinct arenas that appear after the origin, in chronological order of first appearance. Same-arena re-publications are skipped (already-seen arena names tracked in `seen_arenas` set).
+- **Lag computation**: `lag_minutes = (rec_dt - origin_dt).total_seconds() / 60.0`, rounded to 2 decimal places. `None` when either timestamp is absent.
+- **Payload fields**: `cluster_id`, `origin_arena`, `origin_platform`, `origin_published_at`, `is_origin`, `propagation_sequence`, `total_arenas_reached`, `max_lag_hours`, `computed_at`.
+- `_parse_published_at()` helper: coerces datetime objects, ISO 8601 strings, and None values; naive datetimes treated as UTC.
+
+### run_propagation_analysis (`deduplication.py`)
+
+- Added as both a method on `DeduplicationService` and a module-level convenience function.
+- Re-runs `find_near_duplicates()` to obtain fresh cluster membership (avoids reliance on a pre-populated `near_duplicate_cluster_id` column).
+- Filters clusters by `min_distinct_arenas` (default 2) before enriching — single-arena clusters are skipped.
+- Persists enrichment using a raw parameterised `UPDATE content_records SET raw_metadata = jsonb_set(...)` statement; the propagation payload is passed as a bind parameter (`:prop_json`) and cast to `::jsonb` by PostgreSQL — no quoting/injection risk.
+- Path `'{enrichments,propagation}'` with `create_missing=true` creates the `enrichments` intermediate key if absent and preserves sibling keys (e.g. `language_detection`).
+- Lazy import of `PropagationEnricher` avoids circular dependency at module load time.
+- Returns summary dict: `{clusters_found, clusters_analysed, records_enriched}`.
+- Callers must commit the session after this method returns.
+
+### get_propagation_flows (`propagation.py`)
+
+- Queries `content_records` for records where `raw_metadata -> 'enrichments' -> 'propagation'` exists, `is_origin = true`, and `total_arenas_reached >= min_arenas_reached`.
+- Filters by optional `collection_run_id` and `query_design_id`.
+- Orders by `total_arenas_reached DESC, max_lag_hours DESC NULLS LAST`.
+- Returns one dict per cluster (origin record) with: `cluster_id`, `record_id`, `arena`, `platform`, `origin_published_at`, `total_arenas_reached`, `max_lag_hours`, `propagation_sequence`, `computed_at`.
+
+**Notes for QA:**
+- `run_propagation_analysis()` must be called after `detect_and_mark_near_duplicates()` has been run for the same collection run; it re-uses the SimHash clustering logic internally.
+- A session commit must be issued by the caller after `run_propagation_analysis()` returns.
+- `get_propagation_flows()` relies on the `idx_content_metadata` GIN index on `raw_metadata` — ensure the migration has run before testing.
+- Integration tests should mock `find_near_duplicates()` and verify that the `UPDATE content_records SET raw_metadata = jsonb_set(...)` SQL is executed with a valid JSON payload for each qualifying cluster member.
+
+---
+
+## GR-18 — Similarity Finder API + Actor Directory UI (2026-02-19) — API Routes Complete
+
+### Status: API routes complete. "Discover Similar" panel templates need frontend QA review.
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/api/routes/actors.py` | Updated — three new POST routes + three new Pydantic schemas |
+| `src/issue_observatory/api/templates/_partials/similarity_platform.html` | Done — HTMX partial, candidate cards with platform badge + Add to Registry |
+| `src/issue_observatory/api/templates/_partials/similarity_content.html` | Done — HTMX partial, actor cards with similarity progress bar |
+| `src/issue_observatory/api/templates/_partials/similarity_cross_platform.html` | Done — HTMX partial, cross-platform candidates with confidence bar |
+| `src/issue_observatory/api/templates/actors/detail.html` | Updated — "Discover Similar" collapsible section with three Alpine.js sub-tabs |
+
+### New API routes
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/actors/{actor_id}/similar/platform` | POST | Platform recommendations via `SimilarityFinder.find_similar_by_platform()` |
+| `/actors/{actor_id}/similar/content` | POST | Content-similar actors via `SimilarityFinder.find_similar_by_content()` |
+| `/actors/{actor_id}/similar/cross-platform` | POST | Cross-platform name search via `SimilarityFinder.cross_platform_match()` |
+
+### New Pydantic schemas (added to `actors.py`)
+- `SimilarPlatformRequest`: `platforms: list[str]`, `max_results: int = 20`
+- `SimilarContentRequest`: `max_results: int = 20`, `min_similarity: float = 0.3`
+- `SimilarCrossPlatformRequest`: `platforms: list[str]`, `max_results: int = 10`
+
+### Design notes
+- All three routes return `list[dict] | HTMLResponse` — JSON by default, HTMX partial when `HX-Request` header is present.
+- `SimilarityFinder` is instantiated without a persistent HTTP client per request (`SimilarityFinder()`). The finder creates a fresh `httpx.AsyncClient` per API call internally, matching the factory `get_similarity_finder()` in `similarity_finder.py`.
+- No credential pool is passed to the finder; all platform calls fall back to public/unauthenticated endpoints (Bluesky public API, Reddit JSON API). YouTube similarity is a no-op without an `api_key` credential in the pool.
+- `similar_by_content` enriches results with `canonical_name` via a single bulk `SELECT id, canonical_name FROM actors WHERE id IN (...)` query.
+- `similar_cross_platform` sorts by `confidence_score` descending before applying the `max_results` cap.
+- All routes enforce read access via `_check_actor_readable()` and return HTTP 404 via `_get_actor_or_404()`.
+- `SimilarityFinder` is imported inside each route handler to avoid circular import risk.
+
+### Frontend QA checklist (needs review)
+- [ ] Platform Suggestions tab: verify HTMX POST fires with Alpine `:hx-vals` binding (dynamic JSON from reactive `platformSims` array)
+- [ ] Content Similar tab: verify slider `x-model="contentMinSim"` updates `:hx-vals` before POST
+- [ ] Cross-Platform tab: verify HTMX POST fires with `crossPlatforms` array binding
+- [ ] "Add to Registry" buttons: verify `hx-post="/actors/quick-add"` with `hx-vals` submits `platform` + `platform_username` + `display_name` as JSON
+- [ ] Loading spinners (`htmx-indicator`) appear during each fetch
+- [ ] Empty state messages render correctly when no candidates are returned
+- [ ] Progress bars render at boundary values (0%, 100%)
+
+---
+
+## GR-10 — URL Scraper Arena (2026-02-19) — Complete, Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/arenas/web/url_scraper/__init__.py` | Done |
+| `src/issue_observatory/arenas/web/url_scraper/config.py` | Done — tier configs, domain delay constants, health check URL |
+| `src/issue_observatory/arenas/web/url_scraper/collector.py` | Done — UrlScraperCollector with collect_by_terms, collect_by_actors, normalize, health_check |
+| `src/issue_observatory/arenas/web/url_scraper/router.py` | Done — standalone FastAPI router, 3 endpoints |
+| `src/issue_observatory/arenas/web/url_scraper/tasks.py` | Done — 3 Celery tasks (collect_terms, collect_actors, health_check) |
+| `src/issue_observatory/arenas/web/url_scraper/README.md` | Done — setup instructions, API reference, known limitations |
+| `src/issue_observatory/arenas/registry.py` | Updated — added `url_scraper` entry to ARENA_DESCRIPTIONS |
+
+### Implementation notes
+
+- **Collection mode**: Batch-only (no Celery Beat schedule — URL list is static per query design).
+- **Reuse**: 100% of HTTP fetching (`fetch_url`) and content extraction (`extract_from_html`) delegated to existing `src/issue_observatory/scraper/` module.  No re-implementation.
+- **Rate limiting**: Per-domain `asyncio.Semaphore(1)` dictionary; `asyncio.gather()` across domains for parallel throughput.  FREE: 1.0s delay; MEDIUM: 0.5s delay between same-domain requests.
+- **robots.txt**: Single `robots_cache: dict[str, bool]` created per collection run and passed to all `fetch_url()` calls.  Existing `_is_allowed_by_robots()` in `http_fetcher.py` handles caching by origin.
+- **Playwright**: Lazily imported at MEDIUM tier when `needs_playwright=True`.  `ImportError` caught gracefully — falls back to httpx-only with a warning.
+- **Error isolation**: Each URL is wrapped in try/except; failures return a `_fetch_failed=True` record that is excluded from term-matched results but logged.
+- **URL normalization**: `_normalize_url()` strips tracking params (UTM, fbclid, gclid) and trailing slashes before deduplication.
+- **UCR normalization**: `platform_id=sha256(final_url)`, `author_platform_id=domain`, `language=None` (enrichment pipeline handles detection), `content_type="web_page"`.
+- **published_at** resolution order: (1) trafilatura metadata date, (2) HTTP Last-Modified header, (3) `datetime.now(UTC)` fallback.
+- **Registry**: `@register` decorator on `UrlScraperCollector`; `autodiscover()` imports the collector module on startup.
+
+### Known gaps (for QA review)
+
+- `FetchResult` from `http_fetcher.py` does not expose response headers (e.g. `Last-Modified`).  The `last_modified_header` key is always `None` in the raw record; only trafilatura date and `collected_at` fallback are used.  To fix: modify `FetchResult` to include a `headers` field — requires DB Engineer sign-off since it touches shared infrastructure.
+- The `normalize()` method (single-arg public interface required by `ArenaCollector`) delegates to `_normalize_raw_record()` with `Tier.FREE`.  Callers within the collector always use `_normalize_raw_record()` directly with the correct tier.
+- No `date_from` / `date_to` filtering is applied — the URL Scraper fetches live page content regardless of date. The parameters are accepted for API consistency but ignored.
+
+### QA checklist
+
+- [ ] `UrlScraperCollector` registered in arena registry after `autodiscover()`
+- [ ] `collect_by_terms()` returns empty list when `extra_urls` is `None`
+- [ ] `collect_by_terms()` applies term filtering correctly (case-insensitive)
+- [ ] `collect_by_terms()` respects `max_results` cap
+- [ ] `collect_by_actors()` domain-prefix matching against `custom_urls`
+- [ ] `collect_by_actors()` falls back to actor base URL when no `custom_urls` match
+- [ ] Per-URL error isolation: one 404 does not abort remaining URLs
+- [ ] robots.txt disallowed URL produces failure record with `robots_txt_allowed=False`
+- [ ] MEDIUM tier Playwright path: import error handled gracefully
+- [ ] `health_check()` returns `{"status": "ok", "trafilatura": "available"}`
+- [ ] URL deduplication: duplicate and near-duplicate URLs (UTM variants) deduplicated
+- [ ] `platform_id` is deterministic for same URL
+- [ ] `content_hash` differs for pages with different text content

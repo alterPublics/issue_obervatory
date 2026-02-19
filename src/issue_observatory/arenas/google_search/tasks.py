@@ -140,6 +140,7 @@ def google_search_collect_terms(
     terms: list[str],
     tier: str = "medium",
     language_filter: list[str] | None = None,
+    public_figure_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Collect Google Search results for a list of terms.
 
@@ -155,6 +156,11 @@ def google_search_collect_terms(
             Defaults to ``"medium"``.
         language_filter: Optional list of ISO 639-1 language codes (IP2-052).
             When provided, restricts results to the given language(s).
+        public_figure_ids: Optional list of platform user IDs whose authors
+            should bypass SHA-256 pseudonymization (GR-14 — GDPR Art. 89(1)
+            research exemption).  Passed by ``trigger_daily_collection`` from
+            the actor-list configuration of the owning query design.  When
+            ``None`` or empty, all authors are pseudonymized as normal.
 
     Returns:
         Dict with:
@@ -239,6 +245,12 @@ def google_search_collect_terms(
 
     credential_pool = CredentialPool()
     collector = GoogleSearchCollector(credential_pool=credential_pool)
+
+    # GR-14: make the public-figure ID set available to the collector's
+    # normalize() method so that per-record bypass decisions happen without
+    # an additional DB round-trip at collection time.
+    pf_ids: set[str] = set(public_figure_ids) if public_figure_ids else set()
+    collector.set_public_figure_ids(pf_ids)
 
     try:
         records = asyncio.run(

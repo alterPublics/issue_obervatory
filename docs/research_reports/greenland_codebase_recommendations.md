@@ -21,12 +21,13 @@
 2. [Arena Coverage Analysis for Greenland Discourse](#2-arena-coverage-analysis-for-greenland-discourse)
 3. [Cross-Arena Narrative Tracking Capabilities](#3-cross-arena-narrative-tracking-capabilities)
 4. [Conspiracy Theory and Foreign Interference Monitoring](#4-conspiracy-theory-and-foreign-interference-monitoring)
-5. [Multi-Language Support](#5-multi-language-support)
-6. [Web Scraping and Archival Capabilities](#6-web-scraping-and-archival-capabilities)
-7. [Data Management for Cross-Arena Research](#7-data-management-for-cross-arena-research)
-8. [Cost Analysis](#8-cost-analysis)
-9. [Prioritized Improvement Roadmap](#9-prioritized-improvement-roadmap)
-10. [Comparison with Previous Evaluations](#10-comparison-with-previous-evaluations)
+5. [Source Discovery and Actor-to-Collection Workflows](#5-source-discovery-and-actor-to-collection-workflows)
+6. [Multi-Language Support](#6-multi-language-support)
+7. [Web Scraping and Archival Capabilities](#7-web-scraping-and-archival-capabilities)
+8. [Data Management for Cross-Arena Research](#8-data-management-for-cross-arena-research)
+9. [Cost Analysis](#9-cost-analysis)
+10. [Prioritized Improvement Roadmap](#10-prioritized-improvement-roadmap)
+11. [Comparison with Previous Evaluations](#11-comparison-with-previous-evaluations)
 
 ---
 
@@ -45,6 +46,17 @@ The "Greenland in the Danish General Election 2026" scenario is qualitatively di
 5. **Low-cost requirement**: The research team requires a free/medium tier budget. Premium-only arenas ($399.99/month Majestic, $500/month X/Twitter Enterprise) are effectively excluded.
 
 6. **Actor network complexity**: The actor landscape spans Danish politicians, Greenlandic politicians (Naalakkersuisut), Arctic policy experts, US officials, Russian state media, and grassroots movements -- a multi-jurisdictional actor space that the previous use cases did not encounter.
+
+### Design Philosophy: Flexibility Over Hardcoding
+
+**Important**: The recommendations in this report should be interpreted through the lens of *application flexibility*, not use-case-specific hardcoding. The application should not carry built-in support for every possible research scenario. Instead of hardcoding Greenlandic RSS feeds, Kalaallisut language support, or specific Telegram channels into the codebase, the priority is building **researcher-configurable mechanisms** that allow any user to:
+
+- Add their own RSS feeds, Telegram channels, Discord servers, Reddit subreddits, and Wikipedia seed articles through the UI
+- Configure language filters per query design rather than relying on global defaults
+- Specify platform-specific collection parameters (channel lists, subreddit lists, etc.) without code changes
+- Extend the application's coverage to any topic, not just Greenland
+
+Where this report identifies missing Greenlandic media feeds or specific subreddits, these serve as *examples* of what a researcher would need to add through self-service mechanisms. The development effort should be invested in the mechanisms, not the content.
 
 ---
 
@@ -126,11 +138,8 @@ This section evaluates each arena's suitability for the Greenland scenario speci
 **Source:** `src/issue_observatory/config/danish_defaults.py` lines 47-156, `src/issue_observatory/arenas/rss_feeds/`
 **Relevance:** Extremely high. Danish news outlets are the primary arena for election discourse.
 **Coverage:** 30+ feeds from DR, TV2, BT, Politiken, Berlingske, Ekstra Bladet, Information, Jyllands-Posten, Nordjyske, Fyens Stiftstidende, Borsen, Kristeligt Dagblad, Altinget (including section feeds for klima and uddannelse).
-**Gap for Greenland:** No Greenlandic news media feeds. The following are missing and critical:
-- **Sermitsiaq.AG** (the main Greenlandic daily, publishes in Danish and Kalaallisut)
-- **KNR.gl** (Kalaallit Nunaata Radioa -- Greenland's public broadcaster, publishes in Danish)
-- **Arctic Today** or **High North News** (English-language Arctic policy media)
-**Assessment:** The current feed list is excellent for Danish domestic coverage but has a blind spot on Greenlandic perspectives. Adding 3-5 Greenlandic/Arctic feeds is a high-priority, low-effort improvement.
+**Gap for Greenland:** No Greenlandic news media feeds are included in the defaults. A Greenland researcher would need Sermitsiaq.AG, KNR.gl, Arctic Today, or High North News — but more fundamentally, the RSS feed list is hardcoded in `danish_defaults.py` and cannot be extended through the UI.
+**Assessment:** The current feed list is excellent for Danish domestic coverage, but the core issue is that researchers cannot add their own RSS feeds through the query design interface. Every new research topic that needs non-default feeds requires a code change. See GR-01 for the recommended self-service mechanism.
 
 #### Google Search (SerpAPI/Serper.dev)
 **Source:** `src/issue_observatory/arenas/google_search/`, `src/issue_observatory/config/danish_defaults.py` lines 192-201
@@ -153,12 +162,7 @@ DEFAULT_DANISH_CHANNELS: list[str] = [
     "informationdk",
 ]
 ```
-**Critical Gap:** No political channels, no conspiracy/disinformation channels, no Greenland-specific channels, no Russian-language channels. For the Greenland scenario, the following types of channels would need to be added:
-- Danish political commentary channels
-- Greenlandic community channels
-- Arctic geopolitics channels
-- Russian state media in Danish/English (RT, Sputnik if they have Telegram presence in the region)
-- Known Danish conspiracy theory channels (these must be identified through manual research)
+**Critical Gap:** The channel list is hardcoded in `config.py` and `danish_defaults.py` with no UI for researchers to add their own channels. For the Greenland scenario, the researcher would need to add political, geopolitical, and conspiracy-adjacent channels — but this is not a Greenland-specific problem. Any research scenario that requires monitoring specific Telegram channels beyond the 6 mainstream defaults faces the same barrier. See GR-02 for the recommended self-service mechanism.
 
 **Technical Capabilities:** The Telegram collector supports `collect_by_terms()` with client-side term matching against configured channels (line 134-172 of `collector.py`). It supports `collect_by_actors()` to fetch from specific channels by username/ID (lines 174-210). The collector stores `is_forwarded` and `fwd_from_channel_id` in `raw_metadata`, which is **directly useful for tracking how Greenland narratives propagate across Telegram channels** (forwarding chains).
 
@@ -174,13 +178,8 @@ DEFAULT_DANISH_CHANNELS: list[str] = [
 **Source:** `src/issue_observatory/arenas/reddit/`, `src/issue_observatory/config/danish_defaults.py` lines 175-186
 **Relevance:** High for capturing grassroots Danish opinion on Greenland.
 **Current Configuration:** Only 4 subreddits: `Denmark`, `danish`, `copenhagen`, `aarhus`.
-**Gap for Greenland:** Missing subreddits that are directly relevant:
-- `r/Greenland` (small but topically critical)
-- `r/dkpolitik` (Danish politics -- needs verification of activity level)
-- `r/europe` (Greenland/Denmark sovereignty discussions frequently appear here)
-- `r/geopolitics` (Arctic policy discourse)
-- `r/worldnews` (for major Greenland stories with international reach)
-**Assessment:** The current subreddit list is too narrow for the Greenland scenario. However, expanding it is a configuration-only change in `danish_defaults.py`.
+**Gap for Greenland:** The Greenland researcher would need `r/Greenland`, `r/europe`, `r/geopolitics`, `r/worldnews`, and `r/dkpolitik` — but the subreddit list is hardcoded in `danish_defaults.py` and cannot be modified through the UI. This is the same pattern as RSS feeds and Telegram channels: the default list serves one use case (general Danish discourse) but any topic-specific research requires different subreddits.
+**Assessment:** See GR-03 for the recommended self-service mechanism. The underlying issue is not which subreddits are in the default list but that the researcher cannot extend it.
 
 ### 2.2 Tier 2: Important Supporting Arenas
 
@@ -214,7 +213,7 @@ DEFAULT_DANISH_CHANNELS: list[str] = [
 #### Wikipedia
 **Source:** `src/issue_observatory/arenas/wikipedia/`, `src/issue_observatory/config/danish_defaults.py` lines 299-323
 **Relevance:** Moderate. Wikipedia edit wars and pageview trends on Greenland-related articles can serve as a proxy for public interest intensity.
-**Configuration:** `DEFAULT_WIKI_PROJECTS = ["da.wikipedia", "en.wikipedia"]`. The `DANISH_WIKIPEDIA_SEED_ARTICLES` list is empty (line 299) and needs population with Greenland-relevant articles.
+**Configuration:** `DEFAULT_WIKI_PROJECTS = ["da.wikipedia", "en.wikipedia"]`. The `DANISH_WIKIPEDIA_SEED_ARTICLES` list is empty (line 299) and there is no UI for the researcher to specify seed articles. See GR-04 for the recommended self-service mechanism.
 **Greenland value:** Monitor revision activity and pageview trends on articles such as "Gronland", "Danmarks_Riges_Faellesskab", "Selvstyre", "Trump_Greenland" (English Wikipedia). Spikes in edit frequency can indicate emerging controversy. This is a unique OSINT signal that no other arena provides.
 
 #### Gab
@@ -395,7 +394,160 @@ Despite the gaps, several useful capabilities exist:
 
 ---
 
-## 5. Multi-Language Support
+## 5. Source Discovery and Actor-to-Collection Workflows
+
+A researcher mapping Greenland discourse needs three complementary mechanisms for discovering and adding collection sources (accounts, channels, groups, subreddits, websites): (a) manual addition based on domain expertise, (b) discovery from already-collected data, and (c) network-based or similarity-based sampling that expands from known seeds. All three must feed smoothly into the collection pipeline. This section evaluates how well each works today.
+
+### 5.1 Manual Addition — Works Well
+
+**Actor Directory and Platform Presences**
+Source: `src/issue_observatory/api/routes/actors.py` (lines 1087-1200), `src/issue_observatory/api/templates/actors/list.html`
+
+The researcher can:
+1. Create an actor in the Actor Directory (name, type, description)
+2. Add platform presences — e.g., platform="telegram", platform_username="arctic_politics_channel"
+3. Add the actor to an ActorList in a query design
+4. Run collection — arenas with `collect_by_actors()` use these presences
+
+This path works end-to-end. 20+ arenas support `collect_by_actors()`, including Telegram, Discord, Reddit, Bluesky, YouTube, TikTok, Gab, X/Twitter, Threads, Instagram, Facebook, Wikipedia, Event Registry, GDELT, and more. Only Google Search, Google Autocomplete, and AI Chat Search lack actor-based collection.
+
+**Assessment**: The manual path is the strongest. A domain expert who knows which Telegram channels or Discord servers to monitor can add them. The main limitation is that platform-specific source lists (RSS feeds, subreddits, default Telegram channels) are hardcoded and not extensible through the UI — addressed by GR-01 through GR-04 in the roadmap.
+
+### 5.2 Discovery from Collected Data — High Friction
+
+**Entity Resolution (Cross-Platform Author Linking)**
+Source: `src/issue_observatory/api/routes/actors.py` (lines 293-393), `src/issue_observatory/api/templates/actors/resolution.html`
+
+The system detects when the same `author_display_name` appears on 2+ platforms and surfaces these as resolution candidates. The researcher can create an Actor record, linking the cross-platform identities. Merge and split operations are fully implemented (lines 1288-1429).
+
+**Assessment**: Entity resolution works, but only for authors who happen to use the same display name across platforms — a weak heuristic.
+
+**Critical Gap: No fast path from Content Browser to collection**
+
+The Content Browser (`src/issue_observatory/api/templates/content/browser.html`) shows collected content with author names, platforms, and metadata. But there is **no mechanism** to go from "I see an interesting author or source in this content" to "add them to my collection."
+
+A researcher who discovers a relevant Telegram channel mentioned in an RSS article, or finds a Discord server referenced in a Reddit post, must:
+1. Note the channel/author name manually
+2. Navigate to the Actor Directory
+3. Create a new actor
+4. Add the platform presence (handle, channel ID, etc.)
+5. Add to an actor list in the query design
+6. Re-run collection
+
+This is 5+ navigation steps per discovered source. For the Greenland scenario, where the researcher might discover dozens of relevant channels, accounts, and websites during the initial collection sweep, this creates prohibitive manual overhead.
+
+**What's needed**: A "quick add" action in the Content Browser — click an author name → create/link actor → add platform presence → add to active actor list. One flow, one page.
+
+### 5.3 Network-Based Sampling (Snowball) — Works but Limited Platform Coverage
+
+**Snowball Sampler**
+Source: `src/issue_observatory/sampling/snowball.py` (lines 87-254)
+
+The snowball sampler is fully implemented with a working UI panel in the Actor Directory (`actors/list.html` lines 272-596). The researcher can:
+- Select seed actors from the current actor list
+- Choose platforms for expansion
+- Set depth (1-3 hops) and max actors per step
+- Run sampling and view results in a table
+- Add discovered actors to the current actor list
+
+**Network Expander**
+Source: `src/issue_observatory/sampling/network_expander.py` (lines 87-721)
+
+Platform-specific expansion strategies exist for **only 3 platforms**:
+
+| Platform | Expansion Method | Source Lines | Discovery Quality |
+|----------|-----------------|-------------|-------------------|
+| Bluesky | Follow graph (follows + followers, up to 500 per direction) | 360-429 | High — social graph reveals discourse community structure |
+| Reddit | Comment mention mining (regex `u/username` in last 100 comments) | 431-498 | Moderate — finds accounts mentioned in conversation, not structural connections |
+| YouTube | Featured channels metadata from `brandingSettings` | 500-582 | Low — only finds channels explicitly featured by seed, many channels don't use this |
+
+**Platforms WITHOUT expanders** (returns empty list): Telegram, Discord, TikTok, Gab, X/Twitter, Threads, Instagram, Facebook, Wikipedia, GDELT, RSS, all web arenas.
+
+This is the critical limitation for the Greenland scenario. The fringe platforms where the researcher most needs discovery — Telegram, Discord, Gab, TikTok — have no network expansion. A researcher who identifies one relevant Telegram channel cannot use the system to discover related channels.
+
+**Generic co-mention fallback**
+Source: `src/issue_observatory/sampling/network_expander.py` (lines 171-177)
+
+A co-mention detection method exists in stub form — it would mine `content_records` for actors who are frequently mentioned alongside the seed actor. This is platform-agnostic and would work for any arena with collected content. However, it is **not implemented** (returns empty list with a comment noting future development).
+
+**Gap in discovered actor handling**: Newly discovered actors from snowball sampling are returned as results but may not exist as Actor records in the database. Only actors that already have database records can be added to actor lists. If snowball discovers a truly new account, the researcher must manually create an Actor record for it before it can be used in collection.
+
+### 5.4 Similarity-Based Sampling — Code Exists but Not Exposed
+
+**Similarity Finder**
+Source: `src/issue_observatory/sampling/similarity_finder.py` (lines 1-996)
+
+A substantial similarity-based discovery module exists with three methods:
+
+1. **Platform recommendations** (lines 190-259): Uses platform-native suggestion APIs
+   - Bluesky: `app.bsky.graph.getSuggestedFollowsByActor`
+   - Reddit: Finds top posters in subreddits where the seed actor posts
+   - YouTube: Discovers video owners from related playlists
+
+2. **Content similarity** (lines 261-363): Computes TF-IDF cosine similarity on actors' collected text content, with Jaccard word overlap as fallback. Returns top N similar actors ranked by content overlap.
+
+3. **Cross-platform name search** (lines 365-424): Searches for an actor's name on other platforms
+   - Bluesky: `app.bsky.actor.searchActors`
+   - Reddit: `/users/search.json`
+   - YouTube: `/search?type=channel`
+   - Returns candidates with confidence scores
+
+**Current status: NONE of these methods are exposed in the UI or API.** The similarity finder has no API routes and no frontend integration. A researcher cannot use any of these capabilities.
+
+**Assessment**: The content similarity method (method 2) is particularly valuable — it would let a researcher say "find other accounts that post about similar topics to this actor." For the Greenland scenario, starting from one known Arctic policy commentator and discovering others who write about similar themes would be a powerful discovery tool. But it's completely inaccessible.
+
+### 5.5 Platform Support Matrix for Discovery
+
+| Platform | Manual Addition | Snowball Expansion | Similarity Discovery | Content-to-Actor |
+|----------|:-:|:-:|:-:|:-:|
+| Bluesky | Working | Working (follows/followers) | Code exists, not exposed | No quick path |
+| Reddit | Working | Working (comment mentions) | Code exists, not exposed | No quick path |
+| YouTube | Working | Working (featured channels) | Code exists, not exposed | No quick path |
+| Telegram | Working | **Not implemented** | **Not implemented** | No quick path |
+| Discord | Working | **Not implemented** | **Not implemented** | No quick path |
+| TikTok | Working | **Not implemented** | **Not implemented** | No quick path |
+| Gab | Working | **Not implemented** | **Not implemented** | No quick path |
+| X/Twitter | Working | **Not implemented** | **Not implemented** | No quick path |
+| Threads | Working | **Not implemented** | **Not implemented** | No quick path |
+| RSS Feeds | Working (as outlet slugs) | N/A | N/A | No quick path |
+
+### 5.6 Cross-Platform Link Mining — A Missing Discovery Mechanism
+
+None of the existing discovery mechanisms exploit the most natural signal available in collected content: **outbound links to other platform accounts and channels.**
+
+Fringe platform communities routinely cross-reference each other. A Telegram channel post might contain:
+- `t.me/another_channel` — a link to another Telegram channel
+- `discord.gg/invite_code` — a link to a Discord server
+- `youtube.com/c/channel_name` — a link to a YouTube channel
+- `gab.com/username` — a link to a Gab profile
+- `bsky.app/profile/handle` — a link to a Bluesky account
+- `reddit.com/r/subreddit_name` — a link to a Reddit community
+- URLs to niche blogs or organization websites
+
+Similarly, Reddit posts link to YouTube videos, Gab posts link to Telegram channels, and RSS articles link to social media profiles. This cross-platform link graph is already present in collected content — every content record stores `url`, `media_urls`, and the full `text_content` which may contain embedded URLs — but nothing mines it.
+
+**This is arguably the single most effective form of network sampling for fringe platform research.** Unlike co-mention detection (which relies on @username patterns that vary by platform), URL patterns are standardized and unambiguous. A regex-based URL extractor can identify `t.me/`, `discord.gg/`, `youtube.com/`, `reddit.com/r/`, etc. with high precision. The discovered links can be automatically classified by target platform and converted into collection targets.
+
+For the Greenland scenario, this means: collect from one known Telegram channel → find links to 3 other Telegram channels and 1 Discord server in the posts → add those as collection targets → collect from them → discover more links → repeat. This is network expansion through content-embedded link traversal, and it works across all platforms without requiring platform-specific APIs.
+
+**Current status: Not implemented.** No URL extraction or cross-platform link mining exists in the sampling or enrichment modules. See GR-22 in Section 10.3.
+
+### 5.7 Summary Assessment
+
+The application provides a solid manual addition workflow and a working (but narrow) snowball sampler. The most significant gaps are:
+
+1. **No fast path from collected content to collection targets** — the researcher sees something interesting but can't act on it without 5+ manual steps across multiple pages
+2. **No cross-platform link mining** — outbound URLs in collected content (linking to other channels, accounts, servers, websites) are not extracted or used for discovery, despite being the most natural and platform-agnostic signal available
+3. **Network expansion limited to 3 platforms** — the fringe platforms central to the Greenland scenario (Telegram, Discord, Gab, TikTok) have no expanders
+4. **Similarity finder is dead code** — ~1000 lines of useful discovery logic that the researcher cannot access
+5. **Co-mention fallback not implemented** — the one platform-agnostic expansion method that would work across all arenas is stubbed out
+6. **Newly discovered actors require manual creation** — snowball results can't be directly converted to collection targets
+
+These gaps are addressed in the updated roadmap items GR-17 through GR-22 (see Section 10.3).
+
+---
+
+## 6. Multi-Language Support
 
 ### 5.1 Current Language Support Architecture
 
@@ -456,16 +608,16 @@ The Greenland scenario requires support for **four languages**, of which only tw
 
 ### 5.3 Recommendations
 
-1. **Add `kl` (Kalaallisut) to language filter options** in the query design editor, even though platform-level filtering for Kalaallisut is not available on most platforms. Post-collection filtering via `langdetect` (if it supports `kl`) would be the mechanism.
-2. **Add Greenlandic news RSS feeds** (Sermitsiaq.AG, KNR.gl) to `DANISH_RSS_FEEDS` in `danish_defaults.py`. These outlets publish in both Danish and Kalaallisut, so no language filter is needed at the feed level.
-3. **Test `langdetect` for Kalaallisut support** -- if unsupported, consider adding a character-frequency heuristic for Kalaallisut (checking for doubled consonants, `q`, long vowels) similar to the existing Danish heuristic.
-4. **For Russian:** rely on indirect capture via GDELT and English-language Russian media Telegram channels rather than attempting direct Russian-language collection.
+1. **Allow multi-language selection per query design** (see GR-05). The language selector should accept multiple languages rather than forcing a single choice. This removes the need to hardcode support for any specific language — the researcher selects whichever languages are relevant to their topic.
+2. **Allow researchers to add custom RSS feeds per query design** (see GR-01). Rather than hardcoding Greenlandic or Arctic feeds into `danish_defaults.py`, the researcher adds feed URLs (e.g., Sermitsiaq.AG, KNR.gl, Arctic Today) themselves through the UI.
+3. **Generalize the language detection enricher** (see GR-07). The `langdetect` library already supports 55+ languages. Rename `DanishLanguageDetector` to `LanguageDetector` and let the researcher's configured language list drive which languages are expected vs. flagged as unexpected.
+4. **For Russian and other languages with no direct collection path:** rely on indirect capture via GDELT (which includes machine-translated content), Telegram (where state media maintains channels), and Google Search (which indexes multilingual content). The researcher can add relevant Telegram channels through the mechanism in GR-02.
 
 ---
 
-## 6. Web Scraping and Archival Capabilities
+## 7. Web Scraping and Archival Capabilities
 
-### 6.1 Current Web Collection Arenas
+### 7.1 Current Web Collection Arenas
 
 The system has three web-focused arenas, each with a different scope:
 
@@ -490,7 +642,7 @@ Source: `src/issue_observatory/arenas/google_search/`
 - Returns search result snippets and URLs, not full page content.
 - Can discover niche Greenland-focused websites that do not have RSS feeds.
 
-### 6.2 Web Scraping Gaps for Greenland
+### 7.2 Web Scraping Gaps for Greenland
 
 **No full-page content retrieval**
 The most significant gap: none of the web arenas download and parse the actual HTML content of discovered pages. Common Crawl returns index metadata. Wayback returns archive metadata. Google Search returns snippets. For Greenland research, the researcher might discover that a niche blog at `groenlandsk-debat.dk` publishes relevant content, but the system cannot fetch and store the actual article text.
@@ -505,17 +657,17 @@ There is no general-purpose "web scraper" arena that, given a list of URLs, fetc
 **WARC retrieval not implemented**
 The Common Crawl collector explicitly notes that WARC retrieval is "out of scope for Phase 2." This means that even when the CC Index identifies that a relevant page was crawled, the system cannot retrieve the actual content from the WARC archive.
 
-### 6.3 Recommendations
+### 7.3 Recommendations
 
-1. **Implement a generic URL scraper arena** (estimated effort: 3-5 days) that accepts a list of URLs, fetches pages via `httpx`, extracts main text content via `readability-lxml` or `trafilatura`, and normalizes into content records. This would be the most versatile addition for the Greenland scenario.
+1. **Implement a generic URL scraper arena** (see GR-10, estimated effort: 3-5 days) that accepts a researcher-provided list of URLs, fetches pages via `httpx`, extracts main text content via `readability-lxml` or `trafilatura`, and normalizes into content records. The URL list should be configurable per query design, following the same self-service pattern as GR-01 through GR-04. This is the single most versatile addition — it enables any researcher to scrape niche websites, blogs, government pages, or think tank publications relevant to their topic without code changes.
 2. **Implement WARC content retrieval** for Common Crawl results. The CC Index already provides the `warc_filename`, `warc_record_offset`, and `warc_record_length` -- these three fields are sufficient to retrieve the actual page content from Common Crawl's S3 bucket.
 3. **Implement Wayback content retrieval** by fetching the archived page at the constructed `wayback_url`. The URL is already computed and stored in normalized records.
 
 ---
 
-## 7. Data Management for Cross-Arena Research
+## 8. Data Management for Cross-Arena Research
 
-### 7.1 Deduplication
+### 8.1 Deduplication
 
 **Exact deduplication (implemented):**
 Source: `src/issue_observatory/core/deduplication.py` lines 386-454
@@ -527,14 +679,14 @@ SimHash 64-bit fingerprinting with Hamming distance threshold of 3. Union-Find c
 
 **Limitation for Greenland:** The O(n^2) pairwise comparison in `find_near_duplicates()` (lines 188-194) is noted as "suitable for per-run batches (typically < 50K)." For the Greenland scenario during peak election coverage, a single collection run might exceed this if all arenas are active simultaneously. The Union-Find clustering is efficient once comparisons are done, but the pairwise SimHash comparison is the bottleneck.
 
-### 7.2 Pseudonymization
+### 8.2 Pseudonymization
 
 Source: `src/issue_observatory/core/normalizer.py` lines 1-80
 SHA-256 pseudonymization with configurable salt (from `PSEUDONYMIZATION_SALT` environment variable). This is GDPR-compliant for research under Article 89(1) with appropriate safeguards. The salt must be kept secret so that re-identification requires knowledge of both the data and the application secret.
 
 **Greenland-specific consideration:** Public political figures (Danish MPs, Greenlandic ministers, US officials) should generally not be pseudonymized in political discourse research -- their public statements are in the public interest. The system pseudonymizes all authors uniformly. A future enhancement would be to allow a "public figure" flag on actors in the Actor Directory that bypasses pseudonymization for their content records.
 
-### 7.3 Data Volume Estimates
+### 8.3 Data Volume Estimates
 
 For the Greenland scenario, estimated daily collection volumes across active arenas:
 
@@ -558,7 +710,7 @@ For the Greenland scenario, estimated daily collection volumes across active are
 
 **Storage impact:** At ~5KB per record (including raw_metadata JSONB), 5,000 records/day = ~25MB/day = ~750MB/month. PostgreSQL with monthly range partitioning handles this easily. The SimHash deduplication O(n^2) comparison at 5,000 records per run is ~12.5M comparisons -- still within the "suitable for per-run batches" threshold but approaching the upper bound.
 
-### 7.4 Export Capabilities
+### 8.4 Export Capabilities
 
 Source: `src/issue_observatory/analysis/export.py`
 Five export formats are supported: CSV, XLSX, NDJSON, Parquet, GEXF. For the Greenland scenario, the most useful formats are:
@@ -570,9 +722,9 @@ The strategic synthesis (IP2-005, IP2-006) identified that export columns need e
 
 ---
 
-## 8. Cost Analysis
+## 9. Cost Analysis
 
-### 8.1 Free Tier Configuration
+### 9.1 Free Tier Configuration
 
 The following arenas are available at zero cost:
 
@@ -596,7 +748,7 @@ The following arenas are available at zero cost:
 **Total free tier monthly cost: $0**
 **Free tier coverage assessment:** 14 arenas provide substantial Danish discourse coverage at zero cost. The primary gaps at free tier are: no Facebook/Instagram, no X/Twitter, no Event Registry (premium news API), no Majestic (link analysis).
 
-### 8.2 Medium Tier Configuration
+### 9.2 Medium Tier Configuration
 
 Adding the following paid services to the free tier:
 
@@ -617,7 +769,7 @@ Adding the following paid services to the free tier:
 
 **Medium tier coverage assessment:** Adding Event Registry closes the international news coverage gap significantly. Adding Google Search provides SERP analysis for how Danes discover Greenland information. The X/Twitter Basic tier provides only 10,000 tweets/month, which is thin but captures the most prominent political statements.
 
-### 8.3 What the Budget Cannot Cover
+### 9.3 What the Budget Cannot Cover
 
 | Arena/Service | Monthly Cost | Value for Greenland | Recommendation |
 |--------------|-------------|---------------------|----------------|
@@ -627,11 +779,11 @@ Adding the following paid services to the free tier:
 | Majestic Platinum | $399.99/month | Moderate (link analysis) | Exceeds budget; defer |
 | Infomedia | Institutional subscription | Extremely high | Excluded per project specification |
 
-### 8.4 Cost-Optimized Recommendation
+### 9.4 Cost-Optimized Recommendation
 
 For the Greenland scenario with budget constraints:
 
-**Phase 1 (Immediate -- $0/month):** Activate all free-tier arenas with Greenland-specific configuration. This covers 14 arenas and provides the foundational dataset.
+**Phase 1 (Immediate -- $0/month):** Activate all free-tier arenas. Once the self-service configuration mechanisms (GR-01 through GR-05) are built, the researcher adds their own Greenlandic RSS feeds, Telegram channels, subreddits, and Wikipedia seed articles through the UI. This covers 14 arenas and provides the foundational dataset.
 
 **Phase 2 (When budget permits -- $164-299/month):** Add Event Registry for international news coverage and Google Search for SERP analysis. These two services close the most significant coverage gaps that money can address.
 
@@ -639,31 +791,47 @@ For the Greenland scenario with budget constraints:
 
 ---
 
-## 9. Prioritized Improvement Roadmap
+## 10. Prioritized Improvement Roadmap
 
-This section presents Greenland-specific improvements, cross-referenced against the existing IP2-xxx roadmap items where applicable. New items are assigned the prefix GR- (Greenland).
+This section presents improvements, cross-referenced against the existing IP2-xxx roadmap items where applicable. New items are assigned the prefix GR- (Greenland).
 
-### 9.1 Critical Priority (Must-Do Before Collection Begins)
+### 10.1 Critical Priority (Must-Do Before Collection Begins)
+
+These items focus on building **researcher-configurable mechanisms** rather than hardcoding use-case-specific content. The goal is that any researcher — whether studying Greenland, housing policy, or any other issue — can configure the application themselves without code changes.
 
 | ID | Description | Effort | Dependencies | Rationale |
 |----|-------------|--------|--------------|-----------|
-| GR-01 | **Add Greenlandic news RSS feeds** to `DANISH_RSS_FEEDS`: Sermitsiaq.AG (sermitsiaq.ag/rss), KNR.gl (knr.gl/rss). Verify feed URLs and add to `danish_defaults.py`. | 0.25 days | None | Greenlandic perspectives are completely absent from the current feed list. |
-| GR-02 | **Add Arctic/international news RSS feeds**: Arctic Today, High North News, The Arctic Institute. | 0.25 days | None | International Arctic policy coverage supplements the Danish domestic perspective. |
-| GR-03 | **Expand Telegram channel list** with political, policy, and (verified) conspiracy-adjacent channels relevant to Greenland/Arctic discourse. Requires manual research to identify channels. | 1-2 days | Manual research | The current 6-channel list covers only mainstream Danish news. Telegram is the primary fringe monitoring platform. |
-| GR-04 | **Expand Reddit subreddit list** to include `r/Greenland`, `r/europe`, `r/geopolitics`, `r/worldnews`, `r/dkpolitik` (verify activity). | 0.1 days | None | Cross-references IP2-059. Current list (4 subreddits) is too narrow for geopolitical discourse. |
-| GR-05 | **Populate `DANISH_WIKIPEDIA_SEED_ARTICLES`** with Greenland-relevant article titles: "Gronland", "Rigsfaellesskabet", "Selvstyre_(Gronland)", "Gronlands_geologiske_undersogelse", "Thule_Air_Base", "Trump_Greenland_purchase" (English). | 0.1 days | None | Wikipedia edit activity monitoring requires seed articles. The list is currently empty (line 299 of `danish_defaults.py`). |
-| GR-06 | **Design comprehensive Greenland query design** with search terms in all four languages and actor lists spanning Danish politicians, Greenlandic politicians, US officials, and Arctic policy organizations. | 2-3 days | GR-01 through GR-05 | This is the research design artifact that all collection depends on. See Section 9.5 for draft specification. |
+| GR-01 | **Researcher-configurable RSS feed list per query design.** Add a UI panel in the query design editor (or collection launcher) where the researcher can add custom RSS feed URLs alongside the built-in Danish defaults. Store as part of the query design's `arenas_config` JSON. The RSS arena collector should merge the researcher's custom feeds with the system defaults. | 2-3 days | None | Currently RSS feeds are hardcoded in `danish_defaults.py`. The Greenland scenario needs Greenlandic media feeds (Sermitsiaq, KNR), but future scenarios will need entirely different feeds. The researcher should be able to add any RSS feed URL without developer intervention. |
+| GR-02 | **Researcher-configurable Telegram channel list per query design.** Add a UI field where the researcher can specify additional Telegram channel usernames to monitor beyond the system defaults. Store as part of the query design's `arenas_config` JSON. The Telegram collector already supports extending its channel list via `actor_ids` — surface this capability in the UI. | 2-3 days | None | Currently only 6 mainstream news channels are hardcoded. Any fringe monitoring scenario (not just Greenland) requires researcher-curated channel lists. |
+| GR-03 | **Researcher-configurable Reddit subreddit list per query design.** Same pattern as GR-01 and GR-02: a UI field in the query design or arena config where the researcher adds subreddit names. The Reddit collector merges these with system defaults. | 1-2 days | None | Currently 4 subreddits are hardcoded. The Greenland researcher needs `r/Greenland`, `r/geopolitics`, etc.; an education researcher needs different subreddits entirely. |
+| GR-04 | **Researcher-configurable Discord channel IDs and Wikipedia seed articles per query design.** Extend the per-arena configuration pattern (GR-01 through GR-03) to Discord (server/channel snowflake IDs) and Wikipedia (seed article titles). | 1-2 days | GR-01 pattern | Discord requires explicit channel IDs; Wikipedia requires seed articles. Both lists are currently empty in `danish_defaults.py` and can only be populated through code changes. |
+| GR-05 | **Researcher-configurable language filters per query design.** Allow the query design to specify multiple languages (e.g., Danish + English, or Danish + English + Kalaallisut) rather than forcing a single language choice. Store as an array in the query design. Arena collectors should use these to construct appropriate platform-level filters where supported, and the enrichment pipeline should use them for post-collection language detection filtering. | 2-3 days | None | The Greenland scenario needs Danish + English + Kalaallisut. Other scenarios may need Danish + German or Danish only. The language selector currently forces a single choice. |
+| GR-06 | **Add Discord, Twitch, and OpenRouter/AI Chat Search to the admin credentials dropdown.** These three platforms have implemented collectors but are missing from the credential provisioning UI (`admin/credentials.html` lines 77-94). | 0.5 days | None | Corresponds to UX blocker GL-B03. Three arenas are unreachable because credentials cannot be provisioned. |
 
-### 9.2 High Priority (Should-Do Within First Two Weeks)
+### 10.2 High Priority (Should-Do Within First Two Weeks)
 
 | ID | Description | Effort | Dependencies | IP2 Cross-Ref |
 |----|-------------|--------|--------------|---------------|
-| GR-07 | **Test and add Kalaallisut language detection** to `DanishLanguageDetector` enricher. Test whether `langdetect` supports `kl`. If not, implement Kalaallisut character-frequency heuristic alongside the Danish one. | 1-2 days | None | Extension of IP2-008 |
-| GR-08 | **Implement cross-arena temporal propagation detection**: Given a near-duplicate cluster (from SimHash), order records by `published_at` and compute propagation sequences showing which arena published first. Store as enrichment in `raw_metadata.enrichments.propagation`. | 3-5 days | IP2-050, IP2-032 (SimHash -- already implemented) | Implements IP2-050 for the Greenland use case |
-| GR-09 | **Add volume spike alerting**: Implement a simple threshold-based alert that fires when Greenland term volume on any single arena exceeds 2x the rolling 7-day average. Send email notification (email infrastructure already exists per Task ae498f0). | 1-2 days | None | New -- not in IP2 roadmap |
-| GR-10 | **Implement URL scraper arena**: A generic arena that accepts a list of URLs, fetches page content via `httpx`, extracts main text via `trafilatura` or `readability-lxml`, and normalizes into content records. | 3-5 days | Arena brief required | New -- not in IP2 roadmap |
+| GR-07 | **Generalize language detection enricher beyond Danish.** The current `DanishLanguageDetector` enricher uses a Danish-specific character heuristic fallback. Rename/generalize it to a `LanguageDetector` that uses `langdetect` (which supports 55+ languages) as the primary method, with the Danish heuristic as one of several optional fallbacks. The researcher-configured language list from GR-05 should inform which languages are "expected" vs. "unexpected" in a given collection run, enabling language-based filtering in the content browser. | 2-3 days | GR-05 | Extension of IP2-008 |
+| GR-08 | **Implement cross-arena temporal propagation detection**: Given a near-duplicate cluster (from SimHash), order records by `published_at` and compute propagation sequences showing which arena published first. Store as enrichment in `raw_metadata.enrichments.propagation`. | 3-5 days | IP2-050, IP2-032 (SimHash -- already implemented) | Implements IP2-050 |
+| GR-09 | **Add volume spike alerting**: Implement a simple threshold-based alert that fires when term volume on any single arena exceeds 2x the rolling 7-day average. Send email notification (email infrastructure already exists per Task ae498f0). This is a generic monitoring feature, not Greenland-specific. | 1-2 days | None | New -- not in IP2 roadmap |
+| GR-10 | **Implement URL scraper arena**: A generic arena that accepts a researcher-provided list of URLs, fetches page content via `httpx`, extracts main text via `trafilatura` or `readability-lxml`, and normalizes into content records. The URL list should be configurable per query design (same pattern as GR-01 through GR-04). This enables any researcher to scrape niche websites, blogs, or organization pages relevant to their topic. | 3-5 days | Arena brief required | New -- not in IP2 roadmap |
 
-### 9.3 Medium Priority (During Collection Period)
+### 10.3 High Priority: Source Discovery and Actor-to-Collection Workflows
+
+These items address the gaps identified in Section 5 — the three mechanisms through which researchers discover and operationalize new collection sources. They are arguably the most impactful improvements for any multi-platform research scenario, not just Greenland.
+
+| ID | Description | Effort | Dependencies | IP2 Cross-Ref |
+|----|-------------|--------|--------------|---------------|
+| GR-17 | **Content Browser "quick add" to collection.** Add a contextual action on author names in the Content Browser: click an author → modal offers "Create Actor" (pre-filled with display name and platform) → auto-creates platform presence → offers to add to an actor list in the active query design. This collapses the current 5+ step manual process into a single flow. The same pattern should work for discovering a Telegram channel name, Discord server reference, or website URL mentioned in content — the researcher clicks and says "monitor this." Source: `src/issue_observatory/api/templates/content/browser.html` (new), `src/issue_observatory/api/routes/actors.py` (new endpoint). | 3-5 days | None | New |
+| GR-18 | **Expose the Similarity Finder in the UI and API.** Wire `src/issue_observatory/sampling/similarity_finder.py` into the Actor Directory UI. Add API routes for: (a) platform recommendations ("find similar accounts to this actor on Bluesky/Reddit/YouTube"), (b) content similarity ("find other actors who post about similar topics"), (c) cross-platform name search ("search for this actor's name on other platforms"). Surface these as a "Discover Similar" panel on the actor detail page and as a tab alongside the existing Snowball Sampling panel. The content similarity method is particularly valuable — it lets a researcher say "find other accounts that post about the same topics as this one." | 3-5 days | None | New |
+| GR-19 | **Implement the co-mention fallback in the network expander.** The generic co-mention detection in `src/issue_observatory/sampling/network_expander.py` (lines 171-177) is stubbed out. Implement it: mine `content_records` for authors who are frequently mentioned alongside the seed actor (via `@username` patterns, quoted content, or reply chains). This is the only platform-agnostic expansion method and would extend snowball sampling to **every arena with collected content** — including Telegram, Discord, Gab, TikTok, and all other platforms that currently have no expander. | 2-3 days | Requires collected content to exist | New |
+| GR-20 | **Auto-create Actor records for snowball-discovered accounts.** Currently, newly discovered actors from snowball sampling are returned as results but cannot be added to actor lists unless they already have database Actor records. Change this: when snowball discovers a new account, automatically create an Actor record and ActorPlatformPresence so the researcher can immediately add it to a list and collect from it. Source: `src/issue_observatory/sampling/snowball.py` (lines 87-254), `src/issue_observatory/api/routes/actors.py` (snowball endpoint lines 422-542). | 1-2 days | None | New |
+| GR-21 | **Add Telegram-specific network expander.** Telegram's forwarding metadata (`is_forwarded`, `fwd_from_channel_id` in `raw_metadata`) is already collected. Implement a Telegram expander that discovers channels from forwarding chains: "this channel frequently forwards from channel X and channel Y" → discover X and Y as collection targets. This is uniquely valuable because Telegram is the primary fringe monitoring platform and currently has no expansion support. Source: `src/issue_observatory/sampling/network_expander.py` (new method). | 2-3 days | Requires Telegram content to exist | New |
+| GR-22 | **Cross-platform link mining from collected content.** Implement a content enricher or sampling module that extracts outbound URLs from `text_content` and `media_urls` in collected content records, classifies them by target platform using URL pattern matching (e.g., `t.me/` → Telegram channel, `discord.gg/` → Discord server, `youtube.com/c/` → YouTube channel, `reddit.com/r/` → subreddit, `bsky.app/profile/` → Bluesky account, `gab.com/` → Gab profile), and surfaces discovered platform targets to the researcher for import. This is the single most effective form of network sampling for fringe platform research because cross-platform linking is how these communities organically connect. A Telegram post linking to a Discord server or another Telegram channel is an explicit endorsement signal. The discovered links should be presented in a "Discovered Sources" panel, grouped by target platform, with one-click "add to collection" actions. This mechanism is fully platform-agnostic — it works on any content that contains URLs, which means it extends discovery to every arena without requiring platform-specific API support. | 3-5 days | Requires collected content; benefits from GR-17 (quick-add flow) | New |
+
+### 10.4 Medium Priority (During Collection Period)
+
 
 | ID | Description | Effort | Dependencies | IP2 Cross-Ref |
 |----|-------------|--------|--------------|---------------|
@@ -675,7 +843,7 @@ This section presents Greenland-specific improvements, cross-referenced against 
 | IP2-044 | **Temporal network snapshots**: Essential for tracking how the Greenland actor network evolves over the election campaign (new actors entering, existing actors shifting positions). | 3-5 days | None | Already in IP2 roadmap |
 | IP2-034 | **Danish sentiment analysis**: Useful for classifying stance on Greenland sovereignty (supportive of sovereignty, supportive of Danish union, neutral). | 3-5 days | IP2-036 | Already in IP2 roadmap |
 
-### 9.4 Low Priority (Post-Collection Enhancement)
+### 10.5 Low Priority (Post-Collection Enhancement)
 
 | ID | Description | Effort | Dependencies | IP2 Cross-Ref |
 |----|-------------|--------|--------------|---------------|
@@ -684,7 +852,9 @@ This section presents Greenland-specific improvements, cross-referenced against 
 | IP2-045 | **Dynamic GEXF export**: For Greenland network analysis in Gephi with Timeline, enabling visualization of how the actor network evolves week by week during the campaign. | 2-3 days | IP2-044 | Already in IP2 roadmap |
 | IP2-043 | **Content annotation layer**: For qualitative coding of Greenland content by stance (pro-sovereignty, pro-union, neutral, conspiracy) and frame (security, economic, identity, democratic). | 5-7 days | None | Already in IP2 roadmap |
 
-### 9.5 Draft Query Design Specification: Greenland 2026
+### 10.6 Example Query Design Specification: Greenland 2026
+
+The following is a *draft example* showing how a researcher would configure a Greenland study using the self-service mechanisms described in GR-01 through GR-05. This is not intended to be hardcoded into the application — it illustrates the kind of configuration a researcher should be able to create entirely through the UI.
 
 **Search Terms (Danish):**
 
@@ -729,34 +899,35 @@ This section presents Greenland-specific improvements, cross-referenced against 
 
 **Arena Configuration:**
 
-| Arena | Tier | Active |
-|-------|------|--------|
-| rss_feeds | Free | Yes -- with Greenlandic feeds added (GR-01, GR-02) |
-| bluesky | Free | Yes |
-| reddit | Free | Yes -- with expanded subreddits (GR-04) |
-| gdelt | Free | Yes -- also query with English terms for international coverage |
-| youtube | Free | Yes |
-| telegram | Free | Yes -- with expanded channel list (GR-03) |
-| tiktok | Free | Yes |
-| gab | Free | Yes |
-| wikipedia | Free | Yes -- with seed articles (GR-05) |
-| google_autocomplete | Free | Yes |
-| ritzau_via | Free | Yes |
-| common_crawl | Free | Yes |
-| wayback | Free | Yes |
-| google_search | Medium ($50/mo) | Conditional on budget |
-| event_registry | Medium ($149/mo) | Conditional on budget |
+| Arena | Tier | Active | Researcher-Added Sources (via GR-01–GR-04 mechanisms) |
+|-------|------|--------|------------------------------------------------------|
+| rss_feeds | Free | Yes | + Sermitsiaq.AG, KNR.gl, Arctic Today, High North News |
+| bluesky | Free | Yes | (uses default settings) |
+| reddit | Free | Yes | + r/Greenland, r/europe, r/geopolitics, r/worldnews |
+| gdelt | Free | Yes | (also query with English terms for international coverage) |
+| youtube | Free | Yes | (uses default settings) |
+| telegram | Free | Yes | + Political commentary channels, Arctic geopolitics channels |
+| tiktok | Free | Yes | (uses default settings) |
+| gab | Free | Yes | (uses default settings) |
+| wikipedia | Free | Yes | + "Gronland", "Rigsfaellesskabet", "Thule_Air_Base" seed articles |
+| google_autocomplete | Free | Yes | (uses default settings) |
+| ritzau_via | Free | Yes | (uses default settings) |
+| common_crawl | Free | Yes | (uses default settings) |
+| wayback | Free | Yes | (uses default settings) |
+| google_search | Medium ($50/mo) | Conditional on budget | |
+| event_registry | Medium ($149/mo) | Conditional on budget | |
 
 ---
 
-## 10. Comparison with Previous Evaluations
+## 11. Comparison with Previous Evaluations
 
-### 10.1 Assessment Summary Across All Three Scenarios
+### 11.1 Assessment Summary Across All Three Scenarios
 
 | Dimension | CO2 Afgift (Feb 2026) | AI og Uddannelse (Feb 2026) | Greenland (Feb 2026) |
 |-----------|----------------------|-----------------------------|----------------------|
 | Overall readiness | 75-80% | 55-60% | **65-70%** |
-| Arena coverage | Good (Danish domestic) | Good (Danish domestic) | **Moderate** (missing Greenlandic, international Arctic, fringe) |
+| Arena coverage | Good (Danish domestic) | Good (Danish domestic) | **Moderate** (researchers can't add their own feeds/channels/subreddits) |
+| Source discovery workflow | Not tested | Not tested | **Partial** — manual addition works; snowball on 3 platforms; similarity finder dead code; no content-to-collection quick path |
 | Language support | Danish only needed | Danish + some English | **Danish + English + Kalaallisut + Russian needed** |
 | Actor complexity | Moderate (Danish politicians, organizations) | Moderate (educators, unions, think tanks) | **High** (multi-jurisdictional: DK, GL, US, RU) |
 | Conspiracy monitoring | Not required | Not required | **Required -- major gap** |
@@ -764,7 +935,7 @@ This section presents Greenland-specific improvements, cross-referenced against 
 | Cost sensitivity | Low | Low | **High -- free/medium tier required** |
 | Temporal urgency | Ongoing (no hard deadline) | Ongoing (no hard deadline) | **High -- election-bounded window** |
 
-### 10.2 What Changed Since the CO2 Afgift Evaluation
+### 11.2 What Changed Since the CO2 Afgift Evaluation
 
 The following improvements have been implemented since the CO2 afgift evaluation (February 2026):
 
@@ -798,32 +969,34 @@ The following improvements have been implemented since the CO2 afgift evaluation
 
 15. **Education-specific RSS feeds** (IP2-058): Added in Phase C.
 
-### 10.3 What the Greenland Scenario Uniquely Requires (Not Needed by Previous Scenarios)
+### 11.3 What the Greenland Scenario Uniquely Requires (Not Needed by Previous Scenarios)
 
 | Requirement | Why Unique to Greenland | Existing IP2 Coverage | New Work Needed |
 |-------------|------------------------|----------------------|-----------------|
-| Greenlandic/Kalaallisut language support | Previous scenarios needed only Danish | None | GR-07 |
-| Greenlandic media RSS feeds | Previous scenarios covered Danish domestic only | None | GR-01, GR-02 |
-| Conspiracy channel monitoring on Telegram | Previous scenarios did not involve disinformation | None | GR-03 |
+| **Researcher-configurable platform sources** (RSS feeds, Telegram channels, subreddits, etc.) | Previous scenarios could use defaults; Greenland needs custom sources on every platform | None | GR-01 through GR-04 (builds reusable self-service mechanism) |
+| **Fast content-to-collection workflow** | Greenland requires discovering dozens of channels/accounts during initial sweep and quickly operationalizing them | Entity resolution exists but is slow and indirect | GR-17 (content browser quick-add) |
+| **Broad network expansion for source discovery** | Fringe platforms (Telegram, Discord, Gab) are central but have no expanders | Snowball works for Bluesky/Reddit/YouTube only | GR-19 (co-mention fallback), GR-21 (Telegram forwarding chains), GR-22 (cross-platform link mining) |
+| **Similarity-based actor discovery** | Multi-jurisdictional actor space requires finding related accounts across platforms | `similarity_finder.py` exists (~1000 lines) but is dead code | GR-18 (expose in UI/API) |
+| Multi-language query designs | Previous scenarios needed only Danish | None | GR-05 (reusable for any multilingual topic) |
+| Generalized language detection | Previous scenarios needed only Danish detection | IP2-008 (Danish-only) | GR-07 (generalizes enricher for all languages) |
 | Cross-arena narrative propagation velocity | Previous scenarios did not require temporal propagation tracking | IP2-050 (not implemented) | GR-08 |
 | Coordinated posting detection | Previous scenarios did not involve foreign interference | None | GR-11 |
 | Volume spike alerting | Previous scenarios did not have election-cycle urgency | None | GR-09 |
-| Multi-jurisdictional actor space (DK/GL/US/RU) | Previous scenarios were Danish domestic only | None | GR-06 (query design) |
 | Public figure pseudonymization exception | Previous scenarios did not distinguish public figures from private individuals | None | GR-14 |
-| Generic URL scraper arena | Previous scenarios relied on existing API arenas | None | GR-10 |
-| Arctic geopolitics subreddits | Previous scenarios needed only Danish subreddits | IP2-059 (partially) | GR-04 |
+| Generic URL scraper arena | Previous scenarios relied on existing API arenas | None | GR-10 (reusable for any topic needing web scraping) |
+| Credential provisioning for all arenas | Previous scenarios used mainstream arenas with existing credential support | None | GR-06 (adds missing dropdown entries) |
 
-### 10.4 Overall Assessment
+### 11.4 Overall Assessment
 
 The Issue Observatory is **65-70% ready** for the Greenland scenario. This is intermediate between the CO2 afgift readiness (75-80%) and the AI og uddannelse readiness (55-60%), reflecting that:
 
 - The **core infrastructure** is solid: universal content records, deduplication, enrichment pipeline, actor resolution, and network analysis are all operational.
-- The **arena coverage** is strong for Danish domestic discourse but has significant gaps for Greenlandic, Arctic international, and fringe platform content.
+- The **arena coverage** is strong for Danish domestic discourse but researchers cannot extend it — RSS feeds, Telegram channels, Reddit subreddits, and Wikipedia seed articles are hardcoded and not configurable through the UI (addressed by GR-01 through GR-04).
+- The **source discovery workflow** has a strong manual path and a working snowball sampler, but the gap between discovering a source and operationalizing it for collection is too wide. The content browser has no quick path to add discovered authors/channels to collection. The similarity finder (~1000 lines of discovery logic) is completely unexposed. Network expansion only works on 3 of 20+ platforms (addressed by GR-17 through GR-21).
 - The **analytical capabilities** needed for narrative tracking and conspiracy monitoring exist in nascent form (SimHash, co-occurrence) but lack the temporal propagation and coordination detection features that are central to this scenario.
-- The **language support** is the most significant structural gap -- Kalaallisut is completely unsupported and would require new development to address even partially.
 - The **cost constraint** is manageable -- 14 arenas are available at free tier, providing substantial coverage. The most impactful paid additions (Event Registry at $149/month, Google Search at $50/month) are within a $200-300/month budget.
 
-The critical-priority items (GR-01 through GR-06) are primarily configuration changes with very low effort (total: 3-5 days). These should be completed before any collection begins. The high-priority items (GR-07 through GR-10) represent meaningful new development (total: 8-14 days) that would significantly enhance the system's suitability for this scenario.
+The critical-priority items (GR-01 through GR-06) focus on building **researcher self-service mechanisms** — allowing users to configure their own RSS feeds, Telegram channels, Reddit subreddits, Discord servers, Wikipedia articles, and language filters per query design, plus adding missing credential dropdown entries. Total effort: ~10-14 days. These investments pay off across all future research scenarios, not just Greenland. The high-priority source discovery items (GR-17 through GR-21) address the most impactful workflow gap: enabling researchers to discover new sources from collected data, network expansion, and similarity search, and immediately operationalize them for collection (total: ~12-18 days). The analytical enhancement items (GR-07 through GR-10) add cross-arena narrative propagation, volume alerting, and a generic URL scraper (total: ~8-14 days).
 
 ---
 
@@ -854,8 +1027,13 @@ All source file paths are relative to `/Users/jakobbk/Documents/postdoc/codespac
 | `src/issue_observatory/analysis/enrichments/named_entity_extractor.py` | 1.2 | 26-112 (NamedEntityExtractor stub) |
 | `src/issue_observatory/analysis/network.py` | 1.2, 3.1 | Actor/term/bipartite network functions |
 | `src/issue_observatory/analysis/descriptive.py` | 1.2, 3.3 | volume_over_time, top_actors, engagement_distribution |
-| `src/issue_observatory/sampling/snowball.py` | 1.2, 4.3 | 87-254 (SnowballSampler.run) |
-| `src/issue_observatory/sampling/network_expander.py` | 1.2, 2.1 | 87-187 (expand_from_actor), 189-269 (co-mention), 360-429 (Bluesky), 431-498 (Reddit), 500-582 (YouTube) |
+| `src/issue_observatory/sampling/snowball.py` | 1.2, 5.3 | 87-254 (SnowballSampler.run) |
+| `src/issue_observatory/sampling/network_expander.py` | 1.2, 5.3 | 87-187 (expand_from_actor), 171-177 (co-mention stub), 360-429 (Bluesky), 431-498 (Reddit), 500-582 (YouTube) |
+| `src/issue_observatory/sampling/similarity_finder.py` | 5.4 | 190-259 (platform recommendations), 261-363 (content similarity), 365-424 (cross-platform name search) |
+| `src/issue_observatory/api/routes/actors.py` | 5.1, 5.2 | 293-393 (entity resolution), 422-542 (snowball endpoint), 1087-1200 (platform presences), 1288-1429 (merge/split) |
+| `src/issue_observatory/api/templates/actors/list.html` | 5.3 | 272-596 (snowball sampling UI panel) |
+| `src/issue_observatory/api/templates/actors/resolution.html` | 5.2 | 133-321 (resolution candidates), 323-504 (merge UI) |
+| `src/issue_observatory/api/templates/content/browser.html` | 5.2 | Content browser — no quick-add actor action exists |
 
 ## Appendix B: Cross-Reference to IP2 Roadmap
 

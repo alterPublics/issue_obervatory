@@ -1,0 +1,85 @@
+{#
+    HTMX partial — Content-similar actor results (GR-18).
+
+    Rendered by POST /actors/{actor_id}/similar/content when the HX-Request
+    header is present.
+
+    Context:
+        actor_id   (str): UUID string of the actor being queried.
+        candidates (list): Actor dicts from SimilarityFinder.find_similar_by_content().
+            Each dict has:
+              actor_id (str UUID), similarity_score (float 0–1),
+              platform (str), canonical_name (str, enriched by route),
+              discovery_method ("content_similarity").
+#}
+{% if candidates %}
+<ul class="divide-y divide-gray-100" role="list">
+    {% for c in candidates %}
+    {% set cid      = c.actor_id       | default('') %}
+    {% set score    = c.similarity_score | default(0.0) %}
+    {% set platform = c.platform        | default('') %}
+    {% set name     = c.canonical_name  | default('Unknown actor') %}
+
+    {# Convert score to a percentage string for display #}
+    {% set pct = (score * 100) | round(0) | int %}
+
+    <li class="py-3 px-1 space-y-1.5">
+
+        {# Top row: name + score badge #}
+        <div class="flex items-center justify-between gap-3">
+            <div class="flex items-center gap-2 min-w-0">
+                {% if platform == 'bluesky' %}
+                <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-sky-100 text-sky-800 flex-shrink-0">Bluesky</span>
+                {% elif platform == 'reddit' %}
+                <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 flex-shrink-0">Reddit</span>
+                {% elif platform == 'youtube' %}
+                <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800 flex-shrink-0">YouTube</span>
+                {% elif platform %}
+                <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700 flex-shrink-0 capitalize">{{ platform }}</span>
+                {% endif %}
+
+                {% if cid %}
+                <a href="/actors/{{ cid }}"
+                   class="text-sm font-medium text-gray-900 hover:text-blue-600 truncate">{{ name if name else cid[:8] ~ '…' }}</a>
+                {% else %}
+                <span class="text-sm font-medium text-gray-900 truncate">{{ name }}</span>
+                {% endif %}
+            </div>
+
+            <span class="text-xs font-mono text-gray-500 flex-shrink-0">{{ pct }}% similar</span>
+        </div>
+
+        {# Similarity progress bar #}
+        <div class="w-full bg-gray-100 rounded-full h-1.5" role="progressbar"
+             aria-valuenow="{{ pct }}" aria-valuemin="0" aria-valuemax="100"
+             aria-label="Similarity score {{ pct }}%">
+            <div class="h-1.5 rounded-full
+                {% if score >= 0.7 %}bg-green-500
+                {% elif score >= 0.4 %}bg-yellow-400
+                {% else %}bg-gray-400
+                {% endif %}"
+                 style="width: {{ [pct, 100] | min }}%"></div>
+        </div>
+
+        {# Action buttons #}
+        {% if cid %}
+        <div class="flex items-center gap-2">
+            <a href="/actors/{{ cid }}"
+               class="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-gray-500 border border-gray-200 rounded hover:bg-gray-50 transition-colors">
+                View Actor
+            </a>
+            <a href="/content?actor_id={{ cid }}"
+               class="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-gray-500 border border-gray-200 rounded hover:bg-gray-50 transition-colors">
+                Browse Content
+            </a>
+        </div>
+        {% endif %}
+
+    </li>
+    {% endfor %}
+</ul>
+{% else %}
+<p class="text-sm text-gray-400 px-1 py-4">
+    No content-similar actors found. This actor may not have enough collected content yet, or no other actors share overlapping topics.
+</p>
+{% endif %}

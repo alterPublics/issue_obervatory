@@ -100,6 +100,40 @@ def _update_task_status(
 # ---------------------------------------------------------------------------
 
 
+def _load_arenas_config(query_design_id: str) -> dict:
+    """Load ``arenas_config`` from the QueryDesign row identified by *query_design_id*.
+
+    Uses a synchronous SQLAlchemy session (Celery worker context).  Returns an
+    empty dict if the design is not found or on any DB error.
+
+    Args:
+        query_design_id: UUID string of the owning query design.
+
+    Returns:
+        The ``arenas_config`` JSONB dict, or ``{}`` on failure.
+    """
+    try:
+        from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+        from sqlalchemy import text  # noqa: PLC0415
+
+        with get_sync_session() as session:
+            row = session.execute(
+                text(
+                    "SELECT arenas_config FROM query_designs WHERE id = :id"
+                ),
+                {"id": query_design_id},
+            ).fetchone()
+            if row and row[0]:
+                return dict(row[0])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "rss_feeds: failed to load arenas_config for design %s: %s",
+            query_design_id,
+            exc,
+        )
+    return {}
+
+
 @celery_app.task(
     name="issue_observatory.arenas.rss_feeds.tasks.collect_by_terms",
     bind=True,
@@ -126,6 +160,9 @@ def rss_feeds_collect_terms(
     Celery task.  Updates the ``collection_tasks`` row with progress and
     final status.
 
+    Reads ``arenas_config["rss"]["custom_feeds"]`` from the QueryDesign
+    (GR-01) and passes the extra feed URLs to the collector.
+
     Args:
         query_design_id: UUID string of the owning query design.
         collection_run_id: UUID string of the owning collection run.
@@ -134,6 +171,8 @@ def rss_feeds_collect_terms(
         date_from: ISO 8601 earliest publication date (inclusive).
         date_to: ISO 8601 latest publication date (inclusive).
         max_results: Upper bound on returned records.
+        language_filter: Optional list of ISO 639-1 language codes resolved
+            from ``arenas_config["languages"]`` (GR-05).
 
     Returns:
         Dict with ``records_collected``, ``status``, ``arena``, ``tier``.
@@ -151,6 +190,15 @@ def rss_feeds_collect_terms(
         tier,
     )
     _update_task_status(collection_run_id, _ARENA, "running")
+
+    # GR-01: read researcher-configured extra feed URLs from arenas_config.
+    arenas_config = _load_arenas_config(query_design_id)
+    extra_feed_urls: list[str] | None = None
+    rss_config = arenas_config.get("rss") or {}
+    if isinstance(rss_config, dict):
+        raw_custom = rss_config.get("custom_feeds")
+        if isinstance(raw_custom, list) and raw_custom:
+            extra_feed_urls = [str(u) for u in raw_custom if u]
 
     try:
         tier_enum = Tier(tier)
@@ -171,6 +219,7 @@ def rss_feeds_collect_terms(
                 date_to=date_to,
                 max_results=max_results,
                 language_filter=language_filter,
+                extra_feed_urls=extra_feed_urls,
             )
         )
     except ArenaRateLimitError:
@@ -225,6 +274,9 @@ def rss_feeds_collect_actors(
     Wraps :meth:`~RSSFeedsCollector.collect_by_actors`.  ``actor_ids`` are
     feed keys or outlet slug prefixes from :data:`DANISH_RSS_FEEDS`.
 
+    Reads ``arenas_config["rss"]["custom_feeds"]`` from the QueryDesign
+    (GR-01) and passes the extra feed URLs to the collector.
+
     Args:
         query_design_id: UUID string of the owning query design.
         collection_run_id: UUID string of the owning collection run.
@@ -259,6 +311,15 @@ def rss_feeds_collect_actors(
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
         raise ArenaCollectionError(msg, arena=_ARENA, platform="rss_feeds")
 
+    # GR-01: read researcher-configured extra feed URLs from arenas_config.
+    arenas_config = _load_arenas_config(query_design_id)
+    extra_feed_urls: list[str] | None = None
+    rss_config = arenas_config.get("rss") or {}
+    if isinstance(rss_config, dict):
+        raw_custom = rss_config.get("custom_feeds")
+        if isinstance(raw_custom, list) and raw_custom:
+            extra_feed_urls = [str(u) for u in raw_custom if u]
+
     collector = RSSFeedsCollector()
 
     try:
@@ -269,6 +330,7 @@ def rss_feeds_collect_actors(
                 date_from=date_from,
                 date_to=date_to,
                 max_results=max_results,
+                extra_feed_urls=extra_feed_urls,
             )
         )
     except ArenaRateLimitError:

@@ -91,6 +91,12 @@ class ArenaCollector(ABC):
     ) -> None:
         self.credential_pool = credential_pool
         self.rate_limiter = rate_limiter
+        # GR-14: set of platform_user_id strings for actors whose content
+        # should bypass SHA-256 pseudonymization.  Populated by the Celery
+        # task before calling collect_by_terms() / collect_by_actors().
+        # Subclass normalize() implementations should pass this set to
+        # Normalizer.normalize() as the ``public_figure_ids`` argument.
+        self._public_figure_ids: set[str] = set()
 
     # ------------------------------------------------------------------
     # Abstract interface — must be implemented by every arena
@@ -237,6 +243,29 @@ class ArenaCollector(ABC):
     # ------------------------------------------------------------------
     # Concrete helpers — may be overridden
     # ------------------------------------------------------------------
+
+    def set_public_figure_ids(self, ids: set[str]) -> None:
+        """Register a set of platform user IDs for the GR-14 bypass.
+
+        Call this **before** ``collect_by_terms()`` or
+        ``collect_by_actors()`` when the owning query design has
+        ``public_figure=True`` actors.  The ``_public_figure_ids`` set is
+        then available inside the collector's ``normalize()`` method and
+        must be forwarded to
+        :meth:`~core.normalizer.Normalizer.normalize` as the
+        ``public_figure_ids`` keyword argument.
+
+        This method is a no-op when *ids* is empty — existing collectors
+        that do not implement the GR-14 hook continue to pseudonymize all
+        authors normally.
+
+        Args:
+            ids: Set of ``platform_user_id`` strings whose authors should
+                bypass SHA-256 pseudonymization (GR-14 — GDPR Art. 89(1)
+                research exemption).  Pass an empty set to clear any
+                previously registered IDs.
+        """
+        self._public_figure_ids = ids
 
     async def estimate_credits(
         self,

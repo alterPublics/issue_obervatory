@@ -99,6 +99,13 @@ class ActorCreate(BaseModel):
             ``unknown``.
         description: Optional longer description or biography.
         is_shared: When ``True``, the actor is visible to all researchers.
+        public_figure: GR-14 — GDPR Art. 89(1) research exemption.  When
+            ``True``, the collection pipeline stores the plain platform
+            username as ``pseudonymized_author_id`` instead of a salted
+            SHA-256 hash.  Must only be set for publicly elected or appointed
+            officials (e.g. Danish MPs, Greenlandic ministers, US federal
+            officials) acting in their official capacity.  Private individuals
+            must remain pseudonymized regardless of public prominence.
         presence: Optional initial platform presence to attach on creation.
     """
 
@@ -106,6 +113,13 @@ class ActorCreate(BaseModel):
     actor_type: Optional[ACTOR_TYPE_VALUES] = Field(default=None)
     description: Optional[str] = Field(default=None)
     is_shared: bool = Field(default=False)
+    public_figure: bool = Field(
+        default=False,
+        description=(
+            "GR-14 GDPR Art. 89(1) exemption: bypasses SHA-256 pseudonymization. "
+            "Use only for elected/appointed officials in official capacity."
+        ),
+    )
     presence: Optional[ActorPresenceCreate] = Field(default=None)
 
 
@@ -120,12 +134,25 @@ class ActorUpdate(BaseModel):
         actor_type: New actor category from the ``ActorType`` enumeration.
         description: New description text.
         is_shared: New sharing visibility flag.
+        public_figure: GR-14 — GDPR Art. 89(1) research exemption.  When
+            ``True``, the collection pipeline stores the plain platform
+            username as ``pseudonymized_author_id`` instead of a salted
+            SHA-256 hash.  Must only be set for publicly elected or appointed
+            officials acting in their official capacity.  Private individuals
+            must remain pseudonymized regardless of public prominence.
     """
 
     canonical_name: Optional[str] = Field(default=None, min_length=1, max_length=500)
     actor_type: Optional[ACTOR_TYPE_VALUES] = Field(default=None)
     description: Optional[str] = Field(default=None)
     is_shared: Optional[bool] = Field(default=None)
+    public_figure: Optional[bool] = Field(
+        default=None,
+        description=(
+            "GR-14 GDPR Art. 89(1) exemption: bypasses SHA-256 pseudonymization. "
+            "Use only for elected/appointed officials in official capacity."
+        ),
+    )
 
 
 class ActorResponse(BaseModel):
@@ -138,6 +165,9 @@ class ActorResponse(BaseModel):
         description: Optional description.
         created_by: UUID of the researcher who created the actor.
         is_shared: Whether the actor is visible to all researchers.
+        public_figure: GR-14 flag — when ``True`` this actor's content
+            records bypass SHA-256 pseudonymization.  The frontend should
+            display this flag with a clear GDPR warning tooltip.
         created_at: Creation timestamp.
         presences: All linked platform presences.
     """
@@ -150,5 +180,6 @@ class ActorResponse(BaseModel):
     description: Optional[str]
     created_by: Optional[uuid.UUID]
     is_shared: bool
+    public_figure: bool = False
     created_at: datetime
     presences: list[PresenceResponse] = Field(default_factory=list)

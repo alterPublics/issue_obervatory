@@ -20,12 +20,13 @@ from sqlalchemy import select, update
 
 from issue_observatory.core.credit_service import CreditService
 from issue_observatory.core.database import AsyncSessionLocal
+from issue_observatory.core.models.actors import Actor, ActorListMember, ActorPlatformPresence
 from issue_observatory.core.models.collection import (
     CollectionRun,
     CollectionTask,
     CreditTransaction,
 )
-from issue_observatory.core.models.query_design import QueryDesign
+from issue_observatory.core.models.query_design import ActorList, QueryDesign
 from issue_observatory.core.models.users import User
 from issue_observatory.core.retention_service import RetentionService
 
@@ -161,6 +162,7 @@ async def fetch_unsettled_reservations() -> list[dict[str, Any]]:
                 CreditTransaction.credits_consumed.label("reserved_credits"),
                 CollectionRun.completed_at,
                 CollectionRun.records_collected,
+                CollectionRun.query_design_id,
                 User.email.label("user_email"),
             )
             .join(
@@ -306,3 +308,53 @@ async def enforce_retention(retention_days: int) -> int:
         return await _retention_service.enforce_retention(
             db, retention_days=retention_days
         )
+
+
+# ---------------------------------------------------------------------------
+# GR-14 public-figure helpers
+# ---------------------------------------------------------------------------
+
+
+async def fetch_public_figure_ids_for_design(query_design_id: Any) -> set[str]:
+    """Return the set of platform user IDs for all public-figure actors in a query design.
+
+    Queries the actor-list members associated with *query_design_id* and
+    returns the ``platform_user_id`` values from their
+    ``ActorPlatformPresence`` rows where the linked ``Actor.public_figure``
+    flag is ``True``.
+
+    This set is consumed by :func:`~workers.tasks.trigger_daily_collection`
+    before dispatching arena tasks.  It is passed to each arena task as
+    ``public_figure_ids`` and ultimately forwarded to
+    :meth:`~core.normalizer.Normalizer.normalize` so that records authored
+    by known public figures bypass SHA-256 pseudonymization (GR-14 —
+    GDPR Art. 89(1) research exemption).
+
+    Only non-NULL ``platform_user_id`` values are included.  Presences
+    that have only a ``platform_username`` but no ``platform_user_id`` are
+    intentionally excluded because the normalizer matches on
+    ``author_platform_id`` (the native numeric or string user ID returned by
+    the upstream API), not on the display handle.
+
+    Args:
+        query_design_id: UUID of the ``QueryDesign`` whose actor lists to
+            inspect.
+
+    Returns:
+        Set of ``platform_user_id`` strings.  Empty set when no public-figure
+        actors are configured for the design, or when the design has no actor
+        lists at all.
+    """
+    async with AsyncSessionLocal() as db:
+        stmt = (
+            select(ActorPlatformPresence.platform_user_id)
+            .join(Actor, Actor.id == ActorPlatformPresence.actor_id)
+            .join(ActorListMember, ActorListMember.actor_id == Actor.id)
+            .join(ActorList, ActorList.id == ActorListMember.actor_list_id)
+            .where(ActorList.query_design_id == query_design_id)
+            .where(Actor.public_figure.is_(True))
+            .where(ActorPlatformPresence.platform_user_id.is_not(None))
+        )
+        result = await db.execute(stmt)
+        rows = result.scalars().all()
+        return {str(uid) for uid in rows}

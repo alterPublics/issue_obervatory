@@ -1,0 +1,93 @@
+{#
+    HTMX partial — Cross-platform name search results (GR-18).
+
+    Rendered by POST /actors/{actor_id}/similar/cross-platform when the
+    HX-Request header is present.
+
+    Context:
+        actor_id   (str): UUID string of the actor being queried.
+        actor_name (str): The canonical name that was searched.
+        candidates (list): Actor dicts from SimilarityFinder.cross_platform_match().
+            Each dict has:
+              platform, platform_username, canonical_name, profile_url,
+              confidence_score (float 0–1), discovery_method.
+#}
+{% if candidates %}
+<ul class="divide-y divide-gray-100" role="list">
+    {% for c in candidates %}
+    {% set platform = c.platform         | default('') %}
+    {% set username = c.platform_username| default('') %}
+    {% set display  = c.canonical_name   | default(username) %}
+    {% set url      = c.profile_url      | default('') %}
+    {% set score    = c.confidence_score | default(0.0) %}
+    {% set pct      = (score * 100) | round(0) | int %}
+
+    <li class="flex items-center justify-between gap-4 py-3 px-1">
+
+        {# Left: platform badge + name + confidence bar #}
+        <div class="flex items-center gap-3 min-w-0 flex-1">
+            {# Platform badge #}
+            {% if platform == 'bluesky' %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-sky-100 text-sky-800 flex-shrink-0">Bluesky</span>
+            {% elif platform == 'reddit' %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 flex-shrink-0">Reddit</span>
+            {% elif platform == 'youtube' %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800 flex-shrink-0">YouTube</span>
+            {% else %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700 flex-shrink-0 capitalize">{{ platform }}</span>
+            {% endif %}
+
+            <div class="min-w-0 flex-1">
+                <div class="flex items-center justify-between gap-2">
+                    <p class="text-sm font-medium text-gray-900 truncate">{{ display }}</p>
+                    <span class="text-xs font-mono text-gray-400 flex-shrink-0">{{ pct }}%</span>
+                </div>
+                <p class="text-xs text-gray-400 font-mono truncate">{{ username }}</p>
+
+                {# Confidence progress bar #}
+                <div class="mt-1 w-full bg-gray-100 rounded-full h-1"
+                     role="progressbar"
+                     aria-valuenow="{{ pct }}" aria-valuemin="0" aria-valuemax="100"
+                     aria-label="Confidence score {{ pct }}%">
+                    <div class="h-1 rounded-full
+                        {% if score >= 0.8 %}bg-green-500
+                        {% elif score >= 0.5 %}bg-yellow-400
+                        {% else %}bg-gray-400
+                        {% endif %}"
+                         style="width: {{ [pct, 100] | min }}%"></div>
+                </div>
+            </div>
+        </div>
+
+        {# Right: action buttons #}
+        <div class="flex items-center gap-2 flex-shrink-0">
+            {% if url %}
+            <a href="{{ url }}"
+               target="_blank"
+               rel="noopener noreferrer"
+               class="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-500 border border-gray-200 rounded hover:bg-gray-50 transition-colors"
+               aria-label="View {{ display }} on {{ platform }}">
+                View Profile
+            </a>
+            {% endif %}
+
+            <button type="button"
+                    hx-post="/actors/quick-add"
+                    hx-vals='{"platform": "{{ platform }}", "platform_username": "{{ username }}", "display_name": "{{ display }}"}'
+                    hx-headers='{"Content-Type": "application/json"}'
+                    hx-swap="none"
+                    hx-on::after-request="if(event.detail.successful){ this.textContent='Added'; this.disabled=true; this.classList.add('opacity-50'); }"
+                    class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-700 border border-blue-200 rounded hover:bg-blue-50 transition-colors">
+                Add to Registry
+            </button>
+        </div>
+
+    </li>
+    {% endfor %}
+</ul>
+{% else %}
+<p class="text-sm text-gray-400 px-1 py-4">
+    No matching accounts found for "<strong>{{ actor_name | default('this actor') }}</strong>" on the selected platforms.
+    Try adding a platform presence first so the actor's handle can be searched directly.
+</p>
+{% endif %}

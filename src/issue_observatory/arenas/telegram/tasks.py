@@ -107,6 +107,43 @@ def _update_task_status(
 
 
 # ---------------------------------------------------------------------------
+# arenas_config helper
+# ---------------------------------------------------------------------------
+
+
+def _load_arenas_config(query_design_id: str) -> dict:
+    """Load ``arenas_config`` from the QueryDesign row identified by *query_design_id*.
+
+    Uses a synchronous SQLAlchemy session (Celery worker context).  Returns an
+    empty dict if the design is not found or on any DB error.
+
+    Args:
+        query_design_id: UUID string of the owning query design.
+
+    Returns:
+        The ``arenas_config`` JSONB dict, or ``{}`` on failure.
+    """
+    try:
+        from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+        from sqlalchemy import text  # noqa: PLC0415
+
+        with get_sync_session() as session:
+            row = session.execute(
+                text("SELECT arenas_config FROM query_designs WHERE id = :id"),
+                {"id": query_design_id},
+            ).fetchone()
+            if row and row[0]:
+                return dict(row[0])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "telegram: failed to load arenas_config for design %s: %s",
+            query_design_id,
+            exc,
+        )
+    return {}
+
+
+# ---------------------------------------------------------------------------
 # Tasks
 # ---------------------------------------------------------------------------
 
@@ -135,7 +172,11 @@ def telegram_collect_terms(
     """Collect Telegram messages matching a list of search terms.
 
     Searches each term across the configured Danish channel list (and any
-    additional channels in ``channel_ids``) using the Telethon MTProto client.
+    additional channels in ``channel_ids`` or ``arenas_config["telegram"]["custom_channels"]``)
+    using the Telethon MTProto client.
+
+    Reads ``arenas_config["telegram"]["custom_channels"]`` from the QueryDesign
+    (GR-02) and merges the extra channels with the default Danish channel list.
 
     Args:
         query_design_id: UUID string of the owning query design.
@@ -147,6 +188,8 @@ def telegram_collect_terms(
         max_results: Optional cap on total records.
         channel_ids: Additional channel usernames or numeric IDs to search
             beyond the default Danish channel list.
+        language_filter: Optional list of ISO 639-1 language codes resolved
+            from ``arenas_config["languages"]`` (GR-05).
 
     Returns:
         Dict with:
@@ -171,6 +214,15 @@ def telegram_collect_terms(
     )
     _update_task_status(collection_run_id, "social_media", "running")
 
+    # GR-02: read researcher-configured extra channels from arenas_config.
+    arenas_config = _load_arenas_config(query_design_id)
+    extra_channel_ids: list[str] | None = None
+    telegram_config = arenas_config.get("telegram") or {}
+    if isinstance(telegram_config, dict):
+        raw_channels = telegram_config.get("custom_channels")
+        if isinstance(raw_channels, list) and raw_channels:
+            extra_channel_ids = [str(c) for c in raw_channels if c]
+
     credential_pool = get_credential_pool()
     collector = TelegramCollector(credential_pool=credential_pool)
 
@@ -184,6 +236,7 @@ def telegram_collect_terms(
                 max_results=max_results,
                 actor_ids=channel_ids,
                 language_filter=language_filter,
+                extra_channel_ids=extra_channel_ids,
             )
         )
     except NoCredentialAvailableError as exc:

@@ -2,21 +2,22 @@
 
 Queries the Internet Archive's Wayback Machine CDX API for historical web
 page snapshots of Danish domains. Returns capture metadata from the CDX
-index; actual page content retrieval is out of scope for Phase 2.
+index. Optional content retrieval fetches the full archived page text.
 
 **Design notes**:
 
-- Returns CDX capture records (metadata only). ``raw_metadata`` contains
-  CDX fields plus a ``wayback_url`` field (full archive URL) for future
-  content retrieval.
+- Returns CDX capture records. ``raw_metadata`` contains CDX fields plus a
+  ``wayback_url`` field (full archive URL) used for optional content fetch.
 - ``collect_by_terms()`` queries ``*.dk`` captures and filters client-side
   by term substring match against the ``original`` URL field.
 - ``collect_by_actors()`` queries captures for specific domains or URL
   prefixes. Actor IDs are domain names (e.g. ``"dr.dk"``).
 - Pagination via ``showResumeKey=true`` and ``resumeKey`` parameter.
-- Rate limiting: 1 req/sec courtesy throttle. Falls back to
+- CDX rate limiting: 1 req/sec courtesy throttle. Falls back to
   ``asyncio.sleep(1)`` when no ``RateLimiter`` is injected.
-- 503 responses are handled gracefully (WARNING + skip page, no exception).
+- Content fetch rate limiting: a dedicated asyncio semaphore enforces the
+  15 req/min limit on page retrievals (separate from CDX rate limiting).
+- 503 responses from both CDX and content endpoints are handled gracefully.
 - Low-level HTTP helpers are in :mod:`._fetcher` to keep this file concise.
 """
 
@@ -40,6 +41,7 @@ from issue_observatory.arenas.web.wayback._fetcher import (
     format_wb_timestamp,
     parse_wb_timestamp,
 )
+from issue_observatory.arenas.web.wayback._content_fetcher import fetch_content_for_records
 from issue_observatory.arenas.web.wayback.config import (
     WB_CDX_BASE_URL,
     WB_CONCURRENT_FETCH_LIMIT,
@@ -64,7 +66,9 @@ class WaybackCollector(ArenaCollector):
     """Collects web page snapshot metadata via the Wayback Machine CDX API.
 
     Queries the Internet Archive CDX API for captures of Danish ``.dk`` domains.
-    Returns snapshot metadata only; full page content retrieval is out of scope.
+    By default returns CDX metadata only.  Pass ``fetch_content=True`` to
+    ``collect_by_terms()`` or ``collect_by_actors()`` to also retrieve and
+    extract the full archived page text (GR-12).
 
     Supported tiers:
     - ``Tier.FREE`` — Wayback Machine CDX API; no credentials required.
@@ -107,6 +111,7 @@ class WaybackCollector(ArenaCollector):
         max_results: int | None = None,
         term_groups: list[list[str]] | None = None,
         language_filter: list[str] | None = None,
+        fetch_content: bool = False,
     ) -> list[dict[str, Any]]:
         """Collect Wayback Machine CDX captures for Danish pages matching terms.
 
@@ -116,6 +121,14 @@ class WaybackCollector(ArenaCollector):
         No native boolean support.  When ``term_groups`` is provided each
         AND-group is searched as a separate space-joined query.
 
+        When ``fetch_content=True``, each CDX record's archived page is fetched
+        via the Wayback Machine playback URL and text is extracted using
+        ``trafilatura``.  A dedicated rate-limit semaphore enforces 15 req/min
+        on content fetches (separate from the CDX API semaphore).  Tier limits
+        apply: FREE fetches up to 50 records; MEDIUM up to 200.  Individual
+        fetch failures are isolated — they log a warning and mark the record
+        without aborting the overall collection.
+
         Args:
             terms: Search terms (used when ``term_groups`` is ``None``).
             tier: Must be ``Tier.FREE``.
@@ -124,9 +137,13 @@ class WaybackCollector(ArenaCollector):
             max_results: Upper bound on returned records.
             term_groups: Optional boolean AND/OR groups.
             language_filter: Not used — Wayback has no language filter.
+            fetch_content: When ``True``, fetch and extract text for each
+                record that has a ``wayback_url``.  Defaults to ``False``.
 
         Returns:
-            List of normalized content record dicts (web page snapshots).
+            List of normalized content record dicts.  When ``fetch_content``
+            is ``True`` and extraction succeeded, ``text_content`` is
+            populated and ``content_type`` is ``"web_page"``.
 
         Raises:
             ValueError: If *tier* is not ``Tier.FREE``.
@@ -165,10 +182,14 @@ class WaybackCollector(ArenaCollector):
                 )
                 all_records.extend(term_records)
 
+        if fetch_content and all_records:
+            all_records = await self._fetch_content_for_records(all_records, tier)
+
         logger.info(
-            "wayback: collect_by_terms — %d records for %d queries",
+            "wayback: collect_by_terms — %d records for %d queries (fetch_content=%s)",
             len(all_records),
             len(effective_terms),
+            fetch_content,
         )
         return all_records
 
@@ -179,10 +200,17 @@ class WaybackCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        fetch_content: bool = False,
     ) -> list[dict[str, Any]]:
         """Collect Wayback Machine CDX captures for the specified domains.
 
         Actor IDs are domain names or URL prefixes (e.g. ``"dr.dk"``).
+
+        When ``fetch_content=True``, each CDX record's archived page is fetched
+        via the Wayback Machine playback URL and text is extracted using
+        ``trafilatura``.  A dedicated rate-limit semaphore enforces 15 req/min
+        on content fetches.  Tier limits apply: FREE fetches up to 50 records;
+        MEDIUM up to 200.  Individual fetch failures are isolated.
 
         Args:
             actor_ids: Domain names or URL prefixes to query.
@@ -190,9 +218,13 @@ class WaybackCollector(ArenaCollector):
             date_from: Earliest capture timestamp (inclusive).
             date_to: Latest capture timestamp (inclusive).
             max_results: Upper bound on returned records.
+            fetch_content: When ``True``, fetch and extract text for each
+                record that has a ``wayback_url``.  Defaults to ``False``.
 
         Returns:
-            List of normalized content record dicts.
+            List of normalized content record dicts.  When ``fetch_content``
+            is ``True`` and extraction succeeded, ``text_content`` is
+            populated and ``content_type`` is ``"web_page"``.
 
         Raises:
             ValueError: If *tier* is not ``Tier.FREE``.
@@ -222,10 +254,14 @@ class WaybackCollector(ArenaCollector):
                 )
                 all_records.extend(actor_records)
 
+        if fetch_content and all_records:
+            all_records = await self._fetch_content_for_records(all_records, tier)
+
         logger.info(
-            "wayback: collect_by_actors — %d records for %d actors",
+            "wayback: collect_by_actors — %d records for %d actors (fetch_content=%s)",
             len(all_records),
             len(actor_ids),
+            fetch_content,
         )
         return all_records
 
@@ -431,6 +467,27 @@ class WaybackCollector(ArenaCollector):
                     "wayback: rate_limiter.wait_for_slot failed (%s) — sleeping 1s", exc
                 )
         await asyncio.sleep(1.0)
+
+    async def _fetch_content_for_records(
+        self,
+        records: list[dict[str, Any]],
+        tier: Tier,
+    ) -> list[dict[str, Any]]:
+        """Fetch archived page content for a batch of CDX records.
+
+        Delegates to
+        :func:`~issue_observatory.arenas.web.wayback._content_fetcher.fetch_content_for_records`.
+        Applies the per-tier cap (FREE: 50, MEDIUM: 200) and enforces the
+        15 req/min content fetch rate limit.
+
+        Args:
+            records: List of normalized CDX record dicts.
+            tier: Current operational tier — used to look up the fetch cap.
+
+        Returns:
+            The same list with content-enriched records where applicable.
+        """
+        return await fetch_content_for_records(records, tier)
 
     async def _query_term(
         self,

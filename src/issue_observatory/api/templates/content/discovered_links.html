@@ -1,0 +1,829 @@
+{% extends "base.html" %}
+{% block title %}Discovered Sources — Issue Observatory{% endblock %}
+
+{#
+    GR-22: Discovered Sources page.
+
+    Surfaces outbound links found in collected content — accounts and channels that
+    were mentioned or linked-to but not explicitly collected. Researchers can review
+    these and add promising sources to their actor collection.
+
+    Route: GET /content/discovered-links — serves this template
+    Backend endpoint: GET /content/discovered-links returns JSON for HTMX partial updates
+
+    Backend contracts expected:
+        GET /content/discovered-links
+            Query params:
+                platform (str, optional)    — filter to one platform slug
+                min_count (int, default 1)  — minimum number of times a link was seen
+                query_design_id (str, opt)  — scope to a specific query design
+                offset (int, default 0)     — pagination offset
+                limit (int, default 25)     — page size
+            Returns (HTML for full page) or (JSON for HTMX partial):
+                {
+                  items: [{
+                    id: str,
+                    platform: str,                    -- e.g. "telegram"
+                    target_identifier: str,           -- e.g. "@channel" or "r/subreddit"
+                    target_url: str | null,           -- direct link to the platform resource
+                    source_count: int,                -- how many collected items mention it
+                    first_seen: str,                  -- ISO datetime
+                    last_seen: str,                   -- ISO datetime
+                  }],
+                  total: int,
+                  has_more: bool,
+                  next_offset: int
+                }
+
+        POST /actors/quick-add
+            Body (JSON): {
+                display_name: str,
+                platform: str,
+                platform_username: str,
+                actor_type: "Individual" | "Organization" | "Bot",
+                actor_list_id: str | null
+            }
+            Returns: { was_created: bool, actor_id: str }
+
+        POST /actors/quick-add-bulk
+            Body (JSON): {
+                sources: [{
+                    platform: str,
+                    platform_username: str,
+                    display_name: str,
+                    actor_type: str
+                }],
+                actor_list_id: str | null
+            }
+            Returns: { added: int, skipped: int, errors: [str] }
+
+    Context (passed by route):
+        - links (list): initial page of discovered link dicts
+        - total (int): total discovered links matching current filters
+        - has_more (bool): whether more pages exist
+        - next_offset (int): offset value for the "Load more" button
+        - filter (dict): active filter values
+        - query_designs (list): [{id, name}] for the query design selector
+        - active_query_design_id (str|None)
+#}
+{% set links = links | default([]) %}
+{% set total = total | default(0) %}
+{% set has_more = has_more | default(false) %}
+{% set next_offset = next_offset | default(25) %}
+{% set filter = filter | default({}) %}
+{% set query_designs = query_designs | default([]) %}
+{% set active_query_design_id = active_query_design_id | default('') %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto space-y-6"
+     x-data="discoveredSources('{{ active_query_design_id }}')">
+
+    {# ------------------------------------------------------------------ #}
+    {# Page header                                                         #}
+    {# ------------------------------------------------------------------ #}
+    <div class="flex items-start justify-between">
+        <div>
+            <div class="flex items-center gap-2 text-xs text-gray-500 mb-1">
+                <a href="/content" class="hover:text-gray-700 transition-colors">Content</a>
+                <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
+                </svg>
+                <span class="text-gray-900 font-medium">Discovered Sources</span>
+            </div>
+            <h1 class="text-xl font-bold text-gray-900">Discovered Sources</h1>
+            <p class="text-sm text-gray-500 mt-0.5">
+                Platform accounts and channels mentioned in collected content — not yet in your collection.
+            </p>
+        </div>
+
+        {# Bulk import button — enabled when checkboxes are selected #}
+        <div class="flex items-center gap-3">
+            <span x-show="selected.size > 0"
+                  class="text-sm text-gray-600"
+                  x-text="`${selected.size} selected`">
+            </span>
+            <button type="button"
+                    @click="importSelected()"
+                    x-show="selected.size > 0"
+                    x-cloak
+                    :disabled="bulkLoading"
+                    class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                <svg x-show="bulkLoading"
+                     class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg"
+                     fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+                <span x-text="bulkLoading ? 'Importing...' : 'Import Selected'"></span>
+            </button>
+        </div>
+    </div>
+
+    {# ------------------------------------------------------------------ #}
+    {# Bulk operation result banner                                        #}
+    {# ------------------------------------------------------------------ #}
+    <div x-show="bulkResult"
+         x-cloak
+         :class="bulkResult && bulkResult.errors && bulkResult.errors.length > 0
+             ? 'bg-yellow-50 border-yellow-200'
+             : 'bg-green-50 border-green-200'"
+         class="flex items-start gap-3 border rounded-md px-4 py-3">
+        <svg class="w-4 h-4 mt-0.5 flex-shrink-0"
+             :class="bulkResult && bulkResult.errors && bulkResult.errors.length > 0
+                 ? 'text-yellow-600' : 'text-green-600'"
+             xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+             stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+        </svg>
+        <div class="text-sm">
+            <p :class="bulkResult && bulkResult.errors && bulkResult.errors.length > 0
+                   ? 'text-yellow-800' : 'text-green-800'"
+               x-text="bulkResult
+                   ? `Import complete: ${bulkResult.added} added, ${bulkResult.skipped} already existed.`
+                   : ''">
+            </p>
+            <template x-if="bulkResult && bulkResult.errors && bulkResult.errors.length > 0">
+                <ul class="mt-1 space-y-0.5">
+                    <template x-for="err in bulkResult.errors" :key="err">
+                        <li class="text-yellow-700 text-xs" x-text="err"></li>
+                    </template>
+                </ul>
+            </template>
+        </div>
+        <button @click="bulkResult = null"
+                class="ml-auto text-gray-400 hover:text-gray-600">
+            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+        </button>
+    </div>
+
+    {# ------------------------------------------------------------------ #}
+    {# Filter bar                                                          #}
+    {# ------------------------------------------------------------------ #}
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200 px-5 py-4">
+        <form id="discovered-filter-form"
+              class="flex flex-wrap items-end gap-4"
+              hx-get="/content/discovered-links"
+              hx-target="#discovered-links-container"
+              hx-swap="innerHTML"
+              hx-trigger="change, keyup changed delay:400ms"
+              hx-push-url="true"
+              hx-indicator="#filter-spinner">
+
+            {# Platform filter #}
+            <div class="flex-1 min-w-36">
+                <label for="dl-platform" class="block text-xs font-medium text-gray-700 mb-1 uppercase tracking-wider">
+                    Platform
+                </label>
+                <select id="dl-platform"
+                        name="platform"
+                        class="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                    <option value="" {% if not filter.platform | default('') %}selected{% endif %}>All platforms</option>
+                    <option value="telegram"  {% if filter.platform | default('') == 'telegram'  %}selected{% endif %}>Telegram</option>
+                    <option value="reddit"    {% if filter.platform | default('') == 'reddit'    %}selected{% endif %}>Reddit</option>
+                    <option value="youtube"   {% if filter.platform | default('') == 'youtube'   %}selected{% endif %}>YouTube</option>
+                    <option value="bluesky"   {% if filter.platform | default('') == 'bluesky'   %}selected{% endif %}>Bluesky</option>
+                    <option value="discord"   {% if filter.platform | default('') == 'discord'   %}selected{% endif %}>Discord</option>
+                    <option value="gab"       {% if filter.platform | default('') == 'gab'       %}selected{% endif %}>Gab</option>
+                    <option value="web"       {% if filter.platform | default('') == 'web'       %}selected{% endif %}>Web</option>
+                </select>
+            </div>
+
+            {# Minimum source count slider #}
+            <div class="flex-1 min-w-48">
+                <label class="block text-xs font-medium text-gray-700 mb-1 uppercase tracking-wider">
+                    Min. mentions:
+                    <span class="font-semibold text-gray-900 ml-1" x-text="minCount"></span>
+                </label>
+                <input type="range"
+                       name="min_count"
+                       id="dl-min-count"
+                       min="1" max="50" step="1"
+                       value="{{ filter.min_count | default(1) }}"
+                       x-model.number="minCount"
+                       class="w-full accent-blue-600">
+                <div class="flex justify-between text-xs text-gray-400 mt-0.5">
+                    <span>1</span>
+                    <span>50+</span>
+                </div>
+            </div>
+
+            {# Query design selector #}
+            <div class="flex-1 min-w-44">
+                <label for="dl-query-design" class="block text-xs font-medium text-gray-700 mb-1 uppercase tracking-wider">
+                    Query design
+                </label>
+                <select id="dl-query-design"
+                        name="query_design_id"
+                        class="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                    <option value="" {% if not filter.query_design_id | default('') %}selected{% endif %}>All designs</option>
+                    {% for qd in query_designs %}
+                    <option value="{{ qd.id }}"
+                            {% if filter.query_design_id | default('') == qd.id | string %}selected{% endif %}>
+                        {{ qd.name | default(qd.id | string) | truncate(32, true, '…') }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            {# Spinner #}
+            <div class="flex items-center self-end pb-1.5">
+                <span id="filter-spinner" class="htmx-indicator">
+                    <svg class="animate-spin w-4 h-4 text-blue-600" xmlns="http://www.w3.org/2000/svg"
+                         fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                </span>
+            </div>
+
+        </form>
+    </div>
+
+    {# ------------------------------------------------------------------ #}
+    {# Results header                                                      #}
+    {# ------------------------------------------------------------------ #}
+    <div class="flex items-center justify-between">
+        <p class="text-xs text-gray-500">
+            {% if total > 0 %}
+                {{ total }} discovered source{% if total != 1 %}s{% endif %}
+            {% else %}
+                No discovered sources match the current filters.
+            {% endif %}
+        </p>
+        <div class="flex items-center gap-3 text-xs">
+            <button type="button"
+                    @click="selectAll()"
+                    class="text-blue-600 hover:underline">
+                Select all visible
+            </button>
+            <span class="text-gray-300">|</span>
+            <button type="button"
+                    @click="clearSelection()"
+                    class="text-gray-500 hover:underline">
+                Clear
+            </button>
+        </div>
+    </div>
+
+    {# ------------------------------------------------------------------ #}
+    {# Discovered links grid — HTMX-swappable container                   #}
+    {# ------------------------------------------------------------------ #}
+    <div id="discovered-links-container">
+
+        {% if links %}
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+            <table class="min-w-full divide-y divide-gray-200 text-sm">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="w-10 px-4 py-3">
+                            <input type="checkbox"
+                                   @change="$event.target.checked ? selectAll() : clearSelection()"
+                                   :checked="selected.size > 0 && selected.size === visibleCount"
+                                   class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        </th>
+                        <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Platform</th>
+                        <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
+                        <th class="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Mentions</th>
+                        <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden lg:table-cell">First seen</th>
+                        <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden lg:table-cell">Last seen</th>
+                        <th class="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100" id="discovered-links-tbody">
+                    {% for link in links %}
+                    {% set p = link.platform | default('') %}
+                    <tr class="hover:bg-gray-50 transition-colors"
+                        data-link-id="{{ link.id | default(loop.index) }}"
+                        data-platform="{{ p }}"
+                        data-identifier="{{ link.target_identifier | default('') }}"
+                        data-source-count="{{ link.source_count | default(0) }}">
+
+                        {# Checkbox #}
+                        <td class="px-4 py-3">
+                            <input type="checkbox"
+                                   value="{{ link.id | default(loop.index) }}"
+                                   @change="toggleSelect('{{ link.id | default(loop.index) }}', '{{ p }}', '{{ link.target_identifier | default('') }}')"
+                                   :checked="selected.has('{{ link.id | default(loop.index) }}')"
+                                   class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        </td>
+
+                        {# Platform badge — colour-coded per GR-22 spec #}
+                        <td class="px-4 py-3 whitespace-nowrap">
+                            <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium
+                                {% if p == 'telegram' %}bg-blue-100 text-blue-800
+                                {% elif p == 'reddit' %}bg-orange-100 text-orange-800
+                                {% elif p == 'youtube' %}bg-red-100 text-red-800
+                                {% elif p == 'bluesky' %}bg-sky-100 text-sky-800
+                                {% elif p == 'discord' %}bg-indigo-100 text-indigo-800
+                                {% elif p == 'gab' %}bg-green-100 text-green-800
+                                {% else %}bg-gray-100 text-gray-700{% endif %}">
+
+                                {# Platform icon #}
+                                {% if p == 'telegram' %}
+                                <svg class="w-3 h-3" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                    <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.247l-2.03 9.57c-.148.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12L6.922 14.38l-2.95-.924c-.64-.203-.655-.64.135-.948l11.527-4.447c.533-.194 1.001.13.928.186z"/>
+                                </svg>
+                                {% elif p == 'reddit' %}
+                                <svg class="w-3 h-3" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                    <path d="M12 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0zm5.01 4.744c.688 0 1.25.561 1.25 1.249a1.25 1.25 0 0 1-2.498.056l-2.597-.547-.8 3.747c1.824.07 3.48.632 4.674 1.488.308-.309.73-.491 1.207-.491.968 0 1.754.786 1.754 1.754 0 .716-.435 1.333-1.01 1.614a3.111 3.111 0 0 1 .042.52c0 2.694-3.13 4.87-7.004 4.87-3.874 0-7.004-2.176-7.004-4.87 0-.183.015-.366.043-.534A1.748 1.748 0 0 1 4.028 12c0-.968.786-1.754 1.754-1.754.463 0 .898.196 1.207.49 1.207-.883 2.878-1.43 4.744-1.487l.885-4.182a.342.342 0 0 1 .14-.197.35.35 0 0 1 .238-.042l2.906.617a1.214 1.214 0 0 1 1.108-.701zM9.25 12C8.561 12 8 12.562 8 13.25c0 .687.561 1.248 1.25 1.248.687 0 1.248-.561 1.248-1.249 0-.688-.561-1.249-1.249-1.249zm5.5 0c-.687 0-1.248.561-1.248 1.25 0 .687.561 1.248 1.249 1.248.688 0 1.249-.561 1.249-1.249 0-.687-.562-1.249-1.25-1.249zm-5.466 3.99a.327.327 0 0 0-.231.094.33.33 0 0 0 0 .463c.842.842 2.484.913 2.961.913.477 0 2.105-.056 2.961-.913a.361.361 0 0 0 .029-.463.33.33 0 0 0-.464 0c-.547.533-1.684.73-2.512.73-.828 0-1.979-.196-2.512-.73a.326.326 0 0 0-.232-.095z"/>
+                                </svg>
+                                {% elif p == 'youtube' %}
+                                <svg class="w-3 h-3" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                    <path d="M23.495 6.205a3.007 3.007 0 0 0-2.088-2.088c-1.87-.501-9.396-.501-9.396-.501s-7.507-.01-9.396.501A3.007 3.007 0 0 0 .527 6.205a31.247 31.247 0 0 0-.522 5.805 31.247 31.247 0 0 0 .522 5.783 3.007 3.007 0 0 0 2.088 2.088c1.868.502 9.396.502 9.396.502s7.506 0 9.396-.502a3.007 3.007 0 0 0 2.088-2.088 31.247 31.247 0 0 0 .5-5.783 31.247 31.247 0 0 0-.5-5.805zM9.609 15.601V8.408l6.264 3.602z"/>
+                                </svg>
+                                {% elif p == 'bluesky' %}
+                                <svg class="w-3 h-3" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                    <path d="M12 10.8c-1.087-2.114-4.046-6.053-6.798-7.995C2.566.944 1.561 1.266.902 1.565.139 1.908 0 3.08 0 3.768c0 .69.378 5.65.624 6.479.815 2.736 3.713 3.66 6.383 3.364.136-.02.275-.039.415-.056-.138.022-.276.04-.415.056-3.912.58-7.387 2.005-2.83 7.078 5.013 5.19 6.87-1.113 7.823-4.308.953 3.195 2.05 9.271 7.733 4.308 4.267-4.308 1.172-6.498-2.74-7.078a8.741 8.741 0 0 1-.415-.056c.14.017.279.036.415.056 2.67.297 5.568-.628 6.383-3.364.246-.828.624-5.79.624-6.478 0-.69-.139-1.861-.902-2.204-.659-.298-1.664-.62-4.3 1.24C16.046 4.748 13.087 8.687 12 10.8z"/>
+                                </svg>
+                                {% elif p == 'discord' %}
+                                <svg class="w-3 h-3" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                    <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057.1 18.079.11 18.1.128 18.114a19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/>
+                                </svg>
+                                {% elif p == 'gab' %}
+                                <svg class="w-3 h-3" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                    <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm-.5 6.5h1v6h-1zm.5 9a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"/>
+                                </svg>
+                                {% else %}
+                                <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                          d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+                                </svg>
+                                {% endif %}
+
+                                {{ p | capitalize if p else 'Web' }}
+                            </span>
+                        </td>
+
+                        {# Target identifier — linked to the platform URL when available #}
+                        <td class="px-4 py-3">
+                            {% if link.target_url | default('') %}
+                            <a href="{{ link.target_url }}"
+                               target="_blank"
+                               rel="noopener noreferrer"
+                               class="font-medium text-blue-700 hover:text-blue-900 hover:underline font-mono text-xs"
+                               @click.stop>
+                                {{ link.target_identifier | default('(unknown)') | truncate(50, true, '…') }}
+                            </a>
+                            {% else %}
+                            <span class="font-mono text-xs text-gray-900">
+                                {{ link.target_identifier | default('(unknown)') | truncate(50, true, '…') }}
+                            </span>
+                            {% endif %}
+                        </td>
+
+                        {# Source count badge #}
+                        <td class="px-4 py-3 text-center">
+                            {% set cnt = link.source_count | default(0) | int %}
+                            <span class="inline-flex items-center justify-center min-w-[2rem] px-2 py-0.5 rounded-full text-xs font-medium
+                                {% if cnt >= 50 %}bg-blue-600 text-white
+                                {% elif cnt >= 10 %}bg-blue-100 text-blue-800
+                                {% elif cnt >= 3 %}bg-gray-200 text-gray-700
+                                {% else %}bg-gray-100 text-gray-500{% endif %}">
+                                {{ cnt }}
+                            </span>
+                        </td>
+
+                        {# First seen #}
+                        <td class="px-4 py-3 text-xs text-gray-500 whitespace-nowrap hidden lg:table-cell">
+                            {{ link.first_seen | default('') | truncate(10, true, '') }}
+                        </td>
+
+                        {# Last seen #}
+                        <td class="px-4 py-3 text-xs text-gray-500 whitespace-nowrap hidden lg:table-cell">
+                            {{ link.last_seen | default('') | truncate(10, true, '') }}
+                        </td>
+
+                        {# Add to collection button — opens quick-add modal pre-filled #}
+                        <td class="px-4 py-3 text-right">
+                            <button type="button"
+                                    @click.stop="openQuickAdd({
+                                        platform: '{{ p }}',
+                                        identifier: '{{ link.target_identifier | default('') | replace("'", "\\'") }}'
+                                    })"
+                                    class="inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 text-blue-700 text-xs font-medium rounded border border-blue-200 hover:bg-blue-100 hover:border-blue-300 transition-colors">
+                                <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+                                </svg>
+                                Add
+                            </button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {# HTMX "Load more" pagination — offset-based, 25 links per page #}
+        {% if has_more %}
+        <div class="flex justify-center mt-4">
+            <button type="button"
+                    hx-get="/content/discovered-links?offset={{ next_offset }}"
+                    hx-target="#discovered-links-tbody"
+                    hx-swap="beforeend"
+                    hx-include="#discovered-filter-form"
+                    hx-indicator="#load-more-spinner"
+                    class="inline-flex items-center gap-2 px-4 py-2 bg-white text-gray-700 text-sm font-medium border border-gray-200 rounded-md hover:bg-gray-50 transition-colors">
+                <span id="load-more-spinner" class="htmx-indicator">
+                    <svg class="animate-spin w-4 h-4 text-blue-600" xmlns="http://www.w3.org/2000/svg"
+                         fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                </span>
+                Load more
+            </button>
+        </div>
+        {% endif %}
+
+        {% else %}
+        {# Empty state #}
+        <div class="bg-white rounded-lg shadow-sm border border-gray-200 px-6 py-16 text-center">
+            <svg class="mx-auto w-10 h-10 text-gray-300 mb-3" xmlns="http://www.w3.org/2000/svg"
+                 fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+            </svg>
+            <h3 class="text-sm font-medium text-gray-900">No discovered sources yet</h3>
+            <p class="text-xs text-gray-500 mt-1 max-w-sm mx-auto">
+                Discovered sources appear when collected content contains links or mentions of
+                external platform accounts. Run a collection first, then check back here.
+            </p>
+            <a href="/content"
+               class="mt-4 inline-flex items-center gap-2 px-3 py-2 bg-blue-600 text-white text-xs font-medium rounded-md hover:bg-blue-700 transition-colors">
+                Back to Content Browser
+            </a>
+        </div>
+        {% endif %}
+
+    </div>{# /#discovered-links-container #}
+
+</div>{# /max-w-6xl #}
+
+{# ====================================================================== #}
+{# GR-22 / GR-17 shared: Quick-Add Source modal                          #}
+{# ====================================================================== #}
+{#
+    Identical pattern to the one in browser.html, adapted for discovered links.
+    Pre-filled with the discovered link's platform + target_identifier.
+    Actor-list fetch uses the query design from the filter bar.
+#}
+<div x-data="discoveredQuickAdd('{{ active_query_design_id }}')"
+     @quick-add-discovered.window="openFromEvent($event)"
+     x-show="open"
+     x-cloak
+     class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40"
+     @keydown.escape.window="open && close()">
+
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-md mx-4" @click.stop>
+
+        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+            <h2 class="text-base font-semibold text-gray-900">Add to Collection</h2>
+            <button type="button" @click="close()"
+                    class="text-gray-400 hover:text-gray-600 transition-colors">
+                <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+
+        <div x-show="successMsg" x-cloak
+             class="mx-6 mt-4 flex items-center gap-2 bg-green-50 border border-green-200 rounded-md px-4 py-2.5">
+            <svg class="w-4 h-4 text-green-600 flex-shrink-0" xmlns="http://www.w3.org/2000/svg"
+                 fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+            </svg>
+            <p class="text-sm text-green-800" x-text="successMsg"></p>
+        </div>
+
+        <div x-show="errorMsg" x-cloak
+             class="mx-6 mt-4 flex items-center gap-2 bg-red-50 border border-red-200 rounded-md px-4 py-2.5">
+            <svg class="w-4 h-4 text-red-500 flex-shrink-0" xmlns="http://www.w3.org/2000/svg"
+                 fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <p class="text-sm text-red-700" x-text="errorMsg"></p>
+        </div>
+
+        <div class="px-6 py-5 space-y-4">
+
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">
+                    Display name <span class="text-red-500">*</span>
+                </label>
+                <input type="text" x-model="form.displayName"
+                       placeholder="Human-readable name"
+                       class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Platform</label>
+                <input type="text" x-model="form.platform"
+                       class="w-full border border-gray-300 rounded px-3 py-2 text-sm bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Platform username / identifier</label>
+                <input type="text" x-model="form.platformUsername"
+                       class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Actor type</label>
+                <select x-model="form.actorType"
+                        class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                    <option value="Individual">Individual</option>
+                    <option value="Organization">Organization</option>
+                    <option value="Bot">Bot</option>
+                </select>
+            </div>
+
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Add to actor list</label>
+                <div x-show="listsLoading" class="flex items-center gap-2 text-xs text-gray-400 py-1.5">
+                    <svg class="animate-spin w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg"
+                         fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    Loading actor lists...
+                </div>
+                <select x-show="!listsLoading" x-model="form.actorListId"
+                        class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                    <option value="">— No list (registry only) —</option>
+                    <template x-for="list in actorLists" :key="list.id">
+                        <option :value="list.id" x-text="list.name"></option>
+                    </template>
+                </select>
+            </div>
+
+        </div>
+
+        <div class="px-6 py-4 border-t border-gray-200 flex items-center justify-between">
+            <button type="button" @click="close()"
+                    class="text-sm text-gray-500 hover:text-gray-700 transition-colors">Cancel</button>
+            <button type="button"
+                    @click="submit()"
+                    :disabled="submitting || !form.displayName.trim()"
+                    class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                <svg x-show="submitting" class="animate-spin w-4 h-4"
+                     xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+                <span x-text="submitting ? 'Adding...' : 'Add to Collection'"></span>
+            </button>
+        </div>
+
+    </div>
+</div>
+
+<script>
+/**
+ * Alpine component for the Discovered Sources page.
+ * Manages checkbox selection state and bulk import.
+ *
+ * @param {string} queryDesignId - Active query design UUID (from Jinja context, may be empty).
+ */
+function discoveredSources(queryDesignId) {
+    return {
+        queryDesignId: queryDesignId || '',
+        // Map of linkId -> { platform, identifier } for selected rows.
+        selected: new Map(),
+        visibleCount: 0,
+        bulkLoading: false,
+        bulkResult: null,
+        minCount: 1,
+
+        init() {
+            // Count visible rows on init so the "select all" checkbox header works.
+            this.$nextTick(() => {
+                this.updateVisibleCount();
+            });
+        },
+
+        updateVisibleCount() {
+            const tbody = document.getElementById('discovered-links-tbody');
+            this.visibleCount = tbody ? tbody.querySelectorAll('tr[data-link-id]').length : 0;
+        },
+
+        toggleSelect(id, platform, identifier) {
+            if (this.selected.has(id)) {
+                this.selected.delete(id);
+            } else {
+                this.selected.set(id, { platform, identifier });
+            }
+            // Alpine reactive maps need manual trigger
+            this.selected = new Map(this.selected);
+        },
+
+        selectAll() {
+            const tbody = document.getElementById('discovered-links-tbody');
+            if (!tbody) return;
+            tbody.querySelectorAll('tr[data-link-id]').forEach(row => {
+                const id = row.dataset.linkId;
+                const platform = row.dataset.platform;
+                const identifier = row.dataset.identifier;
+                if (id) this.selected.set(id, { platform, identifier });
+            });
+            this.selected = new Map(this.selected);
+        },
+
+        clearSelection() {
+            this.selected = new Map();
+        },
+
+        /**
+         * Open the quick-add modal for a single discovered link row.
+         * Dispatches an event to the discoveredQuickAdd component.
+         */
+        openQuickAdd(data) {
+            this.$dispatch('quick-add-discovered', data);
+        },
+
+        /**
+         * Bulk import: POST all selected rows to /actors/quick-add-bulk.
+         * Shows a progress indicator and result summary banner.
+         *
+         * Backend contract:
+         *   POST /actors/quick-add-bulk
+         *   Body: { sources: [{platform, platform_username, display_name, actor_type}],
+         *           actor_list_id: str | null }
+         *   Returns: { added: int, skipped: int, errors: [str] }
+         */
+        async importSelected() {
+            if (this.selected.size === 0 || this.bulkLoading) return;
+
+            this.bulkLoading = true;
+            this.bulkResult = null;
+
+            const sources = [];
+            for (const [_id, info] of this.selected) {
+                sources.push({
+                    platform: info.platform,
+                    platform_username: info.identifier,
+                    display_name: info.identifier,   // best guess; researcher can edit after import
+                    actor_type: 'Individual',
+                });
+            }
+
+            // Try to pick up the currently-selected query design's first actor list.
+            // For the bulk import we use null (registry-only) since we don't have a list selector here.
+            const payload = {
+                sources,
+                actor_list_id: null,
+            };
+
+            try {
+                const res = await fetch('/actors/quick-add-bulk', {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    throw new Error(data.detail || `HTTP ${res.status}: ${res.statusText}`);
+                }
+
+                this.bulkResult = await res.json();
+                this.clearSelection();
+
+            } catch (e) {
+                this.bulkResult = {
+                    added: 0,
+                    skipped: 0,
+                    errors: [e.message || 'An unexpected error occurred.'],
+                };
+            } finally {
+                this.bulkLoading = false;
+            }
+        },
+    };
+}
+
+/**
+ * Alpine component for the quick-add modal on the Discovered Sources page.
+ * Mirrors the quickAddModal() component from browser.html but responds to
+ * the 'quick-add-discovered' custom event.
+ *
+ * @param {string} queryDesignId - Injected from Jinja context (may be empty string).
+ */
+function discoveredQuickAdd(queryDesignId) {
+    return {
+        open: false,
+        queryDesignId: queryDesignId || '',
+        submitting: false,
+        listsLoading: false,
+        actorLists: [],
+        successMsg: null,
+        errorMsg: null,
+
+        form: {
+            displayName: '',
+            platform: '',
+            platformUsername: '',
+            actorType: 'Individual',
+            actorListId: '',
+        },
+
+        openFromEvent(event) {
+            const { platform, identifier } = event.detail;
+            this.form.platform = platform || '';
+            this.form.platformUsername = identifier || '';
+            // Use identifier as display name; researcher can edit before submitting.
+            this.form.displayName = identifier || '';
+            this.form.actorType = 'Individual';
+            this.form.actorListId = '';
+            this.successMsg = null;
+            this.errorMsg = null;
+            this.open = true;
+            this.fetchActorLists();
+        },
+
+        close() {
+            this.open = false;
+            this.successMsg = null;
+            this.errorMsg = null;
+        },
+
+        async fetchActorLists() {
+            // Read query design from the filter bar in case it was changed since page load.
+            const filterSelect = document.getElementById('dl-query-design');
+            const effectiveDesignId = (filterSelect && filterSelect.value)
+                ? filterSelect.value
+                : this.queryDesignId;
+
+            if (!effectiveDesignId) {
+                this.actorLists = [];
+                return;
+            }
+            this.listsLoading = true;
+            try {
+                const res = await fetch(`/query-designs/${effectiveDesignId}/actor-lists`, {
+                    credentials: 'include',
+                    headers: { 'Accept': 'application/json' },
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                this.actorLists = Array.isArray(data) ? data : (data.results || data.items || []);
+            } catch (_e) {
+                this.actorLists = [];
+            } finally {
+                this.listsLoading = false;
+            }
+        },
+
+        async submit() {
+            if (!this.form.displayName.trim() || this.submitting) return;
+
+            this.submitting = true;
+            this.successMsg = null;
+            this.errorMsg = null;
+
+            try {
+                const payload = {
+                    display_name: this.form.displayName.trim(),
+                    platform: this.form.platform.trim(),
+                    platform_username: this.form.platformUsername.trim() || this.form.displayName.trim(),
+                    actor_type: this.form.actorType,
+                    actor_list_id: this.form.actorListId || null,
+                };
+
+                const res = await fetch('/actors/quick-add', {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    throw new Error(data.detail || `HTTP ${res.status}: ${res.statusText}`);
+                }
+
+                const result = await res.json();
+                this.successMsg = result.was_created === false
+                    ? 'Already in registry — added to actor list.'
+                    : 'Added to collection!';
+
+                setTimeout(() => { this.close(); }, 1500);
+
+            } catch (e) {
+                this.errorMsg = e.message || 'An unexpected error occurred.';
+            } finally {
+                this.submitting = false;
+            }
+        },
+    };
+}
+</script>
+{% endblock %}

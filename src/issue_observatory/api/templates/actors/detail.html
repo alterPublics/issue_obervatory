@@ -40,7 +40,8 @@
          x-cloak
          class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40"
          @keydown.escape.window="editOpen = false">
-        <div class="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 p-6" @click.stop>
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 p-6" @click.stop
+             x-data="{ publicFigure: {{ 'true' if actor.public_figure | default(false) else 'false' }} }">
             <div class="flex items-center justify-between mb-5">
                 <h2 class="text-base font-semibold text-gray-900">Edit Actor</h2>
                 <button @click="editOpen = false" class="text-gray-400 hover:text-gray-600">
@@ -84,6 +85,56 @@
                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none">{{ actor.description | default('') }}</textarea>
                 </div>
 
+                {# Public Figure toggle — GR-14 GDPR Art. 89(1) exemption #}
+                <div class="pt-3 border-t border-gray-100">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <span class="block text-sm font-medium text-gray-700">Public Figure</span>
+                            <span class="block text-xs text-gray-500 mt-0.5 max-w-xs">
+                                Stores real username in collected content. Use only for elected officials
+                                and public appointees acting in official capacity.
+                            </span>
+                        </div>
+                        <button type="button"
+                                @click="publicFigure = !publicFigure"
+                                :class="publicFigure ? 'bg-amber-500' : 'bg-gray-200'"
+                                class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer
+                                       rounded-full border-2 border-transparent transition-colors
+                                       duration-200 ease-in-out focus:outline-none focus:ring-2
+                                       focus:ring-amber-400 focus:ring-offset-1"
+                                role="switch"
+                                :aria-checked="publicFigure.toString()"
+                                aria-label="Public figure toggle">
+                            <span :class="publicFigure ? 'translate-x-4' : 'translate-x-0'"
+                                  class="pointer-events-none inline-block h-4 w-4 transform
+                                         rounded-full bg-white shadow transition duration-200 ease-in-out">
+                            </span>
+                        </button>
+                    </div>
+
+                    {# Hidden input so the value is submitted with the form #}
+                    <input type="hidden" name="public_figure" :value="publicFigure ? 'true' : 'false'">
+
+                    {# GDPR warning — visible only when toggle is ON #}
+                    <div x-show="publicFigure"
+                         x-cloak
+                         class="mt-3 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5">
+                        <svg class="w-4 h-4 text-amber-600 mt-0.5 flex-shrink-0"
+                             xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                             stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                        </svg>
+                        <p class="text-xs text-amber-800 leading-relaxed">
+                            <span class="font-semibold">GDPR Notice:</span>
+                            Enabling this bypasses anonymization for this actor's collected content.
+                            Only use for public political figures (ministers, MPs, officials) making statements
+                            in their official capacity. Private individuals must remain anonymized.
+                            The research institution's DPO should periodically review the public figure list.
+                        </p>
+                    </div>
+                </div>
+
                 <div class="pt-4 border-t border-gray-200 flex justify-between">
                     <button type="button" @click="editOpen = false"
                             class="text-sm text-gray-500 hover:text-gray-700">Cancel</button>
@@ -105,7 +156,15 @@
                     {{ (actor.name or '?')[0] | upper }}
                 </div>
                 <div>
-                    <h2 class="text-lg font-bold text-gray-900">{{ actor.name | default('Unknown') }}</h2>
+                    <div class="flex items-center gap-2">
+                        <h2 class="text-lg font-bold text-gray-900">{{ actor.name | default('Unknown') }}</h2>
+                        {% if actor.public_figure | default(false) %}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-800"
+                              title="Public Figure — pseudonymization bypassed (GDPR Art. 89(1))">
+                            PF
+                        </span>
+                        {% endif %}
+                    </div>
                     <div class="flex items-center gap-2 mt-1">
                         {# Type badge #}
                         {% set atype = actor.type | default('account') %}
@@ -368,6 +427,211 @@
         {% endif %}
     </div>
 
+    {# Discover Similar — GR-18 #}
+    <div class="bg-white rounded-lg shadow overflow-hidden"
+         x-data="discoverSimilar('{{ actor_id }}')">
+
+        {# Collapsible header #}
+        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200 cursor-pointer select-none"
+             @click="open = !open">
+            <h2 class="text-sm font-semibold text-gray-900">Discover Similar Actors</h2>
+            <svg class="w-4 h-4 text-gray-400 transition-transform"
+                 :class="open ? 'rotate-180' : ''"
+                 xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+            </svg>
+        </div>
+
+        <div x-show="open" x-cloak class="p-6 space-y-6">
+
+            {# ---- Sub-tabs ---- #}
+            <div class="border-b border-gray-200">
+                <nav class="-mb-px flex gap-4" aria-label="Similarity discovery tabs">
+                    <button type="button"
+                            @click="activeTab = 'platform'"
+                            :class="activeTab === 'platform'
+                                ? 'border-blue-500 text-blue-600'
+                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+                            class="whitespace-nowrap pb-3 px-1 border-b-2 font-medium text-xs transition-colors">
+                        Platform Suggestions
+                    </button>
+                    <button type="button"
+                            @click="activeTab = 'content'"
+                            :class="activeTab === 'content'
+                                ? 'border-blue-500 text-blue-600'
+                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+                            class="whitespace-nowrap pb-3 px-1 border-b-2 font-medium text-xs transition-colors">
+                        Content Similar
+                    </button>
+                    <button type="button"
+                            @click="activeTab = 'crossplatform'"
+                            :class="activeTab === 'crossplatform'
+                                ? 'border-blue-500 text-blue-600'
+                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+                            class="whitespace-nowrap pb-3 px-1 border-b-2 font-medium text-xs transition-colors">
+                        Cross-Platform Search
+                    </button>
+                </nav>
+            </div>
+
+            {# ---- Tab: Platform Suggestions ---- #}
+            <div x-show="activeTab === 'platform'" x-cloak class="space-y-4">
+                <p class="text-xs text-gray-500">
+                    Find accounts similar to this actor using platform-native recommendation APIs
+                    (Bluesky suggested follows, Reddit shared subreddits, YouTube related playlists).
+                </p>
+
+                <div>
+                    <p class="text-xs font-medium text-gray-700 mb-2">Platforms to search:</p>
+                    <div class="flex flex-wrap gap-3">
+                        <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                            <input type="checkbox" id="psim-bluesky"
+                                   class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                   :checked="platformSims.includes('bluesky')"
+                                   @change="togglePlatformSim('bluesky')">
+                            Bluesky
+                        </label>
+                        <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                            <input type="checkbox" id="psim-reddit"
+                                   class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                   :checked="platformSims.includes('reddit')"
+                                   @change="togglePlatformSim('reddit')">
+                            Reddit
+                        </label>
+                        <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                            <input type="checkbox" id="psim-youtube"
+                                   class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                   :checked="platformSims.includes('youtube')"
+                                   @change="togglePlatformSim('youtube')">
+                            YouTube
+                        </label>
+                    </div>
+                </div>
+
+                <button type="button"
+                        hx-post="/actors/{{ actor_id }}/similar/platform"
+                        hx-headers='{"Content-Type": "application/json"}'
+                        :hx-vals="JSON.stringify({platforms: platformSims, max_results: 20})"
+                        hx-target="#sim-platform-results"
+                        hx-swap="innerHTML"
+                        hx-indicator="#sim-platform-spinner"
+                        :disabled="platformSims.length === 0"
+                        class="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-blue-600 border border-blue-200 rounded-md hover:bg-blue-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                    <span id="sim-platform-spinner" class="htmx-indicator">
+                        <svg class="animate-spin w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                    </span>
+                    Find Similar
+                </button>
+
+                <div id="sim-platform-results" class="min-h-[40px]">
+                    <p class="text-xs text-gray-400">Select platforms and click "Find Similar" to discover recommendations.</p>
+                </div>
+            </div>
+
+            {# ---- Tab: Content Similar ---- #}
+            <div x-show="activeTab === 'content'" x-cloak class="space-y-4">
+                <p class="text-xs text-gray-500">
+                    Find actors whose collected content covers similar topics to this actor,
+                    using TF-IDF cosine similarity over post text.  Requires collected content.
+                </p>
+
+                <div class="flex items-center gap-4">
+                    <label class="text-xs font-medium text-gray-700 flex-shrink-0" for="csim-min-sim">
+                        Min similarity:
+                    </label>
+                    <input type="range" id="csim-min-sim"
+                           min="0" max="1" step="0.05"
+                           x-model="contentMinSim"
+                           class="flex-1 h-1.5 accent-blue-600">
+                    <span class="text-xs font-mono text-gray-500 w-10 text-right" x-text="Math.round(contentMinSim * 100) + '%'"></span>
+                </div>
+
+                <button type="button"
+                        hx-post="/actors/{{ actor_id }}/similar/content"
+                        hx-headers='{"Content-Type": "application/json"}'
+                        :hx-vals="JSON.stringify({max_results: 20, min_similarity: parseFloat(contentMinSim)})"
+                        hx-target="#sim-content-results"
+                        hx-swap="innerHTML"
+                        hx-indicator="#sim-content-spinner"
+                        class="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-blue-600 border border-blue-200 rounded-md hover:bg-blue-50 transition-colors">
+                    <span id="sim-content-spinner" class="htmx-indicator">
+                        <svg class="animate-spin w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                    </span>
+                    Find Similar
+                </button>
+
+                <div id="sim-content-results" class="min-h-[40px]">
+                    <p class="text-xs text-gray-400">Click "Find Similar" to discover actors posting about similar topics.</p>
+                </div>
+            </div>
+
+            {# ---- Tab: Cross-Platform Search ---- #}
+            <div x-show="activeTab === 'crossplatform'" x-cloak class="space-y-4">
+                <p class="text-xs text-gray-500">
+                    Search for this actor's name on other platforms to discover accounts
+                    they may control.  Results are ranked by name similarity.
+                </p>
+
+                <div>
+                    <p class="text-xs font-medium text-gray-700 mb-2">Platforms to search:</p>
+                    <div class="flex flex-wrap gap-3">
+                        <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                            <input type="checkbox" id="xsim-bluesky"
+                                   class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                   :checked="crossPlatforms.includes('bluesky')"
+                                   @change="toggleCrossPlatform('bluesky')">
+                            Bluesky
+                        </label>
+                        <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                            <input type="checkbox" id="xsim-reddit"
+                                   class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                   :checked="crossPlatforms.includes('reddit')"
+                                   @change="toggleCrossPlatform('reddit')">
+                            Reddit
+                        </label>
+                        <label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                            <input type="checkbox" id="xsim-youtube"
+                                   class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                   :checked="crossPlatforms.includes('youtube')"
+                                   @change="toggleCrossPlatform('youtube')">
+                            YouTube
+                        </label>
+                    </div>
+                </div>
+
+                <button type="button"
+                        hx-post="/actors/{{ actor_id }}/similar/cross-platform"
+                        hx-headers='{"Content-Type": "application/json"}'
+                        :hx-vals="JSON.stringify({platforms: crossPlatforms, max_results: 10})"
+                        hx-target="#sim-cross-results"
+                        hx-swap="innerHTML"
+                        hx-indicator="#sim-cross-spinner"
+                        :disabled="crossPlatforms.length === 0"
+                        class="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-blue-600 border border-blue-200 rounded-md hover:bg-blue-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                    <span id="sim-cross-spinner" class="htmx-indicator">
+                        <svg class="animate-spin w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                    </span>
+                    Search Platforms
+                </button>
+
+                <div id="sim-cross-results" class="min-h-[40px]">
+                    <p class="text-xs text-gray-400">Select platforms and click "Search Platforms" to find matching accounts.</p>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
     {# Entity Resolution — Task 3.9 #}
     <div class="bg-white rounded-lg shadow overflow-hidden"
          x-data="entityResolution('{{ actor_id }}', '{{ actor.name | default('') | replace("'", "\\'") }}')">
@@ -472,6 +736,35 @@ function actorProfile() {
     return {
         editOpen: false,
         addPresenceOpen: false,
+    };
+}
+
+function discoverSimilar(actorId) {
+    return {
+        open: false,
+        activeTab: 'platform',
+        // Platform suggestions tab
+        platformSims: ['bluesky', 'reddit', 'youtube'],
+        togglePlatformSim(platform) {
+            const idx = this.platformSims.indexOf(platform);
+            if (idx === -1) {
+                this.platformSims.push(platform);
+            } else {
+                this.platformSims.splice(idx, 1);
+            }
+        },
+        // Content similarity tab
+        contentMinSim: 0.3,
+        // Cross-platform tab
+        crossPlatforms: ['bluesky', 'reddit', 'youtube'],
+        toggleCrossPlatform(platform) {
+            const idx = this.crossPlatforms.indexOf(platform);
+            if (idx === -1) {
+                this.crossPlatforms.push(platform);
+            } else {
+                this.crossPlatforms.splice(idx, 1);
+            }
+        },
     };
 }
 

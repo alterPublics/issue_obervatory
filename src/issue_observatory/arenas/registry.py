@@ -128,6 +128,9 @@ ARENA_DESCRIPTIONS: dict[str, str] = {
     "common_crawl": (
         "Common Crawl open web archive — petabyte-scale crawl dataset (free)"
     ),
+    "url_scraper": (
+        "URL Scraper — live web page content extraction from a researcher-provided URL list (free/medium)"
+    ),
     "wayback": (
         "Wayback Machine (Internet Archive) — historical web snapshots (free)"
     ),

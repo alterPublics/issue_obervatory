@@ -40,7 +40,7 @@ import uuid
 from typing import Annotated, Optional
 
 import structlog
-from fastapi import APIRouter, Depends, Form, HTTPException, status
+from fastapi import APIRouter, Body, Depends, Form, HTTPException, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select
@@ -770,6 +770,106 @@ async def get_arena_config(
     return _raw_config_to_response(design.arenas_config)
 
 
+class ArenaCustomConfigResponse(BaseModel):
+    """Response body for the per-arena custom config PATCH endpoint (GR-01 through GR-05).
+
+    Attributes:
+        arena_name: The arena or ``"global"`` section that was updated.
+        arenas_config_section: The updated sub-dict from ``arenas_config``.
+    """
+
+    arena_name: str
+    arenas_config_section: dict
+
+
+@router.patch(
+    "/{design_id}/arena-config/{arena_name}",
+    response_model=ArenaCustomConfigResponse,
+)
+async def patch_arena_custom_config(
+    design_id: uuid.UUID,
+    arena_name: str,
+    payload: Annotated[dict, Body()],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> ArenaCustomConfigResponse:
+    """Deep-merge researcher-supplied settings into ``arenas_config[arena_name]``.
+
+    Supports all per-arena custom configuration keys introduced by GR-01
+    through GR-05:
+
+    - ``rss`` — ``{"custom_feeds": ["https://..."]}``
+    - ``telegram`` — ``{"custom_channels": ["channel_username"]}``
+    - ``reddit`` — ``{"custom_subreddits": ["SubredditName"]}``
+    - ``discord`` — ``{"custom_channel_ids": ["12345"]}``
+    - ``wikipedia`` — ``{"seed_articles": ["Article Title"]}``
+    - ``global`` — ``{"languages": ["da", "en"]}`` (GR-05; written to
+      ``arenas_config`` root rather than a sub-key)
+
+    The request body is a JSON object of key-value pairs to merge into
+    ``arenas_config[arena_name]``.  Existing keys at the same level are
+    preserved; only the supplied keys are overwritten (shallow merge within
+    the arena section).
+
+    Args:
+        design_id: UUID of the target query design.
+        arena_name: Arena identifier (e.g. ``"rss"``, ``"telegram"``) or
+            ``"global"`` for root-level keys such as ``"languages"``.
+        payload: Dict of key-value pairs to merge into the arena section.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        ``ArenaCustomConfigResponse`` with the updated section.
+
+    Raises:
+        HTTPException 400: If ``arena_name`` is empty or ``payload`` is empty.
+        HTTPException 404: If the design does not exist.
+        HTTPException 403: If the caller is not the owner or an admin.
+    """
+    if not arena_name or not arena_name.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="arena_name must not be empty.",
+        )
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Request body must be a non-empty JSON object.",
+        )
+
+    design = await _get_design_or_404(design_id, db)
+    ownership_guard(design.owner_id, current_user)
+
+    # Start with the existing arenas_config (copy to avoid mutating ORM state).
+    current_config: dict = dict(design.arenas_config) if design.arenas_config else {}
+
+    if arena_name == "global":
+        # Global keys are written directly at the arenas_config root level.
+        current_config.update(payload)
+        updated_section = {k: current_config[k] for k in payload if k in current_config}
+    else:
+        # Per-arena sub-dict: deep-merge the payload into arenas_config[arena_name].
+        existing_section: dict = dict(current_config.get(arena_name) or {})
+        existing_section.update(payload)
+        current_config[arena_name] = existing_section
+        updated_section = existing_section
+
+    design.arenas_config = current_config
+    await db.commit()
+
+    logger.info(
+        "arena_custom_config_patched",
+        design_id=str(design_id),
+        arena_name=arena_name,
+        keys=list(payload.keys()),
+    )
+    return ArenaCustomConfigResponse(
+        arena_name=arena_name,
+        arenas_config_section=updated_section,
+    )
+
+
 @router.post("/{design_id}/arena-config", response_model=ArenaConfigResponse)
 async def set_arena_config(
     design_id: uuid.UUID,
@@ -1210,3 +1310,145 @@ async def remove_actor_from_design(
     )
     # Return empty body — HTMX outerHTML swap removes the <li> element.
     return HTMLResponse(content="", status_code=status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# Actor lists for a query design — GR-17 (frontend modal picker)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{design_id}/actor-lists",
+    summary="List actor lists for a query design",
+)
+async def list_actor_lists_for_design(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> list[dict]:
+    """Return all actor lists belonging to a query design.
+
+    Used by the Content Browser quick-add modal so the researcher can pick
+    which actor list a newly discovered author should be added to.
+
+    Only lists that belong to a query design the caller owns (or is admin)
+    are returned.
+
+    Args:
+        design_id: UUID of the target query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        List of dicts with keys ``id`` (UUID string) and ``name`` (str).
+        Returns an empty list when the design has no actor lists.
+
+    Raises:
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the caller does not own the query design.
+    """
+    design = await _get_design_or_404(design_id, db)
+    ownership_guard(design.owner_id, current_user)
+
+    result = await db.execute(
+        select(ActorList.id, ActorList.name)
+        .where(ActorList.query_design_id == design_id)
+        .order_by(ActorList.name)
+    )
+    rows = result.all()
+
+    logger.info(
+        "actor_lists_for_design_fetched",
+        design_id=str(design_id),
+        count=len(rows),
+        user_id=str(current_user.id),
+    )
+
+    return [{"id": str(row.id), "name": row.name} for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# GR-09: Volume spike alerts
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{design_id}/alerts")
+async def get_volume_spike_alerts(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    days: int = 30,
+) -> list[dict]:
+    """Return volume spike alerts recorded for a query design in the last N days.
+
+    Reads spike events stored in ``collection_runs.arenas_config["_volume_spikes"]``
+    across all completed runs for the query design.  Each alert record contains
+    the run ID, completion timestamp, and the list of spiking arena/platform
+    combinations with their counts and top matched terms.
+
+    Spike events are written by the ``check_volume_spikes`` Celery task
+    (GR-09), which is dispatched automatically after each collection run
+    settles its credits.
+
+    Args:
+        design_id: UUID of the query design to query alerts for.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        days: Number of past days to look back.  Defaults to 30.
+
+    Returns:
+        List of alert dicts ordered by ``completed_at`` descending::
+
+            [
+              {
+                "run_id": "...",
+                "completed_at": "2026-02-15T10:47:32+00:00",
+                "volume_spikes": [
+                  {
+                    "arena_name": "social",
+                    "platform": "bluesky",
+                    "current_count": 842,
+                    "rolling_7d_average": 210.0,
+                    "ratio": 4.01,
+                    "top_terms": ["klimakrisen", "COP", "paris"]
+                  }
+                ]
+              },
+              ...
+            ]
+
+        Returns an empty list when no spikes have been detected in the window.
+
+    Raises:
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the caller does not own the query design (and
+            is not an admin user).
+        HTTPException 422: If ``days`` is not a positive integer.
+    """
+    from issue_observatory.analysis.alerting import (  # noqa: PLC0415
+        fetch_recent_volume_spikes,
+    )
+
+    if days < 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="days must be a positive integer.",
+        )
+
+    design = await _get_design_or_404(design_id, db)
+    ownership_guard(design.owner_id, current_user)
+
+    alerts = await fetch_recent_volume_spikes(
+        session=db,
+        query_design_id=design_id,
+        days=days,
+    )
+
+    logger.info(
+        "volume_spike_alerts_fetched",
+        design_id=str(design_id),
+        days=days,
+        alert_count=len(alerts),
+        user_id=str(current_user.id),
+    )
+    return alerts

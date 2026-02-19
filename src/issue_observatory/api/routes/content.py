@@ -16,6 +16,8 @@ Routes:
     POST /content/export/async              — async export via Celery (unlimited records)
     GET  /content/export/{job_id}/status    — poll Celery export job status from Redis
     GET  /content/export/{job_id}/download  — redirect to MinIO pre-signed download URL
+
+    GET  /content/discovered-links          — GR-22: mine cross-platform links from corpus
 """
 
 from __future__ import annotations
@@ -540,6 +542,7 @@ async def content_browser_page(
     language: Optional[str] = Query(default=None),
     search_term: Optional[str] = Query(default=None),
     run_id: Optional[uuid.UUID] = Query(default=None),
+    query_design_id: Optional[uuid.UUID] = Query(default=None, description="Active query design for quick-add actor flow."),
 ) -> Response:
     """Render the full content browser HTML page.
 
@@ -630,6 +633,7 @@ async def content_browser_page(
             "recent_runs": recent_runs,
             "filter": filter_ctx,
             "cursor": cursor or "",
+            "active_query_design_id": str(query_design_id) if query_design_id else "",
         },
     )
 
@@ -827,6 +831,113 @@ async def get_search_terms_for_run(
         option_html += f'<option value="{escaped}">{escaped}</option>\n'
 
     return HTMLResponse(content=option_html, status_code=200)
+
+
+# ---------------------------------------------------------------------------
+# Discovered links — GR-22 cross-platform link mining
+# Must be declared BEFORE the parametric /{record_id} route so that FastAPI
+# does not try to parse "discovered-links" as a UUID.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/discovered-links")
+async def get_discovered_links(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    query_design_id: uuid.UUID = Query(
+        ...,
+        description="UUID of the query design whose content corpus to mine.",
+    ),
+    platform: Optional[str] = Query(
+        default=None,
+        description=(
+            "Optional platform slug to filter results "
+            "(e.g. 'telegram', 'bluesky', 'youtube').  Omit for all platforms."
+        ),
+    ),
+    min_source_count: int = Query(
+        default=2,
+        ge=1,
+        description="Minimum number of distinct content records that must link to a target.",
+    ),
+    limit: int = Query(
+        default=50,
+        ge=1,
+        le=500,
+        description="Maximum number of discovered links to return (default 50, max 500).",
+    ),
+) -> dict[str, Any]:
+    """Mine cross-platform links from a query design's content corpus.
+
+    Extracts all ``https?://`` URLs from ``text_content`` of every content
+    record in the given query design, classifies them by target platform,
+    aggregates by target identifier, and returns the results grouped by
+    platform and sorted by ``source_count`` descending.
+
+    A link that appears in fewer than ``min_source_count`` distinct records
+    is excluded (default: 2) to surface high-signal discovery targets.
+
+    The response groups results by platform for easy scanning in the Discovered
+    Sources UI panel.
+
+    Args:
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        query_design_id: UUID of the query design to mine.
+        platform: Optional platform slug to restrict results to.
+        min_source_count: Minimum source-record count threshold (default: 2).
+        limit: Maximum total links returned across all platforms (default 50).
+
+    Returns:
+        Dict with keys:
+        - ``query_design_id`` (str): echoed back.
+        - ``total_links`` (int): total discovered links before grouping.
+        - ``by_platform`` (dict[str, list]): links grouped by platform slug,
+          each entry containing the ``DiscoveredLink`` fields.
+
+    Raises:
+        HTTPException 404: Not raised — an empty result is returned when no
+            links are found.
+    """
+    from issue_observatory.analysis.link_miner import LinkMiner  # noqa: PLC0415
+
+    miner = LinkMiner()
+    links = await miner.mine(
+        db=db,
+        query_design_id=query_design_id,
+        platform_filter=platform,
+        min_source_count=min_source_count,
+        limit=limit,
+    )
+
+    # Group by platform.
+    by_platform: dict[str, list[dict]] = {}
+    for link in links:
+        by_platform.setdefault(link.platform, []).append(
+            {
+                "url": link.url,
+                "platform": link.platform,
+                "target_identifier": link.target_identifier,
+                "source_count": link.source_count,
+                "first_seen_at": link.first_seen_at.isoformat(),
+                "last_seen_at": link.last_seen_at.isoformat(),
+                "example_source_urls": link.example_source_urls,
+            }
+        )
+
+    logger.info(
+        "discovered_links.mined",
+        query_design_id=str(query_design_id),
+        total_links=len(links),
+        platforms=list(by_platform.keys()),
+        user_id=str(current_user.id),
+    )
+
+    return {
+        "query_design_id": str(query_design_id),
+        "total_links": len(links),
+        "by_platform": by_platform,
+    }
 
 
 # ---------------------------------------------------------------------------

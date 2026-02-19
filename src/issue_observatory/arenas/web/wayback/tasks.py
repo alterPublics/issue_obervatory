@@ -118,11 +118,13 @@ def wayback_collect_terms(
     date_to: str | None = None,
     max_results: int | None = None,
     language_filter: list[str] | None = None,
+    arenas_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Collect Wayback Machine CDX captures for Danish pages matching the terms.
 
     Queries the CDX API for ``.dk`` domain captures and filters client-side
-    by URL substring matching. Returns snapshot metadata only.
+    by URL substring matching.  When ``arenas_config["wayback"]["fetch_content"]``
+    is ``True``, the archived page content is also fetched and extracted.
 
     Args:
         query_design_id: UUID string of the owning query design.
@@ -132,9 +134,15 @@ def wayback_collect_terms(
         date_from: ISO 8601 earliest capture date (inclusive).
         date_to: ISO 8601 latest capture date (inclusive).
         max_results: Upper bound on returned records.
+        language_filter: Optional ISO 639-1 language code list (unused by
+            Wayback Machine; passed through for interface consistency).
+        arenas_config: Optional arenas configuration dict.  When present,
+            ``arenas_config["wayback"]["fetch_content"]`` controls whether
+            archived page content is fetched for each record.
 
     Returns:
-        Dict with ``records_collected``, ``status``, ``arena``, ``tier``.
+        Dict with ``records_collected``, ``status``, ``arena``, ``tier``,
+        and ``fetch_content`` (bool reflecting the resolved setting).
 
     Raises:
         ArenaRateLimitError: Triggers automatic retry with exponential backoff.
@@ -142,11 +150,16 @@ def wayback_collect_terms(
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    fetch_content: bool = bool(
+        (arenas_config or {}).get("wayback", {}).get("fetch_content", False)
+    )
+
     logger.info(
-        "wayback: collect_by_terms started — run=%s terms=%d tier=%s",
+        "wayback: collect_by_terms started — run=%s terms=%d tier=%s fetch_content=%s",
         collection_run_id,
         len(terms),
         tier,
+        fetch_content,
     )
     _update_task_status(collection_run_id, _ARENA, "running")
 
@@ -169,6 +182,7 @@ def wayback_collect_terms(
                 date_to=date_to,
                 max_results=max_results,
                 language_filter=language_filter,
+                fetch_content=fetch_content,
             )
         )
     except ArenaRateLimitError:
@@ -185,9 +199,10 @@ def wayback_collect_terms(
 
     count = len(records)
     logger.info(
-        "wayback: collect_by_terms completed — run=%s records=%d",
+        "wayback: collect_by_terms completed — run=%s records=%d fetch_content=%s",
         collection_run_id,
         count,
+        fetch_content,
     )
     _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
 
@@ -196,6 +211,7 @@ def wayback_collect_terms(
         "status": "completed",
         "arena": _ARENA,
         "tier": tier,
+        "fetch_content": fetch_content,
     }
 
 
@@ -217,10 +233,13 @@ def wayback_collect_actors(
     date_from: str | None = None,
     date_to: str | None = None,
     max_results: int | None = None,
+    arenas_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Collect Wayback Machine CDX captures for the specified actor domains.
 
-    Actor IDs are domain names or URL prefixes (e.g. ``"dr.dk"``).
+    Actor IDs are domain names or URL prefixes (e.g. ``"dr.dk"``).  When
+    ``arenas_config["wayback"]["fetch_content"]`` is ``True``, the archived
+    page content is also fetched and extracted for each record.
 
     Args:
         query_design_id: UUID string of the owning query design.
@@ -230,17 +249,26 @@ def wayback_collect_actors(
         date_from: ISO 8601 earliest capture date (inclusive).
         date_to: ISO 8601 latest capture date (inclusive).
         max_results: Upper bound on returned records.
+        arenas_config: Optional arenas configuration dict.  When present,
+            ``arenas_config["wayback"]["fetch_content"]`` controls whether
+            archived page content is fetched for each record.
 
     Returns:
-        Dict with ``records_collected``, ``status``, ``arena``, ``tier``.
+        Dict with ``records_collected``, ``status``, ``arena``, ``tier``,
+        and ``fetch_content`` (bool reflecting the resolved setting).
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    fetch_content: bool = bool(
+        (arenas_config or {}).get("wayback", {}).get("fetch_content", False)
+    )
+
     logger.info(
-        "wayback: collect_by_actors started — run=%s actors=%d tier=%s",
+        "wayback: collect_by_actors started — run=%s actors=%d tier=%s fetch_content=%s",
         collection_run_id,
         len(actor_ids),
         tier,
+        fetch_content,
     )
     _update_task_status(collection_run_id, _ARENA, "running")
 
@@ -262,6 +290,7 @@ def wayback_collect_actors(
                 date_from=date_from,
                 date_to=date_to,
                 max_results=max_results,
+                fetch_content=fetch_content,
             )
         )
     except ArenaRateLimitError:
@@ -278,9 +307,10 @@ def wayback_collect_actors(
 
     count = len(records)
     logger.info(
-        "wayback: collect_by_actors completed — run=%s records=%d",
+        "wayback: collect_by_actors completed — run=%s records=%d fetch_content=%s",
         collection_run_id,
         count,
+        fetch_content,
     )
     _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
 
@@ -289,6 +319,7 @@ def wayback_collect_actors(
         "status": "completed",
         "arena": _ARENA,
         "tier": tier,
+        "fetch_content": fetch_content,
     }
 
 

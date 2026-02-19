@@ -129,6 +129,7 @@ class WikipediaCollector(ArenaCollector):
         max_results: int | None = None,
         term_groups: list[list[str]] | None = None,
         language_filter: list[str] | None = None,
+        extra_seed_articles: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect Wikipedia revision and pageview records for terms.
 
@@ -136,11 +137,15 @@ class WikipediaCollector(ArenaCollector):
         search API, then collects revision history and (optionally) pageview
         data for each discovered article.
 
+        When ``extra_seed_articles`` is provided, those articles are added to
+        the collection set directly (bypassing the search step) on top of the
+        term-discovered articles.
+
         Steps:
         1. For each term, search ``da.wikipedia.org`` (and ``en.wikipedia.org``
            when ``language_filter`` allows it) via ``action=query&list=search``.
-        2. For each discovered article, fetch revision history filtered to
-           the requested date range.
+        2. For each discovered article (plus any ``extra_seed_articles``),
+           fetch revision history filtered to the requested date range.
         3. If ``INCLUDE_PAGEVIEWS`` is ``True``, fetch daily pageview data
            for each article over the requested date range.
         4. Normalize all revision and pageview records.
@@ -158,6 +163,11 @@ class WikipediaCollector(ArenaCollector):
             language_filter: Optional list of ISO 639-1 language codes
                 (e.g. ``["da"]`` or ``["da", "en"]``).  When ``None``,
                 both Danish and English Wikipedia are queried.
+            extra_seed_articles: Optional list of Wikipedia article title
+                strings supplied by the researcher via
+                ``arenas_config["wikipedia"]["seed_articles"]`` (GR-04).
+                These are fetched directly (skipping search) and merged
+                with term-discovered articles before collecting revisions.
 
         Returns:
             List of normalized content record dicts (mix of
@@ -181,8 +191,8 @@ class WikipediaCollector(ArenaCollector):
         else:
             search_queries = list(terms)
 
-        if not search_queries:
-            logger.warning("wikipedia: collect_by_terms called with empty terms.")
+        if not search_queries and not extra_seed_articles:
+            logger.warning("wikipedia: collect_by_terms called with empty terms and no seed articles.")
             return []
 
         semaphore = asyncio.Semaphore(_MAX_CONCURRENT_REQUESTS)
@@ -239,6 +249,45 @@ class WikipediaCollector(ArenaCollector):
                                     continue
                                 seen_platform_ids.add(pid)
                                 all_records.append(self.normalize(pv))
+
+                # GR-04: collect revisions (and pageviews) for researcher-supplied
+                # seed articles directly — bypassing the search step.
+                if extra_seed_articles and len(all_records) < effective_max:
+                    seed_titles = [t for t in extra_seed_articles if t and t.strip()]
+                    if seed_titles:
+                        logger.info(
+                            "wikipedia: collecting %d seed articles on %s (GR-04)",
+                            len(seed_titles),
+                            project,
+                        )
+                        seed_revisions = await self._get_revisions(
+                            client, seed_titles, project, date_from, date_to, semaphore
+                        )
+                        for rev in seed_revisions:
+                            if len(all_records) >= effective_max:
+                                break
+                            pid = rev.get("platform_id", "")
+                            if pid in seen_platform_ids:
+                                continue
+                            seen_platform_ids.add(pid)
+                            all_records.append(self.normalize(rev))
+
+                        if INCLUDE_PAGEVIEWS and len(all_records) < effective_max:
+                            pv_start, pv_end = _resolve_pageview_date_range(date_from, date_to)
+                            for title in seed_titles:
+                                if len(all_records) >= effective_max:
+                                    break
+                                pv_records = await self._get_pageviews(
+                                    client, title, project, pv_start, pv_end, semaphore
+                                )
+                                for pv in pv_records:
+                                    if len(all_records) >= effective_max:
+                                        break
+                                    pid = pv.get("platform_id", "")
+                                    if pid in seen_platform_ids:
+                                        continue
+                                    seen_platform_ids.add(pid)
+                                    all_records.append(self.normalize(pv))
 
         logger.info(
             "wikipedia: collect_by_terms — %d records for %d terms on %s",

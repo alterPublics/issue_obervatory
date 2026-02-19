@@ -96,6 +96,24 @@ class Actor(Base):
         nullable=False,
         server_default=sa.text("false"),
     )
+    public_figure: Mapped[bool] = mapped_column(
+        sa.Boolean,
+        nullable=False,
+        server_default=sa.text("false"),
+        comment=(
+            "GR-14 — GDPR Art. 89(1) research exemption. "
+            "When True, bypass SHA-256 pseudonymization for this actor's content "
+            "records: store the plain platform username as pseudonymized_author_id "
+            "instead of a salted hash. "
+            "MUST only be set for actors who (a) are publicly elected or appointed "
+            "officials (e.g. Danish MPs, Greenlandic ministers, US federal "
+            "officials) and (b) make statements strictly in their official capacity. "
+            "Private individuals must remain pseudonymized regardless of "
+            "public prominence. "
+            "The institution's DPO should periodically review the set of "
+            "public-figure-flagged actors."
+        ),
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -132,7 +150,7 @@ class Actor(Base):
     def __repr__(self) -> str:
         return (
             f"<Actor id={self.id} canonical_name={self.canonical_name!r} "
-            f"type={self.actor_type!r}>"
+            f"type={self.actor_type!r} public_figure={self.public_figure!r}>"
         )
 
 

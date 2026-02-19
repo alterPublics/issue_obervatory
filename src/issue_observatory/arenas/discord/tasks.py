@@ -96,6 +96,43 @@ def _update_task_status(
 
 
 # ---------------------------------------------------------------------------
+# arenas_config helper
+# ---------------------------------------------------------------------------
+
+
+def _load_arenas_config(query_design_id: str) -> dict:
+    """Load ``arenas_config`` from the QueryDesign row identified by *query_design_id*.
+
+    Uses a synchronous SQLAlchemy session (Celery worker context).  Returns an
+    empty dict if the design is not found or on any DB error.
+
+    Args:
+        query_design_id: UUID string of the owning query design.
+
+    Returns:
+        The ``arenas_config`` JSONB dict, or ``{}`` on failure.
+    """
+    try:
+        from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+        from sqlalchemy import text  # noqa: PLC0415
+
+        with get_sync_session() as session:
+            row = session.execute(
+                text("SELECT arenas_config FROM query_designs WHERE id = :id"),
+                {"id": query_design_id},
+            ).fetchone()
+            if row and row[0]:
+                return dict(row[0])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "discord: failed to load arenas_config for design %s: %s",
+            query_design_id,
+            exc,
+        )
+    return {}
+
+
+# ---------------------------------------------------------------------------
 # Tasks
 # ---------------------------------------------------------------------------
 
@@ -157,6 +194,15 @@ def discord_collect_terms(
     )
     _update_task_status(collection_run_id, _ARENA, "running")
 
+    # GR-04: read researcher-configured extra channel IDs from arenas_config.
+    arenas_config = _load_arenas_config(query_design_id)
+    extra_channel_ids: list[str] | None = None
+    discord_config = arenas_config.get("discord") or {}
+    if isinstance(discord_config, dict):
+        raw_channels = discord_config.get("custom_channel_ids")
+        if isinstance(raw_channels, list) and raw_channels:
+            extra_channel_ids = [str(c) for c in raw_channels if c]
+
     try:
         tier_enum = Tier(tier)
     except ValueError:
@@ -176,6 +222,7 @@ def discord_collect_terms(
                 date_to=date_to,
                 max_results=max_results,
                 channel_ids=channel_ids,
+                extra_channel_ids=extra_channel_ids,
             )
         )
     except ArenaRateLimitError:

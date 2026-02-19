@@ -136,6 +136,7 @@ class RSSFeedsCollector(ArenaCollector):
         max_results: int | None = None,
         term_groups: list[list[str]] | None = None,
         language_filter: list[str] | None = None,
+        extra_feed_urls: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect RSS entries matching any of the supplied terms.
 
@@ -157,6 +158,10 @@ class RSSFeedsCollector(ArenaCollector):
                 filtering.  Entries must satisfy at least one AND-group.
             language_filter: Not used — RSS feeds are language-specific by
                 their source URL configuration.
+            extra_feed_urls: Optional list of additional feed URLs supplied
+                by the researcher via ``arenas_config["rss"]["custom_feeds"]``.
+                These are merged with the default feed registry before fetching.
+                Each URL is auto-keyed as ``custom_{index}`` in the registry.
 
         Returns:
             List of normalized content record dicts.
@@ -185,8 +190,11 @@ class RSSFeedsCollector(ArenaCollector):
 
         all_records: list[dict[str, Any]] = []
 
+        # Merge extra researcher-supplied feed URLs into the active feed dict.
+        effective_feeds = _merge_extra_feeds(self._feeds, extra_feed_urls)
+
         async with self._build_http_client() as client:
-            raw_entries = await self._fetch_all_feeds(client)
+            raw_entries = await self._fetch_feeds(client, effective_feeds)
 
         for feed_key, outlet_slug, entry in raw_entries:
             if len(all_records) >= effective_max:
@@ -229,6 +237,7 @@ class RSSFeedsCollector(ArenaCollector):
         date_from: datetime | str | None = None,
         date_to: datetime | str | None = None,
         max_results: int | None = None,
+        extra_feed_urls: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect all entries from feeds associated with specific outlets.
 
@@ -243,6 +252,10 @@ class RSSFeedsCollector(ArenaCollector):
             date_from: Earliest publication date to include.
             date_to: Latest publication date to include.
             max_results: Upper bound on returned records.
+            extra_feed_urls: Optional list of additional feed URLs supplied
+                by the researcher via ``arenas_config["rss"]["custom_feeds"]``.
+                These are merged with the default feed registry before resolving
+                actor_ids.  Each URL is auto-keyed as ``custom_{index}``.
 
         Returns:
             List of normalized content record dicts.
@@ -257,10 +270,13 @@ class RSSFeedsCollector(ArenaCollector):
         date_from_dt = _parse_date_bound(date_from)
         date_to_dt = _parse_date_bound(date_to)
 
+        # Merge extra researcher-supplied feed URLs into the active feed dict.
+        effective_feeds = _merge_extra_feeds(self._feeds, extra_feed_urls)
+
         # Resolve actor_ids to matching feed keys
         target_feeds: dict[str, str] = {}
         for actor_id in actor_ids:
-            for feed_key, feed_url in self._feeds.items():
+            for feed_key, feed_url in effective_feeds.items():
                 if feed_key == actor_id or feed_key.startswith(actor_id + "_") or feed_key.startswith(actor_id):
                     target_feeds[feed_key] = feed_url
 
@@ -686,6 +702,39 @@ def _entry_datetime(entry: Any) -> datetime | None:
         return datetime.fromtimestamp(ts, tz=timezone.utc)
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _merge_extra_feeds(
+    base_feeds: dict[str, str],
+    extra_feed_urls: list[str] | None,
+) -> dict[str, str]:
+    """Merge researcher-supplied feed URLs into the base feed registry.
+
+    Extra URLs are auto-keyed as ``custom_0``, ``custom_1``, etc.  Existing
+    keys are not overwritten; only URLs not already present as values are
+    added (deduplication by URL).
+
+    Args:
+        base_feeds: The default feed registry (e.g. :data:`DANISH_RSS_FEEDS`).
+        extra_feed_urls: Optional list of additional feed URLs from the
+            researcher's ``arenas_config["rss"]["custom_feeds"]``.
+
+    Returns:
+        A new dict containing all base feeds plus any non-duplicate extra URLs.
+    """
+    if not extra_feed_urls:
+        return base_feeds
+
+    merged = dict(base_feeds)
+    existing_urls = set(base_feeds.values())
+    counter = 0
+    for url in extra_feed_urls:
+        if not url or url in existing_urls:
+            continue
+        merged[f"custom_{counter}"] = url
+        existing_urls.add(url)
+        counter += 1
+    return merged
 
 
 def _build_searchable_text(entry: Any) -> str:

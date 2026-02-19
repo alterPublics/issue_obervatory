@@ -12,8 +12,16 @@ Supported expansion strategies per platform:
   ``app.bsky.graph.getFollowers`` on the AT Protocol public API.
 - **YouTube**: read the ``featuredChannelsUrls`` field from the
   channel resource's ``brandingSettings``.
+- **Telegram**: forwarding chain analysis against ``content_records``
+  rows already stored in the database.  Messages stored with
+  ``raw_metadata.is_forwarded = true`` and a ``fwd_from_channel_id``
+  reveal which external channels the seed channel frequently forwards
+  from.  Those source channels are high-value discovery targets.
+  Falls back to co-mention detection when no forwarding data exists.
 - **Generic (all platforms)**: co-mention detection against
-  ``content_records`` rows already stored in the database.
+  ``content_records`` rows already stored in the database.  This is the
+  fallback strategy for Discord, TikTok, Gab, X/Twitter, Threads,
+  Instagram, Facebook, and any other platform not explicitly handled above.
 
 No arena collector classes are imported here — all platform HTTP calls
 are made directly via ``httpx.AsyncClient`` to avoid circular imports.
@@ -53,6 +61,25 @@ _BLUESKY_PUBLIC_API = "https://public.api.bsky.app/xrpc"
 _REDDIT_API_BASE = "https://oauth.reddit.com"
 _YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
 _REDDIT_MENTION_RE = re.compile(r"(?<!\w)u/([A-Za-z0-9_-]{3,20})", re.IGNORECASE)
+
+# Regex that captures @-style mentions across major platforms.
+# Covers:
+#   @handle               (Twitter/X, Threads, Instagram, Gab, Mastodon, TikTok)
+#   @handle.domain.tld    (Bluesky/AT Protocol)
+#   @handle.subdomain     (any federated platform)
+# The pattern deliberately avoids matching email addresses (preceded by word
+# characters) to reduce false positives.
+_COMENTION_MENTION_RE = re.compile(
+    r"(?<!\w)@([A-Za-z0-9_](?:[A-Za-z0-9_.%-]{0,48}[A-Za-z0-9_])?)",
+    re.UNICODE,
+)
+
+# Minimum number of distinct content records in which a username must appear
+# alongside the seed actor before it is considered a significant co-mention.
+_COMENTION_MIN_RECORDS: int = 2
+
+# Maximum co-mentioned actors returned by _expand_via_comention().
+_COMENTION_TOP_N: int = 50
 
 
 # ---------------------------------------------------------------------------
@@ -168,13 +195,40 @@ class NetworkExpander:
                     results = await self._expand_youtube(
                         presence["platform_user_id"], credentials
                     )
+                elif platform == "telegram":
+                    results = await self._expand_via_telegram_forwarding(
+                        actor_id=actor_id,
+                        platform=platform,
+                        presence=presence,
+                        db=db,
+                        depth=depth,
+                    )
+                    if not results:
+                        # Fall through to co-mention if no forwarding data
+                        # has been collected yet for this channel.
+                        logger.debug(
+                            "expand_from_actor: no Telegram forwarding data for "
+                            "actor %s — falling back to co-mention",
+                            actor_id,
+                        )
+                        results = await self._expand_via_comention(
+                            actor_id=actor_id,
+                            platform=platform,
+                            presence=presence,
+                            db=db,
+                        )
                 else:
                     logger.debug(
                         "expand_from_actor: no platform-specific expander for %s; "
                         "using co-mention fallback",
                         platform,
                     )
-                    results = []
+                    results = await self._expand_via_comention(
+                        actor_id=actor_id,
+                        platform=platform,
+                        presence=presence,
+                        db=db,
+                    )
 
                 discovered.extend(results)
             except Exception:
@@ -578,6 +632,368 @@ class NetworkExpander:
             "_expand_youtube: found %d featured channels for %s",
             len(results),
             channel_id,
+        )
+        return results
+
+    # ------------------------------------------------------------------
+    # Telegram-specific expander — forwarding chain analysis
+    # ------------------------------------------------------------------
+
+    async def _expand_via_telegram_forwarding(
+        self,
+        actor_id: uuid.UUID,
+        platform: str,
+        presence: dict[str, str],
+        db: Any,
+        top_n: int = 20,
+        min_forwards: int = 2,
+        depth: int = 1,
+    ) -> list[ActorDict]:
+        """Discover Telegram channels via forwarding chain analysis.
+
+        Queries ``content_records`` for Telegram messages from the seed actor's
+        channel that were forwarded from other channels (``is_forwarded = true``
+        in ``raw_metadata``), extracts the ``fwd_from_channel_id`` values, counts
+        their frequency, and returns the most frequent source channels as
+        discovery candidates.
+
+        A channel that the seed channel frequently forwards from is a strong
+        thematic affinity signal — it is worth monitoring directly.
+
+        The query uses PostgreSQL JSONB operators for efficiency:
+
+        - ``raw_metadata ->> 'is_forwarded' = 'true'`` — selects forwarded msgs.
+        - ``raw_metadata ? 'fwd_from_channel_id'`` — ensures the source channel
+          ID is present before extracting it.
+
+        Args:
+            actor_id: UUID of the seed Actor (used for logging and to match
+                the ``author_id`` FK when present, otherwise falls back to
+                matching ``author_platform_id``).
+            platform: Should be ``"telegram"``.  Passed through for logging
+                and to populate the returned ``ActorDict`` records.
+            presence: The actor's platform presence dict (keys:
+                ``platform_user_id``, ``platform_username``, ``profile_url``).
+                The ``platform_user_id`` is used to scope the query to the
+                seed channel's own messages.
+            db: An open ``AsyncSession``.  When ``None`` an empty list is
+                returned immediately.
+            top_n: Maximum number of source channels to return, sorted by
+                forward count descending.
+            min_forwards: Minimum number of distinct messages forwarded from
+                a channel for it to be included in the results.
+            depth: Current expansion depth.  Used to populate the
+                ``depth`` field on returned dicts (set to ``depth + 1``).
+
+        Returns:
+            List of ``ActorDict``-compatible dicts with ``discovery_method``
+            set to ``"telegram_forwarding_chain"``, ordered by forward count
+            descending (most-forwarded source channel first).  An extra
+            ``forward_count`` key is included on each dict for downstream use.
+        """
+        if db is None:
+            logger.debug(
+                "_expand_via_telegram_forwarding: no DB session for actor %s",
+                actor_id,
+            )
+            return []
+
+        user_id = presence.get("platform_user_id", "").strip()
+        username = presence.get("platform_username", "").strip()
+
+        # We need at least one identifier to scope the query to the seed channel.
+        if not user_id and not username:
+            logger.debug(
+                "_expand_via_telegram_forwarding: actor %s has no platform_user_id "
+                "or platform_username — cannot scope query",
+                actor_id,
+            )
+            return []
+
+        try:
+            from sqlalchemy import text
+
+            # Build an author filter: match either author_platform_id or the
+            # actor FK.  We use OR so that both indexed paths are tried.
+            # Raw SQL is used rather than the ORM because JSONB ->> and ?
+            # operators are awkward to express portably via mapped_column().
+            #
+            # Conditions:
+            #   platform = 'telegram'
+            #   (author_platform_id = :user_id OR author_id = :actor_id)
+            #   raw_metadata ->> 'is_forwarded' = 'true'
+            #   raw_metadata ? 'fwd_from_channel_id'
+            #
+            # We then extract raw_metadata ->> 'fwd_from_channel_id' for each
+            # matching row and count occurrences per source channel in SQL.
+            # Doing the count server-side avoids pulling thousands of rows
+            # into Python just to count strings.
+
+            if user_id:
+                author_filter = (
+                    "(author_platform_id = :user_id OR author_id = :actor_id::uuid)"
+                )
+            else:
+                # No numeric user_id — match only by actor UUID FK.
+                author_filter = "author_id = :actor_id::uuid"
+
+            sql = text(
+                f"""
+                SELECT
+                    raw_metadata ->> 'fwd_from_channel_id' AS fwd_channel_id,
+                    COUNT(*)                               AS fwd_count
+                FROM content_records
+                WHERE platform = 'telegram'
+                  AND {author_filter}
+                  AND raw_metadata ->> 'is_forwarded' = 'true'
+                  AND raw_metadata ? 'fwd_from_channel_id'
+                  AND raw_metadata ->> 'fwd_from_channel_id' IS NOT NULL
+                  AND raw_metadata ->> 'fwd_from_channel_id' <> ''
+                GROUP BY fwd_channel_id
+                HAVING COUNT(*) >= :min_forwards
+                ORDER BY fwd_count DESC
+                LIMIT :top_n
+                """
+            )
+
+            params: dict[str, Any] = {
+                "actor_id": str(actor_id),
+                "min_forwards": min_forwards,
+                "top_n": top_n,
+            }
+            if user_id:
+                params["user_id"] = user_id
+
+            result = await db.execute(sql, params)
+            rows = result.fetchall()
+
+        except Exception:
+            logger.exception(
+                "_expand_via_telegram_forwarding: DB query failed for actor %s",
+                actor_id,
+            )
+            return []
+
+        if not rows:
+            logger.debug(
+                "_expand_via_telegram_forwarding: no forwarding data found for "
+                "actor %s on telegram",
+                actor_id,
+            )
+            return []
+
+        results: list[ActorDict] = []
+        next_depth = depth + 1
+
+        for row in rows:
+            fwd_channel_id: str = str(row.fwd_channel_id)
+            fwd_count: int = int(row.fwd_count)
+
+            actor_dict = _make_actor_dict(
+                canonical_name=f"Telegram Channel {fwd_channel_id}",
+                platform="telegram",
+                platform_user_id=fwd_channel_id,
+                platform_username=fwd_channel_id,
+                profile_url="",
+                discovery_method="telegram_forwarding_chain",
+            )
+            # Attach forwarding-specific metadata beyond the standard ActorDict
+            # fields.  Callers that understand these extra keys can use them;
+            # callers that only consume the standard fields can ignore them.
+            actor_dict["display_name"] = f"Telegram Channel {fwd_channel_id}"
+            actor_dict["forward_count"] = str(fwd_count)
+            actor_dict["depth"] = str(next_depth)
+
+            results.append(actor_dict)
+
+        logger.debug(
+            "_expand_via_telegram_forwarding: found %d source channel(s) for "
+            "actor %s (min_forwards=%d, top_n=%d)",
+            len(results),
+            actor_id,
+            min_forwards,
+            top_n,
+        )
+        return results
+
+    # ------------------------------------------------------------------
+    # Co-mention fallback expander (platform-agnostic)
+    # ------------------------------------------------------------------
+
+    async def _expand_via_comention(
+        self,
+        actor_id: uuid.UUID,
+        platform: str,
+        presence: dict[str, str],
+        db: Any,
+        top_n: int = _COMENTION_TOP_N,
+        min_records: int = _COMENTION_MIN_RECORDS,
+    ) -> list[ActorDict]:
+        """Expand an actor by mining co-mentions in stored content records.
+
+        Searches ``content_records.text_content`` for records that mention the
+        seed actor's platform username.  Within those records, all other
+        ``@username`` patterns are extracted and counted.  Usernames that
+        co-occur in at least ``min_records`` distinct content records are
+        returned as discovered actors.
+
+        This method is the catch-all fallback for platforms that do not have a
+        dedicated graph-traversal strategy (Telegram, Discord, TikTok, Gab,
+        X/Twitter, Threads, Instagram, Facebook, etc.).
+
+        Args:
+            actor_id: UUID of the seed actor (used only for logging).
+            platform: Platform identifier (e.g. ``"telegram"``).  Used to
+                scope the content-records query and to populate the returned
+                ``ActorDict`` records.
+            presence: The actor's platform presence dict (keys:
+                ``platform_user_id``, ``platform_username``, ``profile_url``).
+            db: An open ``AsyncSession``.  When ``None`` an empty list is
+                returned immediately.
+            top_n: Maximum number of co-mentioned actors to return.
+            min_records: Minimum number of distinct ``content_records`` rows
+                in which a username must appear alongside the seed actor.
+
+        Returns:
+            List of actor dicts with ``discovery_method`` set to
+            ``"comention_fallback"``, ordered by co-occurrence frequency
+            (most frequent first).
+        """
+        if db is None:
+            logger.debug(
+                "_expand_via_comention: no DB session for actor %s on %s",
+                actor_id,
+                platform,
+            )
+            return []
+
+        username = presence.get("platform_username", "").strip()
+        user_id = presence.get("platform_user_id", "").strip()
+
+        # We need at least one identifier to search for.
+        if not username and not user_id:
+            logger.debug(
+                "_expand_via_comention: actor %s has no username or user_id on %s",
+                actor_id,
+                platform,
+            )
+            return []
+
+        # Build a list of search tokens: @username variants we will look for.
+        # We search using ILIKE (case-insensitive) with the LIKE operator so
+        # that a plain SQL call works without regex support in PostgreSQL text
+        # search.  A separate full-regex pass is applied in Python afterwards.
+        seed_tokens: list[str] = []
+        if username:
+            seed_tokens.append(f"@{username}")
+        if user_id and user_id != username:
+            seed_tokens.append(f"@{user_id}")
+
+        try:
+            from sqlalchemy import text
+
+            # Step 1: Fetch IDs and text of content records that mention the
+            # seed actor on the target platform.  We use OR across the seed
+            # tokens so that either the username or user_id handle triggers a
+            # match.
+            #
+            # ILIKE pattern: '%@username%' — simple substring match, then we
+            # re-validate with the Python regex below to avoid false positives.
+            ilike_clauses = " OR ".join(
+                f"text_content ILIKE :tok{i}" for i, _ in enumerate(seed_tokens)
+            )
+            params: dict[str, Any] = {"platform": platform}
+            for i, tok in enumerate(seed_tokens):
+                params[f"tok{i}"] = f"%{tok}%"
+
+            seed_sql = text(
+                f"""
+                SELECT id, text_content
+                FROM content_records
+                WHERE platform = :platform
+                  AND text_content IS NOT NULL
+                  AND ({ilike_clauses})
+                LIMIT 5000
+                """
+            )
+            seed_result = await db.execute(seed_sql, params)
+            seed_rows = seed_result.fetchall()
+
+        except Exception:
+            logger.exception(
+                "_expand_via_comention: DB query (step 1) failed for actor %s "
+                "on platform %s",
+                actor_id,
+                platform,
+            )
+            return []
+
+        if not seed_rows:
+            logger.debug(
+                "_expand_via_comention: no content records mention actor %s on %s",
+                actor_id,
+                platform,
+            )
+            return []
+
+        # Step 2: In Python, extract all @mentions from those records and count
+        # how many *distinct* records each co-mentioned username appears in.
+        seed_usernames_lower: set[str] = {tok.lstrip("@").lower() for tok in seed_tokens}
+
+        # co_record_ids[username_lower] = set of record IDs where it appears
+        co_record_ids: dict[str, set[str]] = {}
+
+        for row in seed_rows:
+            record_id = str(row.id)
+            text_content: str = row.text_content or ""
+
+            # First confirm this record actually mentions the seed actor via
+            # regex (eliminates substring false positives like @usernamefoo
+            # matching a search for @username).
+            seed_confirmed = any(
+                m.group(1).lower() in seed_usernames_lower
+                for m in _COMENTION_MENTION_RE.finditer(text_content)
+            )
+            if not seed_confirmed:
+                continue
+
+            # Now collect all OTHER @mentions in this record.
+            for match in _COMENTION_MENTION_RE.finditer(text_content):
+                candidate = match.group(1).lower()
+                if candidate in seed_usernames_lower:
+                    continue  # skip the seed actor itself
+                co_record_ids.setdefault(candidate, set()).add(record_id)
+
+        # Step 3: Filter to candidates that appear in >= min_records distinct
+        # records, then sort by frequency descending and take top_n.
+        qualified: list[tuple[str, int]] = [
+            (username_lower, len(record_set))
+            for username_lower, record_set in co_record_ids.items()
+            if len(record_set) >= min_records
+        ]
+        qualified.sort(key=lambda x: x[1], reverse=True)
+        qualified = qualified[:top_n]
+
+        results: list[ActorDict] = []
+        for comentioned_username, record_count in qualified:
+            results.append(
+                _make_actor_dict(
+                    canonical_name=f"@{comentioned_username}",
+                    platform=platform,
+                    platform_user_id=comentioned_username,
+                    platform_username=comentioned_username,
+                    profile_url="",
+                    discovery_method="comention_fallback",
+                )
+            )
+
+        logger.debug(
+            "_expand_via_comention: found %d co-mentioned actor(s) for %s on %s "
+            "(searched %d content records)",
+            len(results),
+            actor_id,
+            platform,
+            len(seed_rows),
         )
         return results
 

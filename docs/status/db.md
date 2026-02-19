@@ -10,6 +10,7 @@
 - [x] `006_add_search_term_groups` — adds `group_id UUID NULL` and `group_label VARCHAR(200) NULL` to `search_terms` with `idx_search_term_group` B-tree index (Item 14)
 - [x] `007_add_simhash_to_content_records` — adds `simhash BIGINT NULL` to `content_records` (partitioned; uses raw ALTER TABLE DDL) with `idx_content_records_simhash` B-tree index (Item 15)
 - [x] `008_add_query_design_cloning` — adds `parent_design_id UUID NULL REFERENCES query_designs(id) ON DELETE SET NULL` with `idx_query_design_parent` B-tree index (IP2-051)
+- [x] `009_add_public_figure_flag_to_actors` — adds `public_figure BOOLEAN NOT NULL DEFAULT false` to `actors`; GDPR Art. 89(1) research exemption for public-figure pseudonymization bypass (GR-14)
 
 ## Models (Task 0.2 — COMPLETE)
 
@@ -461,3 +462,110 @@ A collapsible "Entity Resolution" section is appended at the bottom of the actor
 - Merge buttons use an Alpine confirm dialog before posting to `POST /actors/{id}/merge`.
 - Split section renders checkboxes for each platform presence and a new actor name input; form handled via Alpine `fetch` to `POST /actors/{id}/split`.
 - All UI interactions are handled by the `entityResolution()` Alpine component injected via inline `<script>`.
+
+## GR-14: Public Figure Pseudonymization Exception (COMPLETE — schema/API layer)
+
+**Status**: DB schema and API layer complete. Normalizer and frontend changes outstanding (see below).
+
+### What was implemented
+
+| File | Change |
+|------|--------|
+| `src/issue_observatory/core/models/actors.py` | Added `public_figure: Mapped[bool]` column with `server_default=false` and full GDPR comment |
+| `alembic/versions/009_add_public_figure_flag_to_actors.py` | Reversible migration; adds `public_figure BOOLEAN NOT NULL DEFAULT false` to `actors` |
+| `src/issue_observatory/core/schemas/actors.py` | `public_figure: bool` added to `ActorCreate`, `ActorUpdate`, and `ActorResponse` |
+| `src/issue_observatory/api/routes/actors.py` | `public_figure=payload.public_figure` passed through in `create_actor` handler |
+
+### Schema design notes
+
+- `server_default=false`: every existing actor continues to be pseudonymized on migration; no back-fill required.
+- No index on `public_figure`: the flag will be checked by the normalizer via a direct actor lookup (join on `author_platform_id`), not via a standalone query on this column.  If a covering index is ever needed, `CREATE INDEX idx_actors_public_figure ON actors (id) WHERE public_figure = true;` is a partial index and will remain small.
+- The field is `NOT NULL` deliberately: nullable booleans are a footgun in Python (`if actor.public_figure` passes on `None`, which could accidentally bypass pseudonymization).
+
+### GDPR Art. 89(1) compliance constraints
+
+- This exemption applies only to **publicly elected or appointed officials** (Danish Folketing MPs, Greenlandic ministers, US federal officials, etc.).
+- The exception covers only statements made **in official capacity**.  Private posts by the same individual on the same account do NOT automatically fall under the exemption — collection scope must be defined accordingly in the query design.
+- **Private individuals must remain pseudonymized** regardless of public prominence (e.g. activists, academics, journalists are NOT covered unless they hold an official appointment).
+- The research institution's **DPO must review** the set of `public_figure = true` actors periodically (suggested: quarterly).  A maintenance query is:
+  ```sql
+  SELECT id, canonical_name, actor_type, created_at
+  FROM actors
+  WHERE public_figure = true
+  ORDER BY canonical_name;
+  ```
+
+---
+
+### GR-14 normalizer change required (for Core Application Engineer)
+
+**File**: `src/issue_observatory/core/normalizer.py`
+
+**What to change**: The `pseudonymize_author()` method (line 272) currently always returns a salted SHA-256 hash.  It must be extended to accept an `is_public_figure: bool = False` parameter.  When `True`, it should return the raw `platform_username` (display handle) instead of the hash.
+
+Suggested signature change:
+
+```python
+def pseudonymize_author(
+    self,
+    platform: str,
+    platform_user_id: str,
+    is_public_figure: bool = False,
+    platform_username: str | None = None,
+) -> str | None:
+    """Return pseudonymized or plain author identifier.
+
+    When is_public_figure is True (GR-14), returns the plain
+    platform_username so that content can be attributed to named
+    public officials.  Falls back to platform_user_id if
+    platform_username is not supplied.
+
+    When is_public_figure is False (default), returns the salted
+    SHA-256 hash as usual.
+    """
+    if is_public_figure:
+        return platform_username or platform_user_id
+    if not self._salt:
+        return None
+    payload = f"{platform}:{platform_user_id}:{self._salt}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+```
+
+**Collection runner integration**: Before calling `normalizer.normalize()`, the collection runner must look up the actor in the registry to check `public_figure`.  The recommended pattern:
+
+```python
+# In the collection runner / task, before calling normalizer.normalize():
+actor = await db.scalar(
+    select(Actor)
+    .join(ActorPlatformPresence, ActorPlatformPresence.actor_id == Actor.id)
+    .where(
+        ActorPlatformPresence.platform == platform,
+        ActorPlatformPresence.platform_user_id == raw_author_platform_id,
+    )
+)
+is_public_figure = actor.public_figure if actor else False
+
+record = normalizer.normalize(
+    raw_item=raw_item,
+    platform=platform,
+    arena=arena,
+    is_public_figure=is_public_figure,
+    platform_username=raw_author_display_name,
+)
+```
+
+The `normalize()` method signature should also be extended to accept and forward `is_public_figure` and `platform_username` to `pseudonymize_author()`.
+
+---
+
+### GR-14 frontend change needed (for Frontend Engineer)
+
+The actor detail/edit form (`templates/actors/detail.html` or equivalent) should include a "Public Figure" toggle checkbox.
+
+- Label: "Public Figure (GDPR Art. 89(1) exemption)"
+- The checkbox must carry a warning tooltip explaining the GDPR implications:
+  > "This bypasses anonymization. Use only for elected officials, ministers, and other public figures acting in official capacity. Private individuals must remain pseudonymized."
+- The toggle should only be visible to users with admin or researcher roles — not to read-only guests.
+- When toggled to `True`, display a confirmation dialog:
+  > "Are you sure? Setting this actor as a public figure will store their platform username in plain text in collected content records. This is a GDPR-significant action. Confirm only for publicly elected or appointed officials."
+- API call on save: `PATCH /actors/{id}` with body `{"public_figure": true}` or `{"public_figure": false}`.

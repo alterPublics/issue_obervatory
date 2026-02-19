@@ -129,13 +129,14 @@ class TelegramCollector(ArenaCollector):
         actor_ids: list[str] | None = None,
         term_groups: list[list[str]] | None = None,
         language_filter: list[str] | None = None,
+        extra_channel_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Collect Telegram messages matching one or more search terms.
 
         Iterates over the configured Danish channel list (plus any channels
-        in ``actor_ids``) and searches each for the supplied terms using
-        the ``search`` parameter of ``client.get_messages()``.  Results are
-        deduplicated by ``{channel_id}_{message_id}``.
+        in ``actor_ids`` and ``extra_channel_ids``) and searches each for the
+        supplied terms using the ``search`` parameter of ``client.get_messages()``.
+        Results are deduplicated by ``{channel_id}_{message_id}``.
 
         Telegram does not support boolean query syntax.  When ``term_groups``
         is provided, each AND-group is searched as a space-joined phrase (one
@@ -152,6 +153,11 @@ class TelegramCollector(ArenaCollector):
                 a separate search with terms space-joined as a phrase.
             language_filter: Not used — Telegram channels are pre-selected
                 for Danish content.
+            extra_channel_ids: Optional list of additional channel usernames or
+                numeric IDs supplied by the researcher via
+                ``arenas_config["telegram"]["custom_channels"]`` (GR-02).
+                These are merged with the default Danish channel list before
+                searching.
 
         Returns:
             List of normalized content record dicts.
@@ -178,7 +184,9 @@ class TelegramCollector(ArenaCollector):
         date_from_dt = _parse_datetime(date_from)
         date_to_dt = _parse_datetime(date_to)
 
-        channels = _build_channel_list(self._default_channels, actor_ids)
+        # Merge actor_ids and extra_channel_ids (GR-02) into the channel list.
+        combined_extra = list(actor_ids or []) + list(extra_channel_ids or [])
+        channels = _build_channel_list(self._default_channels, combined_extra or None)
 
         # Telegram has no boolean support; for groups, search each group as a
         # space-joined phrase (one query per group).

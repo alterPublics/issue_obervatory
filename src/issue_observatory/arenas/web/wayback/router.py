@@ -15,7 +15,10 @@ Endpoints:
 - ``GET  /wayback/health`` — arena health check.
 
 Notes:
-    - Returns CDX snapshot metadata only; page content retrieval is out of scope.
+    - By default returns CDX snapshot metadata only.
+    - When ``fetch_content=true`` is set in the request body, the archived page
+      content is fetched and extracted (trafilatura primary, tag-strip fallback).
+      FREE tier: up to 50 content fetches per run; MEDIUM: up to 200.
     - Terms are matched as URL substrings (case-insensitive).
     - Actor IDs must be domain names or URL prefixes (e.g. ``"dr.dk"``).
     - The Internet Archive's infrastructure can be fragile. The health check
@@ -54,6 +57,9 @@ class CollectByTermsRequest(BaseModel):
         date_from: ISO 8601 earliest capture date (inclusive).
         date_to: ISO 8601 latest capture date (inclusive).
         max_results: Upper bound on returned records.
+        fetch_content: When ``True``, fetch and extract text from each
+            archived page.  FREE tier: up to 50 fetches; MEDIUM: up to 200.
+            Adds significant latency due to the 15 req/min rate limit.
     """
 
     terms: list[str] = Field(
@@ -75,6 +81,14 @@ class CollectByTermsRequest(BaseModel):
         le=10_000,
         description="Maximum records to return (1–10,000).",
     )
+    fetch_content: bool = Field(
+        default=False,
+        description=(
+            "When true, fetch and extract text from each archived page. "
+            "FREE tier: up to 50 content fetches. MEDIUM tier: up to 200. "
+            "Substantially increases latency due to the 15 req/min rate limit."
+        ),
+    )
 
 
 class CollectByActorsRequest(BaseModel):
@@ -86,6 +100,9 @@ class CollectByActorsRequest(BaseModel):
         date_from: ISO 8601 earliest capture date (inclusive).
         date_to: ISO 8601 latest capture date (inclusive).
         max_results: Upper bound on returned records.
+        fetch_content: When ``True``, fetch and extract text from each
+            archived page.  FREE tier: up to 50 fetches; MEDIUM: up to 200.
+            Adds significant latency due to the 15 req/min rate limit.
     """
 
     actor_ids: list[str] = Field(
@@ -106,6 +123,14 @@ class CollectByActorsRequest(BaseModel):
         ge=1,
         le=10_000,
         description="Maximum records to return (1–10,000).",
+    )
+    fetch_content: bool = Field(
+        default=False,
+        description=(
+            "When true, fetch and extract text from each archived page. "
+            "FREE tier: up to 50 content fetches. MEDIUM tier: up to 200. "
+            "Substantially increases latency due to the 15 req/min rate limit."
+        ),
     )
 
 
@@ -138,8 +163,9 @@ class CollectResponse(BaseModel):
     summary="Wayback Machine collection by search terms",
     description=(
         "Query the Wayback Machine CDX API for Danish (.dk) pages where the URL "
-        "contains the search terms. Returns CDX snapshot metadata only — page "
-        "content retrieval is out of scope. Terms are matched case-insensitively "
+        "contains the search terms. By default returns CDX snapshot metadata. "
+        "Set ``fetch_content=true`` to also retrieve and extract archived page text "
+        "(trafilatura primary, tag-strip fallback). Terms are matched case-insensitively "
         "as URL substrings."
     ),
 )
@@ -149,12 +175,21 @@ async def collect_by_terms(
 ) -> CollectResponse:
     """Collect Wayback Machine CDX captures matching the search terms.
 
+    When ``body.fetch_content`` is ``True``, the archived page content is
+    fetched via the Wayback playback URL and text is extracted.  This
+    substantially increases response time due to the 15 req/min rate limit
+    on content fetches.
+
     Args:
-        body: Request body with terms, optional date range, and max_results.
+        body: Request body with terms, optional date range, max_results,
+            and fetch_content flag.
         current_user: Injected active user.
 
     Returns:
-        Normalized snapshot records and collection metadata.
+        Normalized snapshot records and collection metadata.  When
+        ``fetch_content`` was ``True``, successfully fetched records have
+        ``text_content`` populated and ``content_type`` set to
+        ``"web_page"``.
 
     Raises:
         HTTPException 429: If the CDX API is rate-limited.
@@ -169,6 +204,7 @@ async def collect_by_terms(
             date_from=body.date_from,
             date_to=body.date_to,
             max_results=body.max_results,
+            fetch_content=body.fetch_content,
         )
     except ArenaRateLimitError as exc:
         logger.warning(
@@ -191,9 +227,10 @@ async def collect_by_terms(
         ) from exc
 
     logger.info(
-        "wayback router: collected %d records for user=%s",
+        "wayback router: collected %d records for user=%s (fetch_content=%s)",
         len(records),
         current_user.id,
+        body.fetch_content,
     )
     return CollectResponse(
         count=len(records),
@@ -210,7 +247,8 @@ async def collect_by_terms(
     summary="Wayback Machine collection by actor domains",
     description=(
         "Query the Wayback Machine CDX API for all captures of the specified "
-        "domains or URL prefixes. Returns CDX snapshot metadata only."
+        "domains or URL prefixes. By default returns CDX snapshot metadata. "
+        "Set ``fetch_content=true`` to also retrieve and extract archived page text."
     ),
 )
 async def collect_by_actors(
@@ -219,12 +257,19 @@ async def collect_by_actors(
 ) -> CollectResponse:
     """Collect Wayback Machine CDX captures for the specified actor domains.
 
+    When ``body.fetch_content`` is ``True``, the archived page content is
+    fetched via the Wayback playback URL and text is extracted.
+
     Args:
-        body: Request body with actor_ids, optional date range, and max_results.
+        body: Request body with actor_ids, optional date range, max_results,
+            and fetch_content flag.
         current_user: Injected active user.
 
     Returns:
-        Normalized snapshot records and collection metadata.
+        Normalized snapshot records and collection metadata.  When
+        ``fetch_content`` was ``True``, successfully fetched records have
+        ``text_content`` populated and ``content_type`` set to
+        ``"web_page"``.
 
     Raises:
         HTTPException 429: If the CDX API is rate-limited.
@@ -239,6 +284,7 @@ async def collect_by_actors(
             date_from=body.date_from,
             date_to=body.date_to,
             max_results=body.max_results,
+            fetch_content=body.fetch_content,
         )
     except ArenaRateLimitError as exc:
         logger.warning(
@@ -261,9 +307,10 @@ async def collect_by_actors(
         ) from exc
 
     logger.info(
-        "wayback router: collected %d records for user=%s",
+        "wayback router: collected %d records for user=%s (fetch_content=%s)",
         len(records),
         current_user.id,
+        body.fetch_content,
     )
     return CollectResponse(
         count=len(records),

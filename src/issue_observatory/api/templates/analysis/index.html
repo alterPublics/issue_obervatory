@@ -12,13 +12,32 @@
       3. graphology-layout (random layout helper — defines window.graphologyLayout)
       4. graphology-layout-forceatlas2 (FA2 worker — defines window.graphologyLayoutForceAtlas2)
       5. network_preview.js (local helper — exposes window.initNetworkPreview)
+
+    GR-16: chartjs-plugin-annotation must load AFTER Chart.js (already in base.html)
+    and BEFORE charts.js attempts to register it or call Chart.register().
+    The UMD build exposes window.ChartAnnotation.
 #}
 <script src="https://cdn.jsdelivr.net/npm/graphology@0.25.4/dist/graphology.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sigma@3.0.0-beta.35/build/sigma.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/graphology-layout@0.6.1/dist/graphology-layout.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/graphology-layout-forceatlas2@0.10.1/dist/graphology-layout-forceatlas2.min.js"></script>
+{# GR-16: Chart.js annotation plugin for political calendar event overlays. #}
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3/dist/chartjs-plugin-annotation.min.js"></script>
+<script>
+  // Register the annotation plugin globally so all Chart.js instances on this
+  // page can use it.  ChartAnnotation is the UMD global from the CDN script above.
+  if (typeof window.ChartAnnotation !== 'undefined' && typeof Chart !== 'undefined') {
+    Chart.register(window.ChartAnnotation);
+  }
+</script>
 {# Local network preview helper — must load after the CDN libs above. #}
 <script src="{{ url_for('static', path='js/network_preview.js') }}"></script>
+
+{#
+  TODO for Core Engineer (GR-16): expose GET /analysis/calendar-events?date_from=&date_to=
+  returning filtered political_calendar.json events as JSON.
+  For now, events are loaded from /static/data/political_calendar.json directly.
+#}
 {% endblock %}
 
 {% block content %}
@@ -252,13 +271,75 @@
         <div
             class="bg-white rounded-lg shadow p-5 lg:col-span-2"
             x-data="volumeChart('{{ run_id }}')"
-            x-init="load()"
+            x-init="init()"
             @filter-applied.window="load()"
         >
-            <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center justify-between mb-3">
                 <h2 class="text-sm font-semibold text-gray-900">Volume over time</h2>
                 <span x-show="loading" class="text-xs text-gray-400 animate-pulse">Loading...</span>
             </div>
+
+            {#
+                GR-16: Political calendar event overlay controls.
+                Compact single-row panel — shows/hides annotation lines on the chart.
+            #}
+            <div class="mb-4 flex flex-wrap items-center gap-x-5 gap-y-2 py-2 px-3 bg-gray-50 rounded-md border border-gray-100 text-xs text-gray-600">
+                {# Master toggle #}
+                <label class="flex items-center gap-1.5 cursor-pointer select-none font-medium text-gray-700">
+                    <input
+                        type="checkbox"
+                        x-model="showCalendarEvents"
+                        @change="load()"
+                        class="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-3.5 w-3.5"
+                    />
+                    Calendar events
+                </label>
+
+                {# Category filter checkboxes — only visible when master toggle is on #}
+                <template x-if="showCalendarEvents">
+                    <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+                        <template x-for="cat in calendarCategories" :key="cat.id">
+                            <label class="flex items-center gap-1 cursor-pointer select-none">
+                                <input
+                                    type="checkbox"
+                                    :value="cat.id"
+                                    x-model="calendarCategoryFilter"
+                                    @change="load()"
+                                    class="rounded border-gray-300 focus:ring-blue-500 h-3 w-3"
+                                    :style="`accent-color: ${cat.color}`"
+                                />
+                                <span
+                                    class="inline-block w-2 h-2 rounded-full flex-shrink-0"
+                                    :style="`background-color: ${cat.color}`"
+                                    aria-hidden="true"
+                                ></span>
+                                <span x-text="cat.label"></span>
+                            </label>
+                        </template>
+
+                        {# Country filter #}
+                        <span class="text-gray-300 select-none" aria-hidden="true">|</span>
+                        <template x-for="c in calendarCountries" :key="c.id">
+                            <label class="flex items-center gap-1 cursor-pointer select-none">
+                                <input
+                                    type="radio"
+                                    name="calendarCountryFilter"
+                                    :value="c.id"
+                                    x-model="calendarCountryFilter"
+                                    @change="load()"
+                                    class="border-gray-300 text-blue-600 focus:ring-blue-500 h-3 w-3"
+                                />
+                                <span x-text="c.label"></span>
+                            </label>
+                        </template>
+                    </div>
+                </template>
+
+                {# Loading / error state for calendar data #}
+                <span x-show="calendarLoading" class="text-gray-400 animate-pulse">Loading events...</span>
+                <span x-show="calendarError && !calendarLoading" class="text-red-500" x-text="calendarError"></span>
+            </div>
+
             <p x-show="error" class="text-sm text-red-600" x-text="error"></p>
             <div x-show="!error">
                 <canvas id="volumeChart" height="80"></canvas>
@@ -1272,12 +1353,103 @@ function summaryCards(runId) {
     };
 }
 
-// ---- Volume-over-time chart -----------------------------------------------
+// ---- Volume-over-time chart (GR-16: political calendar event overlay) -----
 function volumeChart(runId) {
     return {
         runId,
         loading: false,
         error: null,
+
+        // ---- GR-16: political calendar state ----------------------------
+        // Raw event list from /static/data/political_calendar.json.
+        _allCalendarEvents: [],
+        // Category metadata keyed by category id.
+        _calendarCategoryMeta: {},
+        // UI state — persists across chart reloads triggered by filter changes.
+        showCalendarEvents: true,
+        calendarCategoryFilter: ['election', 'parliament', 'international', 'other'],
+        calendarCountryFilter: 'all',
+        calendarLoading: false,
+        calendarError: null,
+
+        // Derived arrays for the template to iterate over.
+        calendarCategories: [],
+        calendarCountries: [
+            { id: 'all',           label: 'All' },
+            { id: 'dk',            label: 'Denmark' },
+            { id: 'gl',            label: 'Greenland' },
+            { id: 'international', label: 'International' },
+        ],
+
+        /**
+         * Called once by x-init.  Loads calendar data then renders the chart.
+         */
+        async init() {
+            await this._loadCalendarData();
+            await this.load();
+        },
+
+        /**
+         * Fetch political_calendar.json from the static path.
+         * Silently degrades to no annotations if the fetch fails.
+         */
+        async _loadCalendarData() {
+            this.calendarLoading = true;
+            this.calendarError = null;
+            try {
+                const res = await fetch('/static/data/political_calendar.json');
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const json = await res.json();
+                this._allCalendarEvents = json.events || [];
+                this._calendarCategoryMeta = json.categories || {};
+
+                // Build the category list for the filter UI, preserving order.
+                this.calendarCategories = Object.entries(this._calendarCategoryMeta).map(
+                    ([id, meta]) => ({ id, color: meta.color, label: meta.label })
+                );
+            } catch (e) {
+                // Non-fatal: annotations are optional.
+                this.calendarError = 'Could not load calendar events.';
+                this._allCalendarEvents = [];
+            } finally {
+                this.calendarLoading = false;
+            }
+        },
+
+        /**
+         * Return the filtered, colour-annotated event list to pass to the chart helpers.
+         * Filtering respects the showCalendarEvents toggle, category checkboxes, and
+         * country radio button.
+         *
+         * @param {string[]} chartLabels - Chart x-axis labels used to derive date range.
+         * @returns {Array<{id, date, label, color}>}
+         */
+        _filteredEvents(chartLabels) {
+            if (!this.showCalendarEvents || this._allCalendarEvents.length === 0) return [];
+
+            // Derive the visible date range from chart labels.
+            const first = chartLabels.length > 0 ? chartLabels[0].slice(0, 10) : null;
+            const last  = chartLabels.length > 0 ? chartLabels[chartLabels.length - 1].slice(0, 10) : null;
+
+            return this._allCalendarEvents
+                .filter(ev => {
+                    // Category filter.
+                    if (!this.calendarCategoryFilter.includes(ev.category)) return false;
+                    // Country filter.
+                    if (this.calendarCountryFilter !== 'all' && ev.country !== this.calendarCountryFilter) return false;
+                    // Date range filter — silently drop events outside the chart window.
+                    if (first && last && (ev.date < first || ev.date > last)) return false;
+                    return true;
+                })
+                .map(ev => ({
+                    id:    ev.id,
+                    date:  ev.date,
+                    label: ev.label,
+                    // Resolve colour from category metadata; fall back to gray.
+                    color: (this._calendarCategoryMeta[ev.category] || {}).color || '#6b7280',
+                }));
+        },
+
         async load() {
             this.loading = true;
             this.error = null;
@@ -1293,12 +1465,15 @@ function volumeChart(runId) {
                 const arenaNames = [...arenaSet].sort();
                 const labels = rows.map(r => r.period ? r.period.slice(0, 10) : r.period);
 
+                // Build the filtered event list for this chart's date range.
+                const events = this._filteredEvents(labels);
+
                 const axisLabels = {
                     xLabel: 'Date',
                     yLabel: 'Number of records',
                 };
                 if (typeof window.initMultiArenaVolumeChart === 'function') {
-                    window.initMultiArenaVolumeChart('volumeChart', { labels, rows, arenaNames, ...axisLabels });
+                    window.initMultiArenaVolumeChart('volumeChart', { labels, rows, arenaNames, ...axisLabels }, events);
                 } else if (typeof window.initVolumeChart === 'function') {
                     // Fallback to the existing single-series helper.
                     window.initVolumeChart('volumeChart', {
@@ -1307,7 +1482,7 @@ function volumeChart(runId) {
                         type: 'line',
                         label: 'Total records',
                         ...axisLabels,
-                    });
+                    }, events);
                 }
             } catch (e) {
                 this.error = e.message;

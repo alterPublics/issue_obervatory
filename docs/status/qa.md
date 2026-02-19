@@ -1,6 +1,6 @@
 # QA Guardian — Status
 
-_Last updated: 2026-02-18 (Phase D test gaps addressed — H-01 through H-06 and M-01 through M-02 implemented)_
+_Last updated: 2026-02-19 (Greenland Roadmap GR-01 through GR-22 post-implementation QA review — conditional pass, no blockers, 4 warnings)_
 
 ---
 
@@ -935,3 +935,56 @@ When each Phase 1 arena is submitted for review, the QA gate requires:
 The `mock_http_client` fixture in `conftest.py` provides the interface contract.
 Arena test files should override it per-platform with `respx` mocks loading from
 `tests/fixtures/api_responses/<platform>/`.
+
+---
+
+## Greenland Roadmap (GR) — Post-Implementation Review (2026-02-19)
+
+_Full report: `/docs/ux_reports/gr_implementation_qa.md`_
+
+**Result: CONDITIONAL PASS** — No blockers. 4 warnings. Test files for all GR modules are missing (primary debt).
+
+### GR Arena Review Status
+
+| Arena | Status | Notes |
+|-------|--------|-------|
+| url_scraper (GR-10) | REVIEW COMPLETE — no tests yet | QA checklist in `core.md` line 1517-1531; import verification test needed |
+| wayback _content_fetcher (GR-12) | REVIEW COMPLETE — no tests yet | W-01: runtime import test required before deployment |
+
+### GR Coverage Gaps (all require test files)
+
+| Component | Required | Status |
+|-----------|----------|--------|
+| `analysis/enrichments/propagation_detector.py` | 85% | NO TESTS — enrich_cluster(), single-arena skip, missing timestamps |
+| `analysis/enrichments/coordination_detector.py` | 85% | NO TESTS — sliding-window, threshold, score normalisation |
+| `analysis/enrichments/language_detector.py` | 85% | Tests noted in prior review as needed; still missing |
+| `analysis/alerting.py` + `_alerting_store.py` | 85% | NO TESTS — detect_volume_spikes, store, fetch, email |
+| `analysis/link_miner.py` | 80% | NO TESTS — URL regex, platform classification, aggregation |
+| `sampling/network_expander.py` (GR-19, GR-21 additions) | 75% | PARTIAL — existing `test_sampling.py` covers Bluesky/Reddit/YouTube; _expand_via_comention and _expand_via_telegram_forwarding not covered |
+| `sampling/snowball.py` (GR-20 additions) | 75% | PARTIAL — existing tests cover core run(); auto_create_actor_records() not covered |
+| `arenas/web/url_scraper/collector.py` | 80% | NO TESTS |
+| `arenas/web/wayback/_content_fetcher.py` | 75% | NO TESTS — rate limiting, error isolation, extractor selection |
+| `api/routes/query_designs.py` (PATCH endpoint GR-01-05, alerts GR-09) | 75% | NO TESTS for new endpoints |
+| `api/routes/actors.py` (quick-add GR-17, similarity GR-18, snowball GR-20) | 75% | NO TESTS for GR-17/GR-18/GR-20 endpoints |
+| `api/routes/content.py` (discovered-links GR-22) | 75% | NO TESTS for GET /content/discovered-links |
+
+### Warnings (active)
+
+- **W-01** `arenas/web/wayback/_content_fetcher.py`: runtime circular-import verification needed. See Section 1.5 of GR QA report.
+- **W-02** `docs/status/core.md`: GR-21 section missing. Add GR-21 entry referencing `_expand_via_telegram_forwarding()`.
+- **W-03** GR-18 frontend QA checklist: 7 items unchecked in `core.md` lines 1475-1482. Frontend Engineer must verify HTMX/Alpine bindings interactively.
+- **W-04** GR-10 `normalize()` tier parameter: public `normalize(record)` delegates to `_normalize_raw_record(record, Tier.FREE)` — external callers using the base class interface get FREE tier regardless of actual tier. Tracked as technical debt.
+
+### Open Issues
+
+```markdown
+## Blocked
+(none)
+
+## Warnings
+- W-01: wayback/_content_fetcher.py — circular import risk with scraper module unverified at runtime.
+  Fix: run test_wayback_content_fetcher_imports.py before next deployment.
+- W-02: core.md GR-21 section missing — Core Application Engineer to add.
+- W-03: GR-18 frontend QA checklist (7 items) — Frontend Engineer to verify interactively.
+- W-04: url_scraper normalize() hardcodes Tier.FREE for public interface callers.
+```

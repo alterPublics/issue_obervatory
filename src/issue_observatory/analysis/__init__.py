@@ -1,4 +1,4 @@
-"""Analysis modules: descriptive statistics, network analysis, and data export."""
+"""Analysis modules: descriptive statistics, network analysis, propagation, and data export."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from issue_observatory.analysis.descriptive import (
     get_top_terms,
     get_volume_over_time,
 )
+from issue_observatory.analysis.enrichments import PropagationEnricher
 from issue_observatory.analysis.export import ContentExporter
 from issue_observatory.analysis.network import (
     build_bipartite_network,
@@ -22,6 +23,7 @@ from issue_observatory.analysis.network import (
     get_temporal_network_snapshots,
     get_term_co_occurrence,
 )
+from issue_observatory.analysis.propagation import get_propagation_flows
 
 __all__ = [
     # filters (shared between descriptive and network)
@@ -43,6 +45,9 @@ __all__ = [
     "build_bipartite_network",
     "build_enhanced_bipartite_network",
     "get_temporal_network_snapshots",
+    # propagation (GR-08)
+    "get_propagation_flows",
+    "PropagationEnricher",
     # export
     "ContentExporter",
 ]

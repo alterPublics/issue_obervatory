@@ -1,0 +1,74 @@
+{#
+    HTMX partial — Platform recommendation results (GR-18).
+
+    Rendered by POST /actors/{actor_id}/similar/platform when the HX-Request
+    header is present.
+
+    Context:
+        actor_id  (str): UUID string of the actor being queried.
+        candidates (list): Actor dicts from SimilarityFinder.find_similar_by_platform().
+            Each dict has:
+              platform, platform_username, canonical_name, profile_url,
+              discovery_method.  similarity_score is not present for platform
+              recommendations (not a scored method).
+#}
+{% if candidates %}
+<ul class="divide-y divide-gray-100" role="list">
+    {% for c in candidates %}
+    {% set platform = c.platform | default('') %}
+    {% set username = c.platform_username | default('') %}
+    {% set display  = c.canonical_name   | default(username) %}
+    {% set url      = c.profile_url      | default('') %}
+
+    <li class="flex items-center justify-between gap-4 py-3 px-1">
+
+        {# Left: platform badge + name #}
+        <div class="flex items-center gap-3 min-w-0">
+            {# Platform badge — colour-coded by platform #}
+            {% if platform == 'bluesky' %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-sky-100 text-sky-800 flex-shrink-0">Bluesky</span>
+            {% elif platform == 'reddit' %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 flex-shrink-0">Reddit</span>
+            {% elif platform == 'youtube' %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800 flex-shrink-0">YouTube</span>
+            {% else %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700 flex-shrink-0 capitalize">{{ platform }}</span>
+            {% endif %}
+
+            <div class="min-w-0">
+                <p class="text-sm font-medium text-gray-900 truncate">{{ display }}</p>
+                <p class="text-xs text-gray-400 font-mono truncate">{{ username }}</p>
+            </div>
+        </div>
+
+        {# Right: action buttons #}
+        <div class="flex items-center gap-2 flex-shrink-0">
+            {% if url %}
+            <a href="{{ url }}"
+               target="_blank"
+               rel="noopener noreferrer"
+               class="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-500 border border-gray-200 rounded hover:bg-gray-50 transition-colors"
+               aria-label="View {{ display }} on {{ platform }}">
+                View Profile
+            </a>
+            {% endif %}
+
+            <button type="button"
+                    hx-post="/actors/quick-add"
+                    hx-vals='{"platform": "{{ platform }}", "platform_username": "{{ username }}", "display_name": "{{ display }}"}'
+                    hx-headers='{"Content-Type": "application/json"}'
+                    hx-swap="none"
+                    hx-on::after-request="if(event.detail.successful){ this.textContent='Added'; this.disabled=true; this.classList.add('opacity-50'); }"
+                    class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-700 border border-blue-200 rounded hover:bg-blue-50 transition-colors">
+                Add to Registry
+            </button>
+        </div>
+
+    </li>
+    {% endfor %}
+</ul>
+{% else %}
+<p class="text-sm text-gray-400 px-1 py-4">
+    No platform recommendations found. The actor may not have a presence on the selected platforms, or the platform API returned no suggestions.
+</p>
+{% endif %}

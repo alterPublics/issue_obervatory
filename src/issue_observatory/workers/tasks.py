@@ -54,6 +54,7 @@ from issue_observatory.workers._enrichment_helpers import (
 from issue_observatory.workers._task_helpers import (
     enforce_retention,
     fetch_live_tracking_designs,
+    fetch_public_figure_ids_for_design,
     fetch_stale_runs,
     fetch_unsettled_reservations,
     get_user_credit_balance,
@@ -125,9 +126,15 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
         owner_id = design["owner_id"]
         arenas_config: dict[str, str] = design.get("arenas_config") or {}
         default_tier: str = design.get("default_tier") or "free"
-        # IP2-052: parse comma-separated language field into a list for dispatch.
-        raw_language: str = design.get("language") or "da"
-        language_filter: list[str] = parse_language_codes(raw_language)
+        # GR-05: arenas_config["languages"] takes priority over the single
+        # query_design.language field.  If the key is missing, fall back to
+        # [query_design.language] (IP2-052 behaviour).
+        config_languages = arenas_config.get("languages") if isinstance(arenas_config, dict) else None
+        if isinstance(config_languages, list) and config_languages:
+            language_filter: list[str] = [str(lc) for lc in config_languages if lc]
+        else:
+            raw_language: str = design.get("language") or "da"
+            language_filter = parse_language_codes(raw_language)
 
         task_log = log.bind(
             query_design_id=str(design_id), run_id=str(run_id)
@@ -183,6 +190,28 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
             skipped += 1
             continue
 
+        # --- GR-14: build set of public-figure platform user IDs ---
+        # This is fetched once per design (not per arena) and passed to every
+        # arena task so the normalizer can bypass pseudonymization for known
+        # public officials without a per-record DB lookup at collection time.
+        public_figure_ids: list[str] = []
+        try:
+            pf_set = asyncio.run(fetch_public_figure_ids_for_design(design_id))
+            public_figure_ids = list(pf_set)
+            if public_figure_ids:
+                task_log.info(
+                    "trigger_daily_collection: GR-14 public-figure IDs loaded",
+                    count=len(public_figure_ids),
+                )
+        except Exception as pf_exc:
+            # Non-fatal: log and continue without the bypass.
+            # Arena tasks will still run; all authors will be pseudonymized.
+            task_log.warning(
+                "trigger_daily_collection: failed to fetch public-figure IDs; "
+                "all authors will be pseudonymized (GR-14 bypass unavailable)",
+                error=str(pf_exc),
+            )
+
         # --- Dispatch arena tasks ---
         for arena_name, arena_tier in arenas_config.items():
             tier = arena_tier or default_tier
@@ -198,6 +227,10 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                         # IP2-052: pass language filter so arena tasks can
                         # restrict results to the design's configured language(s).
                         "language_filter": language_filter,
+                        # GR-14: public-figure platform user IDs; arena tasks
+                        # forward this to the normalizer to bypass
+                        # pseudonymization for known public officials.
+                        "public_figure_ids": public_figure_ids,
                     },
                     queue="celery",
                 )
@@ -396,6 +429,7 @@ def settle_pending_credits() -> dict[str, Any]:
     settled_count = 0
     error_count = 0
     emailed_runs: set[str] = set()  # avoid duplicate completion emails per run
+    spike_checked_runs: set[str] = set()  # avoid duplicate spike checks per run
 
     for row in pending:
         run_id_str = str(row["collection_run_id"])
@@ -429,6 +463,36 @@ def settle_pending_credits() -> dict[str, Any]:
                             run_id=run_id_str,
                             error=str(email_exc),
                         )
+
+            # GR-09: dispatch spike check once per completed run, but only
+            # when the run is associated with a query design (batch/live runs
+            # spawned by trigger_daily_collection always have one; ad-hoc runs
+            # created via the API may not).
+            if run_id_str not in spike_checked_runs:
+                query_design_id = row.get("query_design_id")
+                if query_design_id is not None:
+                    try:
+                        celery_app.send_task(
+                            "issue_observatory.workers.tasks.check_volume_spikes",
+                            kwargs={
+                                "collection_run_id": run_id_str,
+                                "query_design_id": str(query_design_id),
+                            },
+                            queue="celery",
+                        )
+                        spike_checked_runs.add(run_id_str)
+                        log.info(
+                            "settle_pending_credits: dispatched spike check",
+                            run_id=run_id_str,
+                            query_design_id=str(query_design_id),
+                        )
+                    except Exception as spike_exc:
+                        log.warning(
+                            "settle_pending_credits: spike check dispatch failed",
+                            run_id=run_id_str,
+                            error=str(spike_exc),
+                        )
+
         except Exception as exc:
             log.error(
                 "settle_pending_credits: settlement failed",
@@ -596,6 +660,7 @@ def enrich_collection_run(
     self: Any,
     run_id: str,
     enricher_names: list[str] | None = None,
+    language_codes: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run content enrichment on all records from a collection run.
 
@@ -612,6 +677,12 @@ def enrich_collection_run(
         enricher_names: Optional list of enricher names to run.  If None,
             all registered enrichers are applied.  Pass a list to restrict
             to a subset (e.g. ``["language_detection"]``).
+        language_codes: Optional list of ISO 639-1 language codes from the
+            query design's language configuration (e.g. ``["da"]`` for a
+            Danish-only collection).  When provided, the language detector
+            will tag records as ``expected`` or ``unexpected`` and will use
+            a single-language heuristic fallback when langdetect is not
+            installed.
 
     Returns:
         Dict with ``records_processed``, ``enrichments_applied``, and
@@ -619,15 +690,19 @@ def enrich_collection_run(
     """
     _task_start = time.perf_counter()
     log = logger.bind(task="enrich_collection_run", run_id=run_id)
-    log.info("enrich_collection_run: starting", enricher_names=enricher_names)
+    log.info(
+        "enrich_collection_run: starting",
+        enricher_names=enricher_names,
+        language_codes=language_codes,
+    )
 
     # --- Build enricher registry ---
     from issue_observatory.analysis.enrichments import (  # noqa: PLC0415
-        DanishLanguageDetector,
+        LanguageDetector,
     )
 
     _all_enrichers: list[Any] = [
-        DanishLanguageDetector(),
+        LanguageDetector(expected_languages=language_codes),
     ]
 
     if enricher_names is not None:
@@ -738,5 +813,110 @@ def enrich_collection_run(
     except Exception as _metrics_exc:  # noqa: BLE001
         _stdlib_logger.debug(
             "enrich_collection_run: metrics recording failed: %s", _metrics_exc
+        )
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Task 7: check_volume_spikes  (GR-09)
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(
+    name="issue_observatory.workers.tasks.check_volume_spikes",
+)
+def check_volume_spikes_task(
+    collection_run_id: str,
+    query_design_id: str,
+    threshold_multiplier: float = 2.0,
+) -> dict[str, Any]:
+    """Check for volume spikes after a collection run completes.
+
+    Runs as a fire-and-forget task dispatched by arena collection tasks
+    (or by the collection orchestration layer) upon run completion.  The
+    spike check is intentionally isolated here so that any failure does not
+    block or affect the collection run itself.
+
+    Algorithm (delegated to
+    :func:`~issue_observatory.workers._alerting_helpers.run_spike_detection`):
+
+    1. Compute per-arena record counts for the completed run.
+    2. Compute the rolling 7-run average per arena from the prior 7 completed
+       runs for the same query design.
+    3. Flag arenas where current count > ``threshold_multiplier`` x rolling
+       average AND current count >= 10 (to avoid false positives at low volume).
+    4. Persist flagged spikes to ``collection_runs.arenas_config["_volume_spikes"]``.
+    5. Send an email alert to the query design owner.
+
+    Silently returns ``{"spikes": []}`` when there is insufficient run history
+    (fewer than 7 prior completed runs), so no special handling is required
+    in the caller.
+
+    Args:
+        collection_run_id: UUID string of the completed collection run.
+        query_design_id: UUID string of the associated query design.
+        threshold_multiplier: Ratio above which a volume increase is flagged.
+            Defaults to 2.0 (double the rolling average).
+
+    Returns:
+        Dict with key ``"spikes"`` containing a list of spike dicts, and
+        ``"spike_count"`` for fast summary logging.
+    """
+    import uuid as _uuid  # noqa: PLC0415
+
+    _task_start = time.perf_counter()
+    log = logger.bind(
+        task="check_volume_spikes",
+        collection_run_id=collection_run_id,
+        query_design_id=query_design_id,
+    )
+    log.info("check_volume_spikes: starting")
+
+    from issue_observatory.workers._alerting_helpers import (  # noqa: PLC0415
+        run_spike_detection,
+    )
+
+    try:
+        run_uuid = _uuid.UUID(collection_run_id)
+        design_uuid = _uuid.UUID(query_design_id)
+    except ValueError as exc:
+        log.error(
+            "check_volume_spikes: invalid UUID arguments",
+            error=str(exc),
+        )
+        return {"spikes": [], "spike_count": 0, "error": str(exc)}
+
+    try:
+        spikes = asyncio.run(
+            run_spike_detection(
+                collection_run_id=run_uuid,
+                query_design_id=design_uuid,
+                threshold_multiplier=threshold_multiplier,
+            )
+        )
+    except Exception as exc:
+        log.error(
+            "check_volume_spikes: detection failed",
+            error=str(exc),
+            exc_info=True,
+        )
+        return {"spikes": [], "spike_count": 0, "error": str(exc)}
+
+    summary: dict[str, Any] = {"spikes": spikes, "spike_count": len(spikes)}
+    log.info("check_volume_spikes: complete", spike_count=len(spikes))
+    try:
+        from issue_observatory.api.metrics import (  # noqa: PLC0415
+            celery_task_duration_seconds,
+            celery_tasks_total,
+        )
+        celery_tasks_total.labels(
+            task_name="check_volume_spikes", status="success"
+        ).inc()
+        celery_task_duration_seconds.labels(
+            task_name="check_volume_spikes"
+        ).observe(time.perf_counter() - _task_start)
+    except Exception as _metrics_exc:  # noqa: BLE001
+        _stdlib_logger.debug(
+            "check_volume_spikes: metrics recording failed: %s", _metrics_exc
         )
     return summary

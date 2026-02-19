@@ -164,6 +164,9 @@ addopts = [
     "--cov-report=html:htmlcov",
     "-v",
 ]
+markers = [
+    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+]
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning",

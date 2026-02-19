@@ -109,6 +109,36 @@ Used by ``asyncio.Semaphore`` in collect methods.
 """
 
 # ---------------------------------------------------------------------------
+# Content fetch rate limiting
+# ---------------------------------------------------------------------------
+
+WB_CONTENT_FETCH_RATE_LIMIT: int = 15
+"""Maximum Wayback Machine content page fetches per minute.
+
+The Internet Archive applies a separate, stricter rate limit on individual
+page retrievals (the ``/web/{timestamp}id_/{url}`` endpoint) compared to the
+CDX search API.  15 req/min is a conservative safe default.
+"""
+
+WB_CONTENT_FETCH_SIZE_LIMIT: int = 500 * 1024  # 500 KB
+"""Maximum response body size (bytes) for archived page content retrieval.
+
+Responses larger than this limit are skipped to avoid excessive memory use
+and slow extraction times.  The skipped record is marked with
+``raw_metadata["content_skipped_size_bytes"]``.
+"""
+
+WB_MAX_CONTENT_FETCHES: dict[Tier, int] = {
+    Tier.FREE: 50,
+    Tier.MEDIUM: 200,
+}
+"""Maximum number of content fetches allowed per collection run, by tier.
+
+FREE tier: up to 50 records.
+MEDIUM tier: up to 200 records.
+"""
+
+# ---------------------------------------------------------------------------
 # Tier configuration
 # ---------------------------------------------------------------------------
 

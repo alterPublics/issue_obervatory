@@ -1,0 +1,118 @@
+{
+  "events": [
+    {
+      "id": "nato_arctic_exercise_2026",
+      "date": "2026-02-01",
+      "label": "NATO Cold Response (Arctic)",
+      "category": "international",
+      "country": "international",
+      "description": "NATO Cold Response exercise in Norway — Arctic security context and relevance to Greenland/Denmark"
+    },
+    {
+      "id": "inatsisartut_spring_2026",
+      "date": "2026-03-23",
+      "label": "Inatsisartut Spring Session",
+      "category": "parliament",
+      "country": "gl",
+      "description": "Greenlandic parliament (Inatsisartut) spring ordinary session opens"
+    },
+    {
+      "id": "trump_greenland_address_2026",
+      "date": "2026-03-04",
+      "label": "Trump Greenland Address",
+      "category": "international",
+      "country": "international",
+      "description": "US President Trump addresses Congress — expected renewed Greenland acquisition rhetoric"
+    },
+    {
+      "id": "dk_eu_council_presidency_2026",
+      "date": "2026-01-01",
+      "label": "Denmark EU Council Presidency",
+      "category": "international",
+      "country": "dk",
+      "description": "Denmark assumes rotating EU Council presidency (January–June 2026)"
+    },
+    {
+      "id": "dk_folketing_spring_sitting",
+      "date": "2026-01-07",
+      "label": "Folketing Spring Sitting Opens",
+      "category": "parliament",
+      "country": "dk",
+      "description": "Danish Folketing spring parliamentary sitting opens after Christmas recess"
+    },
+    {
+      "id": "dk_election_expected",
+      "date": "2026-06-15",
+      "label": "Danish General Election (expected)",
+      "category": "election",
+      "country": "dk",
+      "description": "Expected window for Danish general election (term expires November 2026)"
+    },
+    {
+      "id": "inatsisartut_autumn_2026",
+      "date": "2026-09-28",
+      "label": "Inatsisartut Autumn Session",
+      "category": "parliament",
+      "country": "gl",
+      "description": "Greenlandic parliament autumn ordinary session opens"
+    },
+    {
+      "id": "gl_municipal_elections_2025",
+      "date": "2025-04-01",
+      "label": "Greenlandic Municipal Elections",
+      "category": "election",
+      "country": "gl",
+      "description": "Greenlandic municipal council elections — impacts local political discourse"
+    },
+    {
+      "id": "dk_defence_agreement_2026",
+      "date": "2026-04-15",
+      "label": "DK Arctic Defence Package",
+      "category": "other",
+      "country": "dk",
+      "description": "Danish government expected to finalise multi-billion krone Arctic/Greenland defence package"
+    },
+    {
+      "id": "us_dk_diplomatic_summit_2026",
+      "date": "2026-05-01",
+      "label": "US-Denmark Diplomatic Summit",
+      "category": "international",
+      "country": "international",
+      "description": "Expected bilateral summit addressing Greenland sovereignty and Arctic security arrangements"
+    },
+    {
+      "id": "nato_summit_2026",
+      "date": "2026-06-25",
+      "label": "NATO Summit (The Hague)",
+      "category": "international",
+      "country": "international",
+      "description": "NATO Summit in The Hague — Arctic security and Greenland on the agenda"
+    },
+    {
+      "id": "gl_inatsisartut_election",
+      "date": "2025-03-11",
+      "label": "Inatsisartut Election",
+      "category": "election",
+      "country": "gl",
+      "description": "Greenlandic parliamentary (Inatsisartut) general election"
+    }
+  ],
+  "categories": {
+    "election": {
+      "color": "#ef4444",
+      "label": "Election"
+    },
+    "parliament": {
+      "color": "#3b82f6",
+      "label": "Parliament Session"
+    },
+    "international": {
+      "color": "#8b5cf6",
+      "label": "International Event"
+    },
+    "other": {
+      "color": "#6b7280",
+      "label": "Other Event"
+    }
+  }
+}

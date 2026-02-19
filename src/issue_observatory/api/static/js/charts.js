@@ -81,6 +81,72 @@ function _destroyExisting(canvas) {
 }
 
 // ---------------------------------------------------------------------------
+// Political calendar event annotations (GR-16)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a chartjs-plugin-annotation annotations object from a list of
+ * political calendar events.
+ *
+ * Events are filtered to those whose date string matches one of the chart
+ * labels — so events outside the visible time range are silently dropped.
+ *
+ * @param {Array<{id, date, label, color}>} events - Filtered event list.
+ * @param {string[]} chartLabels - The x-axis label strings for the chart
+ *   (ISO date prefixes, e.g. ['2025-03-01', '2025-03-02', ...]).
+ * @returns {Object} - Annotation definitions keyed by event id.
+ */
+function _buildAnnotations(events, chartLabels) {
+  // Build a Set of label prefixes so we can test membership cheaply.
+  // Chart labels are typically 'YYYY-MM-DD'; events store full ISO dates.
+  // We match by checking whether any label starts with the event date prefix
+  // OR the event date starts with the label (handles weekly/monthly buckets).
+  const labelSet = new Set(chartLabels);
+
+  return events.reduce((acc, ev) => {
+    // Determine whether the event date falls within the chart range.
+    // Strategy: the event date must be >= the first label and <= the last label.
+    if (chartLabels.length === 0) return acc;
+    const first = chartLabels[0];
+    const last  = chartLabels[chartLabels.length - 1];
+    if (ev.date < first.slice(0, 10) || ev.date > last.slice(0, 10)) return acc;
+
+    // Find the closest label to place the annotation on.
+    // For category-axis charts the annotation must reference a label value.
+    let targetLabel = null;
+    for (const lbl of chartLabels) {
+      if (lbl.slice(0, 10) <= ev.date) {
+        targetLabel = lbl;
+      } else {
+        break;
+      }
+    }
+    if (!targetLabel) return acc;
+
+    acc[ev.id] = {
+      type: 'line',
+      xMin: targetLabel,
+      xMax: targetLabel,
+      borderColor: ev.color,
+      borderWidth: 1.5,
+      borderDash: [4, 3],
+      label: {
+        display: true,
+        content: ev.label,
+        position: 'start',
+        rotation: -90,
+        font: { size: 9, family: 'system-ui, sans-serif' },
+        // Low-opacity background so the label doesn't obscure data.
+        backgroundColor: ev.color + '22',
+        color: ev.color,
+        padding: { x: 3, y: 2 },
+      },
+    };
+    return acc;
+  }, {});
+}
+
+// ---------------------------------------------------------------------------
 // 1. Volume over time — line or bar chart
 // ---------------------------------------------------------------------------
 
@@ -93,21 +159,32 @@ function _destroyExisting(canvas) {
  * @param {number[]} data.values     - Record counts per label.
  * @param {string}  [data.type]      - 'bar' (default) or 'line'.
  * @param {string}  [data.label]     - Dataset label (default: 'Records').
+ * @param {Array}   [events]         - Optional political calendar events (GR-16).
+ *   Each entry must have: { id, date (YYYY-MM-DD), label, color }.
+ *   Events outside the chart's date range are silently ignored.
  * @param {Object}  [options]        - Additional Chart.js options (merged in).
  * @returns {Chart|null}
  */
-window.initVolumeChart = function initVolumeChart(canvasId, data, options = {}) {
+window.initVolumeChart = function initVolumeChart(canvasId, data, events = [], options = {}) {
   const canvas = _getCanvas(canvasId);
   if (!canvas) return null;
   _destroyExisting(canvas);
 
   const chartType = data.type || 'bar';
   const isLine = chartType === 'line';
+  const labels  = data.labels || [];
+
+  // Build annotation config only when the plugin is registered and events exist.
+  const hasAnnotationPlugin = typeof window.ChartAnnotation !== 'undefined'
+    || (typeof Chart !== 'undefined' && Chart.registry && Chart.registry.plugins.get('annotation'));
+  const annotations = (hasAnnotationPlugin && events.length > 0)
+    ? _buildAnnotations(events, labels)
+    : {};
 
   return new Chart(canvas, {
     type: chartType,
     data: {
-      labels: data.labels || [],
+      labels,
       datasets: [{
         label: data.label || 'Records',
         data: data.values || [],
@@ -122,6 +199,10 @@ window.initVolumeChart = function initVolumeChart(canvasId, data, options = {}) 
     },
     options: {
       ..._CHART_DEFAULTS,
+      plugins: {
+        ..._CHART_DEFAULTS.plugins,
+        ...(Object.keys(annotations).length > 0 ? { annotation: { annotations } } : {}),
+      },
       scales: {
         x: {
           ticks: { color: '#6b7280', font: { size: 11 }, maxRotation: 45 },
@@ -429,10 +510,13 @@ window.initEngagementStatsChart = function initEngagementStatsChart(canvasId, da
  * @param {string[]} data.labels     - Period labels (ISO date strings, sliced to 10 chars).
  * @param {Object[]} data.rows       - Raw API rows [{period, count, arenas: {...}}].
  * @param {string[]} data.arenaNames - Sorted list of arena names.
+ * @param {Array}   [events]         - Optional political calendar events (GR-16).
+ *   Each entry must have: { id, date (YYYY-MM-DD), label, color }.
+ *   Events outside the chart's date range are silently ignored.
  * @param {Object}  [options]        - Additional Chart.js options (merged in).
  * @returns {Chart|null}
  */
-window.initMultiArenaVolumeChart = function initMultiArenaVolumeChart(canvasId, data, options = {}) {
+window.initMultiArenaVolumeChart = function initMultiArenaVolumeChart(canvasId, data, events = [], options = {}) {
   const canvas = _getCanvas(canvasId);
   if (!canvas) return null;
   _destroyExisting(canvas);
@@ -461,11 +545,22 @@ window.initMultiArenaVolumeChart = function initMultiArenaVolumeChart(canvasId, 
         pointRadius: 3,
       }];
 
+  // Build annotation config only when the plugin is registered and events exist.
+  const hasAnnotationPlugin = typeof window.ChartAnnotation !== 'undefined'
+    || (typeof Chart !== 'undefined' && Chart.registry && Chart.registry.plugins.get('annotation'));
+  const annotations = (hasAnnotationPlugin && events.length > 0)
+    ? _buildAnnotations(events, labels || [])
+    : {};
+
   return new Chart(canvas, {
     type: 'line',
     data: { labels: labels || [], datasets },
     options: {
       ..._CHART_DEFAULTS,
+      plugins: {
+        ..._CHART_DEFAULTS.plugins,
+        ...(Object.keys(annotations).length > 0 ? { annotation: { annotations } } : {}),
+      },
       scales: {
         x: {
           ticks: { color: '#6b7280', font: { size: 11 }, maxRotation: 45 },
