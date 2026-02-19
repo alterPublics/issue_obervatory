@@ -173,6 +173,12 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides[get_db] = _override_get_db
 
+    # Manually trigger startup events to ensure app.state is initialized
+    # (httpx ASGITransport doesn't automatically trigger them)
+    for handler in app.router.on_startup:
+        if callable(handler):
+            await handler()
+
     transport = ASGITransport(app=app)
     async with AsyncClient(
         transport=transport,

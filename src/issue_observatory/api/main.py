@@ -144,6 +144,7 @@ def create_app() -> FastAPI:
         )
 
         start = time.perf_counter()
+        response = None
         try:
             response = await call_next(request)
         except Exception as exc:
@@ -151,13 +152,14 @@ def create_app() -> FastAPI:
             raise
         finally:
             elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
-            status_code = getattr(response, "status_code", 500)
-            log_fn = logger.warning if status_code >= 400 else logger.info
-            log_fn(
-                "request_complete",
-                status_code=status_code,
-                elapsed_ms=elapsed_ms,
-            )
+            if response is not None:
+                status_code = getattr(response, "status_code", 500)
+                log_fn = logger.warning if status_code >= 400 else logger.info
+                log_fn(
+                    "request_complete",
+                    status_code=status_code,
+                    elapsed_ms=elapsed_ms,
+                )
 
         response.headers["X-Request-ID"] = request_id
         return response

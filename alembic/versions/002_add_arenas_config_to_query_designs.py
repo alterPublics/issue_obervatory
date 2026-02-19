@@ -44,7 +44,7 @@ def upgrade() -> None:
             "arenas_config",
             postgresql.JSONB(),
             nullable=False,
-            server_default="'{}'::jsonb",
+            server_default=sa.text("'{}'::jsonb"),
         ),
     )
 

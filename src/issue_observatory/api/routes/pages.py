@@ -68,7 +68,14 @@ def _templates(request: Request) -> Jinja2Templates:
 
     Returns:
         The ``Jinja2Templates`` instance configured in ``main.py``.
+
+    Raises:
+        RuntimeError: If templates are not available (startup event hasn't run).
     """
+    if not hasattr(request.app.state, "templates") or request.app.state.templates is None:
+        raise RuntimeError(
+            "Templates not initialized. Ensure the FastAPI app startup event has run."
+        )
     return request.app.state.templates
 
 

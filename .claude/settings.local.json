@@ -18,7 +18,10 @@
       "Bash(pytest:*)",
       "WebSearch",
       "Bash(pip3 show:*)",
-      "Bash(.venv/bin/pip install:*)"
+      "Bash(.venv/bin/pip install:*)",
+      "Bash(psql:*)",
+      "Bash(export DATABASE_URL=\"postgresql+asyncpg://jakobbk@localhost:5432/test_observatory\")",
+      "Bash(alembic upgrade:*)"
     ]
   }
 }
