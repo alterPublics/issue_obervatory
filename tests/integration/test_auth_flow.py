@@ -241,7 +241,7 @@ class TestUserScopedResources:
         }
 
         create_response = await client.post(
-            "/query-designs",
+            "/query-designs/",
             json=payload,
             headers=auth_headers,
         )
@@ -275,7 +275,7 @@ class TestUserScopedResources:
         }
 
         create_response = await client.post(
-            "/query-designs",
+            "/query-designs/",
             json=payload,
             headers=auth_headers,
         )
@@ -293,12 +293,12 @@ class TestUserScopedResources:
         # Try to access the design as the admin user (different identity)
         # Admin can access all by design; test with another researcher instead.
         # Here we verify the design is present in the owner's list.
-        list_response = await client.get("/query-designs", headers=auth_headers)
+        list_response = await client.get("/query-designs/", headers=auth_headers)
 
         if list_response.status_code == 200:
             designs = list_response.json()
             owner_ids = {d.get("owner_id") for d in (designs if isinstance(designs, list) else [])}
             # All listed designs should belong to the current user
-            assert all(oid == str(test_admin.id) is False for oid in owner_ids), (
+            assert str(test_admin.id) not in owner_ids, (
                 "Researcher's list should not contain designs owned by admin"
             )

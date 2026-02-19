@@ -88,13 +88,39 @@ def test_database_url() -> str:
     return os.environ["DATABASE_URL"]
 
 
-@pytest_asyncio.fixture(scope="session")
-async def test_engine(test_database_url: str):
-    """Create the async engine pointed at the test database.
+# Session-scoped table creation (runs once, synchronously, to avoid
+# event-loop issues).
+_tables_created = False
 
-    The engine is shared across the entire test session for efficiency.
-    Schema creation is performed once here; individual tests roll back via
-    the ``db_session`` fixture.
+
+@pytest.fixture(scope="session", autouse=True)
+def _ensure_tables(test_database_url: str) -> None:
+    """Create all tables once per session using a synchronous engine.
+
+    In CI the Alembic migration step (``alembic upgrade head``) runs before
+    pytest, so this is a safety net for local runs that skip migrations.
+    """
+    global _tables_created  # noqa: PLW0603
+    if _tables_created:
+        return
+    sync_url = test_database_url.replace(
+        "postgresql+asyncpg://", "postgresql+psycopg2://"
+    ).replace("postgresql://", "postgresql+psycopg2://")
+    from sqlalchemy import create_engine as create_sync_engine  # noqa: PLC0415
+
+    sync_engine = create_sync_engine(sync_url, echo=False)
+    Base.metadata.create_all(sync_engine, checkfirst=True)
+    sync_engine.dispose()
+    _tables_created = True
+
+
+@pytest_asyncio.fixture
+async def test_engine(test_database_url: str):
+    """Create an async engine scoped to the current test's event loop.
+
+    Each test function gets its own event loop in pytest-asyncio auto mode,
+    so the engine (and its connection pool) must be created on that same loop
+    to avoid 'Future attached to a different loop' errors.
 
     Yields:
         AsyncEngine configured against the test PostgreSQL instance.
@@ -106,18 +132,11 @@ async def test_engine(test_database_url: str):
         max_overflow=10,
         pool_pre_ping=True,
     )
-    # Create all tables for the test session.  In CI the Alembic migration
-    # step (``alembic upgrade head``) runs before pytest, so this is a
-    # safety net for local runs that skip migrations.
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
     yield engine
-
     await engine.dispose()
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture
 def test_session_factory(test_engine) -> async_sessionmaker[AsyncSession]:
     """Return a sessionmaker bound to the test engine."""
     return async_sessionmaker(
