@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -173,36 +173,40 @@ class YouTubeCollector(ArenaCollector):
 
         all_video_ids: list[str] = []
 
-        async with self._build_http_client() as client:
-            for term in query_strings:
-                if len(all_video_ids) >= effective_max:
-                    break
-                page_token: str | None = None
-                while len(all_video_ids) < effective_max:
-                    remaining = effective_max - len(all_video_ids)
-                    await self._throttle_request(cred["id"])
-                    ids, page_token = await search_videos_page(
-                        client=client,
-                        api_key=cred["api_key"],
-                        credential_pool=self.credential_pool,
-                        cred_id=cred["id"],
-                        term=term,
-                        max_results_page=min(MAX_RESULTS_PER_SEARCH_PAGE, remaining),
-                        page_token=page_token,
-                        published_after=published_after,
-                        published_before=published_before,
-                        danish_params=DANISH_PARAMS,
-                    )
-                    all_video_ids.extend(ids)
-                    if not page_token or not ids:
+        try:
+            async with self._build_http_client() as client:
+                for term in query_strings:
+                    if len(all_video_ids) >= effective_max:
                         break
+                    page_token: str | None = None
+                    while len(all_video_ids) < effective_max:
+                        remaining = effective_max - len(all_video_ids)
+                        await self._throttle_request(cred["id"])
+                        ids, page_token = await search_videos_page(
+                            client=client,
+                            api_key=cred["api_key"],
+                            credential_pool=self.credential_pool,
+                            cred_id=cred["id"],
+                            term=term,
+                            max_results_page=min(MAX_RESULTS_PER_SEARCH_PAGE, remaining),
+                            page_token=page_token,
+                            published_after=published_after,
+                            published_before=published_before,
+                            danish_params=DANISH_PARAMS,
+                        )
+                        all_video_ids.extend(ids)
+                        if not page_token or not ids:
+                            break
 
-            records = await self._enrich_videos(
-                client=client,
-                api_key=cred["api_key"],
-                cred_id=cred["id"],
-                video_ids=all_video_ids[:effective_max],
-            )
+                records = await self._enrich_videos(
+                    client=client,
+                    api_key=cred["api_key"],
+                    cred_id=cred["id"],
+                    video_ids=all_video_ids[:effective_max],
+                )
+        finally:
+            if self.credential_pool is not None:
+                await self.credential_pool.release(credential_id=cred["id"])
 
         logger.info(
             "youtube: collect_by_terms — queries=%d, records=%d, tier=%s",
@@ -259,13 +263,17 @@ class YouTubeCollector(ArenaCollector):
             all_video_ids.extend(rss_ids)
 
         cred = await self._acquire_credential()
-        async with self._build_http_client() as client:
-            records = await self._enrich_videos(
-                client=client,
-                api_key=cred["api_key"],
-                cred_id=cred["id"],
-                video_ids=all_video_ids[:effective_max],
-            )
+        try:
+            async with self._build_http_client() as client:
+                records = await self._enrich_videos(
+                    client=client,
+                    api_key=cred["api_key"],
+                    cred_id=cred["id"],
+                    video_ids=all_video_ids[:effective_max],
+                )
+        finally:
+            if self.credential_pool is not None:
+                await self.credential_pool.release(credential_id=cred["id"])
 
         logger.info(
             "youtube: collect_by_actors — channels=%d, rss_ids=%d, records=%d",
@@ -348,7 +356,7 @@ class YouTubeCollector(ArenaCollector):
         normalized_published_at = self._normalizer._extract_datetime(
             {"published_at": published_at}, ["published_at"]
         )
-        collected_at = datetime.utcnow().isoformat() + "Z"
+        collected_at = datetime.now(timezone.utc).isoformat() + "Z"
 
         return {
             "platform": self.platform_name,
@@ -388,7 +396,7 @@ class YouTubeCollector(ArenaCollector):
             Dict with ``status``, ``arena``, ``platform``, ``checked_at``,
             and optionally ``detail``.
         """
-        checked_at = datetime.utcnow().isoformat() + "Z"
+        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,

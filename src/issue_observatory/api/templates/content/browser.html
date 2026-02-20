@@ -18,13 +18,6 @@
         - filter (dict): currently active filter values (from query params)
         - cursor (str|None): pagination cursor for next page
         - active_query_design_id (str|None): query design in scope, used by GR-17 actor-list fetch.
-
-    BACKEND GAP (GR-17): The browser route in content.py does not yet pass
-    `active_query_design_id` to the template context. Until the route is updated to include:
-        "active_query_design_id": str(query_design_id) if query_design_id else "",
-    the actor-list dropdown in the Quick-Add modal will remain empty (no options fetched).
-    The route parameter `query_design_id` already exists in the route signature; the fix is
-    purely adding the key to the TemplateResponse context dict.
 #}
 {% set filter = filter | default({}) %}
 {% set records = records | default([]) %}
@@ -66,34 +59,28 @@
                        class="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
             </div>
 
-            {# Arena checkboxes #}
-            <div>
+            {# Arena checkboxes — dynamically populated from /api/arenas/ #}
+            <div x-data="arenaFilter({{ filter.arenas | default([]) | tojson }})">
                 <p class="text-xs font-medium text-gray-700 mb-2 uppercase tracking-wider">Arena</p>
-                <div class="space-y-1.5">
-                    {% set arena_options = [
-                        ('google_search',       'Google Search'),
-                        ('google_autocomplete', 'Autocomplete'),
-                        ('bluesky',             'Bluesky'),
-                        ('reddit',              'Reddit'),
-                        ('youtube',             'YouTube'),
-                        ('rss_feeds',           'RSS Feeds'),
-                        ('gdelt',               'GDELT'),
-                        ('telegram',            'Telegram'),
-                        ('tiktok',              'TikTok'),
-                        ('ritzau_via',          'Ritzau'),
-                        ('gab',                 'Gab'),
-                    ] %}
-                    {% set active_arenas = filter.arenas | default([]) %}
-                    {% for val, label in arena_options %}
-                    <label class="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox"
-                               name="arenas"
-                               value="{{ val }}"
-                               {% if val in active_arenas %}checked{% endif %}
-                               class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-                        <span class="text-xs text-gray-700">{{ label }}</span>
-                    </label>
-                    {% endfor %}
+                <div x-show="loading" class="flex items-center gap-2 text-xs text-gray-400 py-1.5">
+                    <svg class="animate-spin w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg"
+                         fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    Loading arenas...
+                </div>
+                <div x-show="!loading" class="space-y-1.5">
+                    <template x-for="arena in arenas" :key="arena.platform_name">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox"
+                                   name="arenas"
+                                   :value="arena.platform_name"
+                                   :checked="activeArenas.includes(arena.platform_name)"
+                                   class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                            <span class="text-xs text-gray-700" x-text="arena.arena_name"></span>
+                        </label>
+                    </template>
                 </div>
             </div>
 
@@ -148,22 +135,7 @@
                 </p>
             </div>
 
-            {#
-                Collection run — changing this also reloads the search term dropdown.
-
-                BACKEND GAP (IP2-029): The HTMX call below uses hx-get="/content/search-terms"
-                which does NOT yet exist in content.py. The endpoint must be added to serve an
-                HTML fragment (<option> elements) for the #search-term-filter select.
-
-                Required endpoint:
-                    GET /content/search-terms?run_id={uuid}
-                    Returns: HTML <option> fragments listing the distinct search terms matched
-                             in the content records for that collection run.
-                    Query params: run_id (UUID, optional) — filter terms to this run's records.
-
-                Until this endpoint is implemented, selecting a run will trigger a 404 on
-                the HTMX call, which HTMX will silently ignore (the dropdown stays empty).
-            #}
+            {# Collection run — changing this also reloads the search term dropdown via HTMX #}
             <div>
                 <label for="run_id" class="block text-xs font-medium text-gray-700 mb-1 uppercase tracking-wider">Collection Run</label>
                 <select id="run_id"
@@ -625,6 +597,37 @@
 </div>
 
 <script>
+/**
+ * Alpine component for the arena filter sidebar section.
+ * Fetches the live arena list from GET /api/arenas/ and populates checkboxes dynamically.
+ * @param {string[]} initialActiveArenas - Pre-selected arena platform_names from the URL filter.
+ */
+function arenaFilter(initialActiveArenas) {
+    return {
+        loading: true,
+        arenas: [],
+        activeArenas: initialActiveArenas || [],
+
+        async init() {
+            try {
+                const res = await fetch('/api/arenas/', {
+                    credentials: 'include',
+                    headers: { 'Accept': 'application/json' },
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                // Sort alphabetically by arena_name for consistent display
+                this.arenas = data.sort((a, b) => a.arena_name.localeCompare(b.arena_name));
+            } catch (e) {
+                console.error('Failed to load arenas:', e);
+                this.arenas = [];
+            } finally {
+                this.loading = false;
+            }
+        },
+    };
+}
+
 /**
  * Alpine component for the content browser.
  * Manages detail panel show/hide state, row count for the 2000-row cap,

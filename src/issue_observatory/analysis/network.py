@@ -133,6 +133,11 @@ async def get_actor_co_occurrence(
     The join is scoped to the same ``query_design_id`` or ``collection_run_id``
     to keep it bounded.
 
+    IP2-061: Node labels use resolved actor names when available.  The query
+    LEFT JOINs with the ``actors`` table to retrieve the canonical name for
+    entity-resolved authors.  The label priority is: (1) actors.canonical_name,
+    (2) content_records.author_display_name, (3) pseudonymized_author_id.
+
     Args:
         db: Active async database session.
         query_design_id: Restrict to records belonging to this query design.
@@ -146,8 +151,8 @@ async def get_actor_co_occurrence(
 
     Returns:
         Graph dict ``{nodes: [...], edges: [...]}`` where:
-        - node attributes: ``id``, ``label`` (display name), ``platform``,
-          ``post_count``, ``degree``
+        - node attributes: ``id``, ``label`` (resolved name when available),
+          ``platform``, ``post_count``, ``degree``
         - edge attributes: ``source``, ``target``, ``weight``
     """
     params: dict[str, Any] = {
@@ -206,11 +211,16 @@ async def get_actor_co_occurrence(
         )
         SELECT
             c.pseudonymized_author_id AS author_id,
-            MAX(c.author_display_name) AS display_name,
+            COALESCE(
+                MAX(a.canonical_name),
+                MAX(c.author_display_name),
+                c.pseudonymized_author_id
+            ) AS display_name,
             MAX(c.platform)            AS platform,
             COUNT(c.id)                AS post_count
         FROM content_records c
         JOIN node_ids n ON n.author_id = c.pseudonymized_author_id
+        LEFT JOIN actors a ON a.id = c.author_id
         GROUP BY c.pseudonymized_author_id
         """
     )
@@ -516,8 +526,13 @@ async def build_bipartite_network(
     The edge weight is the number of content records in which that author
     matched that term.
 
+    IP2-061: Actor node labels use resolved names when available.  The query
+    LEFT JOINs with the ``actors`` table to retrieve the canonical name for
+    entity-resolved authors.  The label priority is: (1) actors.canonical_name,
+    (2) content_records.author_display_name, (3) pseudonymized_author_id.
+
     Node types:
-    - ``"actor"``: a pseudonymized author
+    - ``"actor"``: a pseudonymized author (with resolved name when available)
     - ``"term"``: a search term string
 
     Args:
@@ -529,7 +544,8 @@ async def build_bipartite_network(
 
     Returns:
         Graph dict ``{nodes: [...], edges: [...]}`` where:
-        - actor node attributes: ``id``, ``label`` (display name), ``type`` = ``"actor"``
+        - actor node attributes: ``id``, ``label`` (resolved name when
+          available), ``type`` = ``"actor"``
         - term node attributes: ``id``, ``label`` (term), ``type`` = ``"term"``
         - edge attributes: ``source`` (author id), ``target`` (term), ``weight``
     """
@@ -546,11 +562,16 @@ async def build_bipartite_network(
         f"""
         SELECT
             cr.pseudonymized_author_id AS author_id,
-            MAX(cr.author_display_name) AS display_name,
+            COALESCE(
+                MAX(a.canonical_name),
+                MAX(cr.author_display_name),
+                cr.pseudonymized_author_id
+            ) AS display_name,
             MAX(cr.platform)            AS platform,
             t.term,
             COUNT(cr.id) AS edge_weight
-        FROM content_records cr,
+        FROM content_records cr
+        LEFT JOIN actors a ON a.id = cr.author_id,
              unnest(search_terms_matched) AS t(term)
         WHERE cr.pseudonymized_author_id IS NOT NULL
           AND cr.search_terms_matched IS NOT NULL
@@ -637,6 +658,10 @@ async def get_temporal_network_snapshots(
 
     Uses a single SQL query with ``date_trunc`` to fetch all edge data across
     all periods at once, then reconstructs per-period snapshots in Python.
+
+    IP2-061: For actor networks, node labels use resolved names when available.
+    The temporal edge query LEFT JOINs with the ``actors`` table to retrieve
+    canonical names for entity-resolved authors.
 
     Args:
         db: Active async database session.
@@ -795,6 +820,9 @@ async def _fetch_actor_temporal_rows(
     overlap operator ``&&``.  Returns one row per ``(period, author_a,
     author_b)`` triple with an aggregated weight.
 
+    IP2-061: Also retrieves resolved actor names by LEFT JOINing with the
+    ``actors`` table for both sides of the co-occurrence pair.
+
     Args:
         db: Active async database session.
         params: Bind parameter dict (already populated by the caller).
@@ -803,7 +831,7 @@ async def _fetch_actor_temporal_rows(
 
     Returns:
         List of SQLAlchemy Row objects with columns ``period``, ``author_a``,
-        ``author_b``, ``weight``.
+        ``author_b``, ``weight``, ``name_a``, ``name_b``.
     """
     # The scope filter references params keys without aliases.  For the
     # self-join we apply them to the ``a`` side only; the ``b`` side mirrors
@@ -844,14 +872,33 @@ async def _fetch_actor_temporal_rows(
               {scope_filter}
               {b_filter}
             GROUP BY 1, 2, 3
+        ),
+        resolved_names AS (
+            SELECT
+                c.pseudonymized_author_id,
+                COALESCE(
+                    MAX(act.canonical_name),
+                    MAX(c.author_display_name),
+                    c.pseudonymized_author_id
+                ) AS resolved_name
+            FROM content_records c
+            LEFT JOIN actors act ON act.id = c.author_id
+            WHERE c.pseudonymized_author_id IN (
+                SELECT author_a FROM bucketed UNION SELECT author_b FROM bucketed
+            )
+            GROUP BY c.pseudonymized_author_id
         )
         SELECT
-            period,
-            author_a,
-            author_b,
-            SUM(pair_count) AS weight
-        FROM bucketed
-        GROUP BY period, author_a, author_b
+            b.period,
+            b.author_a,
+            b.author_b,
+            SUM(b.pair_count) AS weight,
+            MAX(rna.resolved_name) AS name_a,
+            MAX(rnb.resolved_name) AS name_b
+        FROM bucketed b
+        LEFT JOIN resolved_names rna ON rna.pseudonymized_author_id = b.author_a
+        LEFT JOIN resolved_names rnb ON rnb.pseudonymized_author_id = b.author_b
+        GROUP BY b.period, b.author_a, b.author_b
         ORDER BY period ASC, weight DESC
         """
     )
@@ -908,24 +955,34 @@ async def _fetch_term_temporal_rows(
 def _build_actor_snapshot_graph(rows: list[Any]) -> dict:
     """Build a graph dict from actor co-occurrence rows for one time period.
 
+    IP2-061: Uses resolved actor names from the ``name_a`` and ``name_b``
+    columns (populated via LEFT JOIN with actors table) when available.
+
     Args:
-        rows: SQLAlchemy Row objects with ``author_a``, ``author_b``, ``weight``.
+        rows: SQLAlchemy Row objects with ``author_a``, ``author_b``,
+            ``weight``, ``name_a``, ``name_b``.
 
     Returns:
         Graph dict ``{"nodes": [...], "edges": [...]}`` with degree computed
-        from the local edge list.
+        from the local edge list. Node labels use resolved names.
     """
     degree_map: dict[str, int] = defaultdict(int)
-    node_ids: set[str] = set()
+    node_labels: dict[str, str] = {}
     for row in rows:
-        node_ids.add(row.author_a)
-        node_ids.add(row.author_b)
+        # Collect resolved names (or fall back to pseudonymized ID)
+        node_labels[row.author_a] = row.name_a or row.author_a
+        node_labels[row.author_b] = row.name_b or row.author_b
         degree_map[row.author_a] += 1
         degree_map[row.author_b] += 1
 
     nodes = [
-        {"id": nid, "label": nid, "type": "actor", "degree": degree_map[nid]}
-        for nid in node_ids
+        {
+            "id": nid,
+            "label": node_labels[nid],
+            "type": "actor",
+            "degree": degree_map[nid],
+        }
+        for nid in node_labels.keys()
     ]
     edges = [
         {"source": row.author_a, "target": row.author_b, "weight": row.weight}
@@ -993,6 +1050,10 @@ async def build_enhanced_bipartite_network(
     (``to_tsvector`` / ``plainto_tsquery`` with the Danish configuration) and
     merges them into the graph.  Actors already in the base graph are reused;
     new actors are added.
+
+    IP2-061: Actor node labels use resolved names when available, inherited
+    from the base :func:`build_bipartite_network` and applied to emergent-term
+    actor queries via LEFT JOIN with the ``actors`` table.
 
     Args:
         db: Active async database session.
@@ -1067,10 +1128,15 @@ async def build_enhanced_bipartite_network(
             f"""
             SELECT
                 cr.pseudonymized_author_id AS author_id,
-                MAX(cr.author_display_name) AS display_name,
+                COALESCE(
+                    MAX(a.canonical_name),
+                    MAX(cr.author_display_name),
+                    cr.pseudonymized_author_id
+                ) AS display_name,
                 MAX(cr.platform)            AS platform,
                 COUNT(cr.id)                AS edge_weight
             FROM content_records cr
+            LEFT JOIN actors a ON a.id = cr.author_id
             WHERE cr.pseudonymized_author_id IS NOT NULL
               AND cr.text_content IS NOT NULL
               AND to_tsvector('danish', cr.text_content) @@ plainto_tsquery('danish', :et_term)

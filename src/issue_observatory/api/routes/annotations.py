@@ -41,7 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from issue_observatory.api.dependencies import get_current_active_user, ownership_guard
 from issue_observatory.core.database import get_db
-from issue_observatory.core.models.annotations import ContentAnnotation
+from issue_observatory.core.models.annotations import CodebookEntry, ContentAnnotation
 from issue_observatory.core.models.users import User
 
 logger = structlog.get_logger(__name__)
@@ -269,46 +269,33 @@ async def upsert_annotation(
     # Resolve codebook entry if provided
     resolved_frame = body.frame
     if body.codebook_entry_id is not None:
-        # FIXME: Uncomment once CodebookEntry model exists
-        # from issue_observatory.core.models.annotations import CodebookEntry
-        #
-        # codebook_stmt = select(CodebookEntry).where(
-        #     CodebookEntry.id == body.codebook_entry_id
-        # )
-        # codebook_result = await db.execute(codebook_stmt)
-        # codebook_entry = codebook_result.scalar_one_or_none()
-        #
-        # if codebook_entry is None:
-        #     raise HTTPException(
-        #         status_code=status.HTTP_404_NOT_FOUND,
-        #         detail=f"Codebook entry '{body.codebook_entry_id}' not found.",
-        #     )
-        #
-        # # Access control: user must have access to this codebook entry
-        # # (either it's global or they own the associated query design)
-        # if codebook_entry.query_design_id is not None:
-        #     if current_user.role != "admin" and codebook_entry.created_by != current_user.id:
-        #         raise HTTPException(
-        #             status_code=status.HTTP_404_NOT_FOUND,
-        #             detail=f"Codebook entry '{body.codebook_entry_id}' not found.",
-        #         )
-        #
-        # resolved_frame = codebook_entry.code
-        #
-        # logger.debug(
-        #     "annotation.codebook_resolved",
-        #     codebook_entry_id=str(body.codebook_entry_id),
-        #     resolved_frame=resolved_frame,
-        # )
-
-        # Placeholder until model exists
-        logger.warning(
-            "annotation.codebook_not_implemented",
-            message="CodebookEntry model does not exist yet. Using codebook_entry_id will fail.",
+        codebook_stmt = select(CodebookEntry).where(
+            CodebookEntry.id == body.codebook_entry_id
         )
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Codebook integration is not yet available. DB Engineer must create CodebookEntry model first.",
+        codebook_result = await db.execute(codebook_stmt)
+        codebook_entry = codebook_result.scalar_one_or_none()
+
+        if codebook_entry is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Codebook entry '{body.codebook_entry_id}' not found.",
+            )
+
+        # Access control: user must have access to this codebook entry
+        # (either it's global or they own the associated query design)
+        if codebook_entry.query_design_id is not None:
+            if current_user.role != "admin" and codebook_entry.created_by != current_user.id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Codebook entry '{body.codebook_entry_id}' not found.",
+                )
+
+        resolved_frame = codebook_entry.code
+
+        logger.debug(
+            "annotation.codebook_resolved",
+            codebook_entry_id=str(body.codebook_entry_id),
+            resolved_frame=resolved_frame,
         )
 
     # Normalise the published_at to UTC-aware before storing.

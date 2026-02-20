@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -344,7 +344,7 @@ class CommonCrawlCollector(ArenaCollector):
             Dict with ``status``, ``arena``, ``platform``, ``checked_at``,
             and optionally ``latest_index`` and ``detail``.
         """
-        checked_at = datetime.utcnow().isoformat() + "Z"
+        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,

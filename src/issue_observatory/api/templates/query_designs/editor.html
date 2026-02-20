@@ -226,7 +226,7 @@
               hx-post="/query-designs/{{ design_id }}/terms"
               hx-target="#terms-list"
               hx-swap="beforeend"
-              hx-on::after-request="if(event.detail.successful){ this.reset(); $root.resetArenaSelector(); document.getElementById('new-term-input').focus(); }"
+              hx-on::after-request="if(event.detail.successful){ this.reset(); $root.resetArenaSelector(); $root.resetTranslations(); document.getElementById('new-term-input').focus(); }"
               class="space-y-1.5 mb-2">
             <div class="flex gap-2">
                 <select name="term_type"
@@ -315,6 +315,48 @@
             </div>
             {# Hidden input that will be submitted to backend #}
             <input type="hidden" name="target_arenas" :value="$root.getArenaValue()">
+            {# IP2-052: Translations section (shown only when multiple languages selected) #}
+            <div x-show="translationLanguages().length > 0"
+                 class="border-t border-gray-100 pt-2 space-y-1">
+                <button type="button"
+                        @click="translationsOpen = !translationsOpen"
+                        class="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 transition-colors">
+                    <svg class="w-3 h-3 transition-transform"
+                         :class="{'rotate-90': translationsOpen}"
+                         xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
+                    </svg>
+                    <span x-text="'Translations (' + translationLanguages().length + ' languages) — optional'"></span>
+                </button>
+                <div x-show="translationsOpen"
+                     x-transition:enter="transition ease-out duration-200"
+                     x-transition:enter-start="opacity-0 -translate-y-1"
+                     x-transition:enter-end="opacity-100 translate-y-0"
+                     x-transition:leave="transition ease-in duration-150"
+                     x-transition:leave-start="opacity-100 translate-y-0"
+                     x-transition:leave-end="opacity-0 -translate-y-1"
+                     class="pl-4 space-y-2">
+                    <p class="text-xs text-gray-400">
+                        Provide translated equivalents for this term in each selected language.
+                    </p>
+                    <template x-for="lang in translationLanguages()" :key="lang.code">
+                        <div class="flex items-center gap-2">
+                            <label :for="'translation-' + lang.code"
+                                   class="text-xs text-gray-600 flex-shrink-0 w-20 font-medium"
+                                   x-text="lang.label"></label>
+                            <input type="text"
+                                   :id="'translation-' + lang.code"
+                                   :name="'translation_' + lang.code"
+                                   x-model="translations[lang.code]"
+                                   :placeholder="'Translation in ' + lang.label"
+                                   autocomplete="off"
+                                   class="flex-1 border border-gray-200 rounded px-2 py-1 text-xs text-gray-600 placeholder-gray-300 focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-transparent bg-gray-50">
+                        </div>
+                    </template>
+                </div>
+            </div>
+            {# Hidden input for translations JSON #}
+            <input type="hidden" name="translations" :value="getTranslationsJSON()">
         </form>
 
         {# Bulk import UI (shown when bulkMode is active) #}
@@ -683,7 +725,7 @@
                                 <option value="facebook">Facebook</option>
                                 <option value="instagram">Instagram</option>
                                 <option value="gab">Gab</option>
-                                <option value="linkedin">LinkedIn</option>
+                                <option value="linkedin">LinkedIn (manual import only)</option>
                                 <option value="threads">Threads</option>
                                 <option value="other">Other</option>
                             </select>
@@ -719,29 +761,6 @@
             No actors in this list. Add specific accounts or people to track above.
         </p>
         {% endif %}
-                </div>
-                <button type="button"
-                        hx-delete="/query-designs/{{ design_id }}/actors/{{ actor.id }}"
-                        hx-target="#actor-{{ actor.id }}"
-                        hx-swap="outerHTML"
-                        hx-confirm="Remove '{{ actor.name | default('') }}' from this actor list?"
-                        class="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50"
-                        aria-label="Remove actor">
-                    <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                         stroke="currentColor" stroke-width="2" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round"
-                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                    </svg>
-                </button>
-            </li>
-            {% endfor %}
-        </ul>
-        {% else %}
-        <ul class="space-y-1.5" id="actors-list"></ul>
-        <p class="text-sm text-gray-400 text-center py-6">
-            No actors in this list. Add specific accounts or people to track above.
-        </p>
-        {% endif %}
     </div>
 
     {#
@@ -761,7 +780,7 @@
             </div>
             {# Hidden HTMX trigger for estimate refresh #}
             <div id="arena-estimate-trigger"
-                 hx-get="/api/collections/estimate"
+                 hx-post="/collections/estimate"
                  hx-trigger="arena-estimate"
                  hx-target="#arena-credit-estimate"
                  hx-swap="innerHTML"
@@ -2221,6 +2240,13 @@ function languageSelector(designId, initial) {
         _savedTimer: null,
 
         /**
+         * IP2-052: Expose selected languages globally for term translation UI.
+         */
+        init() {
+            window.__queryDesignLanguages = () => this.selected;
+        },
+
+        /**
          * Toggle a language code in/out of the selected array.
          * At least one language must remain selected.
          * @param {string} code - ISO 639-1 language code
@@ -2695,6 +2721,70 @@ function termArenaSelector() {
             } else {
                 return `Target arenas: ${count} selected`;
             }
+        },
+
+        // ---------------------------------------------------------------
+        // IP2-052: Translation management for multilingual term pairing
+        // ---------------------------------------------------------------
+        translationsOpen: false,
+        translations: {},
+
+        /**
+         * Language code to label mapping (subset matching languageSelector).
+         */
+        languageMap: {
+            'da': 'Danish',
+            'kl': 'Greenlandic',
+            'en': 'English',
+            'fo': 'Faroese',
+            'de': 'German',
+            'sv': 'Swedish',
+            'nb': 'Norwegian',
+        },
+
+        /**
+         * Get the list of non-default languages that need translation inputs.
+         * This reads from the global languageSelector state via window.
+         *
+         * @returns {Array<{code: string, label: string}>} Languages excluding Danish
+         */
+        translationLanguages() {
+            // Access the languageSelector's selected languages via global accessor
+            const selectedLangs = (typeof window.__queryDesignLanguages === 'function')
+                ? window.__queryDesignLanguages()
+                : ['da'];
+
+            // Filter out Danish (da) since it's the default and doesn't need translation
+            return selectedLangs
+                .filter(code => code !== 'da')
+                .map(code => ({
+                    code: code,
+                    label: this.languageMap[code] || code.toUpperCase()
+                }));
+        },
+
+        /**
+         * Serialize the translations object to JSON for form submission.
+         * Only includes non-empty translation values.
+         *
+         * @returns {string} JSON string or empty string if no translations
+         */
+        getTranslationsJSON() {
+            const filtered = {};
+            for (const [lang, value] of Object.entries(this.translations)) {
+                if (value && value.trim()) {
+                    filtered[lang] = value.trim();
+                }
+            }
+            return Object.keys(filtered).length > 0 ? JSON.stringify(filtered) : '';
+        },
+
+        /**
+         * Reset translations state after successful form submission.
+         */
+        resetTranslations() {
+            this.translations = {};
+            this.translationsOpen = false;
         },
     };
 }

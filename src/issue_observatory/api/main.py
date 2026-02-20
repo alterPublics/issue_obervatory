@@ -276,6 +276,15 @@ def create_app() -> FastAPI:
     from issue_observatory.arenas.instagram.router import (  # noqa: PLC0415
         router as instagram_router,
     )
+    from issue_observatory.arenas.wikipedia.router import (  # noqa: PLC0415
+        router as wikipedia_router,
+    )
+    from issue_observatory.arenas.discord.router import (  # noqa: PLC0415
+        router as discord_router,
+    )
+    from issue_observatory.arenas.web.url_scraper.router import (  # noqa: PLC0415
+        router as url_scraper_router,
+    )
 
     application.include_router(google_search_router, prefix="/arenas")
     application.include_router(google_autocomplete_router, prefix="/arenas")
@@ -297,6 +306,9 @@ def create_app() -> FastAPI:
     application.include_router(majestic_router, prefix="/arenas")
     application.include_router(facebook_router, prefix="/arenas")
     application.include_router(instagram_router, prefix="/arenas")
+    application.include_router(wikipedia_router, prefix="/arenas")
+    application.include_router(discord_router, prefix="/arenas")
+    application.include_router(url_scraper_router, prefix="/arenas")
 
     # ---- Scraper enrichment service ----------------------------------------
 

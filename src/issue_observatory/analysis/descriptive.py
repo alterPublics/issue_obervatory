@@ -1270,11 +1270,11 @@ async def get_language_distribution(
     sql = text(
         f"""
         SELECT
-            raw_metadata->'enrichments'->'language_detector'->>'language' AS language,
+            raw_metadata->'enrichments'->'language_detection'->>'language' AS language,
             COUNT(*) AS cnt
         FROM content_records
         {where}
-        AND raw_metadata->'enrichments'->'language_detector'->>'language' IS NOT NULL
+        AND raw_metadata->'enrichments'->'language_detection'->>'language' IS NOT NULL
         GROUP BY language
         ORDER BY cnt DESC
         """
@@ -1340,10 +1340,10 @@ async def get_top_named_entities(
             array_agg(DISTINCT entity->>'label') AS entity_types
         FROM content_records,
              jsonb_array_elements(
-                 raw_metadata->'enrichments'->'named_entity_extractor'->'entities'
+                 raw_metadata->'enrichments'->'actor_roles'->'entities'
              ) AS entity
         {where}
-        AND raw_metadata->'enrichments'->'named_entity_extractor'->'entities' IS NOT NULL
+        AND raw_metadata->'enrichments'->'actor_roles'->'entities' IS NOT NULL
         GROUP BY entity_text
         ORDER BY cnt DESC
         LIMIT :limit
@@ -1367,21 +1367,21 @@ async def get_propagation_patterns(
     db: AsyncSession,
     run_id: uuid.UUID,
 ) -> list[dict]:
-    """Query propagation enrichment results and return cross-arena stories.
+    """Query propagation enrichment results and return cross-arena clusters.
 
     Retrieves all records flagged by the propagation enricher as having
-    propagated across 2 or more arenas.  Returns story-level aggregates.
+    propagated across 2 or more arenas.  Returns cluster-level aggregates.
 
     Args:
         db: Active async database session.
         run_id: UUID of the collection run to query.
 
     Returns:
-        List of dicts ordered by story size descending::
+        List of dicts ordered by cluster size descending::
 
             [
               {
-                "story_id": "abc123...",
+                "cluster_id": "abc123...",
                 "arenas": ["news_media", "social_media"],
                 "platforms": ["rss_feeds", "reddit", "bluesky"],
                 "record_count": 24,
@@ -1401,7 +1401,7 @@ async def get_propagation_patterns(
     sql = text(
         f"""
         SELECT
-            raw_metadata->'enrichments'->'propagation_detector'->>'story_id' AS story_id,
+            raw_metadata->'enrichments'->'propagation'->>'cluster_id' AS cluster_id,
             array_agg(DISTINCT arena ORDER BY arena) AS arenas,
             array_agg(DISTINCT platform ORDER BY platform) AS platforms,
             COUNT(*) AS record_count,
@@ -1409,9 +1409,9 @@ async def get_propagation_patterns(
             MAX(published_at) AS last_seen
         FROM content_records
         {where}
-        AND raw_metadata->'enrichments'->'propagation_detector'->>'story_id' IS NOT NULL
-        AND raw_metadata->'enrichments'->'propagation_detector'->>'propagated' = 'true'
-        GROUP BY story_id
+        AND raw_metadata->'enrichments'->'propagation'->>'cluster_id' IS NOT NULL
+        AND raw_metadata->'enrichments'->'propagation'->>'is_origin' = 'false'
+        GROUP BY cluster_id
         HAVING COUNT(DISTINCT arena) >= 2
         ORDER BY record_count DESC
         """
@@ -1422,7 +1422,7 @@ async def get_propagation_patterns(
 
     return [
         {
-            "story_id": row.story_id,
+            "cluster_id": row.cluster_id,
             "arenas": list(row.arenas) if row.arenas else [],
             "platforms": list(row.platforms) if row.platforms else [],
             "record_count": row.record_count,
@@ -1475,7 +1475,7 @@ async def get_coordination_signals(
     sql = text(
         f"""
         SELECT
-            raw_metadata->'enrichments'->'coordination_detector'->>'coordination_type' AS coordination_type,
+            raw_metadata->'enrichments'->'coordination'->>'coordination_type' AS coordination_type,
             content_hash,
             COUNT(DISTINCT pseudonymized_author_id) AS actor_count,
             COUNT(*) AS record_count,
@@ -1484,7 +1484,7 @@ async def get_coordination_signals(
             EXTRACT(EPOCH FROM (MAX(published_at) - MIN(published_at))) / 3600.0 AS time_window_hours
         FROM content_records
         {where}
-        AND raw_metadata->'enrichments'->'coordination_detector'->>'coordinated' = 'true'
+        AND raw_metadata->'enrichments'->'coordination'->>'flagged' = 'true'
         AND content_hash IS NOT NULL
         AND pseudonymized_author_id IS NOT NULL
         GROUP BY coordination_type, content_hash

@@ -400,7 +400,7 @@ async def clone_query_design(
     db.add(clone)
     await db.flush()  # populate clone.id before creating children
 
-    # Deep-copy search terms (including target_arenas per YF-01).
+    # Deep-copy search terms (including target_arenas per YF-01 and translations per IP2-052).
     for term in original.search_terms:
         new_term = SearchTerm(
             query_design_id=clone.id,
@@ -409,6 +409,7 @@ async def clone_query_design(
             group_id=term.group_id,
             group_label=term.group_label,
             target_arenas=term.target_arenas,
+            translations=term.translations,
             is_active=term.is_active,
         )
         db.add(new_term)
@@ -582,6 +583,7 @@ async def add_search_term(
     term_type: Annotated[str, Form()] = "keyword",
     group_label: Annotated[Optional[str], Form()] = None,
     target_arenas: Annotated[Optional[str], Form()] = None,
+    translations: Annotated[Optional[str], Form()] = None,
 ) -> HTMLResponse:
     """Add a search term to an existing query design.
 
@@ -603,6 +605,10 @@ async def add_search_term(
         target_arenas: Optional comma-separated list of platform_name strings
             (YF-01). When provided, the term applies only to specified arenas.
             When NULL or empty, the term applies to all arenas (default).
+        translations: Optional JSON string encoding a dict mapping ISO 639-1
+            language codes to translated terms (IP2-052). When provided and valid,
+            arena collectors use the appropriate translation when querying in
+            non-default languages. Example: ``'{"kl": "CO2-afgift", "en": "CO2 tax"}'``.
 
     Returns:
         HTML ``<li>`` fragment for HTMX ``hx-swap="beforeend"`` insertion.
@@ -611,7 +617,10 @@ async def add_search_term(
         HTTPException 400: If ``term`` is empty after stripping whitespace.
         HTTPException 404: If the design does not exist.
         HTTPException 403: If the caller is not the owner (and not admin).
+        HTTPException 422: If ``translations`` is provided but is not valid JSON.
     """
+    import json  # noqa: PLC0415
+
     term = term.strip()
     if not term:
         raise HTTPException(
@@ -647,6 +656,25 @@ async def add_search_term(
                 )
             resolved_target_arenas = arenas_list
 
+    # IP2-052: Parse translations from JSON string to dict.
+    # Empty string or None means no translations (stored as NULL).
+    resolved_translations: dict[str, str] | None = None
+    if translations and translations.strip():
+        try:
+            parsed = json.loads(translations)
+            if not isinstance(parsed, dict):
+                raise ValueError("translations must be a JSON object (dict)")
+            # Validate all keys are strings (language codes) and values are strings (terms)
+            for lang_code, translated_term in parsed.items():
+                if not isinstance(lang_code, str) or not isinstance(translated_term, str):
+                    raise ValueError("translations dict must have string keys and string values")
+            resolved_translations = parsed
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid translations JSON: {exc}",
+            ) from exc
+
     new_term = SearchTerm(
         query_design_id=design_id,
         term=term,
@@ -654,6 +682,7 @@ async def add_search_term(
         group_id=resolved_group_id,
         group_label=resolved_group_label,
         target_arenas=resolved_target_arenas,
+        translations=resolved_translations,
         is_active=True,
     )
     db.add(new_term)
@@ -757,6 +786,7 @@ async def add_search_terms_bulk(
             group_id=resolved_group_id,
             group_label=resolved_group_label,
             target_arenas=term_data.target_arenas,
+            translations=term_data.translations,
             is_active=True,
         )
         new_terms.append(new_term)

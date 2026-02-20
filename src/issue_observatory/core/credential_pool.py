@@ -51,6 +51,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
+from issue_observatory.core.exceptions import NoCredentialAvailableError
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -67,25 +69,6 @@ _LEASE_TTL_SECONDS: int = 3600
 """Redis TTL for active credential leases."""
 
 
-# ---------------------------------------------------------------------------
-# Exceptions
-# ---------------------------------------------------------------------------
-
-
-class NoCredentialAvailableError(Exception):
-    """Raised when the credential pool has no usable credential.
-
-    Attributes:
-        platform: Platform identifier that was requested.
-        tier: Tier identifier that was requested.
-    """
-
-    def __init__(self, platform: str, tier: str) -> None:
-        self.platform = platform
-        self.tier = tier
-        super().__init__(
-            f"No usable credential available for platform='{platform}' tier='{tier}'."
-        )
 
 
 # ---------------------------------------------------------------------------

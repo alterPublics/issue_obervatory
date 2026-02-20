@@ -105,27 +105,6 @@ document.addEventListener('alpine:init', () => {
     };
   }
 
-  /**
-   * queryEditor — search term management in the query design editor.
-   *
-   * HTMX handles the add/remove server interactions; this Alpine component
-   * provides local state for the term type selector and input focus management.
-   * Will be extended in Phase 1.14 for the arena configuration grid.
-   */
-  Alpine.data('queryEditor', () => ({
-    // Placeholder for Phase 1.14 arena configuration state.
-    // Will be populated from a pre-loaded JSON credit table.
-    arenaConfig: {},
-
-    init() {
-      // Auto-focus the term input after Alpine initialises the terms panel.
-      const input = document.getElementById('new-term-input');
-      if (input) {
-        // Small delay to ensure HTMX has settled.
-        setTimeout(() => input.focus(), 100);
-      }
-    },
-  }));
 
   /**
    * flashDismiss — handles dismissing flash messages via Alpine x-show.

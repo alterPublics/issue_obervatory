@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -574,7 +574,7 @@ class EventRegistryCollector(ArenaCollector):
             Health check requires a valid credential.  If no credential is
             available, returns ``status="down"`` with an explanatory ``detail``.
         """
-        checked_at = datetime.utcnow().isoformat() + "Z"
+        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,

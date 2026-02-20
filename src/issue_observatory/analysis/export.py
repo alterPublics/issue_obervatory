@@ -63,6 +63,7 @@ _FLAT_COLUMNS: list[str] = [
     "likes_count",
     "shares_count",
     "comments_count",
+    "engagement_score",
     "language",
     "collection_tier",
     "search_terms_matched",
@@ -90,6 +91,7 @@ _COLUMN_HEADERS: dict[str, str] = {
     "likes_count": "Likes",
     "shares_count": "Shares",
     "comments_count": "Comments",
+    "engagement_score": "Engagement Score",
     "language": "Language",
     "collection_tier": "Collection Tier",
     "search_terms_matched": "Matched Search Terms",
@@ -343,6 +345,7 @@ class ContentExporter:
             "content_hash", "collection_run_id", "query_design_id",
         ]
         int_cols = ["views_count", "likes_count", "shares_count", "comments_count"]
+        float_cols = ["engagement_score"]
         ts_cols = ["published_at"]
 
         column_data: dict[str, list[Any]] = {col: [] for col in _FLAT_COLUMNS}
@@ -352,6 +355,8 @@ class ContentExporter:
                 val = rec.get(col)
                 if col in int_cols:
                     column_data[col].append(int(val) if val is not None else None)
+                elif col in float_cols:
+                    column_data[col].append(float(val) if val is not None else None)
                 elif col in ts_cols:
                     if isinstance(val, datetime):
                         # Convert to UTC-aware, then to microseconds timestamp
@@ -374,6 +379,8 @@ class ContentExporter:
         for col in _FLAT_COLUMNS:
             if col in int_cols:
                 schema_fields.append(pa.field(col, pa.int64()))
+            elif col in float_cols:
+                schema_fields.append(pa.field(col, pa.float64()))
             elif col in ts_cols:
                 schema_fields.append(pa.field(col, pa.timestamp("us", tz="UTC")))
             elif col == "search_terms_matched":
@@ -386,6 +393,8 @@ class ContentExporter:
         for col in _FLAT_COLUMNS:
             if col in int_cols:
                 arrays.append(pa.array(column_data[col], type=pa.int64()))
+            elif col in float_cols:
+                arrays.append(pa.array(column_data[col], type=pa.float64()))
             elif col in ts_cols:
                 arrays.append(pa.array(column_data[col], type=pa.timestamp("us", tz="UTC")))
             elif col == "search_terms_matched":

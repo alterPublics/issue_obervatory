@@ -309,7 +309,7 @@ class GoogleAutocompleteCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
             ``arena``, ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.utcnow().isoformat() + "Z"
+        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -463,7 +463,15 @@ class GoogleAutocompleteCollector(ArenaCollector):
             ) from exc
 
         records: list[dict[str, Any]] = []
-        for rank, suggestion_text in enumerate(raw_suggestions):
+        for rank, suggestion_item in enumerate(raw_suggestions):
+            # Handle both plain strings and dict items with relevance scores
+            if isinstance(suggestion_item, dict):
+                suggestion_text = suggestion_item.get("value", "")
+                relevance = suggestion_item.get("relevance")
+            else:
+                suggestion_text = suggestion_item
+                relevance = None
+
             raw_item: dict[str, Any] = {
                 "suggestion": suggestion_text,
                 "query": term,
@@ -472,6 +480,8 @@ class GoogleAutocompleteCollector(ArenaCollector):
                 "gl": DANISH_PARAMS["gl"],
                 "hl": DANISH_PARAMS["hl"],
             }
+            if relevance is not None:
+                raw_item["relevance"] = relevance
             records.append(self.normalize(raw_item))
 
         logger.debug(
@@ -484,7 +494,7 @@ class GoogleAutocompleteCollector(ArenaCollector):
 
     async def _fetch_free(
         self, client: httpx.AsyncClient, term: str
-    ) -> list[str]:
+    ) -> list[str | dict[str, Any]]:
         """Fetch suggestions from the undocumented Google endpoint.
 
         Args:
@@ -492,7 +502,7 @@ class GoogleAutocompleteCollector(ArenaCollector):
             term: Search term.
 
         Returns:
-            List of suggestion strings.
+            List of suggestion strings (FREE tier returns plain strings only).
 
         Raises:
             httpx.HTTPStatusError: On non-2xx response.
@@ -516,7 +526,7 @@ class GoogleAutocompleteCollector(ArenaCollector):
 
     async def _fetch_serper(
         self, client: httpx.AsyncClient, term: str, api_key: str
-    ) -> list[str]:
+    ) -> list[str | dict[str, Any]]:
         """Fetch suggestions from Serper.dev autocomplete endpoint.
 
         Args:
@@ -525,7 +535,7 @@ class GoogleAutocompleteCollector(ArenaCollector):
             api_key: Serper.dev API key.
 
         Returns:
-            List of suggestion strings.
+            List of suggestion strings (MEDIUM tier returns plain strings only).
 
         Raises:
             httpx.HTTPStatusError: On non-2xx response.
@@ -550,7 +560,7 @@ class GoogleAutocompleteCollector(ArenaCollector):
 
     async def _fetch_serpapi(
         self, client: httpx.AsyncClient, term: str, api_key: str
-    ) -> list[str]:
+    ) -> list[str | dict[str, Any]]:
         """Fetch suggestions from the SerpAPI autocomplete endpoint.
 
         Args:
@@ -559,7 +569,9 @@ class GoogleAutocompleteCollector(ArenaCollector):
             api_key: SerpAPI API key.
 
         Returns:
-            List of suggestion strings.
+            List of suggestion strings or dicts with {"value": str, "relevance": int}.
+            When the API provides relevance scores, returns dict items preserving
+            both fields for engagement_score mapping in normalize().
 
         Raises:
             httpx.HTTPStatusError: On non-2xx response.
@@ -576,12 +588,16 @@ class GoogleAutocompleteCollector(ArenaCollector):
         data = response.json()
         # SerpAPI returns {"suggestions": [{"value": ..., "relevance": ...}, ...]}
         suggestions_raw = data.get("suggestions", [])
-        result: list[str] = []
+        result: list[str | dict[str, Any]] = []
         for item in suggestions_raw:
             if isinstance(item, dict):
                 text = item.get("value", "")
                 if text:
-                    result.append(str(text))
+                    # Preserve relevance score if present for engagement_score mapping
+                    if "relevance" in item:
+                        result.append({"value": str(text), "relevance": item["relevance"]})
+                    else:
+                        result.append(str(text))
             elif isinstance(item, str):
                 result.append(item)
         return result

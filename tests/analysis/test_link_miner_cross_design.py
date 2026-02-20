@@ -26,14 +26,12 @@ async def test_link_miner_user_scope_mode(db_session, test_user):
     qd1 = QueryDesign(
         id=uuid.uuid4(),
         name="Design 1",
-        created_by=test_user.id,
-        search_terms=["climate", "energy"],
+        owner_id=test_user.id,
     )
     qd2 = QueryDesign(
         id=uuid.uuid4(),
         name="Design 2",
-        created_by=test_user.id,
-        search_terms=["politics", "elections"],
+        owner_id=test_user.id,
     )
     db_session.add_all([qd1, qd2])
     await db_session.flush()
@@ -43,12 +41,14 @@ async def test_link_miner_user_scope_mode(db_session, test_user):
         id=uuid.uuid4(),
         query_design_id=qd1.id,
         initiated_by=test_user.id,
+        mode="batch",
         status="complete",
     )
     run2 = CollectionRun(
         id=uuid.uuid4(),
         query_design_id=qd2.id,
         initiated_by=test_user.id,
+        mode="batch",
         status="complete",
     )
     db_session.add_all([run1, run2])
@@ -66,6 +66,7 @@ async def test_link_miner_user_scope_mode(db_session, test_user):
         text_content="Check out this Telegram channel: https://t.me/climateaction",
         url="https://bsky.app/profile/user1/post/abc123",
         collected_at=datetime.now(tz=timezone.utc),
+        collection_tier="free",
     )
     record2 = UniversalContentRecord(
         id=uuid.uuid4(),
@@ -78,6 +79,7 @@ async def test_link_miner_user_scope_mode(db_session, test_user):
         text_content="Join the discussion at https://t.me/climateaction",
         url="https://reddit.com/r/politics/comments/xyz",
         collected_at=datetime.now(tz=timezone.utc),
+        collection_tier="free",
     )
     record3 = UniversalContentRecord(
         id=uuid.uuid4(),
@@ -90,6 +92,7 @@ async def test_link_miner_user_scope_mode(db_session, test_user):
         text_content="Follow us on YouTube: https://www.youtube.com/@climatetv",
         url="https://reddit.com/r/politics/comments/abc",
         collected_at=datetime.now(tz=timezone.utc),
+        collection_tier="free",
     )
     db_session.add_all([record1, record2, record3])
     await db_session.commit()
@@ -128,14 +131,12 @@ async def test_link_miner_single_design_mode(db_session, test_user):
     qd1 = QueryDesign(
         id=uuid.uuid4(),
         name="Design 1",
-        created_by=test_user.id,
-        search_terms=["climate"],
+        owner_id=test_user.id,
     )
     qd2 = QueryDesign(
         id=uuid.uuid4(),
         name="Design 2",
-        created_by=test_user.id,
-        search_terms=["politics"],
+        owner_id=test_user.id,
     )
     db_session.add_all([qd1, qd2])
     await db_session.flush()
@@ -144,12 +145,14 @@ async def test_link_miner_single_design_mode(db_session, test_user):
         id=uuid.uuid4(),
         query_design_id=qd1.id,
         initiated_by=test_user.id,
+        mode="batch",
         status="complete",
     )
     run2 = CollectionRun(
         id=uuid.uuid4(),
         query_design_id=qd2.id,
         initiated_by=test_user.id,
+        mode="batch",
         status="complete",
     )
     db_session.add_all([run1, run2])
@@ -167,6 +170,7 @@ async def test_link_miner_single_design_mode(db_session, test_user):
         text_content="https://t.me/channel1",
         url="https://bsky.app/profile/user/post/1",
         collected_at=datetime.now(tz=timezone.utc),
+        collection_tier="free",
     )
     # Add content to design 2
     record2 = UniversalContentRecord(
@@ -180,6 +184,7 @@ async def test_link_miner_single_design_mode(db_session, test_user):
         text_content="https://t.me/channel2",
         url="https://bsky.app/profile/user/post/2",
         collected_at=datetime.now(tz=timezone.utc),
+        collection_tier="free",
     )
     db_session.add_all([record1, record2])
     await db_session.commit()
@@ -219,15 +224,13 @@ async def test_link_miner_user_isolation(db_session, test_user, test_user_2):
     qd1 = QueryDesign(
         id=uuid.uuid4(),
         name="User 1 Design",
-        created_by=test_user.id,
-        search_terms=["climate"],
+        owner_id=test_user.id,
     )
     # User 2's query design
     qd2 = QueryDesign(
         id=uuid.uuid4(),
         name="User 2 Design",
-        created_by=test_user_2.id,
-        search_terms=["energy"],
+        owner_id=test_user_2.id,
     )
     db_session.add_all([qd1, qd2])
     await db_session.flush()
@@ -236,12 +239,14 @@ async def test_link_miner_user_isolation(db_session, test_user, test_user_2):
         id=uuid.uuid4(),
         query_design_id=qd1.id,
         initiated_by=test_user.id,
+        mode="batch",
         status="complete",
     )
     run2 = CollectionRun(
         id=uuid.uuid4(),
         query_design_id=qd2.id,
         initiated_by=test_user_2.id,
+        mode="batch",
         status="complete",
     )
     db_session.add_all([run1, run2])
@@ -259,6 +264,7 @@ async def test_link_miner_user_isolation(db_session, test_user, test_user_2):
         text_content="https://t.me/user1channel",
         url="https://bsky.app/profile/user1/post/1",
         collected_at=datetime.now(tz=timezone.utc),
+        collection_tier="free",
     )
     # User 2's content
     record2 = UniversalContentRecord(
@@ -272,6 +278,7 @@ async def test_link_miner_user_isolation(db_session, test_user, test_user_2):
         text_content="https://t.me/user2channel",
         url="https://bsky.app/profile/user2/post/2",
         collected_at=datetime.now(tz=timezone.utc),
+        collection_tier="free",
     )
     db_session.add_all([record1, record2])
     await db_session.commit()

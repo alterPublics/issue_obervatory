@@ -331,8 +331,12 @@ class Normalizer:
         )
 
         # IP2-030: compute normalized engagement score if any metrics present.
-        normalized_engagement: float | None = None
-        if any([views_count, likes_count, shares_count, comments_count]):
+        # However, if the collector has already set engagement_score (e.g. from
+        # a relevance field in the API response), preserve it.
+        normalized_engagement: float | None = raw_item.get("engagement_score")
+        if normalized_engagement is None and any(
+            [views_count, likes_count, shares_count, comments_count]
+        ):
             normalized_engagement = self.compute_normalized_engagement(
                 platform=platform,
                 likes=likes_count,

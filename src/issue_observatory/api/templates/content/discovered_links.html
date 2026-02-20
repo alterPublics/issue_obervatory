@@ -137,16 +137,16 @@
             <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
         </svg>
         <div class="text-sm">
-            <p :class="bulkResult && bulkResult.errors && bulkResult.errors.length > 0
+            <p :class="bulkResult && bulkResult.errors > 0
                    ? 'text-yellow-800' : 'text-green-800'"
                x-text="bulkResult
-                   ? `Import complete: ${bulkResult.added} added, ${bulkResult.skipped} already existed.`
+                   ? `Import complete: ${bulkResult.created} added, ${bulkResult.reused} already existed.`
                    : ''">
             </p>
-            <template x-if="bulkResult && bulkResult.errors && bulkResult.errors.length > 0">
+            <template x-if="bulkResult && bulkResult.errors > 0">
                 <ul class="mt-1 space-y-0.5">
-                    <template x-for="err in bulkResult.errors" :key="err">
-                        <li class="text-yellow-700 text-xs" x-text="err"></li>
+                    <template x-for="result in bulkResult.results.filter(r => r.error)" :key="result.url">
+                        <li class="text-yellow-700 text-xs" x-text="`${result.url}: ${result.error}`"></li>
                     </template>
                 </ul>
             </template>
@@ -219,6 +219,9 @@
                     <option value="reddit"    {% if filter.platform | default('') == 'reddit'    %}selected{% endif %}>Reddit</option>
                     <option value="youtube"   {% if filter.platform | default('') == 'youtube'   %}selected{% endif %}>YouTube</option>
                     <option value="bluesky"   {% if filter.platform | default('') == 'bluesky'   %}selected{% endif %}>Bluesky</option>
+                    <option value="twitter"   {% if filter.platform | default('') == 'twitter'   %}selected{% endif %}>Twitter/X</option>
+                    <option value="instagram" {% if filter.platform | default('') == 'instagram' %}selected{% endif %}>Instagram</option>
+                    <option value="tiktok"    {% if filter.platform | default('') == 'tiktok'    %}selected{% endif %}>TikTok</option>
                     <option value="discord"   {% if filter.platform | default('') == 'discord'   %}selected{% endif %}>Discord</option>
                     <option value="gab"       {% if filter.platform | default('') == 'gab'       %}selected{% endif %}>Gab</option>
                     <option value="web"       {% if filter.platform | default('') == 'web'       %}selected{% endif %}>Web</option>
@@ -333,13 +336,14 @@
                         data-link-id="{{ link.id | default(loop.index) }}"
                         data-platform="{{ p }}"
                         data-identifier="{{ link.target_identifier | default('') }}"
+                        data-url="{{ link.url | default('') }}"
                         data-source-count="{{ link.source_count | default(0) }}">
 
                         {# Checkbox #}
                         <td class="px-4 py-3">
                             <input type="checkbox"
                                    value="{{ link.id | default(loop.index) }}"
-                                   @change="toggleSelect('{{ link.id | default(loop.index) }}', '{{ p }}', '{{ link.target_identifier | default('') }}')"
+                                   @change="toggleSelect('{{ link.id | default(loop.index) }}', '{{ p }}', '{{ link.target_identifier | default('') }}', '{{ link.url | default('') }}')"
                                    :checked="selected.has('{{ link.id | default(loop.index) }}')"
                                    class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
                         </td>
@@ -609,9 +613,12 @@
                 <label class="block text-sm font-medium text-gray-700 mb-1">Actor type</label>
                 <select x-model="form.actorType"
                         class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
-                    <option value="Individual">Individual</option>
-                    <option value="Organization">Organization</option>
-                    <option value="Bot">Bot</option>
+                    <option value="person">Person</option>
+                    <option value="organization">Organization</option>
+                    <option value="media_outlet">Media Outlet</option>
+                    <option value="political_party">Political Party</option>
+                    <option value="company">Company</option>
+                    <option value="unknown">Unknown</option>
                 </select>
             </div>
 
@@ -696,11 +703,11 @@ function discoveredSources(queryDesignId) {
             this.visibleCount = tbody ? tbody.querySelectorAll('tr[data-link-id]').length : 0;
         },
 
-        toggleSelect(id, platform, identifier) {
+        toggleSelect(id, platform, identifier, url) {
             if (this.selected.has(id)) {
                 this.selected.delete(id);
             } else {
-                this.selected.set(id, { platform, identifier });
+                this.selected.set(id, { platform, identifier, url });
             }
             // Alpine reactive maps need manual trigger
             this.selected = new Map(this.selected);
@@ -713,7 +720,8 @@ function discoveredSources(queryDesignId) {
                 const id = row.dataset.linkId;
                 const platform = row.dataset.platform;
                 const identifier = row.dataset.identifier;
-                if (id) this.selected.set(id, { platform, identifier });
+                const url = row.dataset.url;
+                if (id) this.selected.set(id, { platform, identifier, url });
             });
             this.selected = new Map(this.selected);
         },
@@ -886,9 +894,8 @@ function discoveredSources(queryDesignId) {
          *
          * Backend contract:
          *   POST /actors/quick-add-bulk
-         *   Body: { sources: [{platform, platform_username, display_name, actor_type}],
-         *           actor_list_id: str | null }
-         *   Returns: { added: int, skipped: int, errors: [str] }
+         *   Body: [{url, platform, target_identifier, display_name, actor_list_id}, ...]
+         *   Returns: { results, total, created, reused, errors }
          */
         async importSelected() {
             if (this.selected.size === 0 || this.bulkLoading) return;
@@ -896,29 +903,23 @@ function discoveredSources(queryDesignId) {
             this.bulkLoading = true;
             this.bulkResult = null;
 
-            const sources = [];
+            const items = [];
             for (const [_id, info] of this.selected) {
-                sources.push({
+                items.push({
+                    url: info.url,
                     platform: info.platform,
-                    platform_username: info.identifier,
+                    target_identifier: info.identifier,
                     display_name: info.identifier,   // best guess; researcher can edit after import
-                    actor_type: 'Individual',
+                    actor_list_id: null,
                 });
             }
-
-            // Try to pick up the currently-selected query design's first actor list.
-            // For the bulk import we use null (registry-only) since we don't have a list selector here.
-            const payload = {
-                sources,
-                actor_list_id: null,
-            };
 
             try {
                 const res = await fetch('/actors/quick-add-bulk', {
                     method: 'POST',
                     credentials: 'include',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload),
+                    body: JSON.stringify(items),
                 });
 
                 if (!res.ok) {
@@ -931,9 +932,11 @@ function discoveredSources(queryDesignId) {
 
             } catch (e) {
                 this.bulkResult = {
-                    added: 0,
-                    skipped: 0,
-                    errors: [e.message || 'An unexpected error occurred.'],
+                    total: 0,
+                    created: 0,
+                    reused: 0,
+                    errors: 1,
+                    results: [{ error: e.message || 'An unexpected error occurred.' }],
                 };
             } finally {
                 this.bulkLoading = false;

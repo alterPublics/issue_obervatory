@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING
 
@@ -404,7 +404,7 @@ class ArenaCollector(ABC):
             "status": "not_implemented",
             "arena": getattr(self, "arena_name", "unknown"),
             "platform": getattr(self, "platform_name", "unknown"),
-            "checked_at": datetime.utcnow().isoformat() + "Z",
+            "checked_at": datetime.now(timezone.utc).isoformat() + "Z",
         }
 
     def _validate_tier(self, tier: Tier) -> None:

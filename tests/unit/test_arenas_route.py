@@ -43,6 +43,7 @@ _SAMPLE_ARENAS: list[dict[str, Any]] = [
         "description": "Decentralised social network",
         "collector_class": "issue_observatory.arenas.bluesky.collector.BlueskyCollector",
         "custom_config_fields": None,
+        "temporal_mode": "recent",
     },
     {
         "arena_name": "social_media",
@@ -60,6 +61,7 @@ _SAMPLE_ARENAS: list[dict[str, Any]] = [
                 "example": "dkfinance",
             }
         ],
+        "temporal_mode": "recent",
     },
     {
         "arena_name": "news_media",
@@ -77,6 +79,7 @@ _SAMPLE_ARENAS: list[dict[str, Any]] = [
                 "example": "https://sermitsiaq.ag/rss",
             }
         ],
+        "temporal_mode": "forward_only",
     },
 ]
 

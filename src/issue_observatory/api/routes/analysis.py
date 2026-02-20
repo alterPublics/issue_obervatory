@@ -1527,7 +1527,7 @@ async def _get_design_or_raise(
             detail=f"Query design '{design_id}' not found.",
         )
 
-    ownership_guard(design.created_by, current_user)
+    ownership_guard(design.owner_id, current_user)
     return design
 
 

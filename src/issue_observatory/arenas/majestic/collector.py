@@ -382,7 +382,7 @@ class MajesticCollector(ArenaCollector):
             ``arena``, ``platform``, ``checked_at``, and optionally
             ``trust_flow``, ``ref_domains``, and ``detail``.
         """
-        checked_at = datetime.utcnow().isoformat() + "Z"
+        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,

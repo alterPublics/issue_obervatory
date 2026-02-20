@@ -43,7 +43,7 @@ import asyncio
 import json
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import structlog
@@ -361,7 +361,7 @@ def export_content_records(
             "record_count": len(records),
             "object_key": object_key,
             "download_url": presigned_url,
-            "completed_at": datetime.utcnow().isoformat(),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
         }
         _set_status(redis_client, job_id, final_status)
 

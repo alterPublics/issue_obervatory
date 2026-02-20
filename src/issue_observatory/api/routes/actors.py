@@ -70,7 +70,7 @@ _py_logger = logging.getLogger(__name__)
 
 #: Platforms that have a dedicated network-expansion strategy in NetworkExpander.
 #: Derived from the if/elif dispatch in NetworkExpander.expand_from_actor().
-_NETWORK_EXPANSION_PLATFORMS: list[str] = ["bluesky", "reddit", "youtube"]
+_NETWORK_EXPANSION_PLATFORMS: list[str] = ["bluesky", "reddit", "youtube", "telegram"]
 
 logger = structlog.get_logger(__name__)
 

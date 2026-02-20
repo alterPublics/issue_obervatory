@@ -26,8 +26,8 @@ from issue_observatory.core.models.collection import (
     CollectionTask,
     CreditTransaction,
 )
-from issue_observatory.core.models.content import ContentRecord, DiscoveredSource
-from issue_observatory.core.models.query_design import ActorList, QueryDesign, SuggestedTerm
+from issue_observatory.core.models.content import UniversalContentRecord
+from issue_observatory.core.models.query_design import ActorList, QueryDesign
 from issue_observatory.core.models.users import User
 from issue_observatory.core.retention_service import RetentionService
 
@@ -432,51 +432,84 @@ async def get_discovery_summary(run_id: str) -> dict[str, int]:
     """Compute discovery statistics for a completed collection run.
 
     Queries the database to count:
-    - Suggested terms added during this run (from analysis/suggested_terms)
+    - Emergent terms discovered via TF-IDF analysis (not in original query)
     - Discovered sources/links extracted from collected content
 
     Used by SB-03 to emit a post-collection summary notification.
+
+    Implementation notes:
+    - Emergent terms are computed on-demand via TF-IDF (no persistent table).
+    - Discovered links are computed on-demand via LinkMiner (no persistent table).
+    - This function runs lightweight versions of both analyses to generate counts.
 
     Args:
         run_id: UUID string of the CollectionRun to analyze.
 
     Returns:
         Dict with keys:
-        - ``suggested_terms``: Count of suggested_terms rows for this run
-        - ``discovered_links``: Total discovered_sources count
-        - ``telegram_links``: Count of Telegram-specific discovered sources
+        - ``suggested_terms``: Count of emergent terms not in original query
+        - ``discovered_links``: Total discovered link count (min 2 mentions)
+        - ``telegram_links``: Count of Telegram-specific discovered links
     """
-    from sqlalchemy import func  # noqa: PLC0415
     from uuid import UUID  # noqa: PLC0415
+
+    from issue_observatory.analysis.descriptive import get_emergent_terms  # noqa: PLC0415
+    from issue_observatory.analysis.link_miner import LinkMiner  # noqa: PLC0415
 
     run_uuid = UUID(run_id)
 
     async with AsyncSessionLocal() as db:
-        # Count suggested terms for this run
-        suggested_terms_stmt = select(func.count()).select_from(SuggestedTerm).where(
-            SuggestedTerm.collection_run_id == run_uuid
-        )
-        suggested_terms_result = await db.execute(suggested_terms_stmt)
-        suggested_terms_count = suggested_terms_result.scalar_one()
-
-        # Count total discovered sources
-        discovered_links_stmt = select(func.count()).select_from(DiscoveredSource).where(
-            DiscoveredSource.collection_run_id == run_uuid
-        )
-        discovered_links_result = await db.execute(discovered_links_stmt)
-        discovered_links_count = discovered_links_result.scalar_one()
-
-        # Count Telegram-specific discovered sources
-        telegram_links_stmt = (
-            select(func.count())
-            .select_from(DiscoveredSource)
-            .where(
-                DiscoveredSource.collection_run_id == run_uuid,
-                DiscoveredSource.platform == "telegram",
+        # ------------------------------------------------------------------
+        # 1. Count emergent terms (TF-IDF terms not in original search terms)
+        # ------------------------------------------------------------------
+        try:
+            # Call get_emergent_terms with modest parameters to get a quick count.
+            # This requires scikit-learn; if not installed, returns empty list.
+            emergent_terms = await get_emergent_terms(
+                db=db,
+                run_id=run_uuid,
+                top_n=50,
+                exclude_search_terms=True,
+                min_doc_frequency=2,
             )
-        )
-        telegram_links_result = await db.execute(telegram_links_stmt)
-        telegram_links_count = telegram_links_result.scalar_one()
+            suggested_terms_count = len(emergent_terms)
+        except Exception:  # noqa: BLE001
+            # If scikit-learn is not installed or TF-IDF fails, return zero.
+            suggested_terms_count = 0
+
+        # ------------------------------------------------------------------
+        # 2. Count discovered links using LinkMiner
+        # ------------------------------------------------------------------
+        try:
+            # Fetch the collection run to get query_design_id.
+            run_result = await db.execute(
+                select(CollectionRun.query_design_id).where(CollectionRun.id == run_uuid)
+            )
+            qd_id = run_result.scalar_one_or_none()
+
+            if qd_id is None:
+                # No query design associated — return zero counts.
+                discovered_links_count = 0
+                telegram_links_count = 0
+            else:
+                miner = LinkMiner()
+                # Mine all platforms with min_source_count=2 (at least 2 mentions).
+                all_links = await miner.mine(
+                    db=db,
+                    query_design_id=qd_id,
+                    min_source_count=2,
+                    limit=1000,  # generous limit for summary
+                )
+                discovered_links_count = len(all_links)
+
+                # Count Telegram-specific links.
+                telegram_links_count = sum(
+                    1 for link in all_links if link.platform == "telegram"
+                )
+        except Exception:  # noqa: BLE001
+            # If link mining fails, return zero counts.
+            discovered_links_count = 0
+            telegram_links_count = 0
 
     return {
         "suggested_terms": suggested_terms_count,

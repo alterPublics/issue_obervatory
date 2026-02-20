@@ -20,28 +20,8 @@ Credit mapping examples:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 
-
-class Tier(str, Enum):
-    """Operational tier for a collection run or arena.
-
-    The string values (``"free"``, ``"medium"``, ``"premium"``) are stored
-    directly in the database ``collection_runs.tier`` and
-    ``collection_tasks.tier`` columns, so they must remain stable.
-    """
-
-    FREE = "free"
-    """No API cost.  Uses publicly accessible endpoints, official free-tier APIs,
-    or RSS feeds.  No credential required in most cases."""
-
-    MEDIUM = "medium"
-    """Low-cost paid APIs (e.g. Serper.dev at $0.30/1K, TwitterAPI.io at $0.15/1K).
-    Credentials required.  Substantially higher result caps than FREE."""
-
-    PREMIUM = "premium"
-    """Best-available data quality.  High-cost APIs (e.g. SerpAPI, official X Pro,
-    Meta Content Library).  Credentials required.  Highest result caps."""
+from issue_observatory.arenas.base import Tier
 
 
 @dataclass(frozen=True)

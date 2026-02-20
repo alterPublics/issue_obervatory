@@ -205,6 +205,17 @@ class SearchTerm(Base):
         nullable=True,
         comment="Optional list of arena platform_names. NULL = all arenas.",
     )
+    # Optional dict mapping ISO 639-1 language codes to translated terms.
+    # Example: {"kl": "CO2-akilerisitsinnaanera", "en": "CO2 tax"}
+    # NULL = no translations available (use the primary term value).
+    translations: Mapped[dict[str, str] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment=(
+            "Optional dict mapping ISO 639-1 language codes to translated terms. "
+            "NULL = no translations available."
+        ),
+    )
 
     # Relationships
     query_design: Mapped[QueryDesign] = relationship(

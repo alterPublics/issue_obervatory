@@ -232,6 +232,7 @@ job (`0 2 * * * docker compose --profile backup run --rm backup`) — see
 - [x] IP2-053: Suggested terms — `GET /analysis/{run_id}/suggested-terms` endpoint added returning emergent terms not yet in query design; "Suggested terms" panel with "Add to query design" HTMX button added to analysis dashboard — Phase D COMPLETE
 - [x] SB-15: Enrichment Results Dashboard Tab — Data Layer — four analysis functions added to `descriptive.py`: `get_language_distribution()`, `get_top_named_entities()`, `get_propagation_patterns()`, `get_coordination_signals()`; four API endpoints added to `routes/analysis.py`: `/enrichments/languages`, `/enrichments/entities`, `/enrichments/propagation`, `/enrichments/coordination` — Phase 3 COMPLETE (2026-02-20)
 - [x] SB-16: Annotation Codebook Management — Data Layer — `CodebookEntry` model created in `core/models/codebook.py`; migration 012 added; unique constraint on (query_design_id, code); supports both global and query-design-specific codebooks — Phase 3 COMPLETE (2026-02-20)
+- [x] IP2-061: Mixed hash/name resolution in charts — all network analysis functions now LEFT JOIN with `actors` table to resolve actor names; COALESCE priority: (1) `actors.canonical_name`, (2) `content_records.author_display_name`, (3) `pseudonymized_author_id`; applied to `get_actor_co_occurrence()`, `build_bipartite_network()`, `build_enhanced_bipartite_network()`, `get_temporal_network_snapshots()` — Phase D COMPLETE (2026-02-20)
 
 ## Descriptive Statistics (Task 3.1 — COMPLETE)
 
@@ -575,10 +576,10 @@ The `normalize()` method signature should also be extended to accept and forward
 
 | Function | Returns | Description |
 |----------|---------|-------------|
-| `get_language_distribution(db, run_id)` | `list[dict]` | Queries `raw_metadata.enrichments.language_detector.language` and aggregates by language code with counts and percentages |
-| `get_top_named_entities(db, run_id, limit)` | `list[dict]` | Queries `raw_metadata.enrichments.named_entity_extractor.entities` array, unnests via `jsonb_array_elements()`, aggregates by entity text, returns top-N with entity types |
-| `get_propagation_patterns(db, run_id)` | `list[dict]` | Queries `raw_metadata.enrichments.propagation_detector` for stories flagged as propagated (`propagated=true`), groups by `story_id`, returns stories that crossed 2+ arenas with first/last seen timestamps |
-| `get_coordination_signals(db, run_id)` | `list[dict]` | Queries `raw_metadata.enrichments.coordination_detector` for records flagged as coordinated (`coordinated=true`), groups by `content_hash`, returns clusters with 3+ distinct actors within tight time windows |
+| `get_language_distribution(db, run_id)` | `list[dict]` | Queries `raw_metadata.enrichments.language_detection.language` and aggregates by language code with counts and percentages |
+| `get_top_named_entities(db, run_id, limit)` | `list[dict]` | Queries `raw_metadata.enrichments.actor_roles.entities` array, unnests via `jsonb_array_elements()`, aggregates by entity text, returns top-N with entity types |
+| `get_propagation_patterns(db, run_id)` | `list[dict]` | Queries `raw_metadata.enrichments.propagation` for clusters flagged as propagated (`is_origin=false`), groups by `cluster_id`, returns clusters that crossed 2+ arenas with first/last seen timestamps |
+| `get_coordination_signals(db, run_id)` | `list[dict]` | Queries `raw_metadata.enrichments.coordination` for records flagged as coordinated (`flagged=true`), groups by `content_hash`, returns clusters with 3+ distinct actors within tight time windows |
 
 ### API Endpoints
 
@@ -598,6 +599,27 @@ The `normalize()` method signature should also be extended to accept and forward
 - **Propagation filtering**: Only stories with `COUNT(DISTINCT arena) >= 2` are returned, so single-arena stories are excluded automatically.
 - **Coordination threshold**: Coordination signals require `COUNT(DISTINCT pseudonymized_author_id) >= 3` and a non-null `content_hash` to ensure meaningful clusters.
 - **Time window computation**: `EXTRACT(EPOCH FROM (MAX(published_at) - MIN(published_at))) / 3600.0` computes the posting time window in hours (PostgreSQL interval arithmetic).
+
+### Critical Fix: JSONB Key Path Mismatches (2026-02-20)
+
+**Issue**: All four enrichment query functions in `analysis/descriptive.py` were querying incorrect JSONB key paths that did not match the `enricher_name` attributes defined by the enricher classes. This caused all enrichment dashboard endpoints to return empty results even when enrichment data existed.
+
+**Fixed** (2026-02-20):
+
+| Function | Incorrect Path | Correct Path | Fields Fixed |
+|----------|---------------|--------------|--------------|
+| `get_language_distribution()` | `language_detector` | `language_detection` | `language` |
+| `get_top_named_entities()` | `named_entity_extractor` | `actor_roles` | `entities` |
+| `get_propagation_patterns()` | `propagation_detector` | `propagation` | `cluster_id` (was `story_id`), `is_origin` (was `propagated`) |
+| `get_coordination_signals()` | `coordination_detector` | `coordination` | `flagged` (was `coordinated`) |
+
+**Root cause**: Query code was written using inferred enricher names rather than reading the actual `enricher_name` class attribute from the enricher implementations.
+
+**Verification**: All four JSONB paths now match the enricher names defined in:
+- `/analysis/enrichments/language_detector.py` (line 104): `enricher_name = "language_detection"`
+- `/analysis/enrichments/named_entity_extractor.py` (line 53): `enricher_name = "actor_roles"`
+- `/analysis/enrichments/propagation_detector.py` (line 149): `enricher_name = "propagation"`
+- `/analysis/enrichments/coordination_detector.py` (line 153): `enricher_name = "coordination"`
 
 ### Frontend Integration (Pending)
 

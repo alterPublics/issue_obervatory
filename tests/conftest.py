@@ -97,19 +97,51 @@ _tables_created = False
 def _ensure_tables(test_database_url: str) -> None:
     """Create all tables once per session using a synchronous engine.
 
+    Drops and recreates all tables to ensure the schema matches the current
+    SQLAlchemy models. This is crucial when models have been updated since the
+    last test run (e.g., new columns added).
+
+    Also creates content_records partitions spanning 2024-2027 for test data.
+
     In CI the Alembic migration step (``alembic upgrade head``) runs before
     pytest, so this is a safety net for local runs that skip migrations.
     """
+    import sqlalchemy as sa  # noqa: PLC0415
+    from sqlalchemy import create_engine as create_sync_engine  # noqa: PLC0415
+
     global _tables_created  # noqa: PLW0603
     if _tables_created:
         return
     sync_url = test_database_url.replace(
         "postgresql+asyncpg://", "postgresql+psycopg2://"
     ).replace("postgresql://", "postgresql+psycopg2://")
-    from sqlalchemy import create_engine as create_sync_engine  # noqa: PLC0415
 
     sync_engine = create_sync_engine(sync_url, echo=False)
-    Base.metadata.create_all(sync_engine, checkfirst=True)
+    with sync_engine.begin() as conn:
+        # Drop all tables first to ensure fresh schema matching current models
+        Base.metadata.drop_all(bind=conn)
+        Base.metadata.create_all(bind=conn)
+
+        # Create content_records partitions for test date ranges (2024-2027)
+        # This covers the range used by existing tests
+        for year in range(2024, 2028):
+            for month in range(1, 13):
+                next_month = month + 1 if month < 12 else 1
+                next_year = year if month < 12 else year + 1
+                partition_name = f"content_records_{year}_{month:02d}"
+
+                conn.execute(sa.text(f"""
+                    CREATE TABLE IF NOT EXISTS {partition_name}
+                    PARTITION OF content_records
+                    FOR VALUES FROM ('{year}-{month:02d}-01') TO ('{next_year}-{next_month:02d}-01')
+                """))
+
+        # Create default partition for dates outside normal range
+        conn.execute(sa.text("""
+            CREATE TABLE IF NOT EXISTS content_records_default
+            PARTITION OF content_records DEFAULT
+        """))
+
     sync_engine.dispose()
     _tables_created = True
 

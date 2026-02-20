@@ -56,18 +56,27 @@ TermSpec = dict[str, Any]  # {"term": str, "group_id": uuid.UUID | str | None}
 
 def build_boolean_query_groups(
     term_specs: list[TermSpec],
+    target_language: str | None = None,
 ) -> list[list[str]]:
-    """Group term dicts into AND/OR groups.
+    """Group term dicts into AND/OR groups, applying translations when available.
 
     Each term dict must have at minimum a ``"term"`` key (str) and a
-    ``"group_id"`` key (``uuid.UUID | str | None``).
+    ``"group_id"`` key (``uuid.UUID | str | None``).  Optionally a
+    ``"translations"`` key (dict mapping ISO 639-1 codes to translated terms)
+    may be present.
 
     Terms that share the same ``group_id`` are placed into the same AND-group.
     Terms with ``group_id=None`` each form their own single-item group (treated
     as independent OR terms, consistent with the SearchTerm schema design).
 
+    When ``target_language`` is provided and a term has a translation for that
+    language, the translated term is used instead of the primary term (IP2-052).
+
     Args:
-        term_specs: List of dicts with ``"term"`` and ``"group_id"`` keys.
+        term_specs: List of dicts with ``"term"``, ``"group_id"``, and
+            optionally ``"translations"`` keys.
+        target_language: Optional ISO 639-1 language code (e.g. ``"kl"``, ``"en"``).
+            When provided, translated terms are used where available.
 
     Returns:
         A list of groups.  Each group is a list of term strings to be ANDed.
@@ -76,12 +85,16 @@ def build_boolean_query_groups(
     Example::
 
         specs = [
-            {"term": "klimaforandringer", "group_id": "g1"},
+            {
+                "term": "klimaforandringer",
+                "group_id": "g1",
+                "translations": {"kl": "klima-aasakkanik", "en": "climate change"}
+            },
             {"term": "IPCC", "group_id": "g1"},
             {"term": "folketing", "group_id": None},
         ]
-        groups = build_boolean_query_groups(specs)
-        # → [["klimaforandringer", "IPCC"], ["folketing"]]
+        groups = build_boolean_query_groups(specs, target_language="kl")
+        # → [["klima-aasakkanik", "IPCC"], ["folketing"]]
     """
     if not term_specs:
         return []
@@ -91,7 +104,8 @@ def build_boolean_query_groups(
     null_counter = 0
 
     for spec in term_specs:
-        term: str = spec.get("term", "").strip()
+        # Resolve the term text (with translation if available).
+        term: str = resolve_term_translation(spec, target_language).strip()
         if not term:
             continue
 
@@ -278,3 +292,60 @@ def has_boolean_groups(term_specs: list[TermSpec]) -> bool:
         ``True`` when at least one term belongs to a named group.
     """
     return any(spec.get("group_id") is not None for spec in term_specs)
+
+
+# ---------------------------------------------------------------------------
+# Translation support (IP2-052)
+# ---------------------------------------------------------------------------
+
+
+def resolve_term_translation(
+    term_spec: TermSpec,
+    target_language: str | None = None,
+) -> str:
+    """Resolve the appropriate term text based on the target language.
+
+    When ``target_language`` is provided and the term has a translation for
+    that language, returns the translated term.  Otherwise returns the
+    primary ``term`` value.
+
+    Args:
+        term_spec: Term dict with at minimum ``"term"`` and ``"translations"``
+            keys.  ``translations`` should be a dict mapping ISO 639-1 codes
+            to translated term strings, or ``None``.
+        target_language: ISO 639-1 language code (e.g. ``"kl"``, ``"en"``).
+            When ``None`` or ``"da"``, always returns the primary term.
+
+    Returns:
+        The resolved term text (translated if available, primary otherwise).
+
+    Example::
+
+        term_spec = {
+            "term": "CO2 afgift",
+            "translations": {"kl": "CO2-akilerisitsinnaanera", "en": "CO2 tax"}
+        }
+        resolve_term_translation(term_spec, "kl")
+        # → "CO2-akilerisitsinnaanera"
+        resolve_term_translation(term_spec, "en")
+        # → "CO2 tax"
+        resolve_term_translation(term_spec, "da")
+        # → "CO2 afgift"
+    """
+    primary_term: str = term_spec.get("term", "")
+    if not primary_term:
+        return ""
+
+    # Default or Danish: always use the primary term.
+    if not target_language or target_language.lower() == "da":
+        return primary_term
+
+    # Check for translation.
+    translations = term_spec.get("translations")
+    if translations and isinstance(translations, dict):
+        translated = translations.get(target_language.lower())
+        if translated:
+            return translated
+
+    # No translation found; fall back to the primary term.
+    return primary_term

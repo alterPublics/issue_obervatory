@@ -10,62 +10,103 @@
             - term_type (str): 'keyword' | 'phrase' | 'hashtag' | 'url_pattern'
             - is_active (bool)
             - group_label (str|None): display name of the term's group, or None
+            - translations (dict|None): ISO 639-1 code -> translated term string
         - design_id (str): UUID of the parent query design (for delete URL)
 #}
 <li id="term-{{ term.id }}"
     {% if term.group_label %}data-group="{{ term.group_label | e }}"{% endif %}
-    class="flex items-center justify-between gap-3 py-2 px-3 rounded-md bg-gray-50 border border-gray-200 group">
-    <div class="flex items-center gap-2 min-w-0">
-        {# Term type badge #}
-        {% set ttype = term.term_type | default('keyword') %}
-        {% if ttype == 'hashtag' %}
-            <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 flex-shrink-0">#</span>
-        {% elif ttype == 'phrase' %}
-            <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700 flex-shrink-0">""</span>
-        {% elif ttype == 'url_pattern' %}
-            <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700 flex-shrink-0">URL</span>
-        {% else %}
-            <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600 flex-shrink-0">keyword</span>
-        {% endif %}
+    class="flex flex-col gap-1 py-2 px-3 rounded-md bg-gray-50 border border-gray-200 group">
+    <div class="flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2 min-w-0">
+            {# Term type badge #}
+            {% set ttype = term.term_type | default('keyword') %}
+            {% if ttype == 'hashtag' %}
+                <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 flex-shrink-0">#</span>
+            {% elif ttype == 'phrase' %}
+                <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700 flex-shrink-0">""</span>
+            {% elif ttype == 'url_pattern' %}
+                <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700 flex-shrink-0">URL</span>
+            {% else %}
+                <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600 flex-shrink-0">keyword</span>
+            {% endif %}
 
-        <span class="text-sm text-gray-900 font-medium truncate">{{ term.term | default('') }}</span>
+            <span class="text-sm text-gray-900 font-medium truncate">{{ term.term | default('') }}</span>
 
-        {# YF-01: Arena scoping indicator #}
-        {% if term.target_arenas %}
-        {% set arena_count = term.target_arenas | length %}
-        {% if arena_count <= 2 %}
-            {% set arena_display = term.target_arenas | join(', ') %}
-        {% else %}
-            {% set arena_display = arena_count ~ ' arenas' %}
-        {% endif %}
-        <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-700 flex-shrink-0"
-              title="{{ term.target_arenas | join(', ') }}">
-            <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12"/>
+            {# YF-01: Arena scoping indicator #}
+            {% if term.target_arenas %}
+            {% set arena_count = term.target_arenas | length %}
+            {% if arena_count <= 2 %}
+                {% set arena_display = term.target_arenas | join(', ') %}
+            {% else %}
+                {% set arena_display = arena_count ~ ' arenas' %}
+            {% endif %}
+            <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-700 flex-shrink-0"
+                  title="{{ term.target_arenas | join(', ') }}">
+                <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12"/>
+                </svg>
+                {{ arena_display }}
+            </span>
+            {% endif %}
+
+            {# IP2-052: Translations indicator #}
+            {% if term.translations %}
+            <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-teal-100 text-teal-700 flex-shrink-0"
+                  title="Has translations: {{ term.translations.keys() | join(', ') }}">
+                <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"/>
+                </svg>
+                {{ term.translations.keys() | list | length }}
+            </span>
+            {% endif %}
+
+            {% if not term.is_active | default(true) %}
+                <span class="text-xs text-gray-400 italic">(inactive)</span>
+            {% endif %}
+        </div>
+
+        {# Delete button — HTMX hx-delete targets this <li> and removes it from the DOM #}
+        {% if design_id is defined %}
+        <button type="button"
+                hx-delete="/query-designs/{{ design_id }}/terms/{{ term.id }}"
+                hx-target="#term-{{ term.id }}"
+                hx-swap="outerHTML"
+                hx-confirm="Delete search term '{{ term.term | default('') | e }}'?"
+                class="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50"
+                aria-label="Delete term">
+            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
             </svg>
-            {{ arena_display }}
-        </span>
-        {% endif %}
-
-        {% if not term.is_active | default(true) %}
-            <span class="text-xs text-gray-400 italic">(inactive)</span>
+        </button>
         {% endif %}
     </div>
 
-    {# Delete button — HTMX hx-delete targets this <li> and removes it from the DOM #}
-    {% if design_id is defined %}
-    <button type="button"
-            hx-delete="/query-designs/{{ design_id }}/terms/{{ term.id }}"
-            hx-target="#term-{{ term.id }}"
-            hx-swap="outerHTML"
-            hx-confirm="Delete search term '{{ term.term | default('') | e }}'?"
-            class="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50"
-            aria-label="Delete term">
-        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-             stroke="currentColor" stroke-width="2" aria-hidden="true">
-            <path stroke-linecap="round" stroke-linejoin="round"
-                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-        </svg>
-    </button>
+    {# IP2-052: Translation display (if present) #}
+    {% if term.translations %}
+    <div class="pl-8 space-y-0.5 text-xs text-gray-600 border-l-2 border-teal-200 ml-1">
+        {% for lang_code, translated_term in term.translations.items() | sort %}
+        {% if lang_code == 'kl' %}
+            {% set lang_label = 'Greenlandic' %}
+        {% elif lang_code == 'en' %}
+            {% set lang_label = 'English' %}
+        {% elif lang_code == 'fo' %}
+            {% set lang_label = 'Faroese' %}
+        {% elif lang_code == 'de' %}
+            {% set lang_label = 'German' %}
+        {% elif lang_code == 'sv' %}
+            {% set lang_label = 'Swedish' %}
+        {% elif lang_code == 'nb' %}
+            {% set lang_label = 'Norwegian' %}
+        {% else %}
+            {% set lang_label = lang_code %}
+        {% endif %}
+        <div class="flex gap-2">
+            <span class="text-gray-400 font-medium w-20">{{ lang_label }}:</span>
+            <span class="text-gray-700">{{ translated_term }}</span>
+        </div>
+        {% endfor %}
+    </div>
     {% endif %}
 </li>

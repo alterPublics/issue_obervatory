@@ -598,7 +598,7 @@ async def content_browser_page(
     Returns:
         ``TemplateResponse`` rendering ``content/browser.html``.
     """
-    from issue_observatory.api.main import templates  # noqa: PLC0415
+    templates = request.app.state.templates
 
     if templates is None:
         raise HTTPException(status_code=500, detail="Template engine not initialised.")
@@ -726,7 +726,7 @@ async def content_records_fragment(
         ``HTMLResponse`` containing ``<tr>`` elements plus an optional
         sentinel ``<tr hx-trigger="revealed">`` for further loading.
     """
-    from issue_observatory.api.main import templates  # noqa: PLC0415
+    templates = request.app.state.templates
 
     if templates is None:
         raise HTTPException(status_code=500, detail="Template engine not initialised.")
@@ -1025,7 +1025,7 @@ async def get_content_record_html(
         HTTPException 404: If the record does not exist or is not accessible
             by the current user.
     """
-    from issue_observatory.api.main import templates  # noqa: PLC0415
+    templates = request.app.state.templates
 
     if templates is None:
         raise HTTPException(status_code=500, detail="Template engine not initialised.")

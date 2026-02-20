@@ -57,6 +57,7 @@ from issue_observatory.core.exceptions import (
     ArenaAuthError,
     ArenaCollectionError,
     ArenaRateLimitError,
+    NoCredentialAvailableError,
 )
 from issue_observatory.core.normalizer import Normalizer
 
@@ -165,7 +166,6 @@ class ThreadsCollector(ArenaCollector):
 
         cred = await self._acquire_credential()
         if cred is None:
-            from issue_observatory.core.credential_pool import NoCredentialAvailableError  # noqa: PLC0415
             raise NoCredentialAvailableError(platform="threads", tier="free")
 
         credential_id = cred["id"]
@@ -403,7 +403,7 @@ class ThreadsCollector(ArenaCollector):
             ``arena``, ``platform``, ``checked_at``, and optionally
             ``username`` or ``detail``.
         """
-        checked_at = datetime.utcnow().isoformat() + "Z"
+        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,

@@ -78,7 +78,7 @@
     #}
     <div {% if not is_terminal %}
          hx-ext="sse"
-         sse-connect="/api/collections/{{ run_id }}/stream"
+         sse-connect="/collections/{{ run_id }}/stream"
          sse-close="run_complete"
          {% endif %}
          id="sse-container">
@@ -176,7 +176,7 @@
 
                 {# Cancel & Delete — always visible for non-terminal live runs #}
                 <button type="button"
-                        hx-post="/api/collections/{{ run_id }}/cancel"
+                        hx-post="/collections/{{ run_id }}/cancel"
                         hx-confirm="Cancel and permanently delete this live tracking run? All collected data will be retained but the run cannot be restarted. This cannot be undone."
                         hx-target="#run-summary-card"
                         hx-swap="outerHTML"
@@ -219,7 +219,7 @@
                        Live runs have their cancel button in the schedule panel above. #}
                     {% if not is_live %}
                     <button type="button"
-                            hx-post="/api/collections/{{ run_id }}/cancel"
+                            hx-post="/collections/{{ run_id }}/cancel"
                             hx-confirm="Cancel this collection run?"
                             hx-target="#run-summary-card"
                             hx-swap="outerHTML"

@@ -134,6 +134,14 @@ class SearchTermCreate(BaseModel):
             "NULL or empty list means all enabled arenas."
         ),
     )
+    translations: Optional[dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Optional dict mapping ISO 639-1 language codes to translated terms. "
+            "Example: {'kl': 'CO2-akilerisitsinnaanera', 'en': 'CO2 tax'}. "
+            "NULL means no translations available (use the primary term)."
+        ),
+    )
 
 
 class SearchTermRead(SearchTermCreate):

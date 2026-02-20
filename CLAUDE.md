@@ -227,7 +227,7 @@ No schema migration is needed for new enrichers. Enrichments are triggered by th
 All collected data normalizes to `content_records` (range-partitioned by `published_at`, monthly boundaries). Platform-specific data goes in the `raw_metadata` JSONB column. Key fields:
 - `id` (UUID), `published_at` (composite PK)
 - `arena`, `platform`, `content_type`
-- `title`, `text_content`, `url`, `external_id`
+- `title`, `text_content`, `url`, `platform_id`
 - `author_display_name`, `author_platform_id`, `pseudonymized_author_id`
 - `language`, `engagement_score`
 - `content_hash` (SHA-256), `simhash` (BIGINT, near-duplicate fingerprint)
@@ -235,6 +235,7 @@ All collected data normalizes to `content_records` (range-partitioned by `publis
 - `raw_metadata` (JSONB -- platform data, enrichments, duplicate_of markers)
 - `author_id` (FK to actors for entity resolution)
 - `collection_run_id` (FK to collection_runs)
+- `collected_at` (timestamp -- note: content_records does NOT use TimestampMixin as records are immutable)
 
 ### Tier Precedence (IP2-022)
 
@@ -309,7 +310,7 @@ Collection progress is streamed via SSE (`GET /collections/{run_id}/stream`):
 ### Database
 
 - SQLAlchemy 2.0 declarative style
-- All tables have `created_at` and `updated_at` timestamps (via `TimestampMixin`)
+- All tables have `created_at` and `updated_at` timestamps (via `TimestampMixin`), except `content_records` which uses `collected_at` only (records are immutable)
 - Platform-specific data in `raw_metadata` JSONB -- no platform-specific columns on the universal schema
 - UUIDs for all primary keys
 - Alembic for all migrations -- never modify tables manually

@@ -277,21 +277,7 @@ window.initEngagementChart = function initEngagementChart(canvasId, data, option
 };
 
 // ---------------------------------------------------------------------------
-// 3. Arena breakdown — doughnut chart
-// ---------------------------------------------------------------------------
-
-/**
- * Render a doughnut chart showing the content breakdown per arena / platform.
- *
- * @param {string} canvasId - Target canvas element ID.
- * @param {Object} data - Chart data.
- * @param {string[]} data.labels     - Arena or platform names.
- * @param {number[]} data.values     - Record counts per arena.
- * @param {Object}  [options]        - Additional Chart.js options (merged in).
- * @returns {Chart|null}
- */
-// ---------------------------------------------------------------------------
-// 4. Top actors — horizontal bar chart
+// 3. Top actors — horizontal bar chart
 // ---------------------------------------------------------------------------
 
 /**
@@ -584,11 +570,7 @@ window.initMultiArenaVolumeChart = function initMultiArenaVolumeChart(canvasId, 
 };
 
 // ---------------------------------------------------------------------------
-// 8. Arena breakdown — doughnut chart
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// 9. Emergent terms — horizontal bar chart (green palette, high-precision x axis)
+// 8. Emergent terms — horizontal bar chart (green palette, high-precision x axis)
 // ---------------------------------------------------------------------------
 
 /**
@@ -659,7 +641,7 @@ window.initEmergentTermsChart = function initEmergentTermsChart(canvasId, data, 
 };
 
 // ---------------------------------------------------------------------------
-// 10. Arena breakdown — doughnut chart
+// 9. Arena breakdown — doughnut chart
 // ---------------------------------------------------------------------------
 
 window.initArenaBreakdownChart = function initArenaBreakdownChart(canvasId, data, options = {}) {

@@ -275,7 +275,7 @@ def refresh_engagement_metrics(
     Arenas that do not implement ``refresh_engagement()`` are skipped
     silently with a debug log message.
 
-    Records are batched (50 external_ids per API call) to avoid overwhelming
+    Records are batched (50 platform_ids per API call) to avoid overwhelming
     upstream APIs and to respect rate limits.
 
     This task is dispatched by ``POST /collections/{run_id}/refresh-engagement``.
@@ -338,7 +338,7 @@ def _refresh_engagement_sync(sync_dsn: str, run_id: str, settings: Any) -> dict[
     records_queried = 0
     records_updated = 0
 
-    BATCH_SIZE = 50  # process 50 external_ids per API call
+    BATCH_SIZE = 50  # process 50 platform_ids per API call
 
     with psycopg2.connect(sync_dsn) as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -347,19 +347,19 @@ def _refresh_engagement_sync(sync_dsn: str, run_id: str, settings: Any) -> dict[
                 """
                 SELECT
                     platform,
-                    external_id,
+                    platform_id,
                     id::text as record_id
                 FROM content_records
                 WHERE collection_run_id = %(run_id)s
-                  AND external_id IS NOT NULL
-                ORDER BY platform, external_id
+                  AND platform_id IS NOT NULL
+                ORDER BY platform, platform_id
                 """,
                 {"run_id": run_id},
             )
             rows = cur.fetchall()
 
             if not rows:
-                logger.info("refresh_engagement: no records with external_id found")
+                logger.info("refresh_engagement: no records with platform_id found")
                 return {
                     "platforms_processed": 0,
                     "records_queried": 0,
@@ -371,7 +371,7 @@ def _refresh_engagement_sync(sync_dsn: str, run_id: str, settings: Any) -> dict[
             platform_groups: dict[str, list[dict[str, str]]] = defaultdict(list)
             for row in rows:
                 platform_groups[row["platform"]].append(
-                    {"external_id": row["external_id"], "record_id": row["record_id"]}
+                    {"platform_id": row["platform_id"], "record_id": row["record_id"]}
                 )
 
             # Also fetch the tier from collection_runs
@@ -392,23 +392,25 @@ def _refresh_engagement_sync(sync_dsn: str, run_id: str, settings: Any) -> dict[
                 log.info("refresh_engagement: processing platform")
 
                 try:
-                    # Get the arena collector
-                    collector = get_arena(platform_name)
-                    if collector is None:
-                        log.warning("refresh_engagement: arena not found in registry")
-                        platforms_skipped += 1
-                        continue
+                    # Get the arena collector (instantiate it)
+                    collector_class = get_arena(platform_name)
+                    collector = collector_class()
+                except KeyError:
+                    log.warning("refresh_engagement: arena not found in registry")
+                    platforms_skipped += 1
+                    continue
 
+                try:
                     # Process in batches
                     for i in range(0, len(records), BATCH_SIZE):
                         batch = records[i : i + BATCH_SIZE]
-                        external_ids = [r["external_id"] for r in batch]
-                        records_queried += len(external_ids)
+                        platform_ids = [r["platform_id"] for r in batch]
+                        records_queried += len(platform_ids)
 
                         log.debug(
                             "refresh_engagement: fetching batch",
                             batch_start=i,
-                            batch_size=len(external_ids),
+                            batch_size=len(platform_ids),
                         )
 
                         # Call the arena's refresh_engagement() method
@@ -417,7 +419,7 @@ def _refresh_engagement_sync(sync_dsn: str, run_id: str, settings: Any) -> dict[
                         asyncio.set_event_loop(loop)
                         try:
                             engagement_map = loop.run_until_complete(
-                                collector.refresh_engagement(external_ids, tier=tier)
+                                collector.refresh_engagement(platform_ids, tier=tier)
                             )
                         finally:
                             loop.close()
@@ -429,8 +431,8 @@ def _refresh_engagement_sync(sync_dsn: str, run_id: str, settings: Any) -> dict[
 
                         # Update records in the database
                         for record in batch:
-                            external_id = record["external_id"]
-                            metrics = engagement_map.get(external_id)
+                            platform_id = record["platform_id"]
+                            metrics = engagement_map.get(platform_id)
                             if not metrics:
                                 continue
 

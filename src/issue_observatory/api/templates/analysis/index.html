@@ -185,15 +185,9 @@
         IP2-012: Platform and Arena are select dropdowns populated from the API.
 
         Options are loaded by the parent analysisDashboard() component on init()
-        from GET /analysis/{run_id}/filter-options.
-
-        BACKEND GAP (IP2-012): The endpoint GET /analysis/{run_id}/filter-options
-        does not yet exist. It should return the distinct platform and arena values
-        present in the run's content records:
+        from GET /analysis/{run_id}/filter-options, which returns the distinct
+        platform and arena values present in the run's content records:
             { "platforms": string[], "arenas": string[] }
-        Until it exists, the selects show only the "All" sentinel option and the
-        researcher can still type values via the fallback text path. The component
-        silently swallows the 404 and leaves platformOptions/arenaOptions empty.
     #}
     <div class="bg-white rounded-lg shadow px-5 py-4">
         <div class="flex flex-wrap items-end gap-4">
@@ -421,12 +415,11 @@
 
     {# ---- Emergent Terms panel --------------------------------------- #}
     {#
-        BACKEND GAP (IP2-042 / get_emergent_terms):
-        Requires GET /analysis/{run_id}/emergent-terms endpoint returning:
+        IP2-038: Emergent term extraction using TF-IDF.
+        Fetches from GET /analysis/{run_id}/emergent-terms endpoint returning:
             [{ term: string, score: number, document_frequency: number,
                is_search_term: boolean }]
-        Until the endpoint exists this panel silently shows the "No data" state.
-        The exclude_search_terms and top_n params should be forwarded as query params.
+        The exclude_search_terms and top_n params are forwarded as query params.
     #}
     <div
         class="bg-white rounded-lg shadow p-5"
@@ -1514,8 +1507,6 @@ function analysisDashboard(runId) {
             granularity: 'day',
         },
         // IP2-012: dropdown option lists populated from GET /analysis/{run_id}/filter-options.
-        // Stays empty (and dropdowns show only the "All" sentinel) until the backend
-        // endpoint exists. See BACKEND GAP note in the filter bar template comment.
         platformOptions: [],
         arenaOptions: [],
 
@@ -1523,10 +1514,8 @@ function analysisDashboard(runId) {
             // Expose a live reference so chart sub-components can read filters.
             window.__analysisFilters = this.filters;
 
-            // IP2-012: Attempt to load filter options from the backend.
-            // The endpoint GET /analysis/{run_id}/filter-options is not yet implemented.
-            // When it exists it should return { platforms: string[], arenas: string[] }.
-            // We silently swallow errors so the page works without this endpoint.
+            // IP2-012: Load filter options from the backend.
+            // GET /analysis/{run_id}/filter-options returns { platforms: string[], arenas: string[] }.
             try {
                 const resp = await fetch(`/analysis/${runId}/filter-options`, { credentials: 'include' });
                 if (resp.ok) {
@@ -1853,7 +1842,7 @@ function engagementChart(runId) {
 
 // ---- Emergent Terms panel component ---------------------------------------
 //
-// BACKEND GAP: Requires GET /analysis/{run_id}/emergent-terms
+// Fetches TF-IDF emergent terms from GET /analysis/{run_id}/emergent-terms
 //   Query params: top_n (int), exclude_search_terms (bool)
 //   Response: [{ term: string, score: number, document_frequency: number,
 //                is_search_term: boolean }]
@@ -2046,13 +2035,9 @@ function networkTabs(runId) {
 //   GET /analysis/{run_id}/network/{network_type}/temporal
 //   Response: [{ period: string, node_count: int, edge_count: int }]
 //
-// Period snapshot endpoint expected:
+// Period snapshot endpoint:
 //   GET /analysis/{run_id}/network/{network_type}/temporal/{period}
-//   Response: same shape as the static endpoint above
-//
-// BACKEND GAP: Neither the static JSON nor the temporal endpoints currently
-// exist. The component silently shows the "No data" empty state when the
-// API returns 404.
+//   Response: GEXF graph data in JSON format with nodes and edges
 //
 // Maximum nodes to render in the browser preview.
 // Graphs larger than this are trimmed to the top-N nodes by degree before

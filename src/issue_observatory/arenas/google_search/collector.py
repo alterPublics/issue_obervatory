@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -296,7 +296,7 @@ class GoogleSearchCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
             ``arena``, ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.utcnow().isoformat() + "Z"
+        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -332,9 +332,7 @@ class GoogleSearchCollector(ArenaCollector):
             return {**base, "status": "down", "detail": f"Connection error: {exc}"}
         finally:
             if self.credential_pool is not None:
-                await self.credential_pool.release(
-                    platform="serper", credential_id=cred["id"]
-                )
+                await self.credential_pool.release(credential_id=cred["id"])
 
     async def estimate_credits(
         self,
