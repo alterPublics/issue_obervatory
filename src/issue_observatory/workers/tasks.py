@@ -55,6 +55,7 @@ from issue_observatory.workers._task_helpers import (
     enforce_retention,
     fetch_live_tracking_designs,
     fetch_public_figure_ids_for_design,
+    fetch_search_terms_for_arena,
     fetch_stale_runs,
     fetch_unsettled_reservations,
     get_user_credit_balance,
@@ -213,8 +214,41 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
             )
 
         # --- Dispatch arena tasks ---
+        # YF-01: Load and filter search terms per arena based on target_arenas.
+        # Each arena receives only the terms that are either globally applicable
+        # (target_arenas=NULL) or explicitly targeted to that arena's platform_name.
         for arena_name, arena_tier in arenas_config.items():
             tier = arena_tier or default_tier
+
+            # YF-01: Fetch search terms scoped to this arena's platform_name.
+            # The arena_name in arenas_config is the platform_name used in the
+            # registry (e.g., "reddit", "bluesky", "google_search").
+            try:
+                arena_terms = asyncio.run(
+                    fetch_search_terms_for_arena(design_id, arena_name)
+                )
+            except Exception as terms_exc:
+                task_log.error(
+                    "trigger_daily_collection: failed to fetch search terms for arena",
+                    arena=arena_name,
+                    error=str(terms_exc),
+                    exc_info=True,
+                )
+                # Non-fatal: log and skip this arena rather than failing the
+                # entire daily collection.  The run will continue with the
+                # remaining arenas.
+                skipped += 1
+                continue
+
+            if not arena_terms:
+                task_log.info(
+                    "trigger_daily_collection: no search terms scoped to arena; skipping",
+                    arena=arena_name,
+                )
+                # No terms for this arena — skip dispatch but don't count as an
+                # error.  This is expected when YF-01 per-arena scoping is in use.
+                continue
+
             task_name = (
                 f"issue_observatory.arenas.{arena_name}.tasks.collect_by_terms"
             )
@@ -222,7 +256,9 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                 celery_app.send_task(
                     task_name,
                     kwargs={
+                        "query_design_id": str(design_id),
                         "collection_run_id": str(run_id),
+                        "terms": arena_terms,
                         "tier": tier,
                         # IP2-052: pass language filter so arena tasks can
                         # restrict results to the design's configured language(s).
@@ -239,6 +275,7 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                     arena=arena_name,
                     tier=tier,
                     task_name=task_name,
+                    terms_count=len(arena_terms),
                 )
             except Exception as dispatch_exc:
                 task_log.error(

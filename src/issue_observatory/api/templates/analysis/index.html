@@ -90,6 +90,19 @@
             </div>
         </div>
         <div class="flex flex-wrap items-center gap-2">
+            {# YF-06: Link to design-level analysis if this run belongs to a query design #}
+            {% if run.query_design_id %}
+            <a href="/analysis/design/{{ run.query_design_id }}"
+               class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-purple-700 border border-purple-200 rounded-md hover:bg-purple-50 transition-colors"
+               title="View analysis across all runs in this query design">
+                <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                </svg>
+                All runs
+            </a>
+            {% endif %}
             {# Status badge #}
             {% set _sc = {
                 'completed': 'bg-green-100 text-green-800',

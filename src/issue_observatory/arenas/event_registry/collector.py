@@ -499,6 +499,65 @@ class EventRegistryCollector(ArenaCollector):
 
         return normalized
 
+    async def estimate_credits(
+        self,
+        terms: list[str] | None = None,
+        actor_ids: list[str] | None = None,
+        tier: Tier = Tier.MEDIUM,
+        date_from: datetime | str | None = None,
+        date_to: datetime | str | None = None,
+        max_results: int | None = None,
+    ) -> int:
+        """Estimate the credit cost for an Event Registry collection run.
+
+        Event Registry uses a token budget model:
+        - 1 token = 1 API request (returns up to 100 articles)
+        - 1 credit = 1 token in our mapping
+
+        Estimates assume 200-500 articles per term per week.
+
+        Args:
+            terms: Search keywords or phrases.
+            actor_ids: Not applicable for Event Registry.
+            tier: MEDIUM or PREMIUM.
+            date_from: Start of collection date range.
+            date_to: End of collection date range.
+            max_results: Upper bound on results.
+
+        Returns:
+            Estimated credit cost as a non-negative integer.
+        """
+        if tier not in self.supported_tiers:
+            return 0
+
+        all_terms = list(terms or [])
+        if not all_terms:
+            return 0
+
+        # Estimate date range in days
+        date_range_days = 7
+        if date_from and date_to:
+            if isinstance(date_from, str):
+                date_from = datetime.fromisoformat(date_from.replace("Z", "+00:00"))
+            if isinstance(date_to, str):
+                date_to = datetime.fromisoformat(date_to.replace("Z", "+00:00"))
+            delta = date_to - date_from
+            date_range_days = max(1, delta.days)
+
+        # Heuristic: 50 articles per term per day (conservative)
+        articles_per_term_per_day = 50
+        estimated_articles = len(all_terms) * date_range_days * articles_per_term_per_day
+
+        # Apply max_results cap
+        tier_config = self.get_tier_config(tier)
+        effective_max = max_results if max_results is not None else tier_config.max_results_per_run
+        estimated_articles = min(estimated_articles, effective_max)
+
+        # Event Registry returns 100 articles per request, so tokens = ceil(articles / 100)
+        import math
+
+        return math.ceil(estimated_articles / 100)
+
     async def health_check(self) -> dict[str, Any]:
         """Verify Event Registry API connectivity with a minimal test query.
 

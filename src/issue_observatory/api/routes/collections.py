@@ -283,9 +283,8 @@ async def estimate_collection_credits(
     is created.  It is intended to be called from the collection launcher UI
     while the user configures the run parameters.
 
-    The stub implementation returns zero credits for all arenas.  The full
-    implementation (Task 0.8 / CreditService) will compute per-arena cost
-    based on the tier, date range, and estimated result volume.
+    Estimates are heuristic-based and may vary from actual costs by ±50%.
+    They provide order-of-magnitude accuracy for budget planning.
 
     Args:
         payload: Validated ``CreditEstimateRequest`` body.
@@ -299,8 +298,21 @@ async def estimate_collection_credits(
         HTTPException 404: If the query design does not exist.
         HTTPException 403: If the caller does not own the query design.
     """
+    # Import here to avoid circular dependencies
+    from datetime import timedelta
+
+    from issue_observatory.arenas.base import Tier
+    from issue_observatory.arenas.registry import autodiscover, get_arena
+    from issue_observatory.core.credit_service import CreditService
+
+    # Load query design with search terms and actor lists eagerly
     qd_result = await db.execute(
-        select(QueryDesign).where(QueryDesign.id == payload.query_design_id)
+        select(QueryDesign)
+        .where(QueryDesign.id == payload.query_design_id)
+        .options(
+            selectinload(QueryDesign.search_terms),
+            selectinload(QueryDesign.actor_lists),
+        )
     )
     query_design = qd_result.scalar_one_or_none()
     if query_design is None:
@@ -310,13 +322,92 @@ async def estimate_collection_credits(
         )
     ownership_guard(query_design.owner_id, current_user)
 
-    # Stub: CreditService integration deferred to Task 0.8.
-    # Return a zero-credit estimate so the UI renders without error.
+    # Ensure arena registry is populated
+    autodiscover()
+
+    # Merge arena config: query design base + launcher override
+    merged_arenas_config = {**query_design.arenas_config, **payload.arenas_config}
+
+    # Extract active search terms and count enabled arenas
+    active_search_terms = [st for st in query_design.search_terms if st.is_active]
+    term_count = len(active_search_terms)
+
+    # Calculate date range in days (for volume-based estimates)
+    date_range_days = 30  # default for live mode or when dates are unspecified
+    if payload.date_from and payload.date_to:
+        delta = payload.date_to - payload.date_from
+        date_range_days = max(1, delta.days)
+
+    # Convert global tier string to Tier enum
+    default_tier = Tier(payload.tier)
+
+    # Compute per-arena estimates
+    per_arena: dict[str, int] = {}
+    from issue_observatory.arenas.registry import list_arenas
+
+    for arena_meta in list_arenas():
+        platform_name = arena_meta["platform_name"]
+
+        # Determine the effective tier for this arena (IP2-022 precedence)
+        arena_tier_value = merged_arenas_config.get(platform_name, payload.tier)
+        try:
+            arena_tier = Tier(arena_tier_value)
+        except ValueError:
+            # Invalid tier string, skip this arena
+            logger.warning(
+                "Invalid tier for arena",
+                platform_name=platform_name,
+                tier_value=arena_tier_value,
+            )
+            continue
+
+        # Skip arenas that don't support the requested tier
+        if arena_tier.value not in arena_meta["supported_tiers"]:
+            continue
+
+        try:
+            # Get the collector class and call estimate_credits
+            collector_cls = get_arena(platform_name)
+            collector = collector_cls()  # Instantiate without credentials/rate limiter
+
+            estimate = await collector.estimate_credits(
+                terms=[st.term for st in active_search_terms],
+                actor_ids=None,  # Actor-based estimates not yet implemented
+                tier=arena_tier,
+                date_from=payload.date_from,
+                date_to=payload.date_to,
+                max_results=None,  # Use tier default
+            )
+
+            if estimate > 0:
+                per_arena[platform_name] = estimate
+
+        except Exception as exc:  # noqa: BLE001
+            # Log but don't fail the entire estimate if one arena errors
+            logger.warning(
+                "Arena estimation failed",
+                platform_name=platform_name,
+                error=str(exc),
+                exc_info=True,
+            )
+            continue
+
+    # Sum total credits
+    total_credits = sum(per_arena.values())
+
+    # Get user's available credit balance
+    credit_service = CreditService(db)
+    balance = await credit_service.get_balance(current_user.id)
+    available_credits = balance["available"]
+
+    # Determine if run can proceed
+    can_run = total_credits <= available_credits
+
     return CreditEstimateResponse(
-        total_credits=0,
-        available_credits=0,
-        can_run=True,
-        per_arena={},
+        total_credits=total_credits,
+        available_credits=available_credits,
+        can_run=can_run,
+        per_arena=per_arena,
     )
 
 

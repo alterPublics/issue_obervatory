@@ -296,6 +296,52 @@ class AiChatSearchCollector(ArenaCollector):
             "normalised through a single generic normalize() path."
         )
 
+    async def estimate_credits(
+        self,
+        terms: list[str] | None = None,
+        actor_ids: list[str] | None = None,
+        tier: Tier = Tier.MEDIUM,
+        date_from: datetime | str | None = None,
+        date_to: datetime | str | None = None,
+        max_results: int | None = None,
+    ) -> int:
+        """Estimate the credit cost for an AI Chat Search collection run.
+
+        Each term generates N phrasings (5 for MEDIUM, 10 for PREMIUM).
+        Each phrasing calls the Perplexity Sonar API once.
+        1 credit ≈ 1 API call.
+
+        Args:
+            terms: Search terms to expand and query.
+            actor_ids: Not applicable for AI Chat Search.
+            tier: MEDIUM or PREMIUM.
+            date_from: Not used (AI chat search is real-time only).
+            date_to: Not used.
+            max_results: Not used (results depend on citation count).
+
+        Returns:
+            Estimated credit cost as a non-negative integer.
+        """
+        if tier not in self.supported_tiers:
+            return 0
+
+        all_terms = list(terms or [])
+        if not all_terms:
+            return 0
+
+        # Get phrasings per term based on tier
+        from issue_observatory.arenas.ai_chat_search.config import get_n_phrasings
+
+        n_phrasings = get_n_phrasings(tier)
+
+        # Each phrasing = 1 API call to Perplexity Sonar
+        total_calls = len(all_terms) * n_phrasings
+
+        # Approximate cost multiplier for PREMIUM (higher token costs)
+        if tier == Tier.PREMIUM:
+            return total_calls * 5  # 5x cost factor for Sonar Pro
+        return total_calls
+
     async def health_check(self) -> dict[str, Any]:
         """Verify OpenRouter connectivity with a minimal expansion test.
 

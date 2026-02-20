@@ -1,0 +1,439 @@
+{% extends "base.html" %}
+{% block title %}Analysis — {{ design.name | default(design_id) | truncate(30, true, '…') }}{% endblock %}
+
+{% block extra_head %}
+{#
+    YF-06: Cross-run analysis dashboard — design-level view.
+    Aggregates data across all runs in a query design.
+
+    Same chart libraries as the per-run analysis dashboard:
+    - Chart.js (from base.html)
+    - chartjs-plugin-annotation (political calendar overlays)
+
+    Network analysis omitted for now (Phase 2 feature).
+#}
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3/dist/chartjs-plugin-annotation.min.js"></script>
+<script>
+  if (typeof window.ChartAnnotation !== 'undefined' && typeof Chart !== 'undefined') {
+    Chart.register(window.ChartAnnotation);
+  }
+</script>
+{% endblock %}
+
+{% block content %}
+{#
+    Design-level analysis dashboard.
+
+    Context variables:
+        design_id  (str)  — UUID of the query design
+        design     (dict) — {id, name, description}
+        run_count  (int)  — number of completed runs
+        runs       (list) — [{id, started_at, records_collected}]
+
+    All chart data is fetched client-side from /analysis/design/{design_id}/* endpoints.
+#}
+
+<div
+    class="max-w-7xl mx-auto space-y-6"
+    x-data="designAnalysisDashboard('{{ design_id }}')"
+    x-init="init()"
+>
+
+    {# ---- Page header ------------------------------------------------ #}
+    <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-3">
+            <a href="/query-designs/{{ design_id }}"
+               class="text-gray-400 hover:text-gray-600 transition-colors"
+               aria-label="Back to query design">
+                <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                     viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
+                </svg>
+            </a>
+            <div>
+                <h1 class="text-xl font-bold text-gray-900">Cross-Run Analysis</h1>
+                <p class="text-sm text-gray-600 mt-0.5">{{ design.name | default('Query Design') }}</p>
+            </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
+                {{ run_count }} run{{ 's' if run_count != 1 else '' }}
+            </span>
+            <a href="/query-designs/{{ design_id }}"
+               class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
+                <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+                </svg>
+                View design
+            </a>
+        </div>
+    </div>
+
+    {# ---- Summary stats cards ---------------------------------------- #}
+    <div
+        class="grid grid-cols-2 gap-4 sm:grid-cols-4"
+        x-data="designSummaryCards('{{ design_id }}')"
+        x-init="load()"
+    >
+        <template x-if="loading">
+            <template x-for="i in [0,1,2,3]" :key="i">
+                <div class="bg-white rounded-lg shadow px-5 py-4 animate-pulse">
+                    <div class="h-3 bg-gray-200 rounded w-2/3 mb-2"></div>
+                    <div class="h-7 bg-gray-200 rounded w-1/2"></div>
+                </div>
+            </template>
+        </template>
+
+        <template x-if="!loading && error">
+            <div class="col-span-4 bg-red-50 border border-red-200 rounded-lg px-5 py-4 text-sm text-red-700"
+                 x-text="'Could not load summary: ' + error"></div>
+        </template>
+
+        <template x-if="!loading && !error && summary">
+            <div class="contents">
+                <div class="bg-white rounded-lg shadow px-5 py-4">
+                    <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Total records</p>
+                    <p class="mt-1 text-2xl font-semibold text-gray-900"
+                       x-text="summary.total_records !== undefined ? summary.total_records.toLocaleString() : '—'"></p>
+                </div>
+                <div class="bg-white rounded-lg shadow px-5 py-4">
+                    <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Completed runs</p>
+                    <p class="mt-1 text-2xl font-semibold text-gray-900"
+                       x-text="summary.completed_runs !== undefined ? summary.completed_runs : '—'"></p>
+                </div>
+                <div class="bg-white rounded-lg shadow px-5 py-4">
+                    <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Date range</p>
+                    <p class="mt-1 text-sm font-medium text-gray-700 leading-snug">
+                        <span x-text="summary.first_run_at ? summary.first_run_at.slice(0,10) : '—'"></span>
+                        <span class="text-gray-400"> – </span>
+                        <span x-text="summary.last_completed_at ? summary.last_completed_at.slice(0,10) : '—'"></span>
+                    </p>
+                </div>
+                <div class="bg-white rounded-lg shadow px-5 py-4">
+                    <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Total credits</p>
+                    <p class="mt-1 text-2xl font-semibold text-gray-900"
+                       x-text="summary.total_credits !== undefined ? summary.total_credits.toLocaleString() : '—'"></p>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    {# ---- Filter bar ------------------------------------------------- #}
+    <div class="bg-white rounded-lg shadow px-5 py-4">
+        <div class="flex flex-wrap items-end gap-4">
+            <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">Platform</label>
+                <select
+                    x-model="filters.platform"
+                    @change="applyFilters()"
+                    class="block w-40 rounded-md border border-gray-300 shadow-sm text-sm px-2 py-1.5
+                           focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none bg-white"
+                >
+                    <option value="">All platforms</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">Arena</label>
+                <select
+                    x-model="filters.arena"
+                    @change="applyFilters()"
+                    class="block w-40 rounded-md border border-gray-300 shadow-sm text-sm px-2 py-1.5
+                           focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none bg-white"
+                >
+                    <option value="">All arenas</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">Date from</label>
+                <input
+                    type="date"
+                    x-model="filters.date_from"
+                    class="block w-40 rounded-md border border-gray-300 shadow-sm text-sm px-2 py-1.5
+                           focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                />
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">Date to</label>
+                <input
+                    type="date"
+                    x-model="filters.date_to"
+                    class="block w-40 rounded-md border border-gray-300 shadow-sm text-sm px-2 py-1.5
+                           focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                />
+            </div>
+            <div class="flex gap-2">
+                <button
+                    type="button"
+                    @click="applyFilters()"
+                    class="px-4 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-md
+                           hover:bg-blue-700 transition-colors"
+                >
+                    Apply
+                </button>
+                <button
+                    type="button"
+                    @click="resetFilters()"
+                    class="px-4 py-1.5 border border-gray-300 text-gray-700 text-sm font-medium rounded-md
+                           hover:bg-gray-50 transition-colors"
+                >
+                    Reset
+                </button>
+            </div>
+        </div>
+    </div>
+
+    {# ---- Volume over time chart ------------------------------------- #}
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-sm font-semibold text-gray-900 mb-4">Volume Over Time</h2>
+        <div
+            x-data="volumeChart('{{ design_id }}')"
+            x-init="load()"
+            @filter-applied.window="load()"
+        >
+            <template x-if="loading">
+                <div class="h-64 flex items-center justify-center text-sm text-gray-400 animate-pulse">
+                    Loading volume data...
+                </div>
+            </template>
+            <template x-if="!loading && error">
+                <div class="h-64 flex items-center justify-center">
+                    <div class="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700"
+                         x-text="'Error: ' + error"></div>
+                </div>
+            </template>
+            <template x-if="!loading && !error">
+                <canvas id="volumeChart" class="max-h-80"></canvas>
+            </template>
+        </div>
+    </div>
+
+    {# ---- Top actors chart ------------------------------------------- #}
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-sm font-semibold text-gray-900 mb-4">Top Actors</h2>
+        <div
+            x-data="actorsChart('{{ design_id }}')"
+            x-init="load()"
+            @filter-applied.window="load()"
+        >
+            <template x-if="loading">
+                <div class="h-64 flex items-center justify-center text-sm text-gray-400 animate-pulse">
+                    Loading top actors...
+                </div>
+            </template>
+            <template x-if="!loading && error">
+                <div class="h-64 flex items-center justify-center">
+                    <div class="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700"
+                         x-text="'Error: ' + error"></div>
+                </div>
+            </template>
+            <template x-if="!loading && !error">
+                <canvas id="actorsChart" class="max-h-80"></canvas>
+            </template>
+        </div>
+    </div>
+
+    {# ---- Per-run breakdown ------------------------------------------ #}
+    {% if runs %}
+    <div class="bg-white rounded-lg shadow overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-200">
+            <h2 class="text-sm font-semibold text-gray-900">Included Runs</h2>
+            <p class="text-xs text-gray-500 mt-0.5">Analysis aggregates data from all completed runs below</p>
+        </div>
+        <table class="min-w-full divide-y divide-gray-200 text-sm">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Run ID</th>
+                    <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Started</th>
+                    <th class="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Records</th>
+                    <th class="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+                {% for run in runs %}
+                <tr class="hover:bg-gray-50 transition-colors">
+                    <td class="px-6 py-3 font-mono text-xs text-gray-700">
+                        {{ run.id | truncate(8, true, '') }}
+                    </td>
+                    <td class="px-6 py-3 text-xs text-gray-500">
+                        {{ run.started_at | default('') | truncate(16, true, '') }}
+                    </td>
+                    <td class="px-6 py-3 text-right text-xs font-mono text-gray-700">
+                        {{ run.records_collected | default(0) | int }}
+                    </td>
+                    <td class="px-6 py-3 text-right">
+                        <a href="/analysis/{{ run.id }}"
+                           class="text-xs text-blue-600 hover:text-blue-800 font-medium">
+                            View per-run analysis →
+                        </a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+</div>
+
+<script>
+/**
+ * YF-06: Design-level analysis dashboard Alpine components.
+ *
+ * These components fetch aggregated data from /analysis/design/{design_id}/*
+ * endpoints instead of the per-run /analysis/{run_id}/* endpoints.
+ */
+
+function designAnalysisDashboard(designId) {
+    return {
+        filters: {
+            platform: '',
+            arena: '',
+            date_from: '',
+            date_to: '',
+        },
+
+        init() {
+            // No filter options endpoint for design-level yet (optional Phase 2).
+        },
+
+        applyFilters() {
+            // Broadcast filter change to child components.
+            window.dispatchEvent(new CustomEvent('filter-applied'));
+        },
+
+        resetFilters() {
+            this.filters = {
+                platform: '',
+                arena: '',
+                date_from: '',
+                date_to: '',
+            };
+            this.applyFilters();
+        },
+
+        getFilterParams() {
+            const params = new URLSearchParams();
+            if (this.filters.platform) params.set('platform', this.filters.platform);
+            if (this.filters.arena) params.set('arena', this.filters.arena);
+            if (this.filters.date_from) params.set('date_from', this.filters.date_from);
+            if (this.filters.date_to) params.set('date_to', this.filters.date_to);
+            return params.toString();
+        },
+    };
+}
+
+function designSummaryCards(designId) {
+    return {
+        loading: true,
+        error: null,
+        summary: null,
+
+        async load() {
+            this.loading = true;
+            this.error = null;
+            try {
+                const resp = await fetch(`/analysis/design/${designId}/summary`, {
+                    credentials: 'include',
+                });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                this.summary = await resp.json();
+            } catch (err) {
+                this.error = err.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+    };
+}
+
+function volumeChart(designId) {
+    return {
+        loading: true,
+        error: null,
+        chart: null,
+
+        async load() {
+            this.loading = true;
+            this.error = null;
+
+            try {
+                const dashboard = this.$el.closest('[x-data*="designAnalysisDashboard"]').__x.$data;
+                const params = dashboard.getFilterParams();
+
+                const resp = await fetch(
+                    `/analysis/design/${designId}/volume?${params}`,
+                    { credentials: 'include' }
+                );
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+                const data = await resp.json();
+
+                await this.$nextTick();
+
+                // Destroy existing chart if present.
+                if (this.chart) {
+                    this.chart.destroy();
+                    this.chart = null;
+                }
+
+                // Use the multi-arena volume chart helper from charts.js.
+                if (typeof window.initMultiArenaVolumeChart === 'function') {
+                    this.chart = window.initMultiArenaVolumeChart('volumeChart', data);
+                } else {
+                    console.warn('initMultiArenaVolumeChart not found; chart will not render');
+                }
+            } catch (err) {
+                this.error = err.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+    };
+}
+
+function actorsChart(designId) {
+    return {
+        loading: true,
+        error: null,
+        chart: null,
+
+        async load() {
+            this.loading = true;
+            this.error = null;
+
+            try {
+                const dashboard = this.$el.closest('[x-data*="designAnalysisDashboard"]').__x.$data;
+                const params = dashboard.getFilterParams();
+
+                const resp = await fetch(
+                    `/analysis/design/${designId}/actors?${params}&limit=20`,
+                    { credentials: 'include' }
+                );
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+                const data = await resp.json();
+
+                await this.$nextTick();
+
+                if (this.chart) {
+                    this.chart.destroy();
+                    this.chart = null;
+                }
+
+                if (typeof window.initActorsChart === 'function') {
+                    this.chart = window.initActorsChart('actorsChart', data);
+                } else {
+                    console.warn('initActorsChart not found; chart will not render');
+                }
+            } catch (err) {
+                this.error = err.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+    };
+}
+</script>
+{% endblock %}

@@ -1,0 +1,292 @@
+{% extends "base.html" %}
+{% block title %}Explore{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto space-y-6" x-data="explorerApp()">
+
+    {# Page header #}
+    <div class="flex items-center justify-between">
+        <div>
+            <h1 class="text-xl font-bold text-gray-900">Explore Topics</h1>
+            <p class="text-sm text-gray-500 mt-0.5">
+                Run quick ad-hoc queries to explore associations before creating a formal query design
+            </p>
+        </div>
+    </div>
+
+    {# Search input and arena selector #}
+    <div class="bg-white rounded-lg shadow p-6 space-y-4">
+        <div>
+            <label for="explore-term" class="block text-sm font-medium text-gray-700 mb-2">
+                Topic or search term
+            </label>
+            <input
+                type="text"
+                id="explore-term"
+                x-model="searchTerm"
+                @keydown.enter="runExploration"
+                placeholder="Enter a topic to explore..."
+                class="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-600 focus:border-blue-600 transition-colors"
+            >
+        </div>
+
+        <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">
+                Select arena
+            </label>
+            <div class="grid grid-cols-5 gap-3">
+                {% set arenas = [
+                    ('google_autocomplete', 'Google Autocomplete', 'Get search suggestions and related terms'),
+                    ('bluesky', 'Bluesky', 'Danish social media posts'),
+                    ('reddit', 'Reddit', 'Danish subreddit discussions'),
+                    ('rss_feeds', 'RSS Feeds', 'Danish news media articles'),
+                    ('gab', 'Gab', 'Alternative social media platform'),
+                ] %}
+                {% for arena_id, arena_label, arena_desc in arenas %}
+                <label class="relative flex cursor-pointer">
+                    <input
+                        type="radio"
+                        name="arena"
+                        value="{{ arena_id }}"
+                        x-model="selectedArena"
+                        class="peer sr-only"
+                    >
+                    <div class="w-full px-4 py-3 border-2 border-gray-200 rounded-lg hover:border-gray-300 peer-checked:border-blue-600 peer-checked:bg-blue-50 transition-all">
+                        <div class="font-medium text-sm text-gray-900">{{ arena_label }}</div>
+                        <div class="text-xs text-gray-500 mt-1">{{ arena_desc }}</div>
+                    </div>
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="flex items-center justify-between pt-4 border-t border-gray-200">
+            <p class="text-xs text-gray-500">
+                <span class="font-medium">Note:</span> Exploration runs do not deduct credits and are not saved to your collection history.
+            </p>
+            <button
+                @click="runExploration"
+                :disabled="!searchTerm.trim() || isLoading"
+                class="inline-flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+            >
+                <svg x-show="!isLoading" class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                </svg>
+                <svg x-show="isLoading" class="w-4 h-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span x-text="isLoading ? 'Exploring...' : 'Run Exploration'"></span>
+            </button>
+        </div>
+    </div>
+
+    {# Error display #}
+    <div x-show="error" x-cloak class="bg-red-50 border border-red-200 rounded-lg p-4">
+        <div class="flex items-start gap-3">
+            <svg class="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <div class="flex-1">
+                <h3 class="text-sm font-medium text-red-800">Exploration failed</h3>
+                <p class="text-sm text-red-700 mt-1" x-text="error"></p>
+            </div>
+            <button @click="error = null" class="text-red-600 hover:text-red-800">
+                <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    {# Google Autocomplete suggestions (special card) #}
+    <div x-show="selectedArena === 'google_autocomplete' && suggestions.length > 0" x-cloak class="bg-white rounded-lg shadow">
+        <div class="px-6 py-4 border-b border-gray-200">
+            <h2 class="text-sm font-semibold text-gray-900">Related Terms and Suggestions</h2>
+            <p class="text-xs text-gray-500 mt-0.5">Based on Google Autocomplete</p>
+        </div>
+        <div class="p-6">
+            <div class="grid grid-cols-2 gap-3">
+                <template x-for="suggestion in suggestions" :key="suggestion">
+                    <div class="px-4 py-2 bg-blue-50 border border-blue-200 rounded-md text-sm text-gray-900">
+                        <span x-text="suggestion"></span>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </div>
+
+    {# Results table #}
+    <div x-show="results.length > 0" x-cloak class="bg-white rounded-lg shadow">
+        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+            <div>
+                <h2 class="text-sm font-semibold text-gray-900">Results</h2>
+                <p class="text-xs text-gray-500 mt-0.5">
+                    Found <span x-text="results.length" class="font-medium"></span>
+                    <span x-text="selectedArena === 'google_autocomplete' ? 'suggestions' : 'items'"></span>
+                </p>
+            </div>
+            <button
+                @click="createQueryDesign"
+                class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-sm font-medium text-gray-700 rounded-md hover:bg-gray-50 transition-colors"
+            >
+                <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+                </svg>
+                Create Query Design from This Term
+            </button>
+        </div>
+
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Platform
+                        </th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Title
+                        </th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Author
+                        </th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Published
+                        </th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Engagement
+                        </th>
+                    </tr>
+                </thead>
+                <tbody class="bg-white divide-y divide-gray-200">
+                    <template x-for="record in results.slice(0, 50)" :key="record.external_id">
+                        <tr class="hover:bg-gray-50 cursor-pointer" @click="expandRecord(record)">
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800" x-text="record.platform"></span>
+                            </td>
+                            <td class="px-6 py-4 text-sm text-gray-900">
+                                <div class="max-w-md truncate" x-text="record.title || record.text_content || '(no title)'"></div>
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="record.author_display_name || '—'"></td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="formatDate(record.published_at)"></td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="record.engagement_score || 0"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+
+        <template x-if="results.length > 50">
+            <div class="px-6 py-3 bg-gray-50 border-t border-gray-200 text-xs text-gray-500 text-center">
+                Showing first 50 of <span x-text="results.length"></span> results
+            </div>
+        </template>
+    </div>
+
+    {# Empty state (no results yet) #}
+    <div x-show="!isLoading && !error && results.length === 0 && hasSearched" x-cloak class="bg-white rounded-lg shadow p-12 text-center">
+        <svg class="w-12 h-12 text-gray-300 mx-auto mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+        </svg>
+        <h3 class="text-sm font-medium text-gray-900 mb-1">No results found</h3>
+        <p class="text-sm text-gray-500">Try a different search term or select another arena</p>
+    </div>
+
+</div>
+
+<style>
+    [x-cloak] { display: none !important; }
+</style>
+
+<script>
+function explorerApp() {
+    return {
+        searchTerm: '',
+        selectedArena: 'google_autocomplete',
+        isLoading: false,
+        hasSearched: false,
+        error: null,
+        results: [],
+        suggestions: [],
+
+        async runExploration() {
+            if (!this.searchTerm.trim()) return;
+
+            this.isLoading = true;
+            this.error = null;
+            this.results = [];
+            this.suggestions = [];
+            this.hasSearched = true;
+
+            try {
+                const endpointMap = {
+                    'google_autocomplete': '/arenas/google-autocomplete/collect',
+                    'bluesky': '/arenas/bluesky/collect/terms',
+                    'reddit': '/arenas/reddit/collect/terms',
+                    'rss_feeds': '/arenas/rss-feeds/collect/terms',
+                    'gab': '/arenas/gab/collect/terms',
+                };
+
+                const endpoint = endpointMap[this.selectedArena];
+
+                const body = {
+                    terms: [this.searchTerm.trim()],
+                    max_results: 100,
+                };
+
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(body),
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.detail || `Request failed with status ${response.status}`);
+                }
+
+                const data = await response.json();
+                this.results = data.records || [];
+
+                // For Google Autocomplete, extract suggestions into a separate list
+                if (this.selectedArena === 'google_autocomplete') {
+                    this.suggestions = this.results
+                        .map(r => r.title || r.text_content)
+                        .filter(Boolean);
+                }
+
+            } catch (err) {
+                this.error = err.message || 'An unexpected error occurred';
+                console.error('Exploration error:', err);
+            } finally {
+                this.isLoading = false;
+            }
+        },
+
+        createQueryDesign() {
+            // Navigate to query design creation page
+            // Future enhancement: could pass query params to pre-populate the term
+            window.location.href = '/query-designs/new';
+        },
+
+        expandRecord(record) {
+            // Future enhancement: could open a modal with full record details
+            console.log('Record clicked:', record);
+        },
+
+        formatDate(dateStr) {
+            if (!dateStr) return '—';
+            const date = new Date(dateStr);
+            if (isNaN(date.getTime())) return '—';
+            return date.toLocaleDateString('en-GB', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+            });
+        },
+    };
+}
+</script>
+{% endblock %}

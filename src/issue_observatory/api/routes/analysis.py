@@ -1312,3 +1312,374 @@ async def suggested_terms(
     )
 
     return suggestions
+
+
+# ---------------------------------------------------------------------------
+# YF-06: Cross-Run Analysis — Query Design Level
+# ---------------------------------------------------------------------------
+
+
+async def _get_design_or_raise(
+    design_id: uuid.UUID,
+    db: AsyncSession,
+    current_user: User,
+) -> QueryDesign:
+    """Fetch a QueryDesign and verify the caller's ownership.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Active async database session.
+        current_user: The authenticated user making the request.
+
+    Returns:
+        The ``QueryDesign`` ORM instance.
+
+    Raises:
+        HTTPException 404: If the design does not exist.
+        HTTPException 403: If the current user is not the owner and not an admin.
+    """
+    stmt = select(QueryDesign).where(QueryDesign.id == design_id)
+    result = await db.execute(stmt)
+    design = result.scalar_one_or_none()
+
+    if design is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Query design '{design_id}' not found.",
+        )
+
+    ownership_guard(design.created_by, current_user)
+    return design
+
+
+@router.get("/design/{design_id}", include_in_schema=False)
+async def analysis_dashboard_design(
+    design_id: uuid.UUID,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> Any:
+    """Render the analysis dashboard HTML page for all runs in a query design.
+
+    Aggregates data across all collection runs belonging to the specified query
+    design, enabling researchers to analyze their full corpus for a topic.
+
+    Args:
+        design_id: UUID of the query design to analyse.
+        request: The incoming HTTP request (required by Jinja2 TemplateResponse).
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        A Jinja2 ``TemplateResponse`` rendering ``analysis/design.html``.
+
+    Raises:
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    design = await _get_design_or_raise(design_id, db, current_user)
+
+    templates = request.app.state.templates
+    if templates is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Template engine not initialised.",
+        )
+
+    # Fetch all completed runs for this design to show context.
+    runs_stmt = (
+        select(CollectionRun)
+        .where(
+            CollectionRun.query_design_id == design_id,
+            CollectionRun.status == "completed",
+        )
+        .order_by(CollectionRun.started_at.desc())
+    )
+    runs_result = await db.execute(runs_stmt)
+    runs = runs_result.scalars().all()
+
+    return templates.TemplateResponse(
+        "analysis/design.html",
+        {
+            "request": request,
+            "design_id": str(design_id),
+            "design": {
+                "id": str(design.id),
+                "name": design.name,
+                "description": design.description,
+            },
+            "run_count": len(runs),
+            "runs": [
+                {
+                    "id": str(r.id),
+                    "started_at": r.started_at.isoformat() if r.started_at else None,
+                    "records_collected": r.records_collected,
+                }
+                for r in runs
+            ],
+        },
+    )
+
+
+@router.get("/design/{design_id}/summary")
+async def design_summary(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> dict[str, Any]:
+    """Return aggregated statistics across all runs in a query design.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        Dict with design metadata and aggregated run statistics.
+
+    Raises:
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+
+    # Aggregate across all runs for this design.
+    sql = text(
+        """
+        SELECT
+            COUNT(DISTINCT cr.id)                     AS total_runs,
+            COUNT(DISTINCT cr.id) FILTER (
+                WHERE cr.status = 'completed'
+            )                                         AS completed_runs,
+            COALESCE(SUM(cr.credits_spent), 0)       AS total_credits,
+            COALESCE(SUM(cr.records_collected), 0)   AS total_records,
+            MIN(cr.started_at)                       AS first_run_at,
+            MAX(cr.completed_at)                     AS last_completed_at
+        FROM collection_runs cr
+        WHERE cr.query_design_id = :design_id
+        """
+    )
+    result = await db.execute(sql, {"design_id": str(design_id)})
+    row = result.fetchone()
+
+    if row is None:
+        return {
+            "design_id": str(design_id),
+            "total_runs": 0,
+            "completed_runs": 0,
+            "total_credits": 0,
+            "total_records": 0,
+            "first_run_at": None,
+            "last_completed_at": None,
+        }
+
+    return {
+        "design_id": str(design_id),
+        "total_runs": row.total_runs,
+        "completed_runs": row.completed_runs,
+        "total_credits": int(row.total_credits or 0),
+        "total_records": int(row.total_records or 0),
+        "first_run_at": row.first_run_at.isoformat() if row.first_run_at else None,
+        "last_completed_at": row.last_completed_at.isoformat() if row.last_completed_at else None,
+    }
+
+
+@router.get("/design/{design_id}/volume")
+async def design_volume_over_time(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    platform: Optional[str] = Query(default=None, description="Filter by platform."),
+    arena: Optional[str] = Query(default=None, description="Filter by arena."),
+    date_from: Optional[datetime] = Query(default=None, description="Lower bound on published_at."),
+    date_to: Optional[datetime] = Query(default=None, description="Upper bound on published_at."),
+    granularity: str = Query(default="day", description="Time bucket: hour, day, week, month."),
+) -> list[dict[str, Any]]:
+    """Return content volume over time across all runs in a query design.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        platform: Optional platform filter.
+        arena: Optional arena filter.
+        date_from: Optional lower bound on ``published_at``.
+        date_to: Optional upper bound on ``published_at``.
+        granularity: Time bucket size — one of ``hour``, ``day``, ``week``, ``month``.
+
+    Returns:
+        List of dicts with ``period``, ``count``, and ``arenas`` breakdown.
+
+    Raises:
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+        HTTPException 422: If ``granularity`` is invalid.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    try:
+        return await get_volume_over_time(
+            db,
+            query_design_id=design_id,
+            run_id=None,
+            arena=arena,
+            platform=platform,
+            date_from=date_from,
+            date_to=date_to,
+            granularity=granularity,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get("/design/{design_id}/actors")
+async def design_top_actors(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    platform: Optional[str] = Query(default=None, description="Filter by platform."),
+    date_from: Optional[datetime] = Query(default=None),
+    date_to: Optional[datetime] = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=200, description="Maximum actors to return."),
+) -> list[dict[str, Any]]:
+    """Return top authors by post volume across all runs in a query design.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        platform: Optional platform filter.
+        date_from: Optional lower bound on ``published_at``.
+        date_to: Optional upper bound on ``published_at``.
+        limit: Maximum number of actors to return (1–200, default 20).
+
+    Returns:
+        List of dicts ordered by post count descending.
+
+    Raises:
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    return await get_top_actors(
+        db,
+        query_design_id=design_id,
+        run_id=None,
+        platform=platform,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+    )
+
+
+@router.get("/design/{design_id}/network/actors")
+async def design_network_actors(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    platform: Optional[str] = Query(default=None, description="Filter by platform."),
+    arena: Optional[str] = Query(default=None, description="Filter to a specific arena."),
+    date_from: Optional[datetime] = Query(default=None),
+    date_to: Optional[datetime] = Query(default=None),
+    min_co_occurrences: int = Query(default=2, ge=1, description="Minimum edge weight."),
+) -> dict[str, Any]:
+    """Return the actor co-occurrence graph across all runs in a query design.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        platform: Optional platform filter applied to both sides of the join.
+        arena: Optional arena filter applied to both sides of the join.
+        date_from: Optional lower bound on ``published_at``.
+        date_to: Optional upper bound on ``published_at``.
+        min_co_occurrences: Minimum edge weight to include (default 2).
+
+    Returns:
+        Graph dict ``{nodes: [...], edges: [...]}``.
+
+    Raises:
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    return await get_actor_co_occurrence(
+        db,
+        query_design_id=design_id,
+        run_id=None,
+        platform=platform,
+        arena=arena,
+        date_from=date_from,
+        date_to=date_to,
+        min_co_occurrences=min_co_occurrences,
+    )
+
+
+@router.get("/design/{design_id}/network/terms")
+async def design_network_terms(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    arena: Optional[str] = Query(default=None, description="Filter to a specific arena."),
+    min_co_occurrences: int = Query(default=2, ge=1, description="Minimum shared records."),
+) -> dict[str, Any]:
+    """Return the term co-occurrence graph across all runs in a query design.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        arena: Optional arena filter.
+        min_co_occurrences: Minimum number of shared records (default 2).
+
+    Returns:
+        Graph dict ``{nodes: [...], edges: [...]}``.
+
+    Raises:
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    return await get_term_co_occurrence(
+        db,
+        query_design_id=design_id,
+        run_id=None,
+        arena=arena,
+        min_co_occurrences=min_co_occurrences,
+    )
+
+
+@router.get("/design/{design_id}/network/bipartite")
+async def design_network_bipartite(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    arena: Optional[str] = Query(default=None, description="Filter to a specific arena."),
+    limit: int = Query(default=500, ge=1, le=2000, description="Max edges to return."),
+) -> dict[str, Any]:
+    """Return the bipartite actor-term graph across all runs in a query design.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        arena: Optional arena filter.
+        limit: Maximum number of edges to return (default 500, max 2000).
+
+    Returns:
+        Graph dict ``{nodes: [...], edges: [...]}`` with typed nodes.
+
+    Raises:
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    return await build_bipartite_network(
+        db,
+        query_design_id=design_id,
+        run_id=None,
+        arena=arena,
+        limit=limit,
+    )

@@ -274,6 +274,22 @@ async def test_admin(db_session: AsyncSession) -> User:
 
 
 @pytest_asyncio.fixture
+async def test_user_2(db_session: AsyncSession) -> User:
+    """A second active researcher user for multi-user tests.
+
+    Returns:
+        :class:`User` with ``role='researcher'`` and ``is_active=True``.
+    """
+    return await _create_user(
+        db_session,
+        email=f"researcher2-{uuid.uuid4().hex[:8]}@example.com",
+        role="researcher",
+        is_active=True,
+        display_name="Test Researcher 2",
+    )
+
+
+@pytest_asyncio.fixture
 async def test_inactive_user(db_session: AsyncSession) -> User:
     """An inactive (pending admin approval) user for use in tests.
 

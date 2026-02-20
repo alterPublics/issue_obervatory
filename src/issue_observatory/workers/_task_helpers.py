@@ -358,3 +358,65 @@ async def fetch_public_figure_ids_for_design(query_design_id: Any) -> set[str]:
         result = await db.execute(stmt)
         rows = result.scalars().all()
         return {str(uid) for uid in rows}
+
+
+# ---------------------------------------------------------------------------
+# YF-01: Per-arena search term scoping
+# ---------------------------------------------------------------------------
+
+
+async def fetch_search_terms_for_arena(
+    query_design_id: Any,
+    arena_platform_name: str,
+) -> list[str]:
+    """Return the list of active search term strings scoped to a specific arena.
+
+    Queries the ``search_terms`` table for all active terms associated with
+    *query_design_id*, filtering to include only terms where:
+
+    - ``is_active`` is ``True``
+    - ``target_arenas`` is ``NULL`` (applies to all arenas), OR
+    - ``target_arenas`` contains *arena_platform_name* in its JSONB array
+
+    This implements YF-01 per-arena search term scoping, allowing researchers
+    to target specific terms to specific platforms (e.g., hashtags to Twitter
+    only, subreddit names to Reddit only).
+
+    Args:
+        query_design_id: UUID of the ``QueryDesign`` whose search terms to load.
+        arena_platform_name: Platform identifier string (e.g., ``"reddit"``,
+            ``"bluesky"``, ``"google"``).  Must match the ``platform_name``
+            attribute of the registered arena collector.
+
+    Returns:
+        List of search term strings.  Empty list when no active terms are
+        scoped to the given arena, or when the design has no active terms at all.
+    """
+    from issue_observatory.core.models.query_design import SearchTerm  # noqa: PLC0415
+
+    async with AsyncSessionLocal() as db:
+        # YF-01 filtering logic:
+        # Include terms where target_arenas is NULL (all arenas)
+        # OR where the JSONB array contains the arena platform_name.
+        # PostgreSQL's JSONB ? operator checks for string existence in array/object.
+        from sqlalchemy import func, or_  # noqa: PLC0415
+
+        stmt = (
+            select(SearchTerm.term)
+            .where(SearchTerm.query_design_id == query_design_id)
+            .where(SearchTerm.is_active.is_(True))
+            .where(
+                or_(
+                    # SQL NULL (from server_default or direct SQL insert):
+                    SearchTerm.target_arenas.is_(None),
+                    # JSON null (from asyncpg mapping Python None to JSONB null):
+                    func.jsonb_typeof(SearchTerm.target_arenas) == "null",
+                    # JSONB ? operator: does the array contain this string?
+                    SearchTerm.target_arenas.has_key(arena_platform_name),  # type: ignore[attr-defined]
+                )
+            )
+            .order_by(SearchTerm.added_at)
+        )
+        result = await db.execute(stmt)
+        rows = result.scalars().all()
+        return [str(term) for term in rows]

@@ -42,6 +42,7 @@ _SAMPLE_ARENAS: list[dict[str, Any]] = [
         "supported_tiers": ["free"],
         "description": "Decentralised social network",
         "collector_class": "issue_observatory.arenas.bluesky.collector.BlueskyCollector",
+        "custom_config_fields": None,
     },
     {
         "arena_name": "social_media",
@@ -49,6 +50,16 @@ _SAMPLE_ARENAS: list[dict[str, Any]] = [
         "supported_tiers": ["free", "medium"],
         "description": "Reddit posts from Danish subreddits",
         "collector_class": "issue_observatory.arenas.reddit.collector.RedditCollector",
+        "custom_config_fields": [
+            {
+                "field": "custom_subreddits",
+                "label": "Custom Subreddits",
+                "type": "list",
+                "placeholder": "SubredditName",
+                "help": "Additional subreddits beyond default Danish ones",
+                "example": "dkfinance",
+            }
+        ],
     },
     {
         "arena_name": "news_media",
@@ -56,6 +67,16 @@ _SAMPLE_ARENAS: list[dict[str, Any]] = [
         "supported_tiers": ["free"],
         "description": "Danish RSS feeds",
         "collector_class": "issue_observatory.arenas.rss_feeds.collector.RssFeedsCollector",
+        "custom_config_fields": [
+            {
+                "field": "custom_feeds",
+                "label": "Custom RSS Feeds",
+                "type": "list",
+                "placeholder": "https://example.com/feed.xml",
+                "help": "Additional RSS/Atom feeds",
+                "example": "https://sermitsiaq.ag/rss",
+            }
+        ],
     },
 ]
 
@@ -210,3 +231,32 @@ class TestListAvailableArenas:
             await list_available_arenas(db=db)
 
         mock_autodiscover.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_custom_config_fields_present_when_available(self) -> None:
+        """custom_config_fields are included when the arena has them (YF-02)."""
+        db = _make_db(set())
+
+        with patch("issue_observatory.api.routes.arenas.autodiscover"), patch(
+            "issue_observatory.api.routes.arenas.list_arenas",
+            return_value=[_SAMPLE_ARENAS[1]],  # reddit with custom_config_fields
+        ):
+            result = await list_available_arenas(db=db)
+
+        assert result[0].custom_config_fields is not None
+        assert len(result[0].custom_config_fields) == 1
+        assert result[0].custom_config_fields[0].field == "custom_subreddits"
+        assert result[0].custom_config_fields[0].type == "list"
+
+    @pytest.mark.asyncio
+    async def test_custom_config_fields_none_when_not_required(self) -> None:
+        """custom_config_fields is None for arenas that don't require configuration (YF-02)."""
+        db = _make_db(set())
+
+        with patch("issue_observatory.api.routes.arenas.autodiscover"), patch(
+            "issue_observatory.api.routes.arenas.list_arenas",
+            return_value=[_SAMPLE_ARENAS[0]],  # bluesky without custom_config_fields
+        ):
+            result = await list_available_arenas(db=db)
+
+        assert result[0].custom_config_fields is None

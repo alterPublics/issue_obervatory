@@ -109,6 +109,8 @@ class SearchTermCreate(BaseModel):
         group_label: Human-readable display name for the group (max 200 chars).
             Should be identical for all terms with the same ``group_id``.
             Ignored when ``group_id`` is ``None``.
+        target_arenas: Optional list of arena platform_names (e.g. ``["reddit", "youtube"]``)
+            to which this term should be dispatched. ``None`` means all enabled arenas.
     """
 
     term: str = Field(..., min_length=1, description="The search term string.")
@@ -124,6 +126,13 @@ class SearchTermCreate(BaseModel):
         default=None,
         max_length=200,
         description="Display name for the group (e.g. 'Primary terms').",
+    )
+    target_arenas: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Optional list of arena platform_names to which this term applies. "
+            "NULL or empty list means all enabled arenas."
+        ),
     )
 
 

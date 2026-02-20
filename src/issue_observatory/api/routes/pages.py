@@ -16,6 +16,8 @@ dependency.
 Routes:
     GET /                               → redirect to /dashboard
     GET /dashboard                      → dashboard/index.html
+    GET /explore                        → explore/index.html
+    GET /arenas                         → arenas/index.html
     GET /query-designs                  → query_designs/list.html
     GET /query-designs/new              → query_designs/editor.html
     GET /query-designs/{design_id}      → query_designs/detail.html
@@ -118,6 +120,66 @@ async def dashboard(
     tpl = _templates(request)
     return tpl.TemplateResponse(
         "dashboard/index.html",
+        {"request": request, "user": current_user},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Explore (ad-hoc topic exploration)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/explore", response_class=HTMLResponse)
+async def explore_page(
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> HTMLResponse:
+    """Render the ad-hoc exploration page.
+
+    Allows researchers to run quick queries against low-cost arenas (Google
+    Autocomplete, Bluesky, Reddit, RSS Feeds, Gab) to discover associations
+    before committing to a formal query design.
+
+    Args:
+        request: The current HTTP request.
+        current_user: The authenticated, active user.
+
+    Returns:
+        Rendered ``explore/index.html`` template.
+    """
+    tpl = _templates(request)
+    return tpl.TemplateResponse(
+        "explore/index.html",
+        {"request": request, "user": current_user},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Arenas
+# ---------------------------------------------------------------------------
+
+
+@router.get("/arenas", response_class=HTMLResponse)
+async def arenas_page(
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> HTMLResponse:
+    """Render the arenas overview page.
+
+    Displays all registered arena collectors with their metadata, organized by
+    tier. Provides a high-level view of available data collection platforms
+    before researchers create a query design.
+
+    Args:
+        request: The current HTTP request.
+        current_user: The authenticated, active user.
+
+    Returns:
+        Rendered ``arenas/index.html`` template.
+    """
+    tpl = _templates(request)
+    return tpl.TemplateResponse(
+        "arenas/index.html",
         {"request": request, "user": current_user},
     )
 
@@ -364,6 +426,66 @@ async def content_browser(
     return tpl.TemplateResponse(
         "content/browser.html",
         {"request": request, "user": current_user},
+    )
+
+
+@router.get("/content/discovered-links", response_class=HTMLResponse)
+async def discovered_links_page(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    query_design_id: Optional[uuid.UUID] = None,
+) -> HTMLResponse:
+    """Render the discovered sources page (GR-22, YF-13).
+
+    Displays cross-platform links found in collected content. When
+    ``query_design_id`` is provided, scopes to that single design. When
+    omitted, shows links across all of the user's query designs.
+
+    Args:
+        request: The current HTTP request.
+        db: Injected async database session.
+        current_user: The authenticated, active user.
+        query_design_id: Optional UUID to scope to a single query design.
+
+    Returns:
+        Rendered ``content/discovered_links.html`` template with initial
+        context: empty links list (populated via HTMX on page load), user's
+        query designs for the dropdown, and active filter state.
+    """
+    tpl = _templates(request)
+
+    # Fetch user's query designs for the dropdown selector.
+    stmt = (
+        select(QueryDesign)
+        .where(QueryDesign.created_by == current_user.id)
+        .order_by(QueryDesign.created_at.desc())
+    )
+    result = await db.execute(stmt)
+    query_designs = result.scalars().all()
+
+    query_designs_list = [
+        {"id": str(qd.id), "name": qd.name}
+        for qd in query_designs
+    ]
+
+    return tpl.TemplateResponse(
+        "content/discovered_links.html",
+        {
+            "request": request,
+            "user": current_user,
+            "links": [],  # Populated by HTMX
+            "total": 0,
+            "has_more": False,
+            "next_offset": 0,
+            "filter": {
+                "platform": "",
+                "min_count": 2,
+                "query_design_id": str(query_design_id) if query_design_id else "",
+            },
+            "query_designs": query_designs_list,
+            "active_query_design_id": str(query_design_id) if query_design_id else "",
+        },
     )
 
 

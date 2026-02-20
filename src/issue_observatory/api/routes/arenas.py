@@ -31,6 +31,26 @@ router = APIRouter(prefix="/api/arenas", tags=["arenas"])
 # ---------------------------------------------------------------------------
 
 
+class CustomConfigField(BaseModel):
+    """Schema for a single custom configuration field (YF-02).
+
+    Attributes:
+        field: Configuration key name (e.g. ``"custom_channels"``).
+        label: Human-readable label for the UI.
+        type: Input type (``"list"``, ``"boolean"``, ``"text"``).
+        placeholder: Placeholder text for the input.
+        help: Help text explaining what the field is for.
+        example: Example value to show in the UI.
+    """
+
+    field: str
+    label: str
+    type: str
+    placeholder: str
+    help: str
+    example: str
+
+
 class ArenaInfo(BaseModel):
     """Metadata for a single registered arena collector.
 
@@ -42,6 +62,9 @@ class ArenaInfo(BaseModel):
         description: One-line human-readable description of the arena.
         has_credentials: ``True`` when at least one active credential exists
             in the ``api_credentials`` table for this platform.
+        custom_config_fields: Optional list of custom configuration fields
+            for researcher-curated source lists (YF-02). Present only when
+            the arena requires custom configuration.
     """
 
     arena_name: str
@@ -49,6 +72,7 @@ class ArenaInfo(BaseModel):
     supported_tiers: list[str]
     description: str
     has_credentials: bool
+    custom_config_fields: list[CustomConfigField] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +137,11 @@ async def list_available_arenas(
             supported_tiers=entry["supported_tiers"],
             description=entry["description"],
             has_credentials=entry["platform_name"] in platforms_with_credentials,
+            custom_config_fields=(
+                [CustomConfigField(**field) for field in entry["custom_config_fields"]]
+                if entry.get("custom_config_fields")
+                else None
+            ),
         )
         for entry in arenas
     ]

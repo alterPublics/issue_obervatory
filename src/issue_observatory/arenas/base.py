@@ -279,8 +279,17 @@ class ArenaCollector(ABC):
         """Estimate the number of credits a collection run will consume.
 
         The default implementation returns ``0`` (suitable for free-tier
-        arenas). Paid arenas must override this method to return a realistic
-        estimate so that the pre-flight credit check works correctly.
+        arenas with no API cost). Paid arenas should override this method to
+        return a realistic heuristic estimate based on:
+
+        - Number of search terms
+        - Date range duration (days)
+        - Expected result volume per term/day
+        - Tier-specific rate limits and result caps
+
+        Estimates are heuristic-based and may vary from actual costs by ±50%.
+        They provide order-of-magnitude accuracy for budget planning, not
+        exact billing.
 
         Args:
             terms: Search terms to be queried.

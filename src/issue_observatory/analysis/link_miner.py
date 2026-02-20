@@ -26,6 +26,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from issue_observatory.core.models.collection import CollectionRun
 from issue_observatory.core.models.content import UniversalContentRecord
 
 logger = structlog.get_logger(__name__)
@@ -267,21 +268,27 @@ class LinkMiner:
     async def mine(
         self,
         db: AsyncSession,
-        query_design_id: uuid.UUID,
+        query_design_id: Optional[uuid.UUID] = None,
+        user_id: Optional[uuid.UUID] = None,
         platform_filter: Optional[str] = None,
         min_source_count: int = 2,
         limit: int = 50,
     ) -> list[DiscoveredLink]:
-        """Mine cross-platform links from a query design's content corpus.
+        """Mine cross-platform links from a query design's or user's content corpus.
 
-        Fetches all content records for the given ``query_design_id``, extracts
-        URLs from ``text_content``, classifies them by target platform, and
-        aggregates by ``(platform, target_identifier)``.  Records with no
-        ``text_content`` are skipped.
+        Fetches all content records matching the scope, extracts URLs from
+        ``text_content``, classifies them by target platform, and aggregates
+        by ``(platform, target_identifier)``.  Records with no ``text_content``
+        are skipped.
+
+        One of ``query_design_id`` or ``user_id`` must be provided. When both
+        are provided, ``query_design_id`` takes precedence (single-design scope).
 
         Args:
             db: Async database session.
-            query_design_id: UUID of the query design whose content to mine.
+            query_design_id: Optional UUID of a query design to scope to.
+            user_id: Optional UUID of a user — mines all content from all of
+                that user's collection runs.
             platform_filter: Optional platform slug to restrict results to
                 (e.g. ``"telegram"``).  When ``None``, all platforms are
                 returned.
@@ -294,8 +301,20 @@ class LinkMiner:
         Returns:
             List of ``DiscoveredLink`` objects, sorted by ``source_count``
             descending.
+
+        Raises:
+            ValueError: If neither ``query_design_id`` nor ``user_id`` is
+                provided.
         """
-        records = await self._fetch_records(db, query_design_id)
+        if query_design_id is None and user_id is None:
+            msg = "Either query_design_id or user_id must be provided."
+            raise ValueError(msg)
+
+        records = await self._fetch_records(
+            db,
+            query_design_id=query_design_id,
+            user_id=user_id,
+        )
         aggregated = self._aggregate(records)
         return self._filter_and_rank(
             aggregated=aggregated,
@@ -311,29 +330,60 @@ class LinkMiner:
     async def _fetch_records(
         self,
         db: AsyncSession,
-        query_design_id: uuid.UUID,
+        query_design_id: Optional[uuid.UUID] = None,
+        user_id: Optional[uuid.UUID] = None,
     ) -> list[UniversalContentRecord]:
-        """Fetch all content records for the given query design.
+        """Fetch all content records matching the scope.
 
         Only loads the columns needed for URL mining to minimise memory usage.
 
+        When ``query_design_id`` is provided, scopes to that single design.
+        When only ``user_id`` is provided, scopes to all content from all of
+        that user's collection runs.
+
         Args:
             db: Async database session.
-            query_design_id: UUID of the query design to scope the query to.
+            query_design_id: Optional UUID of a query design to scope to.
+            user_id: Optional UUID of a user to scope to.
 
         Returns:
             List of ``UniversalContentRecord`` ORM instances.
         """
         stmt = select(UniversalContentRecord).where(
-            UniversalContentRecord.query_design_id == query_design_id,
             UniversalContentRecord.text_content.isnot(None),
         )
+
+        if query_design_id is not None:
+            # Single-design scope (takes precedence).
+            stmt = stmt.where(
+                UniversalContentRecord.query_design_id == query_design_id,
+            )
+            logger.debug(
+                "link_miner.records_fetched",
+                query_design_id=str(query_design_id),
+                scope="single_design",
+            )
+        elif user_id is not None:
+            # User-scope: join through collection_runs.initiated_by.
+            user_run_ids_subq = (
+                select(CollectionRun.id)
+                .where(CollectionRun.initiated_by == user_id)
+                .scalar_subquery()
+            )
+            stmt = stmt.where(
+                UniversalContentRecord.collection_run_id.in_(user_run_ids_subq),
+            )
+            logger.debug(
+                "link_miner.records_fetched",
+                user_id=str(user_id),
+                scope="user_all_designs",
+            )
+
         result = await db.execute(stmt)
         records = list(result.scalars().all())
 
         logger.debug(
-            "link_miner.records_fetched",
-            query_design_id=str(query_design_id),
+            "link_miner.records_count",
             count=len(records),
         )
         return records

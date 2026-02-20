@@ -1550,3 +1550,62 @@ query design owner.
 - [ ] URL deduplication: duplicate and near-duplicate URLs (UTM variants) deduplicated
 - [ ] `platform_id` is deterministic for same URL
 - [ ] `content_hash` differs for pages with different text content
+
+---
+
+## YF-01 — Per-Arena Search Term Scoping (2026-02-19) — Complete, Ready for QA
+
+| File | Status |
+|------|--------|
+| `src/issue_observatory/workers/_task_helpers.py` | Done — added `fetch_search_terms_for_arena()` async helper (lines 368-418) |
+| `src/issue_observatory/workers/tasks.py` | Done — modified `trigger_daily_collection()` to load and filter terms per arena (lines 216-286) |
+| `docs/status/YF-01_implementation_summary.md` | Updated — added Core Application Layer section |
+
+### Implementation notes
+
+- **Database layer**: Already complete (migration 010, `target_arenas` JSONB field on `search_terms`, Pydantic schemas updated)
+- **Filtering logic**: Centralized in `fetch_search_terms_for_arena()` helper function
+- **SQL query**: Uses PostgreSQL JSONB `?` operator (`has_key()` in SQLAlchemy) to check if platform_name exists in array
+- **Backward compatibility**: All existing terms have `target_arenas = NULL`, which means "all arenas" (pre-YF-01 behavior)
+- **Error handling**: Term loading errors are non-fatal — arena is skipped with error log, remaining arenas continue
+- **Empty term lists**: When no terms are scoped to an arena, it is skipped with info-level log (not an error)
+- **Task parameters**: Now passing `query_design_id` and `terms` to all arena tasks (was missing before)
+
+### Filtering logic
+
+```python
+# SQL (via SQLAlchemy):
+SELECT term FROM search_terms
+WHERE query_design_id = :design_id
+  AND is_active = TRUE
+  AND (
+    target_arenas IS NULL           -- applies to all arenas
+    OR target_arenas ? :platform_name  -- JSONB ? operator
+  )
+ORDER BY added_at
+```
+
+### Functional scenarios
+
+| Scenario | `target_arenas` value | Result |
+|----------|----------------------|--------|
+| All arenas (backward-compatible) | `NULL` | Term dispatched to all enabled arenas |
+| Reddit only | `["reddit"]` | Term dispatched to Reddit only |
+| Reddit and Bluesky | `["reddit", "bluesky"]` | Term dispatched to both |
+| Empty list | `[]` | Term excluded from all arenas |
+| No matching arenas | `["twitter"]` (no match) | Arena skipped with info log |
+
+### QA checklist
+
+- [ ] `fetch_search_terms_for_arena()` returns terms with `target_arenas = NULL`
+- [ ] `fetch_search_terms_for_arena()` returns terms with matching `platform_name` in array
+- [ ] `fetch_search_terms_for_arena()` excludes terms with non-matching `platform_name`
+- [ ] `fetch_search_terms_for_arena()` excludes inactive terms (`is_active = False`)
+- [ ] `fetch_search_terms_for_arena()` returns empty list when no terms match
+- [ ] `trigger_daily_collection()` skips arena when term list is empty (info log)
+- [ ] `trigger_daily_collection()` handles term loading errors gracefully (error log, arena skipped)
+- [ ] `trigger_daily_collection()` passes `query_design_id` and `terms` to arena tasks
+- [ ] `trigger_daily_collection()` logs term count per dispatched arena
+- [ ] Integration test: mixed scoped/unscoped terms dispatch correctly to each arena
+- [ ] Edge case: `target_arenas = []` excludes term from all arenas
+- [ ] Edge case: all terms scoped away from arena results in arena skip (not error)

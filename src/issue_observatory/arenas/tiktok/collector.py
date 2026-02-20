@@ -394,6 +394,65 @@ class TikTokCollector(ArenaCollector):
             normalized["views_count"] = raw_item.get("view_count")
         return normalized
 
+    async def estimate_credits(
+        self,
+        terms: list[str] | None = None,
+        actor_ids: list[str] | None = None,
+        tier: Tier = Tier.FREE,
+        date_from: datetime | str | None = None,
+        date_to: datetime | str | None = None,
+        max_results: int | None = None,
+    ) -> int:
+        """Estimate the credit cost for a TikTok collection run.
+
+        TikTok is free-tier only in Phase 1 (Research API).
+        1 credit = 1 API request (each request returns up to 100 videos).
+        Daily quota: 1,000 requests = 100,000 videos theoretical max.
+
+        Estimates assume 50-100 results per term per day.
+
+        Args:
+            terms: Search keywords or hashtags.
+            actor_ids: Not yet implemented for TikTok.
+            tier: Must be Tier.FREE (others return 0).
+            date_from: Start of collection date range.
+            date_to: End of collection date range.
+            max_results: Upper bound on results.
+
+        Returns:
+            Estimated credit cost as a non-negative integer.
+        """
+        if tier != Tier.FREE:
+            return 0
+
+        all_terms = list(terms or [])
+        if not all_terms:
+            return 0
+
+        # Estimate date range in days
+        date_range_days = 7
+        if date_from and date_to:
+            if isinstance(date_from, str):
+                date_from = datetime.fromisoformat(date_from.replace("Z", "+00:00"))
+            if isinstance(date_to, str):
+                date_to = datetime.fromisoformat(date_to.replace("Z", "+00:00"))
+            delta = date_to - date_from
+            date_range_days = max(1, delta.days)
+
+        # Heuristic: 75 videos per term per day
+        videos_per_term_per_day = 75
+        estimated_videos = len(all_terms) * date_range_days * videos_per_term_per_day
+
+        # Apply max_results cap
+        tier_config = self.get_tier_config(tier)
+        effective_max = max_results if max_results is not None else tier_config.max_results_per_run
+        estimated_videos = min(estimated_videos, effective_max)
+
+        # TikTok returns 100 videos per request, so credits = ceil(videos / 100)
+        import math
+
+        return math.ceil(estimated_videos / 100)
+
     async def health_check(self) -> dict[str, Any]:
         """Verify that the TikTok Research API is reachable and the token works.
 

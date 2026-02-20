@@ -844,9 +844,12 @@ async def get_search_terms_for_run(
 async def get_discovered_links(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    query_design_id: uuid.UUID = Query(
-        ...,
-        description="UUID of the query design whose content corpus to mine.",
+    query_design_id: Optional[uuid.UUID] = Query(
+        default=None,
+        description=(
+            "Optional UUID of a query design to scope to. "
+            "If omitted, mines all content from all the current user's query designs."
+        ),
     ),
     platform: Optional[str] = Query(
         default=None,
@@ -867,15 +870,19 @@ async def get_discovered_links(
         description="Maximum number of discovered links to return (default 50, max 500).",
     ),
 ) -> dict[str, Any]:
-    """Mine cross-platform links from a query design's content corpus.
+    """Mine cross-platform links from a query design's or user's content corpus.
 
     Extracts all ``https?://`` URLs from ``text_content`` of every content
-    record in the given query design, classifies them by target platform,
-    aggregates by target identifier, and returns the results grouped by
-    platform and sorted by ``source_count`` descending.
+    record matching the scope, classifies them by target platform, aggregates
+    by target identifier, and returns the results grouped by platform and
+    sorted by ``source_count`` descending.
 
     A link that appears in fewer than ``min_source_count`` distinct records
     is excluded (default: 2) to surface high-signal discovery targets.
+
+    When ``query_design_id`` is provided, scopes to that single query design.
+    When omitted, mines all content from all of the current user's collection
+    runs across all their query designs (YF-13: cross-design view).
 
     The response groups results by platform for easy scanning in the Discovered
     Sources UI panel.
@@ -883,14 +890,17 @@ async def get_discovered_links(
     Args:
         db: Injected async database session.
         current_user: The authenticated, active user making the request.
-        query_design_id: UUID of the query design to mine.
+        query_design_id: Optional UUID of a query design to scope to. If
+            ``None``, mines across all user content.
         platform: Optional platform slug to restrict results to.
         min_source_count: Minimum source-record count threshold (default: 2).
         limit: Maximum total links returned across all platforms (default 50).
 
     Returns:
         Dict with keys:
-        - ``query_design_id`` (str): echoed back.
+        - ``query_design_id`` (str | None): echoed back, or ``None`` if
+          user-scope mode.
+        - ``scope`` (str): either ``"single_design"`` or ``"user_all_designs"``.
         - ``total_links`` (int): total discovered links before grouping.
         - ``by_platform`` (dict[str, list]): links grouped by platform slug,
           each entry containing the ``DiscoveredLink`` fields.
@@ -905,6 +915,7 @@ async def get_discovered_links(
     links = await miner.mine(
         db=db,
         query_design_id=query_design_id,
+        user_id=current_user.id if query_design_id is None else None,
         platform_filter=platform,
         min_source_count=min_source_count,
         limit=limit,
@@ -925,16 +936,20 @@ async def get_discovered_links(
             }
         )
 
+    scope = "single_design" if query_design_id else "user_all_designs"
+
     logger.info(
         "discovered_links.mined",
-        query_design_id=str(query_design_id),
+        query_design_id=str(query_design_id) if query_design_id else None,
+        scope=scope,
         total_links=len(links),
         platforms=list(by_platform.keys()),
         user_id=str(current_user.id),
     )
 
     return {
-        "query_design_id": str(query_design_id),
+        "query_design_id": str(query_design_id) if query_design_id else None,
+        "scope": scope,
         "total_links": len(links),
         "by_platform": by_platform,
     }

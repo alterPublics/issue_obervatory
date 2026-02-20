@@ -83,12 +83,14 @@ class CollectResponse(BaseModel):
         tier: Tier used for collection.
         arena: Arena name (always ``"google_search"``).
         records: Normalized content record dicts.
+        message: Optional informational message (e.g., tier guidance).
     """
 
     count: int
     tier: str
     arena: str
     records: list[dict[str, Any]]
+    message: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +141,7 @@ async def collect(
 
     if tier_enum == Tier.FREE:
         logger.info(
-            "google_search router: FREE tier requested by user=%s — returning empty.",
+            "google_search router: FREE tier requested by user=%s — returning empty with guidance.",
             current_user.id,
         )
         return CollectResponse(
@@ -147,6 +149,11 @@ async def collect(
             tier=body.tier,
             arena="google_search",
             records=[],
+            message=(
+                "Google Search has no free API. Try Google Autocomplete (free) "
+                "for discovery, or upgrade to medium tier (Serper.dev) for "
+                "search results."
+            ),
         )
 
     credential_pool = CredentialPool()

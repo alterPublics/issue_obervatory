@@ -99,7 +99,8 @@ ARENA_DESCRIPTIONS: dict[str, str] = {
         "Google Autocomplete suggestions revealing real-time public search intent"
     ),
     "google_search": (
-        "Google Search organic results via Serper.dev (medium) or SerpAPI (premium)"
+        "Google Search organic results via Serper.dev (medium) or SerpAPI (premium). "
+        "No free tier — use Google Autocomplete (free) for search trends."
     ),
     "instagram": (
         "Instagram public posts via third-party scraping API (paid tiers only)"
@@ -170,6 +171,70 @@ ARENA_DESCRIPTIONS: dict[str, str] = {
     "web": (
         "Open web archive arena grouping Common Crawl and Wayback Machine collectors"
     ),
+}
+
+# ---------------------------------------------------------------------------
+# Arena custom configuration metadata (YF-02)
+#
+# Defines which arenas require researcher-curated source lists and what input
+# fields should be shown in the UI. Each arena can have multiple configuration
+# fields. Field types include:
+# - "list": multi-value input (tags, one-per-line textarea)
+# - "boolean": toggle switch
+# - "text": single-value text input
+# ---------------------------------------------------------------------------
+
+ARENA_CUSTOM_CONFIG: dict[str, list[dict[str, str]]] = {
+    "telegram": [
+        {
+            "field": "custom_channels",
+            "label": "Custom Channels",
+            "type": "list",
+            "placeholder": "channel_username (without @)",
+            "help": "Additional Telegram channels beyond the default Danish channels. Enter usernames without @ prefix, one per line.",
+            "example": "dr_nyheder",
+        }
+    ],
+    "reddit": [
+        {
+            "field": "custom_subreddits",
+            "label": "Custom Subreddits",
+            "type": "list",
+            "placeholder": "SubredditName",
+            "help": "Additional subreddits beyond r/Denmark, r/danish, r/copenhagen, r/aarhus, r/dkpolitik. Enter subreddit names without r/ prefix.",
+            "example": "dkfinance",
+        }
+    ],
+    "rss_feeds": [
+        {
+            "field": "custom_feeds",
+            "label": "Custom RSS Feeds",
+            "type": "list",
+            "placeholder": "https://example.com/feed.xml",
+            "help": "Additional RSS/Atom feeds beyond the 30+ Danish defaults (DR, TV2, Politiken, etc.). Enter full feed URLs including https://",
+            "example": "https://sermitsiaq.ag/rss",
+        }
+    ],
+    "discord": [
+        {
+            "field": "custom_channel_ids",
+            "label": "Channel IDs",
+            "type": "list",
+            "placeholder": "123456789012345678",
+            "help": "Discord channel snowflake IDs to monitor. Requires bot invitation to the server. Enable Developer Mode in Discord to copy channel IDs.",
+            "example": "1234567890123456789",
+        }
+    ],
+    "wikipedia": [
+        {
+            "field": "seed_articles",
+            "label": "Seed Articles",
+            "type": "list",
+            "placeholder": "Article Title",
+            "help": "Wikipedia article titles to monitor for editorial attention signals (revisions, talk page activity, pageviews). Use exact titles including capitalization.",
+            "example": "Folkeskole",
+        }
+    ],
 }
 
 
@@ -299,6 +364,9 @@ def list_arenas() -> list[dict]:  # type: ignore[type-arg]
           :data:`ARENA_DESCRIPTIONS`, looked up first by ``platform_name``
           then by ``arena_name`` (empty string if neither is defined).
         - ``collector_class`` (str): Fully qualified class name (for debugging).
+        - ``custom_config_fields`` (list[dict] | None): Optional configuration
+          fields for researcher-curated source lists (YF-02). Present only
+          when the arena requires custom configuration.
     """
     return [
         {
@@ -312,6 +380,9 @@ def list_arenas() -> list[dict]:  # type: ignore[type-arg]
                 or ARENA_DESCRIPTIONS.get(cls.arena_name, "")  # type: ignore[attr-defined]
             ),
             "collector_class": f"{cls.__module__}.{cls.__qualname__}",
+            "custom_config_fields": ARENA_CUSTOM_CONFIG.get(
+                cls.platform_name  # type: ignore[attr-defined]
+            ),
         }
         for cls in sorted(
             _REGISTRY.values(),

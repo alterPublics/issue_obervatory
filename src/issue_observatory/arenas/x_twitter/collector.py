@@ -745,6 +745,66 @@ class XTwitterCollector(ArenaCollector):
         return flat
 
     # ------------------------------------------------------------------
+    # Credit estimation
+    # ------------------------------------------------------------------
+
+    async def estimate_credits(
+        self,
+        terms: list[str] | None = None,
+        actor_ids: list[str] | None = None,
+        tier: Tier = Tier.MEDIUM,
+        date_from: datetime | str | None = None,
+        date_to: datetime | str | None = None,
+        max_results: int | None = None,
+    ) -> int:
+        """Estimate the credit cost for an X/Twitter collection run.
+
+        Estimates are based on heuristic result volumes:
+        - Each term typically returns 100-500 tweets per day of collection
+        - 1 credit = 1 tweet retrieved (for both MEDIUM and PREMIUM tiers)
+        - Estimates may vary from actual costs by ±50%
+
+        Args:
+            terms: Search terms to be queried.
+            actor_ids: Actor usernames for timeline collection (not yet estimated).
+            tier: Requested tier (MEDIUM or PREMIUM).
+            date_from: Start of collection date range.
+            date_to: End of collection date range.
+            max_results: Upper bound on results (uses tier default if None).
+
+        Returns:
+            Estimated credit cost as a non-negative integer.
+        """
+        if tier not in self.supported_tiers:
+            return 0
+
+        tier_config = self.get_tier_config(tier)
+        all_terms = list(terms or [])
+        if not all_terms:
+            return 0
+
+        # Estimate date range in days
+        date_range_days = 7  # default to 7-day window
+        if date_from and date_to:
+            if isinstance(date_from, str):
+                date_from = datetime.fromisoformat(date_from.replace("Z", "+00:00"))
+            if isinstance(date_to, str):
+                date_to = datetime.fromisoformat(date_to.replace("Z", "+00:00"))
+            delta = date_to - date_from
+            date_range_days = max(1, delta.days)
+
+        # Heuristic: 250 tweets per term per day (conservative middle estimate)
+        tweets_per_term_per_day = 250
+        estimated_tweets = len(all_terms) * date_range_days * tweets_per_term_per_day
+
+        # Apply max_results cap if specified
+        effective_max = max_results if max_results is not None else tier_config.max_results_per_run
+        estimated_tweets = min(estimated_tweets, effective_max)
+
+        # 1 credit = 1 tweet
+        return estimated_tweets
+
+    # ------------------------------------------------------------------
     # Health check
     # ------------------------------------------------------------------
 

@@ -207,17 +207,26 @@
     </datalist>
 
     {# Search terms panel #}
-    <div class="bg-white rounded-lg shadow p-6" x-data="termGroupManager()">
+    <div class="bg-white rounded-lg shadow p-6" x-data="{ ...termGroupManager(), ...termArenaSelector(), ...bulkTermImporter() }">
         <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4">
             <h2 class="text-sm font-semibold text-gray-900">Search Terms</h2>
-            <span class="text-xs text-gray-400" id="term-count">{{ terms | length }} term{% if terms | length != 1 %}s{% endif %}</span>
+            <div class="flex items-center gap-3">
+                <button type="button"
+                        @click="bulkMode = !bulkMode"
+                        class="text-xs font-medium rounded px-2 py-1 transition-colors"
+                        :class="bulkMode ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'">
+                    <span x-text="bulkMode ? 'Single Term' : 'Bulk Add'"></span>
+                </button>
+                <span class="text-xs text-gray-400" id="term-count">{{ terms | length }} term{% if terms | length != 1 %}s{% endif %}</span>
+            </div>
         </div>
 
-        {# Add term form — primary row: type + term input + add button #}
-        <form hx-post="/query-designs/{{ design_id }}/terms"
+        {# Single term form (shown by default) #}
+        <form x-show="!bulkMode"
+              hx-post="/query-designs/{{ design_id }}/terms"
               hx-target="#terms-list"
               hx-swap="beforeend"
-              hx-on::after-request="if(event.detail.successful){ this.reset(); document.getElementById('new-term-input').focus(); }"
+              hx-on::after-request="if(event.detail.successful){ this.reset(); $root.resetArenaSelector(); document.getElementById('new-term-input').focus(); }"
               class="space-y-1.5 mb-2">
             <div class="flex gap-2">
                 <select name="term_type"
@@ -258,10 +267,127 @@
                        autocomplete="off"
                        class="flex-1 border border-gray-200 rounded px-2 py-1 text-xs text-gray-600 placeholder-gray-300 focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-transparent bg-gray-50">
             </div>
+            {# YF-01: Arena scoping — collapsible, optional #}
+            <div class="border-t border-gray-100 pt-2 space-y-1">
+                <button type="button"
+                        @click="arenaOpen = !arenaOpen"
+                        class="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 transition-colors">
+                    <svg class="w-3 h-3 transition-transform"
+                         :class="{'rotate-90': arenaOpen}"
+                         xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
+                    </svg>
+                    <span x-text="arenaSelectionSummary()"></span>
+                </button>
+                <div x-show="arenaOpen"
+                     x-transition:enter="transition ease-out duration-200"
+                     x-transition:enter-start="opacity-0 -translate-y-1"
+                     x-transition:enter-end="opacity-100 translate-y-0"
+                     x-transition:leave="transition ease-in duration-150"
+                     x-transition:leave-start="opacity-100 translate-y-0"
+                     x-transition:leave-end="opacity-0 -translate-y-1"
+                     class="pl-4 space-y-1.5">
+                    <p class="text-xs text-gray-400">
+                        By default, this term applies to all arenas. Select specific arenas to limit where it is used.
+                    </p>
+                    <div class="grid grid-cols-2 gap-1.5 max-h-48 overflow-y-auto" x-show="availableArenas.length > 0">
+                        <template x-for="arena in availableArenas" :key="arena.platform_name">
+                            <label class="flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer hover:bg-gray-50 rounded px-2 py-1">
+                                <input type="checkbox"
+                                       :value="arena.platform_name"
+                                       x-model="selectedArenas"
+                                       class="rounded border-gray-300 text-blue-600 focus:ring-blue-500 focus:ring-offset-0">
+                                <span x-text="arena.platform_name"></span>
+                            </label>
+                        </template>
+                    </div>
+                    <div x-show="availableArenas.length === 0" class="text-xs text-gray-400 italic">
+                        Loading arenas...
+                    </div>
+                    <button type="button"
+                            @click="selectedArenas = []"
+                            class="text-xs text-blue-600 hover:text-blue-700 underline"
+                            x-show="selectedArenas.length > 0">
+                        Clear selection (use all arenas)
+                    </button>
+                </div>
+            </div>
+            {# Hidden input that will be submitted to backend #}
+            <input type="hidden" name="target_arenas" :value="$root.getArenaValue()">
         </form>
 
-        {# Term type help text #}
-        <div class="mb-4 rounded-md bg-gray-50 border border-gray-100 px-3 py-2.5 text-xs text-gray-600 space-y-1">
+        {# Bulk import UI (shown when bulkMode is active) #}
+        <div x-show="bulkMode"
+             x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0 -translate-y-2"
+             x-transition:enter-end="opacity-100 translate-y-0"
+             class="space-y-3 mb-4">
+
+            {# Bulk textarea input #}
+            <div class="space-y-2">
+                <textarea x-model="bulkInput"
+                          rows="8"
+                          placeholder="Enter terms, one per line&#10;&#10;Simple format:&#10;ytringsfrihed&#10;free speech&#10;&#10;Structured format:&#10;ytringsfrihed | keyword | Danish terms | bluesky,reddit&#10;freedom of speech | phrase | English terms | youtube"
+                          class="w-full border border-gray-300 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y"
+                          :disabled="importing"></textarea>
+
+                {# Action buttons #}
+                <div class="flex items-center gap-2">
+                    <button type="button"
+                            @click="importTerms()"
+                            :disabled="!bulkInput.trim() || importing"
+                            class="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                             stroke="currentColor" stroke-width="2" aria-hidden="true" x-show="!importing">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
+                        </svg>
+                        <svg class="w-4 h-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" x-show="importing" x-cloak>
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <span x-text="importing ? 'Importing...' : 'Import Terms'"></span>
+                    </button>
+
+                    <button type="button"
+                            @click="bulkInput = ''; bulkError = null"
+                            :disabled="!bulkInput.trim() || importing"
+                            class="px-3 py-2 text-sm text-gray-600 hover:text-gray-800 transition-colors disabled:opacity-50">
+                        Clear
+                    </button>
+
+                    <div class="flex-1"></div>
+
+                    {# Status messages #}
+                    <span x-show="bulkSuccess" x-cloak
+                          x-transition:enter="transition ease-out duration-150"
+                          x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+                          x-transition:leave="transition ease-in duration-300"
+                          x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+                          class="text-sm text-green-700 font-medium"
+                          x-text="bulkSuccess"></span>
+                    <span x-show="bulkError" x-cloak class="text-sm text-red-600" x-text="bulkError"></span>
+                </div>
+            </div>
+
+            {# Format help text #}
+            <div class="rounded-md bg-blue-50 border border-blue-100 px-3 py-2.5 text-xs text-blue-900 space-y-1.5">
+                <p class="font-semibold">Two input formats supported:</p>
+                <div class="pl-3 space-y-1">
+                    <p><span class="font-medium">Simple:</span> One term per line (defaults to "keyword" type)</p>
+                    <p><span class="font-medium">Structured:</span> <code class="bg-blue-100 px-1 rounded">term | type | group | arenas</code></p>
+                </div>
+                <p class="pt-1"><span class="font-medium">Example:</span></p>
+                <div class="pl-3 font-mono text-xs bg-blue-100 rounded px-2 py-1.5 space-y-0.5">
+                    <p>ytringsfrihed | keyword | Danish terms | bluesky,reddit</p>
+                    <p>freedom of speech | phrase | English terms |</p>
+                    <p>#freespeech | hashtag | | youtube</p>
+                </div>
+                <p class="pt-1 text-blue-700">Lines starting with <code class="bg-blue-100 px-1 rounded">#</code> are ignored as comments. Empty lines are skipped.</p>
+            </div>
+        </div>
+
+        {# Term type help text (only shown in single-term mode) #}
+        <div x-show="!bulkMode" class="mb-4 rounded-md bg-gray-50 border border-gray-100 px-3 py-2.5 text-xs text-gray-600 space-y-1">
             <p><span class="font-medium">Keyword</span> — Match any content containing this word.</p>
             <p><span class="font-medium">Phrase</span> — Match exact multi-word phrase (use for names, compound terms).</p>
             <p><span class="font-medium">Hashtag</span> — Match the specific hashtag across social platforms.</p>
@@ -306,42 +432,126 @@
             <span class="text-xs text-gray-400" id="actor-count">{{ actors | length }} actor{% if actors | length != 1 %}s{% endif %}</span>
         </div>
 
-        {# Add actor form #}
-        <form hx-post="/query-designs/{{ design_id }}/actors"
-              hx-target="#actors-list"
-              hx-swap="beforeend"
-              hx-on::after-request="if(event.detail.successful){ this.reset(); document.getElementById('new-actor-input').focus(); }"
-              class="flex gap-2 mb-4">
-            <select name="actor_type"
-                    class="border border-gray-300 rounded px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white flex-shrink-0">
-                <option value="person">Person</option>
-                <option value="organization">Organization</option>
-                <option value="political_party">Political party</option>
-                <option value="educational_institution">Educational institution</option>
-                <option value="teachers_union">Teachers' union</option>
-                <option value="think_tank">Think tank</option>
-                <option value="media_outlet">Media outlet</option>
-                <option value="government_body">Government body</option>
-                <option value="ngo">NGO</option>
-                <option value="company">Company</option>
-                <option value="unknown">Unknown</option>
-            </select>
-            <input type="text"
-                   id="new-actor-input"
-                   name="name"
-                   required
-                   placeholder="Actor name or handle..."
-                   autocomplete="off"
-                   class="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-            <button type="submit"
-                    class="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded hover:bg-gray-200 transition-colors flex-shrink-0">
-                <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                     stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-                </svg>
-                Add
-            </button>
-        </form>
+        {# Add actor form with bulk import toggle #}
+        <div x-data="{ bulkMode: false }" class="mb-4">
+            {# Toggle between single and bulk #}
+            <div class="flex items-center gap-2 mb-3">
+                <button type="button"
+                        @click="bulkMode = false"
+                        :class="!bulkMode ? 'bg-gray-200 text-gray-900' : 'text-gray-500 hover:text-gray-700'"
+                        class="px-3 py-1.5 text-xs font-medium rounded transition-colors">
+                    Single Add
+                </button>
+                <button type="button"
+                        @click="bulkMode = true"
+                        :class="bulkMode ? 'bg-gray-200 text-gray-900' : 'text-gray-500 hover:text-gray-700'"
+                        class="px-3 py-1.5 text-xs font-medium rounded transition-colors">
+                    Bulk Add
+                </button>
+            </div>
+
+            {# Single actor form #}
+            <form x-show="!bulkMode"
+                  hx-post="/query-designs/{{ design_id }}/actors"
+                  hx-target="#actors-list"
+                  hx-swap="beforeend"
+                  hx-on::after-request="if(event.detail.successful){ this.reset(); document.getElementById('new-actor-input').focus(); }"
+                  class="flex gap-2">
+                <select name="actor_type"
+                        class="border border-gray-300 rounded px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white flex-shrink-0">
+                    <option value="person">Person</option>
+                    <option value="organization">Organization</option>
+                    <option value="political_party">Political party</option>
+                    <option value="educational_institution">Educational institution</option>
+                    <option value="teachers_union">Teachers' union</option>
+                    <option value="think_tank">Think tank</option>
+                    <option value="media_outlet">Media outlet</option>
+                    <option value="government_body">Government body</option>
+                    <option value="ngo">NGO</option>
+                    <option value="company">Company</option>
+                    <option value="unknown">Unknown</option>
+                </select>
+                <input type="text"
+                       id="new-actor-input"
+                       name="name"
+                       required
+                       placeholder="Actor name or handle..."
+                       autocomplete="off"
+                       class="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                <button type="submit"
+                        class="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded hover:bg-gray-200 transition-colors flex-shrink-0">
+                    <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                         stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+                    </svg>
+                    Add
+                </button>
+            </form>
+
+            {# Bulk actor import panel #}
+            <div x-show="bulkMode" x-data="bulkActorImport()" class="space-y-3">
+                <div>
+                    <textarea x-model="bulkInput"
+                              id="bulk-actors-input"
+                              rows="8"
+                              placeholder="Enter actors, one per line. Supports two formats:&#10;&#10;Simple (defaults to person type):&#10;Lars Løkke Rasmussen&#10;Mette Frederiksen&#10;&#10;Structured (name | type):&#10;Lars Løkke Rasmussen | person&#10;Socialdemokratiet | political_party&#10;DR | media_outlet&#10;&#10;Empty lines and lines starting with # are ignored."
+                              class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono"></textarea>
+                </div>
+
+                {# Action buttons and status #}
+                <div class="flex items-center gap-3">
+                    <button type="button"
+                            @click="bulkInput = ''; bulkError = null"
+                            :disabled="!bulkInput.trim() || importing"
+                            class="px-3 py-2 text-sm text-gray-600 hover:text-gray-800 transition-colors disabled:opacity-50">
+                        Clear
+                    </button>
+
+                    <button type="button"
+                            @click="submitBulkActors()"
+                            :disabled="!bulkInput.trim() || importing"
+                            class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                        <svg x-show="importing" class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg"
+                             fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                        </svg>
+                        <span x-show="!importing">Import Actors</span>
+                        <span x-show="importing">Importing...</span>
+                    </button>
+
+                    <div class="flex-1"></div>
+
+                    {# Status messages #}
+                    <span x-show="bulkSuccess" x-cloak
+                          x-transition:enter="transition ease-out duration-150"
+                          x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+                          x-transition:leave="transition ease-in duration-300"
+                          x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+                          class="text-sm text-green-700 font-medium"
+                          x-text="bulkSuccess"></span>
+                    <span x-show="bulkError" x-cloak class="text-sm text-red-600" x-text="bulkError"></span>
+                </div>
+            </div>
+
+            {# Format help text #}
+            <div x-show="bulkMode" class="rounded-md bg-blue-50 border border-blue-100 px-3 py-2.5 text-xs text-blue-900 space-y-1.5">
+                <p class="font-semibold">Two input formats supported:</p>
+                <div class="pl-3 space-y-1">
+                    <p><span class="font-medium">Simple:</span> One actor name per line (defaults to "person" type)</p>
+                    <p><span class="font-medium">Structured:</span> <code class="bg-blue-100 px-1 rounded">name | type</code></p>
+                </div>
+                <p class="pt-1"><span class="font-medium">Valid types:</span> person, organization, political_party, educational_institution, teachers_union, think_tank, media_outlet, government_body, ngo, company, unknown</p>
+                <p class="pt-1"><span class="font-medium">Example:</span></p>
+                <div class="pl-3 font-mono text-xs bg-blue-100 rounded px-2 py-1.5 space-y-0.5">
+                    <p>Lars Løkke Rasmussen | person</p>
+                    <p>Socialdemokratiet | political_party</p>
+                    <p>DR | media_outlet</p>
+                    <p>Undervisningsministeriet | government_body</p>
+                </div>
+                <p class="pt-1 text-blue-700">Lines starting with <code class="bg-blue-100 px-1 rounded">#</code> are ignored as comments. Empty lines are skipped.</p>
+            </div>
+        </div>
 
         {# Actors list #}
         {% if actors %}
@@ -366,6 +576,19 @@
                     <a href="/actors/{{ actor.actor_id }}"
                        class="text-xs text-blue-500 hover:text-blue-700 flex-shrink-0"
                        title="View actor profile">Profile</a>
+                    <span class="text-gray-300 flex-shrink-0">|</span>
+                    {# YF-16: Add link to configure platform presences #}
+                    <a href="/actors/{{ actor.actor_id }}#presences"
+                       target="_blank"
+                       class="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 hover:underline flex-shrink-0"
+                       title="Add platform presences (opens in new tab)">
+                        <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                             stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+                        </svg>
+                        Add presences
+                    </a>
                     {% endif %}
                 </div>
                 <button type="button"
@@ -488,9 +711,23 @@
                                           ? 'Credentials configured'
                                           : 'Credentials not configured — this arena will be skipped during collection'">
                                 </span>
-                                <div class="min-w-0">
-                                    <span class="block text-sm font-medium text-gray-800"
-                                          x-text="arena.label"></span>
+                                <div class="min-w-0 flex-1">
+                                    <div class="flex items-center gap-2">
+                                        <span class="text-sm font-medium text-gray-800"
+                                              x-text="arena.label"></span>
+                                        {# YF-02: Configuration badge for source-list arenas #}
+                                        <span x-show="arena.customConfigFields && arena.customConfigFields.length > 0"
+                                              class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700"
+                                              :title="'Requires configuration (' + (arena.customConfigFields ? arena.customConfigFields.length : 0) + ' field' + (arena.customConfigFields && arena.customConfigFields.length !== 1 ? 's' : '') + ')'">
+                                            <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round"
+                                                      d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                            </svg>
+                                            Config
+                                        </span>
+                                    </div>
                                     {# Compact description line (IP2-003) #}
                                     <span x-show="arena.description"
                                           class="block text-xs text-gray-400 truncate max-w-xs"
@@ -605,10 +842,33 @@
                 Save Arena Config
             </button>
         </div>
+
+        {# YF-02: Info box about source-list arenas #}
+        <div class="mt-4 rounded-md bg-blue-50 border border-blue-200 p-3">
+            <div class="flex gap-2">
+                <svg class="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <div class="text-sm text-blue-800">
+                    <p class="font-medium mb-1">Source-list arenas require additional configuration</p>
+                    <p class="text-xs text-blue-700">
+                        Arenas marked with <span class="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700 mx-1">
+                            <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                            </svg>
+                            Config
+                        </span> need you to specify which sources to monitor. Configure them in the panels below (Telegram, Reddit, RSS, Discord, Wikipedia).
+                    </p>
+                </div>
+            </div>
+        </div>
     </div>
 
     {#
-        GR-01 through GR-05 — Per-arena custom source panels + multi-language selector.
+        GR-01 through GR-05 / YF-02 — Per-arena custom source panels + multi-language selector.
 
         These panels are only rendered in edit mode (design_id is required for
         PATCH /query-designs/{design_id}/arena-config/{arena_name} calls).
@@ -706,7 +966,7 @@
     {# ------------------------------------------------------------------ #}
     {# GR-01 — RSS: custom feeds panel                                    #}
     {# ------------------------------------------------------------------ #}
-    <div class="bg-white rounded-lg shadow p-6"
+    <div id="config-rss_feeds" class="bg-white rounded-lg shadow p-6"
          x-data="arenaSourcePanel(
              '{{ design_id }}',
              'rss',
@@ -716,8 +976,19 @@
 
         <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
              @click="open = !open">
-            <div>
-                <h2 class="text-sm font-semibold text-gray-900">RSS — Custom Feeds</h2>
+            <div class="flex-1">
+                <div class="flex items-center gap-2">
+                    <h2 class="text-sm font-semibold text-gray-900">RSS — Custom Feeds</h2>
+                    <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600"
+                          title="Source-list arena requiring configuration">
+                        <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                             stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        Requires setup
+                    </span>
+                </div>
                 <p class="text-xs text-gray-400 mt-0.5">Additional RSS/Atom feeds beyond the 30+ Danish defaults</p>
             </div>
             <div class="flex items-center gap-2">
@@ -797,13 +1068,75 @@
                       class="text-sm text-green-700 font-medium">Saved</span>
                 <span x-show="saveError" x-cloak class="text-sm text-red-600" x-text="saveError"></span>
             </div>
+
+            {# YF-12: RSS feed list preview #}
+            <div class="mt-4 pt-4 border-t border-gray-100">
+                <div x-data="rssFeedViewer()" x-init="loadFeeds()">
+                    <div class="flex items-center justify-between mb-2">
+                        <h3 class="text-xs font-semibold text-gray-700">Default Danish RSS Feeds</h3>
+                        <span x-show="feeds.length > 0"
+                              class="text-xs text-gray-400"
+                              x-text="filteredFeeds.length + ' of ' + feeds.length + ' feeds'"></span>
+                    </div>
+
+                    {# Search input #}
+                    <div class="mb-2">
+                        <div class="relative">
+                            <svg class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none"
+                                 xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
+                            </svg>
+                            <input type="text"
+                                   x-model="searchQuery"
+                                   placeholder="Search feeds by outlet name or URL..."
+                                   class="w-full pl-7 pr-3 py-1.5 text-xs border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-transparent">
+                        </div>
+                    </div>
+
+                    {# Feed list #}
+                    <div x-show="loading" class="text-xs text-gray-400 italic py-3 text-center">
+                        Loading feeds...
+                    </div>
+                    <div x-show="!loading && feeds.length === 0" class="text-xs text-gray-400 italic py-3 text-center">
+                        No feeds available
+                    </div>
+                    <div x-show="!loading && feeds.length > 0" class="max-h-64 overflow-y-auto border border-gray-200 rounded">
+                        <table class="min-w-full text-xs">
+                            <thead class="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th class="text-left px-2 py-1.5 text-xs font-medium text-gray-500">Outlet</th>
+                                    <th class="text-left px-2 py-1.5 text-xs font-medium text-gray-500">Feed URL</th>
+                                </tr>
+                            </thead>
+                            <tbody class="bg-white divide-y divide-gray-100">
+                                <template x-for="feed in filteredFeeds" :key="feed.key">
+                                    <tr class="hover:bg-gray-50">
+                                        <td class="px-2 py-1.5 text-gray-700 font-medium whitespace-nowrap" x-text="feed.name"></td>
+                                        <td class="px-2 py-1.5">
+                                            <a :href="feed.url" target="_blank" rel="noopener noreferrer"
+                                               class="text-blue-600 hover:text-blue-800 hover:underline font-mono text-xs truncate block max-w-xs"
+                                               :title="feed.url"
+                                               x-text="feed.url">
+                                            </a>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div x-show="!loading && feeds.length > 0 && filteredFeeds.length === 0" class="text-xs text-gray-400 italic py-3 text-center border border-gray-200 rounded">
+                        No feeds match your search
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
     {# ------------------------------------------------------------------ #}
     {# GR-02 — Telegram: custom channels panel                            #}
     {# ------------------------------------------------------------------ #}
-    <div class="bg-white rounded-lg shadow p-6"
+    <div id="config-telegram" class="bg-white rounded-lg shadow p-6"
          x-data="arenaSourcePanel(
              '{{ design_id }}',
              'telegram',
@@ -813,9 +1146,20 @@
 
         <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
              @click="open = !open">
-            <div>
-                <h2 class="text-sm font-semibold text-gray-900">Telegram — Custom Channels</h2>
-                <p class="text-xs text-gray-400 mt-0.5">Additional public channels to monitor</p>
+            <div class="flex-1">
+                <div class="flex items-center gap-2">
+                    <h2 class="text-sm font-semibold text-gray-900">Telegram — Custom Channels</h2>
+                    <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600"
+                          title="Source-list arena requiring configuration">
+                        <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                             stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        Requires setup
+                    </span>
+                </div>
+                <p class="text-xs text-gray-400 mt-0.5">Additional public channels to monitor beyond default Danish channels</p>
             </div>
             <div class="flex items-center gap-2">
                 <span x-show="items.length > 0"
@@ -901,7 +1245,7 @@
     {# ------------------------------------------------------------------ #}
     {# GR-03 — Reddit: custom subreddits panel                            #}
     {# ------------------------------------------------------------------ #}
-    <div class="bg-white rounded-lg shadow p-6"
+    <div id="config-reddit" class="bg-white rounded-lg shadow p-6"
          x-data="arenaSourcePanel(
              '{{ design_id }}',
              'reddit',
@@ -911,9 +1255,20 @@
 
         <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
              @click="open = !open">
-            <div>
-                <h2 class="text-sm font-semibold text-gray-900">Reddit — Custom Subreddits</h2>
-                <p class="text-xs text-gray-400 mt-0.5">Additional subreddits to search alongside keyword results</p>
+            <div class="flex-1">
+                <div class="flex items-center gap-2">
+                    <h2 class="text-sm font-semibold text-gray-900">Reddit — Custom Subreddits</h2>
+                    <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600"
+                          title="Source-list arena requiring configuration">
+                        <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                             stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        Requires setup
+                    </span>
+                </div>
+                <p class="text-xs text-gray-400 mt-0.5">Additional subreddits beyond r/Denmark, r/danish, r/copenhagen, r/aarhus, r/dkpolitik</p>
             </div>
             <div class="flex items-center gap-2">
                 <span x-show="items.length > 0"
@@ -1003,7 +1358,7 @@
     {# ------------------------------------------------------------------ #}
     {# GR-04a — Discord: custom channel IDs panel                         #}
     {# ------------------------------------------------------------------ #}
-    <div class="bg-white rounded-lg shadow p-6"
+    <div id="config-discord" class="bg-white rounded-lg shadow p-6"
          x-data="arenaSourcePanel(
              '{{ design_id }}',
              'discord',
@@ -1013,8 +1368,19 @@
 
         <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
              @click="open = !open">
-            <div>
-                <h2 class="text-sm font-semibold text-gray-900">Discord — Custom Channel IDs</h2>
+            <div class="flex-1">
+                <div class="flex items-center gap-2">
+                    <h2 class="text-sm font-semibold text-gray-900">Discord — Custom Channel IDs</h2>
+                    <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600"
+                          title="Source-list arena requiring configuration">
+                        <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                             stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        Requires setup
+                    </span>
+                </div>
                 <p class="text-xs text-gray-400 mt-0.5">Specific Discord channels to monitor (requires Bot Token credentials)</p>
             </div>
             <div class="flex items-center gap-2">
@@ -1102,7 +1468,7 @@
     {# ------------------------------------------------------------------ #}
     {# GR-04b — Wikipedia: custom seed articles panel                     #}
     {# ------------------------------------------------------------------ #}
-    <div class="bg-white rounded-lg shadow p-6"
+    <div id="config-wikipedia" class="bg-white rounded-lg shadow p-6"
          x-data="arenaSourcePanel(
              '{{ design_id }}',
              'wikipedia',
@@ -1112,9 +1478,20 @@
 
         <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
              @click="open = !open">
-            <div>
-                <h2 class="text-sm font-semibold text-gray-900">Wikipedia — Seed Articles</h2>
-                <p class="text-xs text-gray-400 mt-0.5">Wikipedia articles to crawl for topic mapping and link analysis</p>
+            <div class="flex-1">
+                <div class="flex items-center gap-2">
+                    <h2 class="text-sm font-semibold text-gray-900">Wikipedia — Seed Articles</h2>
+                    <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600"
+                          title="Source-list arena requiring configuration">
+                        <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                             stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        Requires setup
+                    </span>
+                </div>
+                <p class="text-xs text-gray-400 mt-0.5">Wikipedia articles to monitor for editorial attention signals</p>
             </div>
             <div class="flex items-center gap-2">
                 <span x-show="items.length > 0"
@@ -1255,6 +1632,8 @@ function arenaConfigGrid(defaultTier) {
                     // Default tier: use the design default if it is supported, else the first supported tier.
                     tier: defaultTier || 'free',
                     estimatedCredits: null,
+                    // YF-02: Include custom configuration field metadata.
+                    customConfigFields: a.custom_config_fields || null,
                 }));
                 // Correct initial tier if the design default is not supported by this arena.
                 fetchedArenas.forEach(a => {
@@ -1396,11 +1775,15 @@ function termGroupManager() {
 
         init() {
             this._rebuildHeaders();
+            this._updateDatalist();
 
             // Watch for DOM changes caused by HTMX appends/removes.
             const list = document.getElementById('terms-list');
             if (list) {
-                this._observer = new MutationObserver(() => this._rebuildHeaders());
+                this._observer = new MutationObserver(() => {
+                    this._rebuildHeaders();
+                    this._updateDatalist();
+                });
                 this._observer.observe(list, { childList: true, subtree: false });
             }
         },
@@ -1520,6 +1903,46 @@ function termGroupManager() {
                 }
             });
             this._rebuildHeaders();
+            this._updateDatalist();
+        },
+
+        /**
+         * YF-10: Update the datalist with existing group labels from the current
+         * query design's terms.
+         *
+         * Scans all term rows for data-group attributes and adds them to the
+         * #term-group-suggestions datalist alongside the predefined options.
+         */
+        _updateDatalist() {
+            const list = document.getElementById('terms-list');
+            const datalist = document.getElementById('term-group-suggestions');
+            if (!list || !datalist) return;
+
+            // Collect existing group labels
+            const existingGroups = new Set();
+            list.querySelectorAll('li[data-group]').forEach(row => {
+                const label = row.dataset.group;
+                if (label && label.trim()) {
+                    existingGroups.add(label);
+                }
+            });
+
+            // Remove previously added dynamic options (marked with data-dynamic attribute)
+            datalist.querySelectorAll('option[data-dynamic]').forEach(opt => opt.remove());
+
+            // Add existing groups as new options
+            existingGroups.forEach(label => {
+                // Check if this label already exists in predefined options
+                const existingOption = Array.from(datalist.querySelectorAll('option:not([data-dynamic])')).find(
+                    opt => opt.value === label
+                );
+                if (!existingOption) {
+                    const opt = document.createElement('option');
+                    opt.value = label;
+                    opt.dataset.dynamic = 'true';
+                    datalist.appendChild(opt);
+                }
+            });
         },
     };
 }
@@ -1701,6 +2124,438 @@ function languageSelector(designId, initial) {
                 this.saveError = 'Save failed: ' + err.message;
             } finally {
                 this.saving = false;
+            }
+        },
+    };
+}
+
+// ---------------------------------------------------------------------------
+// YF-12 — RSS Feed Preview Component
+// ---------------------------------------------------------------------------
+//
+// Displays the list of default Danish RSS feeds with search filtering.
+// Fetches feed data from GET /api/arenas/rss-feeds/feeds.
+//
+// ---------------------------------------------------------------------------
+function rssFeedViewer() {
+    return {
+        feeds: [],
+        searchQuery: '',
+        loading: false,
+        error: null,
+
+        async loadFeeds() {
+            this.loading = true;
+            this.error = null;
+            try {
+                const resp = await fetch('/api/arenas/rss-feeds/feeds', {
+                    credentials: 'include',
+                });
+                if (!resp.ok) {
+                    throw new Error(`HTTP ${resp.status}`);
+                }
+                const data = await resp.json();
+                // Transform the feeds dict into an array
+                this.feeds = Object.entries(data.feeds || {}).map(([key, url]) => ({
+                    key: key,
+                    name: this.formatOutletName(key),
+                    url: url
+                }));
+            } catch (err) {
+                this.error = 'Failed to load feeds: ' + err.message;
+                console.error('rssFeedViewer: loadFeeds error', err);
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        /**
+         * Convert feed key to human-readable outlet name.
+         * Examples:
+         *   "dr_allenyheder" -> "DR AllNyheder"
+         *   "tv2_nyheder" -> "TV2 Nyheder"
+         *   "politiken_seneste" -> "Politiken Seneste"
+         */
+        formatOutletName(key) {
+            return key
+                .split('_')
+                .map((part, idx) => {
+                    if (idx === 0) {
+                        // First part is outlet abbreviation - keep uppercase
+                        return part.toUpperCase();
+                    }
+                    // Subsequent parts - capitalize first letter
+                    return part.charAt(0).toUpperCase() + part.slice(1);
+                })
+                .join(' ');
+        },
+
+        /**
+         * Filter feeds by search query (matches outlet name or URL).
+         */
+        get filteredFeeds() {
+            if (!this.searchQuery.trim()) {
+                return this.feeds;
+            }
+            const q = this.searchQuery.toLowerCase();
+            return this.feeds.filter(feed =>
+                feed.name.toLowerCase().includes(q) ||
+                feed.url.toLowerCase().includes(q)
+            );
+        },
+    };
+}
+
+// ---------------------------------------------------------------------------
+// YF-01 — Per-arena search term scoping
+// ---------------------------------------------------------------------------
+//
+// Alpine component for the arena selector in the search term form.
+// Fetches the list of available arenas from GET /api/arenas/ and allows
+// the researcher to scope a term to specific arenas. When no arenas are
+// selected, the term applies to all arenas (default behavior).
+//
+// ---------------------------------------------------------------------------
+/**
+ * Bulk actor importer component (YF-07).
+ *
+ * Provides a textarea-based UI for importing multiple actors at once,
+ * supporting two formats:
+ *   - Simple: one actor name per line (defaults to "person" type)
+ *   - Structured: name | type (pipe-delimited)
+ *
+ * Lines starting with # are treated as comments and skipped.
+ * Empty lines are ignored.
+ */
+function bulkActorImport() {
+    return {
+        bulkInput: '',
+        importing: false,
+        bulkSuccess: null,
+        bulkError: null,
+
+        /**
+         * Parse the bulk input textarea and submit to the backend.
+         */
+        async submitBulkActors() {
+            this.bulkError = null;
+            this.bulkSuccess = null;
+
+            const lines = this.bulkInput
+                .split('\n')
+                .map(line => line.trim())
+                .filter(line => line && !line.startsWith('#'));
+
+            if (lines.length === 0) {
+                this.bulkError = 'No valid actors found. Add at least one actor.';
+                return;
+            }
+
+            const actors = [];
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const lineNum = i + 1;
+
+                try {
+                    const actor = this.parseLine(line);
+                    actors.push(actor);
+                } catch (err) {
+                    this.bulkError = `Line ${lineNum}: ${err.message}`;
+                    return;
+                }
+            }
+
+            // Submit to backend
+            this.importing = true;
+            try {
+                const designId = '{{ design_id }}';
+                const resp = await fetch(`/query-designs/${designId}/actors/bulk`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(actors),
+                });
+
+                if (!resp.ok) {
+                    const errorData = await resp.json().catch(() => ({}));
+                    throw new Error(errorData.detail || `HTTP ${resp.status}`);
+                }
+
+                // Success - clear input and refresh the actors list
+                const result = await resp.json();
+                const total = result.added.length + result.skipped.length;
+
+                if (result.skipped.length > 0) {
+                    this.bulkSuccess = `Added ${result.added.length} actor${result.added.length !== 1 ? 's' : ''}, skipped ${result.skipped.length} duplicate${result.skipped.length !== 1 ? 's' : ''}`;
+                } else {
+                    this.bulkSuccess = `Added ${result.added.length} actor${result.added.length !== 1 ? 's' : ''}`;
+                }
+
+                this.bulkInput = '';
+
+                // Reload the page to show the new actors
+                setTimeout(() => {
+                    window.location.reload();
+                }, 800);
+
+            } catch (err) {
+                this.bulkError = err.message;
+            } finally {
+                this.importing = false;
+            }
+        },
+
+        /**
+         * Parse a single line into an ActorBulkItem object.
+         *
+         * Supports two formats:
+         *   - Simple: "name" → {name: "name", actor_type: "person"}
+         *   - Structured: "name | type" → {name: "name", actor_type: "type"}
+         *
+         * @param {string} line - The input line to parse
+         * @returns {object} ActorBulkItem-compatible object
+         * @throws {Error} If the line is invalid
+         */
+        parseLine(line) {
+            // Check if it's structured format (contains pipe)
+            if (line.includes('|')) {
+                const parts = line.split('|').map(p => p.trim());
+
+                const name = parts[0];
+                if (!name) {
+                    throw new Error('Actor name must not be empty');
+                }
+
+                const actor_type = parts[1] || 'person';
+
+                // Validate actor type
+                const validTypes = [
+                    'person', 'organization', 'political_party', 'educational_institution',
+                    'teachers_union', 'think_tank', 'media_outlet', 'government_body',
+                    'ngo', 'company', 'unknown'
+                ];
+                if (!validTypes.includes(actor_type)) {
+                    throw new Error(`Invalid actor type: ${actor_type}. Must be one of: ${validTypes.join(', ')}`);
+                }
+
+                return { name, actor_type };
+            } else {
+                // Simple format: just a name, defaults to person
+                return {
+                    name: line,
+                    actor_type: 'person'
+                };
+            }
+        },
+
+        /**
+         * Clear the input textarea and any error message.
+         */
+        clearInput() {
+            this.bulkInput = '';
+            this.bulkError = null;
+            this.bulkSuccess = null;
+        }
+    };
+}
+
+/**
+ * Bulk term importer component.
+ *
+ * Provides a textarea-based UI for importing multiple search terms at once,
+ * supporting two formats:
+ *   - Simple: one term per line (defaults to "keyword" type)
+ *   - Structured: term | type | group_label | arenas (pipe-delimited)
+ *
+ * Lines starting with # are treated as comments and skipped.
+ * Empty lines are ignored.
+ */
+function bulkTermImporter() {
+    return {
+        bulkMode: false,
+        bulkInput: '',
+        importing: false,
+        bulkSuccess: null,
+        bulkError: null,
+
+        /**
+         * Parse the bulk input textarea and submit to the backend.
+         */
+        async importTerms() {
+            this.bulkError = null;
+            this.bulkSuccess = null;
+
+            const lines = this.bulkInput
+                .split('\n')
+                .map(line => line.trim())
+                .filter(line => line && !line.startsWith('#'));
+
+            if (lines.length === 0) {
+                this.bulkError = 'No valid terms found. Add at least one term.';
+                return;
+            }
+
+            const terms = [];
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const lineNum = i + 1;
+
+                try {
+                    const term = this.parseLine(line);
+                    terms.push(term);
+                } catch (err) {
+                    this.bulkError = `Line ${lineNum}: ${err.message}`;
+                    return;
+                }
+            }
+
+            // Submit to backend
+            this.importing = true;
+            try {
+                const designId = '{{ design_id }}';
+                const resp = await fetch(`/query-designs/${designId}/terms/bulk`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(terms),
+                });
+
+                if (!resp.ok) {
+                    const errorData = await resp.json().catch(() => ({}));
+                    throw new Error(errorData.detail || `HTTP ${resp.status}`);
+                }
+
+                // Success - clear input and refresh the terms list
+                const addedTerms = await resp.json();
+                this.bulkSuccess = `Added ${addedTerms.length} term${addedTerms.length !== 1 ? 's' : ''}`;
+                this.bulkInput = '';
+
+                // Reload the page to show the new terms with proper grouping
+                setTimeout(() => {
+                    window.location.reload();
+                }, 800);
+
+            } catch (err) {
+                this.bulkError = err.message;
+            } finally {
+                this.importing = false;
+            }
+        },
+
+        /**
+         * Parse a single line into a SearchTermCreate object.
+         *
+         * Supports two formats:
+         *   - Simple: "term" → {term: "term", term_type: "keyword"}
+         *   - Structured: "term | type | group | arenas" → full object
+         *
+         * @param {string} line - The input line to parse
+         * @returns {object} SearchTermCreate-compatible object
+         * @throws {Error} If the line is invalid
+         */
+        parseLine(line) {
+            // Check if it's structured format (contains pipes)
+            if (line.includes('|')) {
+                const parts = line.split('|').map(p => p.trim());
+
+                const term = parts[0];
+                if (!term) {
+                    throw new Error('Term text cannot be empty');
+                }
+
+                const termType = parts[1] || 'keyword';
+                const validTypes = ['keyword', 'phrase', 'hashtag', 'url_pattern'];
+                if (!validTypes.includes(termType)) {
+                    throw new Error(`Invalid term type "${termType}". Must be one of: ${validTypes.join(', ')}`);
+                }
+
+                const groupLabel = parts[2] || null;
+                const arenasStr = parts[3] || '';
+                const targetArenas = arenasStr
+                    ? arenasStr.split(',').map(a => a.trim()).filter(a => a)
+                    : null;
+
+                return {
+                    term: term,
+                    term_type: termType,
+                    group_label: groupLabel,
+                    target_arenas: targetArenas,
+                };
+            } else {
+                // Simple format: just the term text
+                return {
+                    term: line,
+                    term_type: 'keyword',
+                    group_label: null,
+                    target_arenas: null,
+                };
+            }
+        },
+    };
+}
+
+function termArenaSelector() {
+    return {
+        arenaOpen: false,
+        availableArenas: [],
+        selectedArenas: [],
+        _loading: false,
+
+        async init() {
+            await this.fetchArenas();
+        },
+
+        /**
+         * Fetch the list of available arenas from the backend.
+         */
+        async fetchArenas() {
+            if (this._loading || this.availableArenas.length > 0) return;
+            this._loading = true;
+            try {
+                const resp = await fetch('/api/arenas/');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const arenas = await resp.json();
+                // Sort alphabetically by platform_name for consistent display
+                this.availableArenas = arenas.sort((a, b) =>
+                    a.platform_name.localeCompare(b.platform_name)
+                );
+            } catch (err) {
+                console.error('Failed to fetch arenas:', err);
+            } finally {
+                this._loading = false;
+            }
+        },
+
+        /**
+         * Return a comma-separated string of selected arena platform_names
+         * for submission to the backend. Returns empty string if none selected
+         * (which means "all arenas").
+         */
+        getArenaValue() {
+            return this.selectedArenas.join(',');
+        },
+
+        /**
+         * Reset the arena selector state after successful form submission.
+         */
+        resetArenaSelector() {
+            this.selectedArenas = [];
+            this.arenaOpen = false;
+        },
+
+        /**
+         * Summary text for the collapsible arena selector button.
+         */
+        arenaSelectionSummary() {
+            const count = this.selectedArenas.length;
+            if (count === 0) {
+                return 'Target arenas: all (default)';
+            } else if (count === 1) {
+                return `Target arenas: ${this.selectedArenas[0]}`;
+            } else {
+                return `Target arenas: ${count} selected`;
             }
         },
     };

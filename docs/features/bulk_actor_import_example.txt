@@ -1,0 +1,173 @@
+================================================================================
+BULK ACTOR IMPORT - UI EXAMPLE
+================================================================================
+
+Location: Query Design Editor > Actor List Panel
+
+--------------------------------------------------------------------------------
+[1] MODE TOGGLE (always visible)
+--------------------------------------------------------------------------------
+
+[Single Add]  [Bulk Add]
+     ^            ^
+  Selected    Not selected
+
+
+--------------------------------------------------------------------------------
+[2] SINGLE ADD MODE (default, x-show="!bulkMode")
+--------------------------------------------------------------------------------
+
+[Person ▼]  [Actor name or handle...                    ]  [+ Add]
+
+
+--------------------------------------------------------------------------------
+[3] BULK ADD MODE (x-show="bulkMode")
+--------------------------------------------------------------------------------
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│ Enter actors, one per line. Supports two formats:                         │
+│                                                                            │
+│ Simple (defaults to person type):                                         │
+│ Lars Løkke Rasmussen                                                       │
+│ Mette Frederiksen                                                          │
+│                                                                            │
+│ Structured (name | type):                                                 │
+│ Lars Løkke Rasmussen | person                                              │
+│ Socialdemokratiet | political_party                                        │
+│ DR | media_outlet                                                          │
+│                                                                            │
+│ Empty lines and lines starting with # are ignored.                        │
+└────────────────────────────────────────────────────────────────────────────┘
+  (8 rows, monospace font, border-gray-300)
+
+[Clear]                                                    [Import Actors]
+                                                             (blue button)
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│ ℹ Two input formats supported:                                            │
+│   • Simple: One actor name per line (defaults to "person" type)           │
+│   • Structured: name | type                                                │
+│                                                                            │
+│ Valid types: person, organization, political_party, educational_institution│
+│             teachers_union, think_tank, media_outlet, government_body,    │
+│             ngo, company, unknown                                          │
+│                                                                            │
+│ Example:                                                                   │
+│   Lars Løkke Rasmussen | person                                            │
+│   Socialdemokratiet | political_party                                      │
+│   DR | media_outlet                                                        │
+│   Undervisningsministeriet | government_body                               │
+│                                                                            │
+│ Lines starting with # are ignored as comments. Empty lines are skipped.   │
+└────────────────────────────────────────────────────────────────────────────┘
+  (blue background, border-blue-100, text-blue-900)
+
+
+--------------------------------------------------------------------------------
+[4] SUCCESS STATE
+--------------------------------------------------------------------------------
+
+[Clear]                              ✓ Added 5 actors, skipped 2 duplicates
+                                       (green text, fade in/out transition)
+
+
+--------------------------------------------------------------------------------
+[5] ERROR STATE
+--------------------------------------------------------------------------------
+
+[Clear]                              ✗ Line 3: Invalid actor type: person_org
+                                       (red text, stays visible until cleared)
+
+
+--------------------------------------------------------------------------------
+[6] LOADING STATE
+--------------------------------------------------------------------------------
+
+[Clear]                                                    [⟳ Importing...]
+(disabled)                                                 (blue, disabled,
+                                                            spinner animation)
+
+
+================================================================================
+SAMPLE INPUT DATA
+================================================================================
+
+# Danish political leaders
+Lars Løkke Rasmussen | person
+Mette Frederiksen | person
+Pernille Vermund | person
+
+# Political parties
+Socialdemokratiet | political_party
+Venstre | political_party
+Dansk Folkeparti | political_party
+
+# Media outlets
+DR | media_outlet
+TV2 | media_outlet
+Politiken | media_outlet
+
+# Government bodies
+Undervisningsministeriet | government_body
+Finansministeriet | government_body
+
+# Teachers' unions
+DLF | teachers_union
+GL | teachers_union
+
+# Simple format (defaults to person)
+Jakob Ellemann-Jensen
+Pia Olsen Dyhr
+Morten Østergaard
+
+
+================================================================================
+BEHAVIOR SEQUENCE
+================================================================================
+
+1. User clicks "Bulk Add" button
+2. Single-actor form hides, bulk panel shows
+3. User pastes/types actors in textarea
+4. User clicks "Import Actors"
+5. Frontend validates line-by-line
+   - If error: Show error message with line number, keep textarea content
+   - If valid: Show spinner, disable button, POST to backend
+6. Backend validates and processes
+   - Creates/links canonical Actor records
+   - Skips duplicates
+   - Returns counts
+7. Success: Show message "Added X actors, skipped Y duplicates"
+8. After 800ms: Page reloads to show new actors
+9. User sees all actors in the Actor List below
+
+
+================================================================================
+ERROR EXAMPLES
+================================================================================
+
+Input:
+  Lars Løkke Rasmussen | person_org
+
+Error:
+  Line 1: Invalid actor type: person_org. Must be one of: person, organization,
+  political_party, educational_institution, teachers_union, think_tank,
+  media_outlet, government_body, ngo, company, unknown
+
+---
+
+Input:
+  | person
+
+Error:
+  Line 1: Actor name must not be empty
+
+---
+
+Input:
+  (empty textarea)
+
+Error:
+  No valid actors found. Add at least one actor.
+
+
+================================================================================

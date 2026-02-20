@@ -11,6 +11,7 @@
 - [x] `007_add_simhash_to_content_records` — adds `simhash BIGINT NULL` to `content_records` (partitioned; uses raw ALTER TABLE DDL) with `idx_content_records_simhash` B-tree index (Item 15)
 - [x] `008_add_query_design_cloning` — adds `parent_design_id UUID NULL REFERENCES query_designs(id) ON DELETE SET NULL` with `idx_query_design_parent` B-tree index (IP2-051)
 - [x] `009_add_public_figure_flag_to_actors` — adds `public_figure BOOLEAN NOT NULL DEFAULT false` to `actors`; GDPR Art. 89(1) research exemption for public-figure pseudonymization bypass (GR-14)
+- [x] `010_add_target_arenas_to_search_terms` — adds `target_arenas JSONB NULL` to `search_terms`; implements YF-01 per-arena search term scoping (2026-02-19)
 
 ## Models (Task 0.2 — COMPLETE)
 

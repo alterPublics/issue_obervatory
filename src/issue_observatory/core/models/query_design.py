@@ -199,6 +199,12 @@ class SearchTerm(Base):
         sa.String(200),
         nullable=True,
     )
+    # Optional list of arena platform_names. NULL = all arenas.
+    target_arenas: Mapped[list[str] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment="Optional list of arena platform_names. NULL = all arenas.",
+    )
 
     # Relationships
     query_design: Mapped[QueryDesign] = relationship(

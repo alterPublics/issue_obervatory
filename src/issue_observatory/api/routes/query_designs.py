@@ -14,10 +14,12 @@ Routes:
     PUT    /query-designs/{design_id}                    — partial update
     DELETE /query-designs/{design_id}                    — soft-delete (is_active=False)
     POST   /query-designs/{design_id}/terms              — add a search term
+    POST   /query-designs/{design_id}/terms/bulk         — add multiple search terms (YF-03)
     DELETE /query-designs/{design_id}/terms/{term_id}    — remove a search term
     GET    /query-designs/{design_id}/arena-config       — read per-arena tier config
     POST   /query-designs/{design_id}/arena-config       — write per-arena tier config
     POST   /query-designs/{design_id}/actors             — add actor (create-or-link Actor record)
+    POST   /query-designs/{design_id}/actors/bulk        — add multiple actors (YF-07)
     DELETE /query-designs/{design_id}/actors/{member_id} — remove actor list member
 
 Note on arena-config storage:
@@ -53,6 +55,7 @@ from issue_observatory.api.dependencies import (
     get_pagination,
     ownership_guard,
 )
+from issue_observatory.arenas.registry import list_arenas
 from issue_observatory.core.database import get_db
 from issue_observatory.core.models.actors import Actor, ActorListMember
 from issue_observatory.core.models.query_design import ActorList, QueryDesign, SearchTerm
@@ -62,6 +65,8 @@ from issue_observatory.core.schemas.query_design import (
     QueryDesignCreate,
     QueryDesignRead,
     QueryDesignUpdate,
+    SearchTermCreate,
+    SearchTermRead,
 )
 
 logger = structlog.get_logger(__name__)
@@ -395,7 +400,7 @@ async def clone_query_design(
     db.add(clone)
     await db.flush()  # populate clone.id before creating children
 
-    # Deep-copy search terms.
+    # Deep-copy search terms (including target_arenas per YF-01).
     for term in original.search_terms:
         new_term = SearchTerm(
             query_design_id=clone.id,
@@ -403,6 +408,7 @@ async def clone_query_design(
             term_type=term.term_type,
             group_id=term.group_id,
             group_label=term.group_label,
+            target_arenas=term.target_arenas,
             is_active=term.is_active,
         )
         db.add(new_term)
@@ -485,6 +491,28 @@ def _render_term_list_item(term: SearchTerm, design_id: uuid.UUID) -> str:
         else ""
     )
 
+    # YF-01: Show arena scoping indicator when target_arenas is set.
+    arena_badge = ""
+    if term.target_arenas:
+        count = len(term.target_arenas)
+        # Show first 2 arena names if count <= 2, otherwise show count
+        if count <= 2:
+            display = ", ".join(term.target_arenas)
+        else:
+            display = f"{count} arenas"
+        arena_badge = (
+            f'<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded '
+            f'text-xs font-medium bg-indigo-100 text-indigo-700 flex-shrink-0" '
+            f'title="{_html_escape(", ".join(term.target_arenas))}">'
+            f'<svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" '
+            f'viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">'
+            f'<path stroke-linecap="round" stroke-linejoin="round" '
+            f'd="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12"/>'
+            f"</svg>"
+            f"{_html_escape(display)}"
+            f"</span>"
+        )
+
     return (
         f'<li id="term-{term.id}"'
         f'{group_attr}'
@@ -495,6 +523,7 @@ def _render_term_list_item(term: SearchTerm, design_id: uuid.UUID) -> str:
         f' {badge_classes} flex-shrink-0">{badge_label}</span>'
         f'<span class="text-sm text-gray-900 font-medium truncate">'
         f"{_html_escape(term.term)}</span>"
+        f"{arena_badge}"
         f"{inactive_badge}"
         f"</div>"
         f'<button type="button"'
@@ -552,6 +581,7 @@ async def add_search_term(
     term: Annotated[str, Form()],
     term_type: Annotated[str, Form()] = "keyword",
     group_label: Annotated[Optional[str], Form()] = None,
+    target_arenas: Annotated[Optional[str], Form()] = None,
 ) -> HTMLResponse:
     """Add a search term to an existing query design.
 
@@ -570,6 +600,9 @@ async def add_search_term(
             When provided, a stable ``group_id`` UUID is derived from the
             combination of ``design_id`` and the normalised label so that
             all terms with the same label share the same UUID.
+        target_arenas: Optional comma-separated list of platform_name strings
+            (YF-01). When provided, the term applies only to specified arenas.
+            When NULL or empty, the term applies to all arenas (default).
 
     Returns:
         HTML ``<li>`` fragment for HTMX ``hx-swap="beforeend"`` insertion.
@@ -599,12 +632,28 @@ async def add_search_term(
     if resolved_group_label:
         resolved_group_id = uuid.uuid5(design_id, resolved_group_label.lower())
 
+    # YF-01: Parse target_arenas from comma-separated string to list.
+    # Empty string or None means "all arenas" (stored as NULL).
+    resolved_target_arenas: list[str] | None = None
+    if target_arenas:
+        arenas_list = [a.strip() for a in target_arenas.split(",") if a.strip()]
+        if arenas_list:
+            registered = {a["platform_name"] for a in list_arenas()}
+            invalid = [a for a in arenas_list if a not in registered]
+            if invalid:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Invalid arena platform names: {invalid}",
+                )
+            resolved_target_arenas = arenas_list
+
     new_term = SearchTerm(
         query_design_id=design_id,
         term=term,
         term_type=term_type,
         group_id=resolved_group_id,
         group_label=resolved_group_label,
+        target_arenas=resolved_target_arenas,
         is_active=True,
     )
     db.add(new_term)
@@ -618,6 +667,116 @@ async def add_search_term(
     )
     fragment = _render_term_list_item(new_term, design_id)
     return HTMLResponse(content=fragment, status_code=status.HTTP_201_CREATED)
+
+
+@router.post(
+    "/{design_id}/terms/bulk",
+    status_code=status.HTTP_201_CREATED,
+    response_model=list[SearchTermRead],
+)
+async def add_search_terms_bulk(
+    design_id: uuid.UUID,
+    terms_data: list[SearchTermCreate],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> list[SearchTerm]:
+    """Add multiple search terms to a query design in a single atomic operation.
+
+    All terms are validated before any are inserted.  If validation fails
+    for any term, the entire batch is rejected and no terms are added.
+
+    This endpoint is designed for scenarios where researchers prepare term
+    lists in external tools (spreadsheets, text editors) and want to import
+    them all at once rather than adding them one by one.
+
+    Args:
+        design_id: UUID of the target query design.
+        terms_data: List of ``SearchTermCreate`` objects to add.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        List of newly created ``SearchTermRead`` objects ordered by insertion.
+
+    Raises:
+        HTTPException 400: If ``terms_data`` is empty.
+        HTTPException 404: If the design does not exist.
+        HTTPException 403: If the caller is not the owner (and not admin).
+        HTTPException 422: If any term fails validation.
+    """
+    if not terms_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Request body must contain at least one search term.",
+        )
+
+    design = await _get_design_or_404(design_id, db)
+    ownership_guard(design.owner_id, current_user)
+
+    # YF-01: Validate all target_arenas values against the arena registry.
+    registered = {a["platform_name"] for a in list_arenas()}
+    for term_data in terms_data:
+        if term_data.target_arenas:
+            invalid = [a for a in term_data.target_arenas if a not in registered]
+            if invalid:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"Term {term_data.term!r} has invalid arena platform "
+                        f"names: {invalid}"
+                    ),
+                )
+
+    new_terms: list[SearchTerm] = []
+    for term_data in terms_data:
+        # Strip and validate term text.
+        term_text = term_data.term.strip()
+        if not term_text:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Search term must not be empty: {term_data.term!r}",
+            )
+
+        # Resolve group_id from group_label if provided (same logic as single-term endpoint).
+        resolved_group_id: uuid.UUID | None = term_data.group_id
+        resolved_group_label: str | None = term_data.group_label
+        if resolved_group_label and resolved_group_label.strip():
+            resolved_group_label = resolved_group_label.strip()
+            # Derive stable UUID from design_id + normalised label if not provided.
+            if resolved_group_id is None:
+                resolved_group_id = uuid.uuid5(design_id, resolved_group_label.lower())
+        else:
+            resolved_group_label = None
+            resolved_group_id = None
+
+        # Construct the SearchTerm ORM instance.
+        new_term = SearchTerm(
+            query_design_id=design_id,
+            term=term_text,
+            term_type=term_data.term_type or "keyword",
+            group_id=resolved_group_id,
+            group_label=resolved_group_label,
+            target_arenas=term_data.target_arenas,
+            is_active=True,
+        )
+        new_terms.append(new_term)
+
+    # Bulk insert all terms atomically.
+    db.add_all(new_terms)
+    await db.commit()
+
+    # Refresh all new terms to populate generated fields (id, added_at).
+    for term in new_terms:
+        await db.refresh(term)
+
+    logger.info(
+        "search_terms_bulk_added",
+        design_id=str(design_id),
+        count=len(new_terms),
+        user_id=str(current_user.id),
+    )
+
+    return new_terms
 
 
 @router.delete(
@@ -1090,6 +1249,23 @@ def _render_actor_list_item(
         f'title="View actor profile">Profile</a>'
     )
 
+    # YF-16: Add prominent link to configure platform presences
+    configure_presences_link = (
+        f'<a href="/actors/{actor.id}#presences" '
+        f'target="_blank" '
+        f'class="inline-flex items-center gap-1 text-xs text-blue-600 '
+        f'hover:text-blue-800 hover:underline flex-shrink-0" '
+        f'title="Add platform presences (opens in new tab)">'
+        f'<svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" '
+        f'viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">'
+        f'<path stroke-linecap="round" stroke-linejoin="round" '
+        f'd="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 '
+        f'005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>'
+        f'</svg>'
+        f'Add presences'
+        f'</a>'
+    )
+
     return (
         f'<li id="actor-{member_id}" '
         f'class="flex items-center justify-between gap-3 py-2 px-3 rounded-md '
@@ -1099,6 +1275,8 @@ def _render_actor_list_item(
         f'{badge_classes} flex-shrink-0">{badge_label}</span>'
         f'<span class="text-sm text-gray-900 font-medium truncate">{name}</span>'
         f"{profile_link}"
+        f'<span class="text-gray-300 flex-shrink-0">|</span>'
+        f"{configure_presences_link}"
         f"</div>"
         f'<button type="button" '
         f'hx-delete="/query-designs/{design_id}/actors/{member_id}" '
@@ -1117,6 +1295,37 @@ def _render_actor_list_item(
         f"</button>"
         f"</li>"
     )
+
+
+class ActorBulkItem(BaseModel):
+    """One item in a bulk actor import request.
+
+    Attributes:
+        name: Actor's canonical name (required).
+        actor_type: Actor type classification (defaults to ``"person"``).
+            One of: person, organization, political_party, educational_institution,
+            teachers_union, think_tank, media_outlet, government_body, ngo,
+            company, unknown.
+    """
+
+    name: str
+    actor_type: str = "person"
+
+
+class ActorBulkAddResponse(BaseModel):
+    """Response body for the bulk actor add endpoint.
+
+    Attributes:
+        added: List of actor names that were successfully added.
+        skipped: List of actor names that were already in the list.
+        actor_ids: List of UUIDs for all actors (added or skipped).
+        total: Total items processed.
+    """
+
+    added: list[str]
+    skipped: list[str]
+    actor_ids: list[str]
+    total: int
 
 
 @router.post(
@@ -1231,6 +1440,137 @@ async def add_actor_to_design(
         actor=actor,
     )
     return HTMLResponse(content=fragment, status_code=status.HTTP_201_CREATED)
+
+
+@router.post(
+    "/{design_id}/actors/bulk",
+    status_code=status.HTTP_201_CREATED,
+    response_model=ActorBulkAddResponse,
+)
+async def add_actors_to_design_bulk(
+    design_id: uuid.UUID,
+    actors_data: list[ActorBulkItem],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> ActorBulkAddResponse:
+    """Add multiple actors to a query design in a single atomic operation.
+
+    All actors are validated before any are inserted.  Actors already present
+    in the query design's default actor list are skipped (no error raised).
+
+    This endpoint is designed for scenarios where researchers have a prepared
+    list of 8-15 seed actors and want to import them all at once rather than
+    adding them one by one through the query design editor.
+
+    For each actor in the request:
+    1. Validate the actor name is not empty.
+    2. Find or create a canonical ``Actor`` record (case-insensitive name match).
+    3. Find or create the query design's ``Default`` ``ActorList``.
+    4. Add an ``ActorListMember`` linking the actor to the list (skip if already present).
+
+    Args:
+        design_id: UUID of the target query design.
+        actors_data: List of ``ActorBulkItem`` objects to add.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        ``ActorBulkAddResponse`` with counts of added/skipped actors and their IDs.
+
+    Raises:
+        HTTPException 400: If ``actors_data`` is empty.
+        HTTPException 404: If the design does not exist.
+        HTTPException 403: If the caller is not the owner (and not admin).
+        HTTPException 422: If any actor name is empty after stripping.
+    """
+    if not actors_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Request body must contain at least one actor.",
+        )
+
+    # Pre-validate all names before any DB writes (atomic: all or nothing).
+    for item in actors_data:
+        if not item.name.strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Actor name must not be empty: {item.name!r}",
+            )
+
+    design = await _get_design_or_404(design_id, db)
+    ownership_guard(design.owner_id, current_user)
+
+    # Find or create the design's default ActorList once for all actors.
+    actor_list = await _get_or_create_default_actor_list(
+        design_id=design_id,
+        user_id=current_user.id,
+        db=db,
+    )
+
+    added_names: list[str] = []
+    skipped_names: list[str] = []
+    actor_ids: list[str] = []
+    # Track actor IDs added during this batch to prevent duplicate member inserts.
+    batch_added_actor_ids: set[uuid.UUID] = set()
+
+    for item in actors_data:
+        name = item.name.strip()
+
+        # Find or create canonical Actor record.
+        actor = await _find_or_create_actor(
+            name=name,
+            actor_type=item.actor_type,
+            user_id=current_user.id,
+            db=db,
+        )
+        actor_ids.append(str(actor.id))
+
+        # Skip if already added during this batch (within-batch dedup).
+        if actor.id in batch_added_actor_ids:
+            skipped_names.append(actor.canonical_name)
+            continue
+
+        # Check if actor is already a member of this list (pre-existing).
+        existing = await db.execute(
+            select(ActorListMember).where(
+                ActorListMember.actor_list_id == actor_list.id,
+                ActorListMember.actor_id == actor.id,
+            )
+        )
+        member = existing.scalar_one_or_none()
+
+        if member is None:
+            # Add new membership.
+            member = ActorListMember(
+                actor_list_id=actor_list.id,
+                actor_id=actor.id,
+                added_by="bulk_import",
+            )
+            db.add(member)
+            added_names.append(actor.canonical_name)
+            batch_added_actor_ids.add(actor.id)
+        else:
+            # Actor already in the list.
+            skipped_names.append(actor.canonical_name)
+
+    # Commit all changes atomically.
+    await db.commit()
+
+    logger.info(
+        "actors_bulk_added",
+        design_id=str(design_id),
+        total=len(actors_data),
+        added=len(added_names),
+        skipped=len(skipped_names),
+        user_id=str(current_user.id),
+    )
+
+    return ActorBulkAddResponse(
+        added=added_names,
+        skipped=skipped_names,
+        actor_ids=actor_ids,
+        total=len(actors_data),
+    )
 
 
 @router.delete(

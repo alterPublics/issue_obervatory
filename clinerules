@@ -1,4 +1,6 @@
-# Issue Observatory — Project Rules (.clinerules)
+# Issue Observatory -- Project Rules (.clinerules)
+
+**Last updated:** 2026-02-19
 
 ## Project Identity
 
@@ -6,52 +8,83 @@ This is **The Issue Observatory**, a modular multi-platform media data collectio
 
 ## Key References
 
-- `/IMPLEMENTATION_PLAN.md` — Phased build plan, architecture, schema, cost tiers
-- `/AGENTS.md` — Sub-agent role definitions and boundaries
-- `/reports/cross_platform_data_collection.md` — Platform-by-platform API/access research
-- `/reports/danish_context_guide.md` — Denmark-specific sources, legal, GDPR, DSA
-- `https://github.com/dimelab/issue_observatory_search` — Predecessor project (Google Search tracking). Inspect closely for patterns, but build fresh.
+- `/CLAUDE.md` -- Comprehensive project guide reflecting current implementation state
+- `/IMPLEMENTATION_PLAN.md` -- Original phased build plan, architecture, schema, cost tiers
+- `/docs/research_reports/implementation_plan_2_0_strategy.md` -- Unified improvement roadmap (IP2-001 through IP2-061)
+- `/AGENTS.md` -- Sub-agent role definitions and boundaries
+- `/reports/cross_platform_data_collection.md` -- Platform-by-platform API/access research
+- `/reports/danish_context_guide.md` -- Denmark-specific sources, legal, GDPR, DSA
+- `/docs/status/{agent}.md` -- Per-agent implementation status (research, core, db, frontend, qa)
+- `/docs/arenas/{platform}.md` -- Arena research briefs (required before implementation)
 
-**All agents must read IMPLEMENTATION_PLAN.md and the relevant report(s) in /reports before beginning any task.**
+**All agents must read CLAUDE.md before beginning any task.** For arena work, also read the relevant arena brief in `/docs/arenas/`.
 
 ---
 
 ## Architecture Rules
 
 ### Arena Isolation
-- Every arena (google_search, bluesky, reddit, etc.) lives in `src/issue_observatory/arenas/{arena_name}/`
-- Every arena MUST expose a standalone FastAPI router in `router.py` that can be mounted independently
+- Every arena lives in `src/issue_observatory/arenas/{arena_name}/` with: `collector.py`, `tasks.py` (Celery), `router.py` (FastAPI), `config.py`, `__init__.py`
 - Every arena MUST implement the `ArenaCollector` abstract base class from `issue_observatory.arenas.base`
-- Arenas MUST NOT import from other arenas. Cross-arena logic belongs in `issue_observatory.core`
-- Each arena has its own `collector.py`, `tasks.py` (Celery), `router.py` (FastAPI), and `config.py`
+- Every arena MUST be registered via the `@register` decorator from `issue_observatory.arenas.registry`
+- The registry is keyed by `platform_name` (unique per collector), not `arena_name` (which is a shared logical grouping label). Multiple collectors may share the same `arena_name` (e.g., `"social_media"`)
+- Arenas MUST NOT import from other arenas. Cross-arena logic belongs in `issue_observatory.core` or `issue_observatory.analysis`
+- Arena research briefs (`/docs/arenas/{platform}.md`) are blocking dependencies -- engineering work must not begin without a completed brief
+
+### ArenaCollector Interface
+- `arena_name` (str) -- logical grouping label (e.g., `"social_media"`, `"news_media"`, `"web"`)
+- `platform_name` (str) -- unique per-collector identifier (e.g., `"reddit"`, `"youtube"`, `"wayback"`)
+- `supported_tiers` (list[Tier]) -- FREE, MEDIUM, PREMIUM
+- `collect_by_terms(terms, tier, ...)` -- keyword search; supports `term_groups` for boolean AND/OR logic and `language_filter` for multi-language collection
+- `collect_by_actors(actor_ids, tier, ...)` -- actor-based collection
+- `normalize(raw_item)` -- transforms raw API response to universal content record dict
+- `get_tier_config(tier)` -- returns tier-specific API configuration
+- `set_public_figure_ids(ids)` -- GR-14: registers actor IDs that bypass SHA-256 pseudonymization
+- `estimate_credits(...)` -- returns estimated credit cost (default 0 for free arenas; override for paid)
 
 ### Three-Tier Cost Model
 - Every arena MUST support at least one of: FREE, MEDIUM, PREMIUM tiers
-- Tier selection is a runtime configuration, not a code branch — use strategy pattern or config-driven provider selection
+- Tier selection is a runtime configuration, not a code branch -- use strategy pattern or config-driven provider selection
 - If an arena has no free option, it MUST gracefully skip when tier=FREE (log warning, return empty results)
-- Tier configuration lives in `arenas_config` JSONB on `collection_runs` and per-arena `config.py` files
+- Tier precedence (IP2-022): per-arena in arenas_config > launcher request > global CollectionRun.tier
+
+### Researcher-Configurable Source Lists (GR-01 through GR-04)
+- Arenas with curated source lists support researcher customization via `arenas_config` JSONB on query_designs
+- Configuration is persisted via `PATCH /query-designs/{design_id}/arena-config/{arena_name}`
+- Implemented for: RSS (custom_feeds), Telegram (custom_channels), Reddit (custom_subreddits), Discord (custom_channel_ids), Wikipedia (seed_articles)
+- Multi-language override: `arenas_config["languages"]` takes priority over single `language` field (GR-05)
 
 ### Query Design as First-Class Entity
-- All collection revolves around `query_designs` — named sets of search terms + actor lists
-- Every collection function accepts a `query_design_id` parameter
-- Actor-based collection (monitoring specific accounts) is equally important as keyword search — some arenas (Telegram, LinkedIn) may ONLY support actor-based collection
+- All collection revolves around `query_designs` -- named sets of search terms + actor lists + arena configuration
+- Search terms support boolean grouping: terms with the same `group_id` are ANDed; groups are ORed (IP2-031, `arenas/query_builder.py`)
+- Search terms support `group_label` for categorization (IP2-046)
+- Actor-based collection is equally important as keyword search
 - The entity resolver (`issue_observatory.core.entity_resolver`) is shared across all arenas
+- Query designs can be cloned (IP2-051, `parent_design_id` FK)
 
 ### Celery Task Patterns
 - All data collection happens in Celery tasks, never in request handlers
 - Task naming convention: `issue_observatory.arenas.{arena_name}.tasks.{action}`
-- Tasks must be idempotent — safe to retry on failure
-- Rate limit state tracked in Redis with keys: `ratelimit:{arena}:{provider}:{key}`
+- Tasks must be idempotent -- safe to retry on failure
+- Rate limit state tracked in Redis with keys: `ratelimit:{arena}:{platform}:{credential_id}`
 - Use `collection_runs` and `collection_tasks` tables to track progress
-- Long-running streaming tasks (Bluesky firehose, Reddit PRAW, Telegram) use dedicated Celery workers
+- SSE live monitoring: tasks publish progress via `event_bus.py` (synchronous Redis pub/sub)
+
+### Enrichment Pipeline Pattern
+- Enrichments are pluggable post-collection processors subclassing `ContentEnricher` from `analysis/enrichments/base.py`
+- Each enricher defines `enricher_name`, `is_applicable(record)`, and `enrich(record)`
+- Output stored in `raw_metadata.enrichments.{enricher_name}` as JSONB -- no schema migration needed
+- Available enrichers: LanguageDetector, NamedEntityExtractor, PropagationEnricher, CoordinationDetector
 
 ### Database Conventions
 - All models in `src/issue_observatory/core/models/` directory using SQLAlchemy 2.0 declarative style
-- All tables have `created_at` and `updated_at` timestamps
-- Platform-specific data goes in `raw_metadata` JSONB column — never add platform-specific columns to the universal schema
+- All tables have `created_at` and `updated_at` timestamps (via `TimestampMixin`)
+- Platform-specific data goes in `raw_metadata` JSONB column -- never add platform-specific columns to the universal schema
+- Enrichment data goes in `raw_metadata.enrichments.{enricher_name}` -- not in new columns
 - UUIDs for all primary keys
-- Alembic for all migrations — never modify tables manually
+- Alembic for all migrations -- never modify tables manually
 - Pydantic schemas in `src/issue_observatory/core/schemas/` for all API inputs/outputs
+- `content_records` is range-partitioned by `published_at` (monthly boundaries); FK references must account for the composite PK `(id, published_at)`
 
 ---
 
@@ -70,15 +103,20 @@ This is **The Issue Observatory**, a modular multi-platform media data collectio
 - Classes: `PascalCase`
 - Functions/methods: `snake_case`
 - Constants: `UPPER_SNAKE_CASE`
-- Arena names: `snake_case` everywhere (google_search, x_twitter, news_media, web_at_large)
+- Arena platform_names: `snake_case` (e.g., `google_search`, `x_twitter`, `rss_feeds`, `common_crawl`, `wayback`)
 - Celery task names: dotted path matching module location
 
 ### Error Handling
-- Custom exception hierarchy rooted in `IssueObservatoryError`
+- Custom exception hierarchy rooted in `IssueObservatoryError` (`core/exceptions.py`)
 - Arena-specific exceptions: `ArenaCollectionError`, `ArenaRateLimitError`, `ArenaAuthError`
-- Never swallow exceptions silently — log at minimum
+- Never swallow exceptions silently -- log at minimum
 - All external API calls wrapped in try/except with specific error types
-- Use structured logging (structlog or standard logging with JSON formatter)
+- Use structured logging (structlog)
+
+### Linting and Formatting
+- Ruff for linting and formatting; line length 100; double quotes; LF line endings
+- Mypy strict mode with `pydantic.mypy` plugin
+- Pre-commit hooks: ruff + pre-commit-hooks
 
 ### UI Language
 - The application interface MUST be in **English**. All nav labels, page headings, button labels,
@@ -93,12 +131,14 @@ This is **The Issue Observatory**, a modular multi-platform media data collectio
 - The `<html lang="en">` attribute must be set in `base.html` and `base_auth.html`.
 
 ### Testing
-- Every arena collector must have unit tests with mocked API responses
+- Every arena collector must have unit tests with mocked API responses (using `respx`)
+- Test fixtures live in `tests/fixtures/api_responses/{arena_name}/`
+- Test factories in `tests/factories/` (UserFactory, QueryDesignFactory, ContentRecordFactory)
 - Integration tests use Docker-based PostgreSQL and Redis (pytest fixtures in conftest.py)
-- Minimum test coverage target: 80% for core/, 70% for arenas/
+- Minimum test coverage target: 80% for core/, 75% for arenas/
 - Test file naming: `test_{module_name}.py`
-- Use `pytest-asyncio` for async tests
-- Fixture factories for content_items, query_designs, actors
+- Use `pytest-asyncio` with `asyncio_mode = "auto"`
+- Test directories: `tests/unit/`, `tests/arenas/`, `tests/integration/`, `tests/scraper/`
 
 ---
 
@@ -106,51 +146,58 @@ This is **The Issue Observatory**, a modular multi-platform media data collectio
 
 ### Language & Locale
 - All Google Search/Autocomplete requests MUST include `gl=dk&hl=da` for Danish context
-- YouTube searches should use `relevanceLanguage=da` where supported
-- Bluesky searchPosts supports `lang:da` filter — use it
-- GDELT queries should filter by `sourcelang:danish` or `sourcecountry:DA`
-- Store language as ISO 639-1 (`da` for Danish) and country as ISO 3166-1 (`DK`) on all content_items
+- YouTube searches use `relevanceLanguage=da`, `regionCode=DK`
+- Bluesky searchPosts uses `lang:da` filter for term search; actor-based collection uses client-side language filtering
+- GDELT queries filter by `sourcelang:danish` or `sourcecountry:DA`
+- Event Registry uses ISO 639-3 `"dan"` (not ISO 639-1 `"da"`)
+- X/Twitter uses `lang:da` search operator
+- Store language as ISO 639-1 (`da` for Danish) and country as ISO 3166-1 (`DK`) on all content records
+- Multi-language collection is supported via `arenas_config["languages"]` list (GR-05)
 
 ### Danish News Sources
-- A curated Danish RSS feed list is a first-class configuration artifact in `src/issue_observatory/config/danish_defaults.py`
-- Minimum required sources: DR (all feeds), TV2, BT, Politiken, Berlingske, Ekstra Bladet, Information, Jyllands-Posten, Nordjyske, Børsen, Kristeligt Dagblad
-- Feed URLs must be verified active before inclusion
-- TV2 feed: `https://feeds.services.tv2.dk/api/feeds/nyheder/rss`
-- DR feeds base: `https://www.dr.dk/nyheder/service/feeds/`
+- A curated Danish RSS feed list is in `src/issue_observatory/config/danish_defaults.py`
+- Core sources: DR (all feeds), TV2, BT, Politiken, Berlingske, Ekstra Bladet, Information, Jyllands-Posten (uncertain availability), Nordjyske, Borsen, Kristeligt Dagblad
+- Policy/sector: Altinget (main + uddannelse + klima section feeds)
+- Education: Folkeskolen, Gymnasieskolen, KU, DTU, CBS
+- Researchers can add custom RSS feeds via `arenas_config["rss"]["custom_feeds"]` (GR-01)
 
 ### Excluded Sources
-- Infomedia is explicitly EXCLUDED despite being ideal for Danish news research (per user specification)
+- **Infomedia** is explicitly EXCLUDED (institutional-subscription-only, not available)
+- **LinkedIn** has no automated collection path -- manual Zeeschuimer capture with NDJSON import only
 - Do not implement Infomedia integration or reference it as available
 
 ### Legal Compliance
 - GDPR compliance is non-negotiable. All architecture decisions must support:
-  - Pseudonymization of author identifiers on export
-  - Data subject deletion capability (soft-delete with `deleted_at` column)
-  - Purpose limitation (content_items linked to research query_designs)
-  - Data retention policies (configurable per arena)
-- LinkedIn scraping carries HIGH legal risk in EU — always flag this in documentation and logs
-- The application must be able to generate a DPIA-supporting data inventory on demand
+  - Pseudonymization of author identifiers (SHA-256 with configurable salt)
+  - Public figure exemption: `public_figure=True` on Actor records bypasses pseudonymization per GDPR Art. 89(1), with audit trail in `raw_metadata` (GR-14)
+  - Data subject deletion capability via `RetentionService` (`core/retention_service.py`)
+  - Purpose limitation (content records linked to research query_designs)
+  - Data retention policies (configurable)
+- LinkedIn scraping carries HIGH legal risk in EU (CNIL precedent: KASPR fined EUR 240K)
+- Content annotations support qualitative coding with stance vocabulary (positive, negative, neutral, contested, irrelevant)
 
 ---
 
 ## Git & Workflow Rules
 
 ### Branch Strategy
-- `main` — stable, tested, deployable
-- `develop` — integration branch
-- `feature/{arena-name}` — per-arena feature branches
-- `feature/{module-name}` — for core, analysis, sampling modules
+- `main` -- stable, tested, deployable
+- `develop` -- integration branch
+- `feature/{arena-name}` -- per-arena feature branches
+- `feature/{module-name}` -- for core, analysis, sampling modules
 - PRs require passing CI (lint + type-check + tests) before merge
 
 ### Commit Messages
-- Format: `{scope}: {description}` 
-- Scopes: `core`, `arena/{name}`, `analysis`, `sampling`, `infra`, `docs`, `tests`
+- Format: `{scope}: {description}`
+- Scopes: `core`, `arena/{name}`, `analysis`, `sampling`, `scraper`, `infra`, `docs`, `tests`
 - Examples: `core: add query design CRUD endpoints`, `arena/bluesky: implement keyword search collector`
 
 ### Documentation
-- README.md at project root with setup instructions
-- Each arena directory gets a brief README.md documenting: supported tiers, required credentials, rate limits, Danish-specific notes
+- `/CLAUDE.md` at project root with comprehensive project guide
+- `/README.md` at project root with setup instructions
+- Arena research briefs in `/docs/arenas/{platform}.md`
 - API docs auto-generated via FastAPI OpenAPI (no manual API docs)
+- Status tracking in `/docs/status/{agent}.md`
 
 ---
 
@@ -158,23 +205,26 @@ This is **The Issue Observatory**, a modular multi-platform media data collectio
 
 ### Handoff Protocol
 - When one agent's work depends on another's output, the dependent agent MUST check that the prerequisite code exists and passes tests before building on it
-- The Research & Planning agent maintains `/docs/decisions/` (ADR log) with all architectural decisions and rationale
+- The Research & Planning agent maintains `/docs/decisions/` (ADR log) and arena briefs
 - The QA agent has final say on whether code meets standards before it merges to develop
+- Arena implementation requires a completed research brief at `/docs/arenas/{platform}.md`
 
 ### Shared State
 - Database schema changes MUST be proposed in an Alembic migration and reviewed by the Database agent
-- New arena implementations MUST follow the ArenaCollector interface — the Core agent defines the interface, arena agents implement it
-- The QA agent maintains `/docs/test_plan.md` tracking coverage per module
+- New arena implementations MUST follow the ArenaCollector interface and use the `@register` decorator
+- New enrichers MUST subclass `ContentEnricher` and store output in `raw_metadata.enrichments`
 
 ### File Ownership
-- `src/issue_observatory/core/` (except `models/`) — Core Application Agent
-- `src/issue_observatory/arenas/` — Core Application Agent (structure/interface + arena implementations)
-- `src/issue_observatory/api/` — Core Application Agent
-- `src/issue_observatory/workers/` — Core Application Agent
-- `src/issue_observatory/config/` — Core Application Agent
-- `src/issue_observatory/sampling/` — Core Application Agent
-- `src/issue_observatory/core/models/`, `src/issue_observatory/core/database.py`, `alembic/` — Database & Data Processing Agent
-- `src/issue_observatory/analysis/` — Database & Data Processing Agent
-- `tests/` — QA & Testing Agent (writes tests), all agents (fix failing tests in their scope)
-- `docs/`, `reports/` — Research & Planning Agent
-- `docker-compose.yml`, CI config, `pyproject.toml` — shared (coordinate via PR review)
+- `src/issue_observatory/core/` (except `models/`) -- Core Application Agent
+- `src/issue_observatory/arenas/` -- Core Application Agent (structure/interface + arena implementations)
+- `src/issue_observatory/api/routes/`, `src/issue_observatory/api/dependencies.py`, `src/issue_observatory/api/main.py` -- Core Application Agent
+- `src/issue_observatory/api/templates/`, `src/issue_observatory/api/static/` -- Frontend Engineer
+- `src/issue_observatory/workers/` -- Core Application Agent
+- `src/issue_observatory/config/` -- Core Application Agent
+- `src/issue_observatory/sampling/` -- Core Application Agent
+- `src/issue_observatory/scraper/` -- Core Application Agent
+- `src/issue_observatory/core/models/`, `src/issue_observatory/core/database.py`, `alembic/` -- Database & Data Processing Agent
+- `src/issue_observatory/analysis/` -- Database & Data Processing Agent
+- `tests/` -- QA & Testing Agent (writes tests), all agents (fix failing tests in their scope)
+- `docs/`, `reports/` -- Research & Planning Agent
+- `docker-compose.yml`, CI config, `pyproject.toml` -- shared (coordinate via PR review)
