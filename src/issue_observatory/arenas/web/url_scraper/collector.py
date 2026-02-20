@@ -32,7 +32,7 @@ from typing import Any
 
 import httpx
 
-from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.web.url_scraper._helpers import (
     build_searchable_text,
@@ -125,6 +125,7 @@ class UrlScraperCollector(ArenaCollector):
     arena_name: str = "web"
     platform_name: str = "url_scraper"
     supported_tiers: list[Tier] = [Tier.FREE, Tier.MEDIUM]
+    temporal_mode: TemporalMode = TemporalMode.RECENT
 
     def __init__(
         self,

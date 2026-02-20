@@ -23,6 +23,8 @@ Available enrichers:
   inauthentic behaviour (CIB) by flagging near-duplicate clusters where
   multiple distinct authors post near-identical content within a narrow
   time window.
+- :class:`SentimentAnalyzer` — IP2-034: computes Danish sentiment scores
+  using the AFINN lexicon (requires the ``nlp`` extra).
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from issue_observatory.analysis.enrichments.language_detector import (
 )
 from issue_observatory.analysis.enrichments.named_entity_extractor import NamedEntityExtractor
 from issue_observatory.analysis.enrichments.propagation_detector import PropagationEnricher
+from issue_observatory.analysis.enrichments.sentiment_analyzer import SentimentAnalyzer
 
 __all__ = [
     "ContentEnricher",
@@ -44,4 +47,5 @@ __all__ = [
     "NamedEntityExtractor",
     "PropagationEnricher",
     "CoordinationDetector",
+    "SentimentAnalyzer",
 ]

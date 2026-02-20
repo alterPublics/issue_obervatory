@@ -4,12 +4,14 @@ Currently covers:
 
 - ``deduplicate_run``: run a full cross-arena near-duplicate detection pass
   for one collection run (Task 3.8).
+- ``refresh_engagement_metrics``: re-fetch engagement metrics for existing
+  content records in a collection run (IP2-035).
 
 Database access uses ``psycopg2`` (synchronous) because Celery workers are
 synchronous processes.  The async deduplication service logic is re-implemented
 here using direct SQL to avoid running a nested asyncio event loop under Celery.
 
-Owned by the DB Engineer.
+Owned by the Core Application Engineer (engagement refresh) and DB Engineer (dedup).
 """
 
 from __future__ import annotations
@@ -253,3 +255,226 @@ def deduplicate_run(
     except Exception as exc:
         log.error("dedup_task.failed", error=str(exc))
         raise
+
+
+# ---------------------------------------------------------------------------
+# Engagement metric refresh (IP2-035)
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(name="refresh_engagement_metrics", bind=True)  # type: ignore[misc]
+def refresh_engagement_metrics(
+    self: Any,  # noqa: ANN401
+    run_id: str,
+) -> dict[str, Any]:
+    """Re-fetch engagement metrics for content records in a collection run.
+
+    Groups records by platform, calls each arena's ``refresh_engagement()``
+    method (if implemented), and updates engagement counts in the database.
+
+    Arenas that do not implement ``refresh_engagement()`` are skipped
+    silently with a debug log message.
+
+    Records are batched (50 external_ids per API call) to avoid overwhelming
+    upstream APIs and to respect rate limits.
+
+    This task is dispatched by ``POST /collections/{run_id}/refresh-engagement``.
+
+    Args:
+        run_id: UUID string of the collection run to refresh.
+
+    Returns:
+        Dict with:
+        - ``platforms_processed``: number of platforms that support refresh
+        - ``records_queried``: total records sent to arena APIs
+        - ``records_updated``: number of records successfully updated
+        - ``platforms_skipped``: number of platforms without refresh support
+    """
+    log = logger.bind(task="refresh_engagement_metrics", run_id=run_id)
+    log.info("refresh_engagement.start")
+
+    from issue_observatory.config.settings import get_settings
+
+    settings = get_settings()
+    sync_dsn = _build_sync_dsn(settings.database_url)
+
+    try:
+        result = _refresh_engagement_sync(sync_dsn, run_id, settings)
+        log.info("refresh_engagement.complete", **result)
+        return result
+    except Exception as exc:
+        log.error("refresh_engagement.failed", error=str(exc))
+        raise
+
+
+def _refresh_engagement_sync(sync_dsn: str, run_id: str, settings: Any) -> dict[str, Any]:  # noqa: ANN401
+    """Execute engagement refresh inside a synchronous psycopg2 connection.
+
+    Args:
+        sync_dsn: psycopg2-compatible database DSN.
+        run_id: UUID string of the collection run to refresh.
+        settings: Application settings instance.
+
+    Returns:
+        Dict with processing statistics.
+    """
+    try:
+        import psycopg2
+        import psycopg2.extras
+    except ImportError as exc:
+        raise ImportError(
+            "psycopg2 is required for maintenance tasks. "
+            "Install it with: pip install psycopg2-binary"
+        ) from exc
+
+    import asyncio
+    from collections import defaultdict
+
+    from issue_observatory.arenas.base import Tier
+    from issue_observatory.arenas.registry import get_arena
+
+    platforms_processed = 0
+    platforms_skipped = 0
+    records_queried = 0
+    records_updated = 0
+
+    BATCH_SIZE = 50  # process 50 external_ids per API call
+
+    with psycopg2.connect(sync_dsn) as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Fetch all records grouped by platform
+            cur.execute(
+                """
+                SELECT
+                    platform,
+                    external_id,
+                    id::text as record_id
+                FROM content_records
+                WHERE collection_run_id = %(run_id)s
+                  AND external_id IS NOT NULL
+                ORDER BY platform, external_id
+                """,
+                {"run_id": run_id},
+            )
+            rows = cur.fetchall()
+
+            if not rows:
+                logger.info("refresh_engagement: no records with external_id found")
+                return {
+                    "platforms_processed": 0,
+                    "records_queried": 0,
+                    "records_updated": 0,
+                    "platforms_skipped": 0,
+                }
+
+            # Group records by platform
+            platform_groups: dict[str, list[dict[str, str]]] = defaultdict(list)
+            for row in rows:
+                platform_groups[row["platform"]].append(
+                    {"external_id": row["external_id"], "record_id": row["record_id"]}
+                )
+
+            # Also fetch the tier from collection_runs
+            cur.execute(
+                """
+                SELECT tier
+                FROM collection_runs
+                WHERE id = %(run_id)s
+                """,
+                {"run_id": run_id},
+            )
+            tier_row = cur.fetchone()
+            tier = Tier(tier_row["tier"]) if tier_row else Tier.FREE
+
+            # Process each platform
+            for platform_name, records in platform_groups.items():
+                log = logger.bind(platform=platform_name, record_count=len(records))
+                log.info("refresh_engagement: processing platform")
+
+                try:
+                    # Get the arena collector
+                    collector = get_arena(platform_name)
+                    if collector is None:
+                        log.warning("refresh_engagement: arena not found in registry")
+                        platforms_skipped += 1
+                        continue
+
+                    # Process in batches
+                    for i in range(0, len(records), BATCH_SIZE):
+                        batch = records[i : i + BATCH_SIZE]
+                        external_ids = [r["external_id"] for r in batch]
+                        records_queried += len(external_ids)
+
+                        log.debug(
+                            "refresh_engagement: fetching batch",
+                            batch_start=i,
+                            batch_size=len(external_ids),
+                        )
+
+                        # Call the arena's refresh_engagement() method
+                        # Run in a temporary asyncio event loop
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            engagement_map = loop.run_until_complete(
+                                collector.refresh_engagement(external_ids, tier=tier)
+                            )
+                        finally:
+                            loop.close()
+
+                        if not engagement_map:
+                            # Arena doesn't support refresh or returned no data
+                            log.debug("refresh_engagement: arena returned empty map")
+                            continue
+
+                        # Update records in the database
+                        for record in batch:
+                            external_id = record["external_id"]
+                            metrics = engagement_map.get(external_id)
+                            if not metrics:
+                                continue
+
+                            # Build SET clause dynamically based on available metrics
+                            updates = []
+                            params = {"record_id": record["record_id"]}
+
+                            if "likes_count" in metrics:
+                                updates.append("likes_count = %(likes_count)s")
+                                params["likes_count"] = metrics["likes_count"]
+                            if "shares_count" in metrics:
+                                updates.append("shares_count = %(shares_count)s")
+                                params["shares_count"] = metrics["shares_count"]
+                            if "comments_count" in metrics:
+                                updates.append("comments_count = %(comments_count)s")
+                                params["comments_count"] = metrics["comments_count"]
+                            if "views_count" in metrics:
+                                updates.append("views_count = %(views_count)s")
+                                params["views_count"] = metrics["views_count"]
+
+                            if updates:
+                                sql = f"""
+                                    UPDATE content_records
+                                    SET {", ".join(updates)}
+                                    WHERE id = %(record_id)s::uuid
+                                """
+                                cur.execute(sql, params)
+                                records_updated += cur.rowcount
+
+                    platforms_processed += 1
+
+                except Exception as exc:
+                    log.warning(
+                        "refresh_engagement: platform refresh failed",
+                        error=str(exc),
+                    )
+                    platforms_skipped += 1
+                    continue
+
+        conn.commit()
+
+    return {
+        "platforms_processed": platforms_processed,
+        "records_queried": records_queried,
+        "records_updated": records_updated,
+        "platforms_skipped": platforms_skipped,
+    }

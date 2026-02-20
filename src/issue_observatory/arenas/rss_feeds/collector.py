@@ -35,7 +35,7 @@ from typing import Any
 import feedparser
 import httpx
 
-from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.query_builder import build_boolean_query_groups
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.rss_feeds.config import (
@@ -104,6 +104,7 @@ class RSSFeedsCollector(ArenaCollector):
     arena_name: str = "rss_feeds"
     platform_name: str = "rss_feeds"
     supported_tiers: list[Tier] = [Tier.FREE]
+    temporal_mode: TemporalMode = TemporalMode.FORWARD_ONLY
 
     # The logical arena group stored in the content_records ``arena`` column.
     # Distinct from ``arena_name`` which is used as the registry key.

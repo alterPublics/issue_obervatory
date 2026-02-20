@@ -59,7 +59,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.vkontakte.config import (
     VKONTAKTE_TIERS,
@@ -109,6 +109,7 @@ class VKontakteCollector(ArenaCollector):
     arena_name: str = "social_media"
     platform_name: str = "vkontakte"
     supported_tiers: list[Tier] = [Tier.FREE]
+    temporal_mode: TemporalMode = TemporalMode.RECENT
 
     def __init__(
         self,

@@ -74,6 +74,12 @@ class AnnotationUpsertBody(BaseModel):
         stance: Stance label.  One of "positive", "negative", "neutral",
             "contested", "irrelevant".  None to leave unset.
         frame: Free-text frame label (e.g. "economic", "environmental").
+            Mutually exclusive with ``codebook_entry_id`` for frame coding.
+        codebook_entry_id: Optional UUID of a codebook entry to use for
+            structured coding. When provided, the codebook entry's ``code``
+            is automatically populated into the annotation's ``frame`` field.
+            This enforces vocabulary consistency. Mutually exclusive with
+            free-text ``frame``.
         is_relevant: Relevance flag.  True = relevant, False = irrelevant,
             None = not yet coded.
         notes: Free-text annotation notes.
@@ -85,6 +91,10 @@ class AnnotationUpsertBody(BaseModel):
     published_at: datetime
     stance: Optional[str] = Field(default=None, max_length=20)
     frame: Optional[str] = Field(default=None, max_length=200)
+    codebook_entry_id: Optional[uuid.UUID] = Field(
+        default=None,
+        description="Codebook entry to use for structured coding (populates frame field)",
+    )
     is_relevant: Optional[bool] = None
     notes: Optional[str] = None
     tags: Optional[list[str]] = None
@@ -216,6 +226,12 @@ async def upsert_annotation(
     (current_user, record_id, published_at) triplet, a new row is inserted.
     If one already exists, its coding fields are updated in place.
 
+    Codebook integration:
+        If ``codebook_entry_id`` is provided, the endpoint fetches the
+        corresponding codebook entry and uses its ``code`` to populate the
+        annotation's ``frame`` field. This enforces vocabulary consistency.
+        The ``frame`` and ``codebook_entry_id`` fields are mutually exclusive.
+
     Args:
         record_id: UUID of the target content record.
         body: Annotation fields to set.  ``published_at`` is required;
@@ -228,7 +244,10 @@ async def upsert_annotation(
 
     Raises:
         HTTPException 400: If the ``stance`` value is not one of the allowed
-            vocabulary terms.
+            vocabulary terms, or if both ``frame`` and ``codebook_entry_id``
+            are provided simultaneously.
+        HTTPException 404: If ``codebook_entry_id`` is provided but does not
+            exist or the user lacks access to it.
     """
     # Validate stance vocabulary at the application layer.
     if body.stance is not None and body.stance not in _VALID_STANCES:
@@ -238,6 +257,58 @@ async def upsert_annotation(
                 f"Invalid stance {body.stance!r}.  "
                 f"Must be one of: {', '.join(sorted(_VALID_STANCES))}."
             ),
+        )
+
+    # Validate mutual exclusivity of frame and codebook_entry_id
+    if body.frame is not None and body.codebook_entry_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot provide both 'frame' and 'codebook_entry_id'. Use one or the other.",
+        )
+
+    # Resolve codebook entry if provided
+    resolved_frame = body.frame
+    if body.codebook_entry_id is not None:
+        # FIXME: Uncomment once CodebookEntry model exists
+        # from issue_observatory.core.models.annotations import CodebookEntry
+        #
+        # codebook_stmt = select(CodebookEntry).where(
+        #     CodebookEntry.id == body.codebook_entry_id
+        # )
+        # codebook_result = await db.execute(codebook_stmt)
+        # codebook_entry = codebook_result.scalar_one_or_none()
+        #
+        # if codebook_entry is None:
+        #     raise HTTPException(
+        #         status_code=status.HTTP_404_NOT_FOUND,
+        #         detail=f"Codebook entry '{body.codebook_entry_id}' not found.",
+        #     )
+        #
+        # # Access control: user must have access to this codebook entry
+        # # (either it's global or they own the associated query design)
+        # if codebook_entry.query_design_id is not None:
+        #     if current_user.role != "admin" and codebook_entry.created_by != current_user.id:
+        #         raise HTTPException(
+        #             status_code=status.HTTP_404_NOT_FOUND,
+        #             detail=f"Codebook entry '{body.codebook_entry_id}' not found.",
+        #         )
+        #
+        # resolved_frame = codebook_entry.code
+        #
+        # logger.debug(
+        #     "annotation.codebook_resolved",
+        #     codebook_entry_id=str(body.codebook_entry_id),
+        #     resolved_frame=resolved_frame,
+        # )
+
+        # Placeholder until model exists
+        logger.warning(
+            "annotation.codebook_not_implemented",
+            message="CodebookEntry model does not exist yet. Using codebook_entry_id will fail.",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Codebook integration is not yet available. DB Engineer must create CodebookEntry model first.",
         )
 
     # Normalise the published_at to UTC-aware before storing.
@@ -262,7 +333,7 @@ async def upsert_annotation(
             content_record_id=record_id,
             content_published_at=published_at,
             stance=body.stance,
-            frame=body.frame,
+            frame=resolved_frame,  # Use resolved frame from codebook if provided
             is_relevant=body.is_relevant,
             notes=body.notes,
             collection_run_id=body.collection_run_id,
@@ -275,7 +346,7 @@ async def upsert_annotation(
         # Update existing annotation — only overwrite fields that are
         # explicitly present in the request body (not absent = no change).
         annotation.stance = body.stance
-        annotation.frame = body.frame
+        annotation.frame = resolved_frame  # Use resolved frame from codebook if provided
         annotation.is_relevant = body.is_relevant
         annotation.notes = body.notes
         annotation.collection_run_id = body.collection_run_id

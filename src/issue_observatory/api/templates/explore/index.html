@@ -34,29 +34,25 @@
             <label class="block text-sm font-medium text-gray-700 mb-2">
                 Select arena
             </label>
-            <div class="grid grid-cols-5 gap-3">
-                {% set arenas = [
-                    ('google_autocomplete', 'Google Autocomplete', 'Get search suggestions and related terms'),
-                    ('bluesky', 'Bluesky', 'Danish social media posts'),
-                    ('reddit', 'Reddit', 'Danish subreddit discussions'),
-                    ('rss_feeds', 'RSS Feeds', 'Danish news media articles'),
-                    ('gab', 'Gab', 'Alternative social media platform'),
-                ] %}
-                {% for arena_id, arena_label, arena_desc in arenas %}
-                <label class="relative flex cursor-pointer">
-                    <input
-                        type="radio"
-                        name="arena"
-                        value="{{ arena_id }}"
-                        x-model="selectedArena"
-                        class="peer sr-only"
-                    >
-                    <div class="w-full px-4 py-3 border-2 border-gray-200 rounded-lg hover:border-gray-300 peer-checked:border-blue-600 peer-checked:bg-blue-50 transition-all">
-                        <div class="font-medium text-sm text-gray-900">{{ arena_label }}</div>
-                        <div class="text-xs text-gray-500 mt-1">{{ arena_desc }}</div>
-                    </div>
-                </label>
-                {% endfor %}
+            <div x-show="availableArenas.length === 0" class="text-sm text-gray-400 py-4 text-center animate-pulse">
+                Loading arenas...
+            </div>
+            <div x-show="availableArenas.length > 0" class="grid gap-3" :class="availableArenas.length <= 3 ? 'grid-cols-3' : availableArenas.length <= 4 ? 'grid-cols-4' : 'grid-cols-5'">
+                <template x-for="arena in availableArenas" :key="arena.platform_name">
+                    <label class="relative flex cursor-pointer">
+                        <input
+                            type="radio"
+                            name="arena"
+                            :value="arena.platform_name"
+                            x-model="selectedArena"
+                            class="peer sr-only"
+                        >
+                        <div class="w-full px-4 py-3 border-2 border-gray-200 rounded-lg hover:border-gray-300 peer-checked:border-blue-600 peer-checked:bg-blue-50 transition-all">
+                            <div class="font-medium text-sm text-gray-900" x-text="arena.label"></div>
+                            <div class="text-xs text-gray-500 mt-1" x-text="arena.description"></div>
+                        </div>
+                    </label>
+                </template>
             </div>
         </div>
 
@@ -202,12 +198,99 @@
 function explorerApp() {
     return {
         searchTerm: '',
-        selectedArena: 'google_autocomplete',
+        selectedArena: '',
         isLoading: false,
         hasSearched: false,
         error: null,
         results: [],
         suggestions: [],
+        availableArenas: [],
+
+        async init() {
+            await this.loadArenas();
+        },
+
+        async loadArenas() {
+            try {
+                const response = await fetch('/api/arenas/', {
+                    credentials: 'include',
+                });
+                if (!response.ok) throw new Error('Failed to load arenas');
+                const data = await response.json();
+
+                // Filter to FREE tier arenas only (exploration is meant to be no-cost)
+                this.availableArenas = data.arenas
+                    .filter(arena => arena.supported_tiers.includes('free'))
+                    .map(arena => ({
+                        platform_name: arena.platform_name,
+                        label: this._formatArenaLabel(arena.platform_name),
+                        description: arena.description || this._getDefaultDescription(arena.platform_name)
+                    }));
+
+                // Set default selection to first arena
+                if (this.availableArenas.length > 0) {
+                    this.selectedArena = this.availableArenas[0].platform_name;
+                }
+            } catch (err) {
+                console.error('Failed to load arenas:', err);
+                this.error = 'Failed to load available arenas';
+            }
+        },
+
+        _formatArenaLabel(platformName) {
+            const labels = {
+                'google_autocomplete': 'Google Autocomplete',
+                'bluesky': 'Bluesky',
+                'reddit': 'Reddit',
+                'rss_feeds': 'RSS Feeds',
+                'gab': 'Gab',
+                'youtube': 'YouTube',
+                'gdelt': 'GDELT',
+                'telegram': 'Telegram',
+                'ritzau_via': 'Ritzau Infostream',
+                'threads': 'Threads',
+                'wikipedia': 'Wikipedia',
+                'discord': 'Discord',
+            };
+            return labels[platformName] || platformName.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        },
+
+        _getDefaultDescription(platformName) {
+            const descriptions = {
+                'google_autocomplete': 'Get search suggestions and related terms',
+                'bluesky': 'Danish social media posts',
+                'reddit': 'Danish subreddit discussions',
+                'rss_feeds': 'Danish news media articles',
+                'gab': 'Alternative social media platform',
+                'youtube': 'Video platform',
+                'gdelt': 'Global news events',
+                'telegram': 'Messaging platform channels',
+                'ritzau_via': 'Danish news wire',
+                'threads': 'Meta social platform',
+                'wikipedia': 'Encyclopedia articles',
+                'discord': 'Chat platform channels',
+            };
+            return descriptions[platformName] || 'Explore this arena';
+        },
+
+        _buildEndpoint(platformName) {
+            // Map platform name to collection endpoint
+            const endpointMap = {
+                'google_autocomplete': '/arenas/google-autocomplete/collect',
+                'bluesky': '/arenas/bluesky/collect/terms',
+                'reddit': '/arenas/reddit/collect/terms',
+                'rss_feeds': '/arenas/rss-feeds/collect/terms',
+                'gab': '/arenas/gab/collect/terms',
+                'youtube': '/arenas/youtube/collect/terms',
+                'gdelt': '/arenas/gdelt/collect/terms',
+                'telegram': '/arenas/telegram/collect/terms',
+                'ritzau_via': '/arenas/ritzau-via/collect/terms',
+                'threads': '/arenas/threads/collect/terms',
+                'wikipedia': '/arenas/wikipedia/collect/terms',
+                'discord': '/arenas/discord/collect/terms',
+            };
+            return endpointMap[platformName];
+        },
 
         async runExploration() {
             if (!this.searchTerm.trim()) return;
@@ -219,15 +302,10 @@ function explorerApp() {
             this.hasSearched = true;
 
             try {
-                const endpointMap = {
-                    'google_autocomplete': '/arenas/google-autocomplete/collect',
-                    'bluesky': '/arenas/bluesky/collect/terms',
-                    'reddit': '/arenas/reddit/collect/terms',
-                    'rss_feeds': '/arenas/rss-feeds/collect/terms',
-                    'gab': '/arenas/gab/collect/terms',
-                };
-
-                const endpoint = endpointMap[this.selectedArena];
+                const endpoint = this._buildEndpoint(this.selectedArena);
+                if (!endpoint) {
+                    throw new Error('This arena does not support exploration yet');
+                }
 
                 const body = {
                     terms: [this.searchTerm.trim()],

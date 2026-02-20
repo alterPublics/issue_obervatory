@@ -263,6 +263,7 @@ def _build_browse_stmt(
     language: Optional[str],
     search_term: Optional[str],
     run_id: Optional[uuid.UUID],
+    mode: Optional[str],
     cursor_published_at: Optional[datetime],
     cursor_id: Optional[uuid.UUID],
     limit: int,
@@ -283,6 +284,7 @@ def _build_browse_stmt(
         language: Optional ISO 639-1 language code.
         search_term: Optional member-of-array filter on ``search_terms_matched``.
         run_id: Optional collection run UUID filter.
+        mode: Optional collection mode filter ('batch' or 'live').
         cursor_published_at: ``published_at`` value of the last row on the
             previous page (keyset lower bound).
         cursor_id: ``id`` value of the last row on the previous page.
@@ -293,15 +295,24 @@ def _build_browse_stmt(
     """
     ucr = UniversalContentRecord
 
+    # SB-13: Join with collection_runs to get mode for badge display
     if current_user.role == "admin":
-        stmt = select(ucr)
+        stmt = select(ucr, CollectionRun.mode).join(
+            CollectionRun,
+            ucr.collection_run_id == CollectionRun.id,
+            isouter=True,
+        )
     else:
         user_run_ids_subq = (
             select(CollectionRun.id)
             .where(CollectionRun.initiated_by == current_user.id)
             .scalar_subquery()
         )
-        stmt = select(ucr).where(ucr.collection_run_id.in_(user_run_ids_subq))
+        stmt = (
+            select(ucr, CollectionRun.mode)
+            .join(CollectionRun, ucr.collection_run_id == CollectionRun.id, isouter=True)
+            .where(ucr.collection_run_id.in_(user_run_ids_subq))
+        )
 
     # Optional filters
     if platform is not None:
@@ -318,6 +329,19 @@ def _build_browse_stmt(
         stmt = stmt.where(ucr.collection_run_id == run_id)
     if search_term is not None:
         stmt = stmt.where(ucr.search_terms_matched.contains([search_term]))
+
+    # SB-13: Filter by collection mode (batch/live)
+    if mode is not None:
+        mode_run_ids_subq = (
+            select(CollectionRun.id)
+            .where(CollectionRun.mode == mode)
+        )
+        # If there's already a user scoping, intersect with mode filter
+        if current_user.role != "admin":
+            mode_run_ids_subq = mode_run_ids_subq.where(
+                CollectionRun.initiated_by == current_user.id
+            )
+        stmt = stmt.where(ucr.collection_run_id.in_(mode_run_ids_subq.scalar_subquery()))
 
     # Full-text search using the GIN index created in migration 001.
     if q:
@@ -401,6 +425,7 @@ async def _count_matching(
     language: Optional[str],
     search_term: Optional[str],
     run_id: Optional[uuid.UUID],
+    mode: Optional[str],
 ) -> int:
     """Return the total number of records matching the current browser filters.
 
@@ -417,6 +442,7 @@ async def _count_matching(
         language: Language filter.
         search_term: ``search_terms_matched`` array membership filter.
         run_id: Collection run UUID filter.
+        mode: Collection mode filter ('batch' or 'live').
 
     Returns:
         Integer row count (may be approximate on very large datasets).
@@ -433,6 +459,7 @@ async def _count_matching(
         language=language,
         search_term=search_term,
         run_id=run_id,
+        mode=mode,
         cursor_published_at=None,
         cursor_id=None,
         limit=_BROWSE_CAP + 1,  # count up to cap+1 to detect overflow
@@ -468,6 +495,9 @@ def _orm_row_to_template_dict(row: Any) -> dict[str, Any]:  # noqa: ANN401
     col = _get("collected_at")
     terms = _get("search_terms_matched") or []
 
+    # SB-13: Extract mode from the joined collection_runs table
+    mode = _get("mode") or ""
+
     return {
         "id": str(_get("id") or ""),
         "platform": _get("platform") or "",
@@ -485,6 +515,7 @@ def _orm_row_to_template_dict(row: Any) -> dict[str, Any]:  # noqa: ANN401
         "search_terms_matched": terms if isinstance(terms, list) else [],
         "run_id": str(_get("collection_run_id") or ""),
         "metadata": _get("raw_metadata") or {},
+        "mode": mode,
     }
 
 
@@ -542,6 +573,7 @@ async def content_browser_page(
     language: Optional[str] = Query(default=None),
     search_term: Optional[str] = Query(default=None),
     run_id: Optional[uuid.UUID] = Query(default=None),
+    mode: Optional[str] = Query(default=None, description="Collection mode filter: 'batch' or 'live'."),
     query_design_id: Optional[uuid.UUID] = Query(default=None, description="Active query design for quick-add actor flow."),
 ) -> Response:
     """Render the full content browser HTML page.
@@ -584,6 +616,7 @@ async def content_browser_page(
         language=language,
         search_term=search_term,
         run_id=run_id,
+        mode=mode,
         cursor_published_at=None,
         cursor_id=None,
         limit=_BROWSE_LIMIT,
@@ -611,6 +644,7 @@ async def content_browser_page(
         language=language,
         search_term=search_term,
         run_id=run_id,
+        mode=mode,
     )
 
     filter_ctx = {
@@ -622,6 +656,7 @@ async def content_browser_page(
         "language": language or "",
         "search_term": search_term or "",
         "run_id": str(run_id) if run_id else "",
+        "mode": mode or "",
     }
 
     return templates.TemplateResponse(
@@ -657,6 +692,7 @@ async def content_records_fragment(
     language: Optional[str] = Query(default=None),
     search_term: Optional[str] = Query(default=None),
     run_id: Optional[uuid.UUID] = Query(default=None),
+    mode: Optional[str] = Query(default=None, description="Collection mode filter: 'batch' or 'live'."),
     offset: int = Query(default=0, ge=0, description="Running total of rows already sent."),
     limit: int = Query(default=_BROWSE_LIMIT, ge=1, le=_MAX_LIMIT),
 ) -> HTMLResponse:
@@ -726,6 +762,7 @@ async def content_records_fragment(
         language=language,
         search_term=search_term,
         run_id=run_id,
+        mode=mode,
         cursor_published_at=cursor_published_at,
         cursor_id=cursor_id_val,
         limit=remaining,

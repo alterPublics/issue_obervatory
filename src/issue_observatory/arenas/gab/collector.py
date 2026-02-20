@@ -32,7 +32,7 @@ from typing import Any
 
 import httpx
 
-from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.gab.config import (
     GAB_ACCOUNT_LOOKUP_ENDPOINT,
@@ -83,6 +83,7 @@ class GabCollector(ArenaCollector):
     arena_name: str = "social_media"
     platform_name: str = "gab"
     supported_tiers: list[Tier] = [Tier.FREE]
+    temporal_mode: TemporalMode = TemporalMode.RECENT
 
     def __init__(
         self,

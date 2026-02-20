@@ -30,7 +30,7 @@ from typing import Any
 
 import httpx
 
-from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.facebook.config import (
     BRIGHTDATA_FACEBOOK_COUNTRY,
@@ -77,6 +77,7 @@ class FacebookCollector(ArenaCollector):
     arena_name: str = _ARENA
     platform_name: str = _PLATFORM
     supported_tiers: list[Tier] = [Tier.MEDIUM, Tier.PREMIUM]
+    temporal_mode: TemporalMode = TemporalMode.RECENT
 
     def __init__(
         self,

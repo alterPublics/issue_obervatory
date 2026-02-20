@@ -172,3 +172,106 @@ class ContentAnnotation(Base, TimestampMixin):
             f"created_by={self.created_by} "
             f"stance={self.stance!r}>"
         )
+
+
+class CodebookEntry(Base, TimestampMixin):
+    """Structured qualitative coding scheme entry for annotations.
+
+    Codebook entries define a controlled vocabulary of codes with labels,
+    descriptions, and optional categories that researchers can use when
+    annotating content records. This allows standardized, structured
+    qualitative coding instead of free-text frame entries.
+
+    Codebook entries can be scoped to a specific query design or marked as
+    global (query_design_id=NULL) to be available across all studies.
+    Non-admin users can only create/modify design-scoped entries they own.
+    Admins can manage global entries.
+
+    Attributes:
+        id: UUID primary key (application-generated via uuid.uuid4).
+        code: Short identifier for this entry (e.g., "punitive_frame").
+            Must be unique within the scope of query_design_id.
+            Used as the value stored in ContentAnnotation.frame when selected.
+        label: Human-readable display name (e.g., "Punitive Framing").
+            Shown in dropdown UI elements.
+        description: Optional longer explanation of when to use this code.
+            Useful for training coders and documenting the coding scheme.
+        category: Optional grouping label (e.g., "stance", "frame").
+            Used to organize codes in the UI (e.g., as optgroups in dropdowns).
+        query_design_id: Optional FK to query_designs.id.
+            NULL means this is a global codebook entry visible to all
+            researchers. Non-NULL means it's scoped to a specific query design
+            and only visible to researchers with access to that design.
+        created_by: UUID of the user who created this entry.
+            Soft FK to users.id (SET NULL on delete).
+
+    Unique constraint:
+        (query_design_id, code) — codes must be unique within a query design scope.
+        NULL query_design_id is treated as a distinct value per row.
+    """
+
+    __tablename__ = "codebook_entries"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    code: Mapped[str] = mapped_column(
+        sa.String(100),
+        nullable=False,
+        index=True,
+    )
+
+    label: Mapped[str] = mapped_column(
+        sa.String(200),
+        nullable=False,
+    )
+
+    description: Mapped[Optional[str]] = mapped_column(
+        sa.Text,
+        nullable=True,
+    )
+
+    category: Mapped[Optional[str]] = mapped_column(
+        sa.String(100),
+        nullable=True,
+        index=True,
+    )
+
+    # Scope: design-specific or global
+    query_design_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("query_designs.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
+    # Ownership — who created this entry
+    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # ---------------------------------------------------------------------------
+    # Table-level constraints and indexes
+    # ---------------------------------------------------------------------------
+
+    __table_args__ = (
+        # Code must be unique within a query design scope
+        sa.UniqueConstraint(
+            "query_design_id",
+            "code",
+            name="uq_codebook_design_code",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<CodebookEntry id={self.id} "
+            f"code={self.code!r} "
+            f"query_design_id={self.query_design_id}>"
+        )

@@ -36,6 +36,8 @@ dependencies = [
     "httpx>=0.28,<0.29",
     # Feed parsing
     "feedparser>=6.0,<7.0",
+    # HTML parsing (for RSS feed autodiscovery — SB-09)
+    "beautifulsoup4>=4.12,<5.0",
     # Reddit async API wrapper
     "asyncpraw>=7.7,<8.0",
     # WebSocket support (Bluesky Jetstream streamer)
@@ -72,6 +74,9 @@ nlp = [
     # Optional dependency for language detection in analysis/enrichments/language_detector.py.
     # When not installed, DanishLanguageDetector falls back to a character-frequency heuristic.
     "langdetect>=1.0.9,<2.0",
+    # Optional dependency for Danish sentiment analysis in analysis/enrichments/sentiment_analyzer.py.
+    # When not installed, SentimentAnalyzer enricher is skipped.
+    "afinn>=0.1,<1.0",
 ]
 nlp-ner = [
     # Optional dependency for named entity extraction in

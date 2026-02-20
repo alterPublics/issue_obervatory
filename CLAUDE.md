@@ -1,6 +1,6 @@
 # CLAUDE.md -- Issue Observatory Project Guide
 
-**Last updated:** 2026-02-19
+**Last updated:** 2026-02-20
 
 This file provides essential context for AI agents working on the Issue Observatory codebase. It reflects the actual state of the implementation as of the date above and supersedes any conflicting guidance in other documents.
 
@@ -85,7 +85,7 @@ This file provides essential context for AI agents working on the Issue Observat
 | Event bus (SSE) | `core/event_bus.py` | Complete -- Redis pub/sub for live collection monitoring |
 | Email service | `core/email_service.py` | Complete -- no-op when SMTP not configured |
 
-### Database Models and Migrations (9 migrations)
+### Database Models and Migrations (12 migrations)
 
 | Migration | Description |
 |-----------|-------------|
@@ -105,7 +105,7 @@ This file provides essential context for AI agents working on the Issue Observat
 
 | Component | File | Status |
 |-----------|------|--------|
-| Descriptive analytics | `analysis/descriptive.py` | Complete -- volume, top actors (with resolved names), top terms |
+| Descriptive analytics | `analysis/descriptive.py` | Complete -- volume, top actors (with resolved names), top terms, temporal comparison (IP2-033), arena comparison (IP2-037) |
 | Network analysis | `analysis/network.py` | Complete -- actor co-occurrence, term co-occurrence, bipartite, cross-platform actors |
 | Export | `analysis/export.py` | Complete -- CSV, XLSX, NDJSON, Parquet, GEXF (3 types), RIS, BibTeX |
 | Shared filter builder | `analysis/_filters.py` | Complete (IP2-024) |
@@ -123,6 +123,7 @@ This file provides essential context for AI agents working on the Issue Observat
 | Named entity extraction | `analysis/enrichments/named_entity_extractor.py` | Complete (IP2-049) -- spaCy-based, optional `nlp-ner` extra |
 | Propagation detection | `analysis/enrichments/propagation_detector.py` | Complete (GR-08) |
 | Coordination detection | `analysis/enrichments/coordination_detector.py` | Complete (GR-11) |
+| Danish sentiment analysis | `analysis/enrichments/sentiment_analyzer.py` | Complete (IP2-034) -- AFINN lexicon, optional `nlp` extra |
 
 ### Scraper Module (standalone)
 
@@ -378,6 +379,25 @@ The authoritative improvement roadmap is at `/docs/research_reports/implementati
 | IP2-058 | Education-specific RSS feeds | Done |
 | IP2-059 | Expand Reddit subreddits | Done |
 | IP2-060 | Formalize actor_type values | Done -- ActorType enum |
+| IP2-001 | Dynamic arena grid (populate from server registry) | Done -- Alpine.js `arenaConfigGrid` fetching from `/api/arenas/` |
+| IP2-002 | Arena tier validation (disable unsupported tiers) | Done -- `supportedTiers.includes(t)` disables unsupported tiers |
+| IP2-003 | Arena descriptions in config grid | Done -- `arena.description` shown in grid |
+| IP2-007 | Actor synchronization (QD <-> Actor Directory) | Done -- creates/links Actor + ActorListMember |
+| IP2-010 | Update stale "Phase 0" text on dashboard | Done -- no "Phase 0" in any user-facing template |
+| IP2-030 | Engagement score normalization | Done -- platform-specific weights, log scaling, 0-100 score in `normalizer.py` |
+| IP2-033 | Temporal volume comparison | Done -- `get_temporal_comparison()` in `descriptive.py`, week/month periods |
+| IP2-034 | Danish sentiment analysis enrichment | Done -- AFINN lexicon, `SentimentAnalyzer` enricher, optional `nlp` extra |
+| IP2-035 | Engagement metric refresh | Done -- `refresh_engagement()` on ArenaCollector, Celery task, API endpoint |
+| IP2-037 | Arena-comparative analysis | Done -- `get_arena_comparison()` in `descriptive.py`, per-arena metrics |
+| IP2-038 | Emergent term extraction (TF-IDF) | Done -- suggested terms API endpoint |
+| IP2-039 | Unified actor ranking | Done -- `get_top_actors_unified()` in `descriptive.py` |
+| IP2-040 | Bipartite network with extracted topics | Done -- `build_enhanced_bipartite_network()` in `network.py` |
+| IP2-042 | In-browser network preview | Done -- `static/js/network_preview.js` + Sigma.js |
+| IP2-044 | Temporal network snapshots | Done -- `get_temporal_network_snapshots()` in `network.py` |
+| IP2-045 | Dynamic GEXF export (temporal attributes) | Done -- `export_temporal_gexf()` in `export.py` |
+| IP2-047 | Per-arena GEXF export | Done -- arena filter in `export.py` and analysis routes |
+| IP2-050 | Cross-arena flow analysis | Done -- propagation detection (GR-08) |
+| IP2-055 | Filtered export from analysis results | Done -- analysis template + content browser |
 
 ### Greenland Roadmap Items (implemented)
 
@@ -396,6 +416,10 @@ The authoritative improvement roadmap is at `/docs/research_reports/implementati
 | GR-16 | Political calendar overlay | Done |
 | GR-17 | Content browser quick-add actor | Done |
 | GR-22 | Discovered sources panel | Done |
+| GR-18 | Expose Similarity Finder in UI | Done -- `/actors/{id}/similarity-search` + `cross-platform-match` |
+| GR-19 | Co-mention fallback in network expander | Done -- `_expand_via_comention()` in `network_expander.py` |
+| GR-20 | Auto-create actors from snowball discoveries | Done -- `actors.py` route + `snowball.py` |
+| GR-21 | Telegram forwarding chain expander | Done -- forwarding chain analysis in `network_expander.py` |
 
 ### Phase 3 Blocker Fixes (implemented)
 
@@ -405,30 +429,28 @@ The authoritative improvement roadmap is at `/docs/research_reports/implementati
 | B-02 | GEXF network type buttons | Done |
 | B-03 | Live tracking schedule visibility | Done |
 
+### Ytringsfrihed Report Items (implemented)
+
+| ID | Description | Status |
+|----|-------------|--------|
+| YF-01 | Per-arena search term scoping | Done -- migrations 010 + 011 |
+| YF-02 | Source-list arena configuration UI | Done (via GR-01 through GR-04) |
+| YF-05 | Ad-hoc exploration mode | Done -- `explore/index.html`, dynamic arena list |
+| YF-07 | Bulk actor import | Done -- bulk add in `actors.py` route + editor template |
+| YF-08 | Arena overview page | Done -- `arenas/index.html`, tier-organized |
+| YF-09 | Tier precedence explanation | Done -- launcher template, collections routes, base.py |
+| YF-10 | Group label autocomplete | Done -- dynamic datalist in QD editor |
+| YF-11 | Snowball platform transparency | Done -- actors template and route |
+| YF-13 | Discovered sources cross-design view | Done -- scope toggle in discovered links page |
+| YF-14 | Google Search free-tier guidance | Done -- amber badge on Google arenas |
+| YF-16 | Actor platform presence inline add | Done -- inline form in QD editor |
+
 ### Not Yet Implemented (key remaining items)
 
 | ID | Description | Phase |
 |----|-------------|-------|
-| IP2-001 | Dynamic arena grid (populate from server registry) | A |
-| IP2-002 | Arena tier validation (disable unsupported tiers) | A |
-| IP2-003 | Arena descriptions in config grid | A |
-| IP2-007 | Actor synchronization (QD <-> Actor Directory) | A |
-| IP2-010 | Update stale "Phase 0" text on dashboard | A |
-| IP2-030 | Engagement score normalization | B |
-| IP2-033 | Temporal volume comparison | B |
-| IP2-034 | Danish sentiment analysis enrichment | B |
-| IP2-035 | Engagement metric refresh | B |
-| IP2-037 | Arena-comparative analysis | B |
-| IP2-038 | Emergent term extraction (TF-IDF/KeyBERT) | C |
-| IP2-040 | Bipartite network with extracted topics | C |
-| IP2-041 | Entity resolution UI | C |
-| IP2-042 | In-browser network preview | C |
-| IP2-044 | Temporal network snapshots | C |
-| IP2-050 | Cross-arena flow analysis | C |
-| IP2-054 | Topic modeling (BERTopic) | D |
-| IP2-057 | Folketinget.dk arena | D |
-| YF-01 | Per-arena search term scoping | Critical (ytringsfrihed report) |
-| YF-02 | Source-list arena configuration UI | Critical (ytringsfrihed report) |
+| IP2-054 | Topic modeling (BERTopic) | D -- requires GPU, heavy dependencies |
+| IP2-057 | Folketinget.dk arena | D -- arena brief required |
 
 ---
 
@@ -530,5 +552,5 @@ See `.env.example` for all required environment variables. Key ones:
 | Extra | Package | Purpose |
 |-------|---------|---------|
 | `ml` | scikit-learn | Content similarity scoring in SimilarityFinder |
-| `nlp` | langdetect | Language detection enricher |
+| `nlp` | langdetect, afinn | Language detection enricher, Danish sentiment analysis enricher |
 | `nlp-ner` | spaCy | Named entity extraction (also requires `python -m spacy download da_core_news_lg`) |

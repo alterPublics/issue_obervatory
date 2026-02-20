@@ -29,7 +29,7 @@ from __future__ import annotations
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import structlog
@@ -668,6 +668,844 @@ async def get_top_actors_unified(
             "platforms": list(row.platforms) if row.platforms else [],
             "count": row.cnt,
             "total_engagement": int(row.total_engagement or 0),
+        }
+        for row in rows
+    ]
+
+
+async def compare_runs(
+    db: AsyncSession,
+    run_id_1: uuid.UUID,
+    run_id_2: uuid.UUID,
+) -> dict:
+    """Compare two collection runs and return delta metrics.
+
+    Computes volume deltas, new actors, new terms, and content overlap
+    between two runs. Run 1 is treated as the baseline, Run 2 as the new run.
+
+    Args:
+        db: Active async database session.
+        run_id_1: UUID of the first (baseline) run.
+        run_id_2: UUID of the second (new) run.
+
+    Returns:
+        A dict with comparison metrics::
+
+            {
+              "run_1_id": "...",
+              "run_2_id": "...",
+              "volume_delta": {
+                "total_records_1": 5812,
+                "total_records_2": 6234,
+                "delta": 422,
+                "delta_pct": 7.26,
+                "by_arena": [
+                  {"arena": "news", "count_1": 2100, "count_2": 2300, "delta": 200},
+                  ...
+                ]
+              },
+              "new_actors": [
+                {"author_display_name": "...", "pseudonymized_author_id": "...", "count": 45},
+                ...
+              ],
+              "new_terms": [
+                {"term": "...", "count": 123},
+                ...
+              ],
+              "content_overlap": {
+                "shared_hashes": 234,
+                "unique_to_1": 5578,
+                "unique_to_2": 6000,
+                "overlap_pct": 4.0
+              }
+            }
+    """
+    params: dict[str, Any] = {"run_id_1": str(run_id_1), "run_id_2": str(run_id_2)}
+
+    # --- Volume delta ---
+    volume_sql = text(
+        """
+        SELECT
+            COALESCE(SUM(CASE WHEN collection_run_id = :run_id_1 THEN 1 ELSE 0 END), 0) AS total_1,
+            COALESCE(SUM(CASE WHEN collection_run_id = :run_id_2 THEN 1 ELSE 0 END), 0) AS total_2
+        FROM content_records
+        WHERE collection_run_id IN (:run_id_1, :run_id_2)
+          AND (raw_metadata->>'duplicate_of') IS NULL
+        """
+    )
+    volume_result = await db.execute(volume_sql, params)
+    volume_row = volume_result.fetchone()
+    total_1 = int(volume_row.total_1 or 0) if volume_row else 0
+    total_2 = int(volume_row.total_2 or 0) if volume_row else 0
+    delta = total_2 - total_1
+    delta_pct = round((delta / total_1 * 100), 2) if total_1 > 0 else 0.0
+
+    # Per-arena breakdown
+    arena_sql = text(
+        """
+        SELECT
+            arena,
+            COALESCE(SUM(CASE WHEN collection_run_id = :run_id_1 THEN 1 ELSE 0 END), 0) AS count_1,
+            COALESCE(SUM(CASE WHEN collection_run_id = :run_id_2 THEN 1 ELSE 0 END), 0) AS count_2
+        FROM content_records
+        WHERE collection_run_id IN (:run_id_1, :run_id_2)
+          AND (raw_metadata->>'duplicate_of') IS NULL
+        GROUP BY arena
+        ORDER BY arena
+        """
+    )
+    arena_result = await db.execute(arena_sql, params)
+    arena_rows = arena_result.fetchall()
+    by_arena = [
+        {
+            "arena": row.arena,
+            "count_1": int(row.count_1),
+            "count_2": int(row.count_2),
+            "delta": int(row.count_2) - int(row.count_1),
+        }
+        for row in arena_rows
+    ]
+
+    # --- New actors in run 2 not seen in run 1 ---
+    new_actors_sql = text(
+        """
+        SELECT
+            c2.author_display_name,
+            c2.pseudonymized_author_id,
+            COUNT(*) AS cnt
+        FROM content_records c2
+        WHERE c2.collection_run_id = :run_id_2
+          AND c2.pseudonymized_author_id IS NOT NULL
+          AND (c2.raw_metadata->>'duplicate_of') IS NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM content_records c1
+              WHERE c1.collection_run_id = :run_id_1
+                AND c1.pseudonymized_author_id = c2.pseudonymized_author_id
+          )
+        GROUP BY c2.author_display_name, c2.pseudonymized_author_id
+        ORDER BY cnt DESC
+        LIMIT 50
+        """
+    )
+    new_actors_result = await db.execute(new_actors_sql, params)
+    new_actors_rows = new_actors_result.fetchall()
+    new_actors = [
+        {
+            "author_display_name": row.author_display_name,
+            "pseudonymized_author_id": row.pseudonymized_author_id,
+            "count": row.cnt,
+        }
+        for row in new_actors_rows
+    ]
+
+    # --- New terms in run 2 not in run 1 ---
+    new_terms_sql = text(
+        """
+        WITH terms_1 AS (
+            SELECT DISTINCT unnest(search_terms_matched) AS term
+            FROM content_records
+            WHERE collection_run_id = :run_id_1
+              AND (raw_metadata->>'duplicate_of') IS NULL
+        ),
+        terms_2 AS (
+            SELECT unnest(search_terms_matched) AS term
+            FROM content_records
+            WHERE collection_run_id = :run_id_2
+              AND (raw_metadata->>'duplicate_of') IS NULL
+        )
+        SELECT t2.term, COUNT(*) AS cnt
+        FROM terms_2 t2
+        LEFT JOIN terms_1 t1 ON t1.term = t2.term
+        WHERE t1.term IS NULL
+        GROUP BY t2.term
+        ORDER BY cnt DESC
+        LIMIT 50
+        """
+    )
+    new_terms_result = await db.execute(new_terms_sql, params)
+    new_terms_rows = new_terms_result.fetchall()
+    new_terms = [{"term": row.term, "count": row.cnt} for row in new_terms_rows]
+
+    # --- Content overlap via content_hash ---
+    overlap_sql = text(
+        """
+        WITH hashes_1 AS (
+            SELECT DISTINCT content_hash
+            FROM content_records
+            WHERE collection_run_id = :run_id_1
+              AND content_hash IS NOT NULL
+              AND (raw_metadata->>'duplicate_of') IS NULL
+        ),
+        hashes_2 AS (
+            SELECT DISTINCT content_hash
+            FROM content_records
+            WHERE collection_run_id = :run_id_2
+              AND content_hash IS NOT NULL
+              AND (raw_metadata->>'duplicate_of') IS NULL
+        )
+        SELECT
+            (SELECT COUNT(*) FROM hashes_1)                       AS total_1,
+            (SELECT COUNT(*) FROM hashes_2)                       AS total_2,
+            COUNT(*)                                             AS shared
+        FROM hashes_1
+        INNER JOIN hashes_2 ON hashes_1.content_hash = hashes_2.content_hash
+        """
+    )
+    overlap_result = await db.execute(overlap_sql, params)
+    overlap_row = overlap_result.fetchone()
+    shared = int(overlap_row.shared or 0) if overlap_row else 0
+    total_hashes_1 = int(overlap_row.total_1 or 0) if overlap_row else 0
+    total_hashes_2 = int(overlap_row.total_2 or 0) if overlap_row else 0
+    unique_to_1 = total_hashes_1 - shared
+    unique_to_2 = total_hashes_2 - shared
+    overlap_pct = round((shared / total_hashes_1 * 100), 2) if total_hashes_1 > 0 else 0.0
+
+    logger.info(
+        "compare_runs",
+        run_id_1=str(run_id_1),
+        run_id_2=str(run_id_2),
+        delta=delta,
+        new_actors_count=len(new_actors),
+        new_terms_count=len(new_terms),
+    )
+
+    return {
+        "run_1_id": str(run_id_1),
+        "run_2_id": str(run_id_2),
+        "volume_delta": {
+            "total_records_1": total_1,
+            "total_records_2": total_2,
+            "delta": delta,
+            "delta_pct": delta_pct,
+            "by_arena": by_arena,
+        },
+        "new_actors": new_actors,
+        "new_terms": new_terms,
+        "content_overlap": {
+            "shared_hashes": shared,
+            "unique_to_1": unique_to_1,
+            "unique_to_2": unique_to_2,
+            "overlap_pct": overlap_pct,
+        },
+    }
+
+
+async def get_temporal_comparison(
+    db: AsyncSession,
+    run_id: uuid.UUID,
+    period: str = "week",
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+) -> dict:
+    """Period-over-period volume comparison (current vs previous).
+
+    Computes total volume for the current period and the immediately preceding
+    period of equal length, then calculates delta and percentage change.
+    Also provides per-arena breakdowns.
+
+    Args:
+        db: Active async database session.
+        run_id: UUID of the collection run.
+        period: Time period — one of ``"week"`` (default), ``"month"``.
+        date_from: Optional explicit start of current period. If not provided,
+            uses the latest date in the run as the end of the current period.
+        date_to: Optional explicit end of current period.
+
+    Returns:
+        Dict with current and previous period volume::
+
+            {
+              "current_period": {
+                "date_from": "2026-02-10T00:00:00+00:00",
+                "date_to": "2026-02-17T00:00:00+00:00",
+                "count": 1234,
+              },
+              "previous_period": {
+                "date_from": "2026-02-03T00:00:00+00:00",
+                "date_to": "2026-02-10T00:00:00+00:00",
+                "count": 987,
+              },
+              "delta": 247,
+              "pct_change": 25.03,
+              "per_arena": [
+                {
+                  "arena": "news_media",
+                  "current_count": 500,
+                  "previous_count": 400,
+                  "delta": 100,
+                  "pct_change": 25.0,
+                },
+                ...
+              ],
+            }
+
+    Raises:
+        ValueError: If period is not ``"week"`` or ``"month"``.
+    """
+    if period not in {"week", "month"}:
+        raise ValueError(f"Invalid period {period!r}. Must be 'week' or 'month'.")
+
+    params: dict[str, Any] = {"run_id": str(run_id)}
+
+    # Determine the date range for the current period.
+    # If not provided, use the latest published_at as the end.
+    if date_to is None:
+        latest_sql = text(
+            """
+            SELECT MAX(published_at) AS latest
+            FROM content_records
+            WHERE collection_run_id = :run_id
+              AND published_at IS NOT NULL
+            """
+        )
+        latest_result = await db.execute(latest_sql, params)
+        latest_row = latest_result.fetchone()
+        if latest_row is None or latest_row.latest is None:
+            logger.info("get_temporal_comparison: no data for run", run_id=str(run_id))
+            return {
+                "current_period": {"date_from": None, "date_to": None, "count": 0},
+                "previous_period": {"date_from": None, "date_to": None, "count": 0},
+                "delta": 0,
+                "pct_change": 0.0,
+                "per_arena": [],
+            }
+        date_to = latest_row.latest
+
+    # Compute the interval as a timedelta
+    if period == "week":
+        interval_days = 7
+    else:  # month
+        # Use 30 days as a proxy for a month
+        interval_days = 30
+
+    if date_from is None:
+        date_from = date_to - timedelta(days=interval_days)
+
+    # Previous period is immediately before the current period
+    previous_from = date_from - timedelta(days=interval_days)
+    previous_to = date_from
+
+    # Aggregate volume for current and previous periods
+    volume_sql = text(
+        """
+        WITH current_period AS (
+            SELECT COUNT(*) AS cnt
+            FROM content_records
+            WHERE collection_run_id = :run_id
+              AND published_at >= :current_from
+              AND published_at < :current_to
+              AND (raw_metadata->>'duplicate_of') IS NULL
+        ),
+        previous_period AS (
+            SELECT COUNT(*) AS cnt
+            FROM content_records
+            WHERE collection_run_id = :run_id
+              AND published_at >= :previous_from
+              AND published_at < :previous_to
+              AND (raw_metadata->>'duplicate_of') IS NULL
+        )
+        SELECT
+            (SELECT cnt FROM current_period) AS current_count,
+            (SELECT cnt FROM previous_period) AS previous_count
+        """
+    )
+    params.update({
+        "current_from": date_from,
+        "current_to": date_to,
+        "previous_from": previous_from,
+        "previous_to": previous_to,
+    })
+    volume_result = await db.execute(volume_sql, params)
+    volume_row = volume_result.fetchone()
+
+    current_count = int(volume_row.current_count or 0) if volume_row else 0
+    previous_count = int(volume_row.previous_count or 0) if volume_row else 0
+    delta = current_count - previous_count
+    pct_change = round((delta / previous_count * 100), 2) if previous_count > 0 else 0.0
+
+    # Per-arena breakdown
+    arena_sql = text(
+        """
+        SELECT
+            arena,
+            SUM(CASE
+                WHEN published_at >= :current_from AND published_at < :current_to
+                THEN 1 ELSE 0
+            END) AS current_count,
+            SUM(CASE
+                WHEN published_at >= :previous_from AND published_at < :previous_to
+                THEN 1 ELSE 0
+            END) AS previous_count
+        FROM content_records
+        WHERE collection_run_id = :run_id
+          AND published_at >= :previous_from
+          AND published_at < :current_to
+          AND (raw_metadata->>'duplicate_of') IS NULL
+        GROUP BY arena
+        ORDER BY arena
+        """
+    )
+    arena_result = await db.execute(arena_sql, params)
+    arena_rows = arena_result.fetchall()
+
+    per_arena = []
+    for row in arena_rows:
+        arena_current = int(row.current_count or 0)
+        arena_previous = int(row.previous_count or 0)
+        arena_delta = arena_current - arena_previous
+        arena_pct = (
+            round((arena_delta / arena_previous * 100), 2)
+            if arena_previous > 0
+            else 0.0
+        )
+        per_arena.append({
+            "arena": row.arena,
+            "current_count": arena_current,
+            "previous_count": arena_previous,
+            "delta": arena_delta,
+            "pct_change": arena_pct,
+        })
+
+    logger.info(
+        "get_temporal_comparison",
+        run_id=str(run_id),
+        period=period,
+        current_count=current_count,
+        previous_count=previous_count,
+        delta=delta,
+    )
+
+    return {
+        "current_period": {
+            "date_from": _dt_iso(date_from),
+            "date_to": _dt_iso(date_to),
+            "count": current_count,
+        },
+        "previous_period": {
+            "date_from": _dt_iso(previous_from),
+            "date_to": _dt_iso(previous_to),
+            "count": previous_count,
+        },
+        "delta": delta,
+        "pct_change": pct_change,
+        "per_arena": per_arena,
+    }
+
+
+async def get_arena_comparison(
+    db: AsyncSession,
+    run_id: uuid.UUID,
+) -> dict:
+    """Side-by-side arena metrics for a collection run.
+
+    Returns per-arena breakdown with record count, unique actors, unique terms,
+    average engagement score, and date range. Includes a totals row.
+
+    Args:
+        db: Active async database session.
+        run_id: UUID of the collection run.
+
+    Returns:
+        Dict with per-arena metrics and totals::
+
+            {
+              "by_arena": [
+                {
+                  "arena": "news_media",
+                  "record_count": 1234,
+                  "unique_actors": 87,
+                  "unique_terms": 23,
+                  "avg_engagement": 42.5,
+                  "earliest_record": "2026-02-01T00:00:00+00:00",
+                  "latest_record": "2026-02-17T23:59:59+00:00",
+                },
+                ...
+              ],
+              "totals": {
+                "record_count": 5678,
+                "unique_actors": 321,
+                "unique_terms": 45,
+                "avg_engagement": 38.7,
+                "earliest_record": "2026-02-01T00:00:00+00:00",
+                "latest_record": "2026-02-17T23:59:59+00:00",
+              },
+            }
+
+        Returns empty lists and zero counts when no records exist.
+    """
+    params: dict[str, Any] = {"run_id": str(run_id)}
+
+    # Per-arena breakdown
+    # Note: unique_terms requires a subquery because COUNT(DISTINCT unnest(...))
+    # is not supported directly in PostgreSQL.
+    arena_sql = text(
+        """
+        SELECT
+            c.arena,
+            COUNT(*) AS record_count,
+            COUNT(DISTINCT c.pseudonymized_author_id) AS unique_actors,
+            (
+                SELECT COUNT(DISTINCT term)
+                FROM content_records cr,
+                     unnest(cr.search_terms_matched) AS term
+                WHERE cr.collection_run_id = :run_id
+                  AND cr.arena = c.arena
+                  AND (cr.raw_metadata->>'duplicate_of') IS NULL
+            ) AS unique_terms,
+            AVG(c.engagement_score) AS avg_engagement,
+            MIN(c.published_at) AS earliest_record,
+            MAX(c.published_at) AS latest_record
+        FROM content_records c
+        WHERE c.collection_run_id = :run_id
+          AND (c.raw_metadata->>'duplicate_of') IS NULL
+        GROUP BY c.arena
+        ORDER BY record_count DESC
+        """
+    )
+    arena_result = await db.execute(arena_sql, params)
+    arena_rows = arena_result.fetchall()
+
+    by_arena = [
+        {
+            "arena": row.arena,
+            "record_count": row.record_count,
+            "unique_actors": row.unique_actors or 0,
+            "unique_terms": row.unique_terms or 0,
+            "avg_engagement": round(float(row.avg_engagement or 0), 2),
+            "earliest_record": _dt_iso(row.earliest_record),
+            "latest_record": _dt_iso(row.latest_record),
+        }
+        for row in arena_rows
+    ]
+
+    # Aggregate totals across all arenas
+    totals_sql = text(
+        """
+        SELECT
+            COUNT(*) AS record_count,
+            COUNT(DISTINCT pseudonymized_author_id) AS unique_actors,
+            (
+                SELECT COUNT(DISTINCT term)
+                FROM content_records cr,
+                     unnest(cr.search_terms_matched) AS term
+                WHERE cr.collection_run_id = :run_id
+                  AND (cr.raw_metadata->>'duplicate_of') IS NULL
+            ) AS unique_terms,
+            AVG(engagement_score) AS avg_engagement,
+            MIN(published_at) AS earliest_record,
+            MAX(published_at) AS latest_record
+        FROM content_records
+        WHERE collection_run_id = :run_id
+          AND (raw_metadata->>'duplicate_of') IS NULL
+        """
+    )
+    totals_result = await db.execute(totals_sql, params)
+    totals_row = totals_result.fetchone()
+
+    if totals_row is None or totals_row.record_count == 0:
+        logger.info("get_arena_comparison: no data for run", run_id=str(run_id))
+        return {
+            "by_arena": [],
+            "totals": {
+                "record_count": 0,
+                "unique_actors": 0,
+                "unique_terms": 0,
+                "avg_engagement": 0.0,
+                "earliest_record": None,
+                "latest_record": None,
+            },
+        }
+
+    totals = {
+        "record_count": totals_row.record_count,
+        "unique_actors": totals_row.unique_actors or 0,
+        "unique_terms": totals_row.unique_terms or 0,
+        "avg_engagement": round(float(totals_row.avg_engagement or 0), 2),
+        "earliest_record": _dt_iso(totals_row.earliest_record),
+        "latest_record": _dt_iso(totals_row.latest_record),
+    }
+
+    logger.info(
+        "get_arena_comparison",
+        run_id=str(run_id),
+        arena_count=len(by_arena),
+        total_records=totals["record_count"],
+    )
+
+    return {
+        "by_arena": by_arena,
+        "totals": totals,
+    }
+
+
+async def get_language_distribution(
+    db: AsyncSession,
+    run_id: uuid.UUID,
+) -> list[dict]:
+    """Query language detection enrichment results and return language counts.
+
+    Extracts the ``raw_metadata.enrichments.language_detector.language`` field
+    from all records in the specified collection run and aggregates by language
+    code.  Returns an empty list when no language enrichment data exists.
+
+    Args:
+        db: Active async database session.
+        run_id: UUID of the collection run to query.
+
+    Returns:
+        List of dicts ordered by count descending::
+
+            [
+              {"language": "da", "count": 523, "percentage": 68.5},
+              {"language": "en", "count": 142, "percentage": 18.6},
+              ...
+            ]
+    """
+    params: dict[str, Any] = {}
+    where = _build_content_filters(
+        None, run_id, None, None, None, None, params
+    )
+
+    sql = text(
+        f"""
+        SELECT
+            raw_metadata->'enrichments'->'language_detector'->>'language' AS language,
+            COUNT(*) AS cnt
+        FROM content_records
+        {where}
+        AND raw_metadata->'enrichments'->'language_detector'->>'language' IS NOT NULL
+        GROUP BY language
+        ORDER BY cnt DESC
+        """
+    )
+
+    result = await db.execute(sql, params)
+    rows = result.fetchall()
+
+    if not rows:
+        return []
+
+    total = sum(row.cnt for row in rows)
+
+    return [
+        {
+            "language": row.language,
+            "count": row.cnt,
+            "percentage": round((row.cnt / total * 100), 2) if total > 0 else 0.0,
+        }
+        for row in rows
+    ]
+
+
+async def get_top_named_entities(
+    db: AsyncSession,
+    run_id: uuid.UUID,
+    limit: int = 20,
+) -> list[dict]:
+    """Query NER enrichment results and return most frequent entities.
+
+    Extracts entities from the
+    ``raw_metadata.enrichments.named_entity_extractor.entities`` array,
+    aggregates by entity text, and returns the top-N most frequent entities.
+
+    Args:
+        db: Active async database session.
+        run_id: UUID of the collection run to query.
+        limit: Maximum number of entities to return (default 20).
+
+    Returns:
+        List of dicts ordered by count descending::
+
+            [
+              {"entity": "Danmark", "count": 142, "types": ["GPE", "LOC"]},
+              {"entity": "København", "count": 87, "types": ["GPE"]},
+              ...
+            ]
+
+        Returns an empty list when no NER enrichment data exists.
+    """
+    params: dict[str, Any] = {"limit": limit}
+    where = _build_content_filters(
+        None, run_id, None, None, None, None, params
+    )
+
+    # Unnest the entities array and aggregate by entity text.
+    # Collect all unique entity types per entity text using array_agg(DISTINCT).
+    sql = text(
+        f"""
+        SELECT
+            entity->>'text' AS entity_text,
+            COUNT(*) AS cnt,
+            array_agg(DISTINCT entity->>'label') AS entity_types
+        FROM content_records,
+             jsonb_array_elements(
+                 raw_metadata->'enrichments'->'named_entity_extractor'->'entities'
+             ) AS entity
+        {where}
+        AND raw_metadata->'enrichments'->'named_entity_extractor'->'entities' IS NOT NULL
+        GROUP BY entity_text
+        ORDER BY cnt DESC
+        LIMIT :limit
+        """
+    )
+
+    result = await db.execute(sql, params)
+    rows = result.fetchall()
+
+    return [
+        {
+            "entity": row.entity_text,
+            "count": row.cnt,
+            "types": list(row.entity_types) if row.entity_types else [],
+        }
+        for row in rows
+    ]
+
+
+async def get_propagation_patterns(
+    db: AsyncSession,
+    run_id: uuid.UUID,
+) -> list[dict]:
+    """Query propagation enrichment results and return cross-arena stories.
+
+    Retrieves all records flagged by the propagation enricher as having
+    propagated across 2 or more arenas.  Returns story-level aggregates.
+
+    Args:
+        db: Active async database session.
+        run_id: UUID of the collection run to query.
+
+    Returns:
+        List of dicts ordered by story size descending::
+
+            [
+              {
+                "story_id": "abc123...",
+                "arenas": ["news_media", "social_media"],
+                "platforms": ["rss_feeds", "reddit", "bluesky"],
+                "record_count": 24,
+                "first_seen": "2026-02-10T08:30:00+00:00",
+                "last_seen": "2026-02-15T14:22:00+00:00",
+              },
+              ...
+            ]
+
+        Returns an empty list when no propagation enrichment data exists.
+    """
+    params: dict[str, Any] = {}
+    where = _build_content_filters(
+        None, run_id, None, None, None, None, params
+    )
+
+    sql = text(
+        f"""
+        SELECT
+            raw_metadata->'enrichments'->'propagation_detector'->>'story_id' AS story_id,
+            array_agg(DISTINCT arena ORDER BY arena) AS arenas,
+            array_agg(DISTINCT platform ORDER BY platform) AS platforms,
+            COUNT(*) AS record_count,
+            MIN(published_at) AS first_seen,
+            MAX(published_at) AS last_seen
+        FROM content_records
+        {where}
+        AND raw_metadata->'enrichments'->'propagation_detector'->>'story_id' IS NOT NULL
+        AND raw_metadata->'enrichments'->'propagation_detector'->>'propagated' = 'true'
+        GROUP BY story_id
+        HAVING COUNT(DISTINCT arena) >= 2
+        ORDER BY record_count DESC
+        """
+    )
+
+    result = await db.execute(sql, params)
+    rows = result.fetchall()
+
+    return [
+        {
+            "story_id": row.story_id,
+            "arenas": list(row.arenas) if row.arenas else [],
+            "platforms": list(row.platforms) if row.platforms else [],
+            "record_count": row.record_count,
+            "first_seen": _dt_iso(row.first_seen),
+            "last_seen": _dt_iso(row.last_seen),
+        }
+        for row in rows
+    ]
+
+
+async def get_coordination_signals(
+    db: AsyncSession,
+    run_id: uuid.UUID,
+) -> list[dict]:
+    """Query coordination enrichment results and return detected patterns.
+
+    Retrieves coordination signals flagged by the coordination enricher:
+    actors posting identical or near-identical content within a short time
+    window, or burst patterns indicating coordinated activity.
+
+    Args:
+        db: Active async database session.
+        run_id: UUID of the collection run to query.
+
+    Returns:
+        List of dicts ordered by signal strength descending::
+
+            [
+              {
+                "coordination_type": "burst",
+                "actor_count": 12,
+                "record_count": 87,
+                "content_hash": "abc123...",
+                "time_window_hours": 2.5,
+                "first_post": "2026-02-14T10:00:00+00:00",
+                "last_post": "2026-02-14T12:30:00+00:00",
+              },
+              ...
+            ]
+
+        Returns an empty list when no coordination enrichment data exists.
+    """
+    params: dict[str, Any] = {}
+    where = _build_content_filters(
+        None, run_id, None, None, None, None, params
+    )
+
+    # Aggregate coordination signals by content_hash to identify clusters.
+    # Extract coordination_type from enrichment data.
+    sql = text(
+        f"""
+        SELECT
+            raw_metadata->'enrichments'->'coordination_detector'->>'coordination_type' AS coordination_type,
+            content_hash,
+            COUNT(DISTINCT pseudonymized_author_id) AS actor_count,
+            COUNT(*) AS record_count,
+            MIN(published_at) AS first_post,
+            MAX(published_at) AS last_post,
+            EXTRACT(EPOCH FROM (MAX(published_at) - MIN(published_at))) / 3600.0 AS time_window_hours
+        FROM content_records
+        {where}
+        AND raw_metadata->'enrichments'->'coordination_detector'->>'coordinated' = 'true'
+        AND content_hash IS NOT NULL
+        AND pseudonymized_author_id IS NOT NULL
+        GROUP BY coordination_type, content_hash
+        HAVING COUNT(DISTINCT pseudonymized_author_id) >= 3
+        ORDER BY record_count DESC
+        LIMIT 50
+        """
+    )
+
+    result = await db.execute(sql, params)
+    rows = result.fetchall()
+
+    return [
+        {
+            "coordination_type": row.coordination_type or "unknown",
+            "actor_count": row.actor_count,
+            "record_count": row.record_count,
+            "content_hash": row.content_hash,
+            "time_window_hours": round(float(row.time_window_hours or 0), 2),
+            "first_post": _dt_iso(row.first_post),
+            "last_post": _dt_iso(row.last_post),
         }
         for row in rows
     ]

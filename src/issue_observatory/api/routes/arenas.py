@@ -59,6 +59,8 @@ class ArenaInfo(BaseModel):
         platform_name: Underlying platform name written to content records.
         supported_tiers: List of tier strings the arena supports (``"free"``,
             ``"medium"``, ``"premium"``).
+        temporal_mode: Temporal capability mode (``"historical"``, ``"recent"``,
+            ``"forward_only"``, or ``"mixed"``).
         description: One-line human-readable description of the arena.
         has_credentials: ``True`` when at least one active credential exists
             in the ``api_credentials`` table for this platform.
@@ -70,6 +72,7 @@ class ArenaInfo(BaseModel):
     arena_name: str
     platform_name: str
     supported_tiers: list[str]
+    temporal_mode: str
     description: str
     has_credentials: bool
     custom_config_fields: list[CustomConfigField] | None = None
@@ -135,6 +138,7 @@ async def list_available_arenas(
             arena_name=entry["arena_name"],
             platform_name=entry["platform_name"],
             supported_tiers=entry["supported_tiers"],
+            temporal_mode=entry["temporal_mode"],
             description=entry["description"],
             has_credentials=entry["platform_name"] in platforms_with_credentials,
             custom_config_fields=(

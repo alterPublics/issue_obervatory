@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.web.wayback._fetcher import (
@@ -87,6 +87,7 @@ class WaybackCollector(ArenaCollector):
     arena_name: str = "web"
     platform_name: str = "wayback"
     supported_tiers: list[Tier] = [Tier.FREE]
+    temporal_mode: TemporalMode = TemporalMode.HISTORICAL
 
     def __init__(
         self,

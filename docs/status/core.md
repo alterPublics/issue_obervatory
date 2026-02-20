@@ -1,5 +1,10 @@
 # Core Application Engineer — Status
 
+## Socialt Bedrageri Recommendations (P2)
+
+- [x] SB-09 backend complete (2026-02-20): RSS feed autodiscovery. New `arenas/rss_feeds/feed_discovery.py` module with `discover_feeds(url)` function. Discovery algorithm: (1) fetch HTML, (2) parse `<link rel="alternate">` tags with RSS/Atom content types, (3) probe common feed paths (`/rss`, `/feed`, `/atom.xml`, etc.) if no tags found, (4) verify with HEAD requests. New endpoint `POST /query-designs/{design_id}/discover-feeds` accepts website URL, returns list of discovered feed URLs with titles and types for one-click addition to `arenas_config["rss"]["custom_feeds"]`. Added `beautifulsoup4>=4.12,<5.0` dependency to `pyproject.toml`. Documentation: `ADR-012-source-discovery-assistance.md`, `SB-09-SB-10-source-discovery.md`.
+- [x] SB-10 backend complete (2026-02-20): Reddit subreddit suggestion. New `arenas/reddit/subreddit_suggestion.py` module with `suggest_subreddits(reddit, query, limit)` function using Reddit's `/subreddits/search` API. New endpoint `GET /query-designs/{design_id}/suggest-subreddits?query=...&limit=20` accepts optional query (defaults to query design's active search terms), returns list of subreddit metadata (name, subscribers, description, active users) for one-click addition to `arenas_config["reddit"]["custom_subreddits"]`. FREE-tier asyncpraw call. No new dependencies required.
+
 ## Greenland Roadmap
 
 - [x] GR-01 backend complete (2026-02-19): Researcher-configurable RSS feed list via `arenas_config["rss"]["custom_feeds"]`. Added `extra_feed_urls` param to `collect_by_terms()`/`collect_by_actors()` in RSS collector, `_merge_extra_feeds()` helper deduplicates URLs, tasks.py loads arenas_config and passes extra feeds.

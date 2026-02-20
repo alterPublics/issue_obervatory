@@ -1,0 +1,554 @@
+{% extends "base.html" %}
+{% block title %}Codebook Manager — Issue Observatory{% endblock %}
+
+{% block content %}
+{#
+    Codebook Manager — CRUD interface for managing structured coding schemes.
+
+    This page provides a full interface for researchers to define and manage
+    a controlled vocabulary of annotation codes for a specific query design.
+    Each codebook entry consists of:
+    - code: short identifier (e.g., "punitive_frame")
+    - label: human-readable name (e.g., "Punitive Framing")
+    - category: optional grouping (e.g., "frame", "stance")
+    - description: optional explanation of when to use this code
+
+    Context:
+        - design_id (str): UUID of the query design
+        - design_name (str): Name of the query design
+#}
+{% set design_id = design_id | default('') %}
+{% set design_name = design_name | default('Query Design') %}
+
+<div class="max-w-5xl mx-auto space-y-6"
+     x-data="codebookManager('{{ design_id }}')"
+     x-init="loadCodebook()">
+
+    {# Header with breadcrumb navigation #}
+    <div class="flex items-center gap-3">
+        <a href="/query-designs/{{ design_id }}"
+           class="text-gray-400 hover:text-gray-600 transition-colors"
+           aria-label="Back to query design">
+            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
+            </svg>
+        </a>
+        <nav class="flex items-center gap-2 text-sm">
+            <a href="/query-designs/{{ design_id }}"
+               class="text-gray-500 hover:text-gray-700">{{ design_name }}</a>
+            <svg class="w-4 h-4 text-gray-300" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
+            </svg>
+            <span class="text-gray-900 font-medium">Codebook</span>
+        </nav>
+    </div>
+
+    {# Page header #}
+    <div class="flex items-center justify-between">
+        <div>
+            <h1 class="text-xl font-bold text-gray-900">Codebook Manager</h1>
+            <p class="text-sm text-gray-500 mt-1">Define structured codes for qualitative annotation</p>
+        </div>
+        <button type="button"
+                @click="openAddModal()"
+                class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+            </svg>
+            Add Entry
+        </button>
+    </div>
+
+    {# Loading state #}
+    <div x-show="loading" class="bg-white rounded-lg shadow p-12 text-center">
+        <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-gray-200 border-t-blue-600"></div>
+        <p class="text-sm text-gray-500 mt-4">Loading codebook...</p>
+    </div>
+
+    {# Error state #}
+    <div x-show="!loading && error"
+         x-cloak
+         class="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-800">
+        <div class="flex items-start gap-2">
+            <svg class="w-5 h-5 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <span x-text="error"></span>
+        </div>
+    </div>
+
+    {# Search and filter bar #}
+    <div x-show="!loading && !error"
+         x-cloak
+         class="bg-white rounded-lg shadow p-4">
+        <div class="flex items-center gap-4">
+            <div class="flex-1">
+                <input type="text"
+                       x-model="searchQuery"
+                       @input="filterEntries()"
+                       placeholder="Search codes, labels, or descriptions..."
+                       class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+            <div class="w-48">
+                <select x-model="categoryFilter"
+                        @change="filterEntries()"
+                        class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                    <option value="">All categories</option>
+                    <template x-for="cat in availableCategories" :key="cat">
+                        <option :value="cat" x-text="cat"></option>
+                    </template>
+                </select>
+            </div>
+            <div class="text-xs text-gray-500" x-text="filteredEntries.length + ' of ' + allEntries.length + ' entries'"></div>
+        </div>
+    </div>
+
+    {# Empty state #}
+    <div x-show="!loading && !error && allEntries.length === 0"
+         x-cloak
+         class="bg-white rounded-lg shadow p-12 text-center">
+        <svg class="w-16 h-16 mx-auto text-gray-300" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+             stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round"
+                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+        </svg>
+        <h3 class="mt-4 text-base font-medium text-gray-900">No codebook entries yet</h3>
+        <p class="mt-2 text-sm text-gray-500">Get started by adding your first coding scheme entry.</p>
+        <button type="button"
+                @click="openAddModal()"
+                class="mt-6 inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+            </svg>
+            Add your first entry
+        </button>
+    </div>
+
+    {# Codebook entries table (grouped by category) #}
+    <div x-show="!loading && !error && allEntries.length > 0"
+         x-cloak
+         class="space-y-4">
+
+        <template x-for="(entries, category) in groupedEntries" :key="category">
+            <div class="bg-white rounded-lg shadow overflow-hidden">
+                <div class="px-6 py-3 bg-gray-50 border-b border-gray-200">
+                    <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wider"
+                        x-text="category || 'Uncategorized'"></h3>
+                </div>
+                <table class="min-w-full divide-y divide-gray-200 text-sm">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider w-1/4">Code</th>
+                            <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider w-1/4">Label</th>
+                            <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider w-1/3">Description</th>
+                            <th class="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider w-1/6">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-100">
+                        <template x-for="entry in entries" :key="entry.id">
+                            <tr class="hover:bg-gray-50 transition-colors">
+                                <td class="px-6 py-3">
+                                    <code class="text-xs font-mono text-gray-800 bg-gray-100 px-2 py-1 rounded"
+                                          x-text="entry.code"></code>
+                                </td>
+                                <td class="px-6 py-3 text-gray-900 font-medium"
+                                    x-text="entry.label"></td>
+                                <td class="px-6 py-3 text-gray-600 text-xs">
+                                    <span x-show="entry.description"
+                                          x-text="entry.description.length > 80 ? entry.description.substring(0, 80) + '...' : entry.description"
+                                          :title="entry.description"></span>
+                                    <span x-show="!entry.description" class="text-gray-400 italic">No description</span>
+                                </td>
+                                <td class="px-6 py-3 text-right">
+                                    <div class="flex items-center justify-end gap-2">
+                                        <button type="button"
+                                                @click="openEditModal(entry)"
+                                                class="text-blue-600 hover:text-blue-800 transition-colors"
+                                                title="Edit entry">
+                                            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round"
+                                                      d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                                            </svg>
+                                        </button>
+                                        <button type="button"
+                                                @click="confirmDelete(entry)"
+                                                class="text-red-400 hover:text-red-600 transition-colors"
+                                                title="Delete entry">
+                                            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round"
+                                                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+        </template>
+    </div>
+
+    {# Add/Edit modal #}
+    <div x-show="showModal"
+         x-cloak
+         class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40"
+         @keydown.escape.window="showModal && closeModal()">
+
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4" @click.stop>
+
+            <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+                <h3 class="text-base font-semibold text-gray-900"
+                    x-text="editingEntry ? 'Edit Codebook Entry' : 'Add Codebook Entry'"></h3>
+                <button type="button" @click="closeModal()"
+                        class="text-gray-400 hover:text-gray-600 transition-colors">
+                    <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                         stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+
+            {# Error message in modal #}
+            <div x-show="modalError"
+                 x-cloak
+                 class="mx-6 mt-4 flex items-center gap-2 bg-red-50 border border-red-200 rounded-md px-4 py-2.5">
+                <svg class="w-4 h-4 text-red-500 flex-shrink-0" xmlns="http://www.w3.org/2000/svg"
+                     fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <p class="text-sm text-red-700" x-text="modalError"></p>
+            </div>
+
+            <form @submit.prevent="submitForm()" class="px-6 py-5 space-y-4">
+
+                {# Code input #}
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">
+                        Code <span class="text-red-500">*</span>
+                    </label>
+                    <input type="text"
+                           x-model="form.code"
+                           required
+                           maxlength="100"
+                           pattern="[a-z0-9_]+"
+                           title="Use lowercase letters, numbers, and underscores only"
+                           placeholder="e.g., punitive_frame"
+                           class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono">
+                    <p class="text-xs text-gray-500 mt-1">Short identifier (lowercase_with_underscores)</p>
+                </div>
+
+                {# Label input #}
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">
+                        Label <span class="text-red-500">*</span>
+                    </label>
+                    <input type="text"
+                           x-model="form.label"
+                           required
+                           maxlength="200"
+                           placeholder="e.g., Punitive Framing"
+                           class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <p class="text-xs text-gray-500 mt-1">Human-readable display name</p>
+                </div>
+
+                {# Category input #}
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Category (optional)</label>
+                    <div class="flex gap-2">
+                        <select x-model="form.category"
+                                x-show="!showNewCategory"
+                                class="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                            <option value="">— none —</option>
+                            <template x-for="cat in availableCategories" :key="cat">
+                                <option :value="cat" x-text="cat"></option>
+                            </template>
+                        </select>
+                        <input type="text"
+                               x-show="showNewCategory"
+                               x-cloak
+                               x-model="form.category"
+                               maxlength="100"
+                               placeholder="Enter new category"
+                               class="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <button type="button"
+                                @click="showNewCategory = !showNewCategory"
+                                class="px-3 py-2 text-xs font-medium text-gray-600 border border-gray-300 rounded hover:bg-gray-50 transition-colors"
+                                x-text="showNewCategory ? 'Select' : 'New'"></button>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-1">Grouping label (e.g., stance, frame)</p>
+                </div>
+
+                {# Description textarea #}
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Description (optional)</label>
+                    <textarea x-model="form.description"
+                              rows="4"
+                              placeholder="Explain when to use this code..."
+                              class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"></textarea>
+                    <p class="text-xs text-gray-500 mt-1">Longer explanation for training coders</p>
+                </div>
+
+            </form>
+
+            <div class="px-6 py-4 border-t border-gray-200 flex items-center justify-between">
+                <button type="button" @click="closeModal()"
+                        class="text-sm text-gray-500 hover:text-gray-700 transition-colors">Cancel</button>
+                <button type="button"
+                        @click="submitForm()"
+                        :disabled="submitting"
+                        class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                    <svg x-show="submitting" class="animate-spin w-4 h-4"
+                         xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    <span x-text="submitting ? 'Saving...' : (editingEntry ? 'Update Entry' : 'Add Entry')"></span>
+                </button>
+            </div>
+
+        </div>
+    </div>
+
+</div>
+
+<script>
+/**
+ * Alpine.js component for the Codebook Manager page.
+ *
+ * Provides full CRUD functionality for managing codebook entries for a query design.
+ */
+function codebookManager(designId) {
+    return {
+        designId,
+        loading: true,
+        error: null,
+
+        // Data
+        allEntries: [],
+        filteredEntries: [],
+
+        // Search and filter
+        searchQuery: '',
+        categoryFilter: '',
+        availableCategories: [],
+
+        // Modal state
+        showModal: false,
+        editingEntry: null,
+        submitting: false,
+        modalError: null,
+        showNewCategory: false,
+
+        // Form data
+        form: {
+            code: '',
+            label: '',
+            description: '',
+            category: '',
+        },
+
+        /**
+         * Load all codebook entries for this query design.
+         */
+        async loadCodebook() {
+            this.loading = true;
+            this.error = null;
+            try {
+                const resp = await fetch(`/codebooks/?query_design_id=${this.designId}`, {
+                    credentials: 'include',
+                });
+                if (!resp.ok) {
+                    throw new Error(`Failed to load codebook (HTTP ${resp.status})`);
+                }
+                const data = await resp.json();
+                this.allEntries = data.entries || [];
+                this.updateAvailableCategories();
+                this.filterEntries();
+            } catch (err) {
+                this.error = err.message || 'An error occurred loading the codebook.';
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        /**
+         * Extract unique categories from all entries.
+         */
+        updateAvailableCategories() {
+            const cats = new Set();
+            this.allEntries.forEach(e => {
+                if (e.category) cats.add(e.category);
+            });
+            this.availableCategories = Array.from(cats).sort();
+        },
+
+        /**
+         * Filter entries by search query and category.
+         */
+        filterEntries() {
+            const q = this.searchQuery.toLowerCase();
+            const cat = this.categoryFilter;
+
+            this.filteredEntries = this.allEntries.filter(e => {
+                const matchesSearch = !q ||
+                    e.code.toLowerCase().includes(q) ||
+                    e.label.toLowerCase().includes(q) ||
+                    (e.description && e.description.toLowerCase().includes(q));
+
+                const matchesCategory = !cat || e.category === cat;
+
+                return matchesSearch && matchesCategory;
+            });
+        },
+
+        /**
+         * Group filtered entries by category for display.
+         */
+        get groupedEntries() {
+            const groups = {};
+            this.filteredEntries.forEach(e => {
+                const cat = e.category || '';
+                if (!groups[cat]) groups[cat] = [];
+                groups[cat].push(e);
+            });
+            return groups;
+        },
+
+        /**
+         * Open the add entry modal.
+         */
+        openAddModal() {
+            this.editingEntry = null;
+            this.form = { code: '', label: '', description: '', category: '' };
+            this.showNewCategory = false;
+            this.modalError = null;
+            this.showModal = true;
+        },
+
+        /**
+         * Open the edit modal for an existing entry.
+         */
+        openEditModal(entry) {
+            this.editingEntry = entry;
+            this.form = {
+                code: entry.code,
+                label: entry.label,
+                description: entry.description || '',
+                category: entry.category || '',
+            };
+            this.showNewCategory = false;
+            this.modalError = null;
+            this.showModal = true;
+        },
+
+        /**
+         * Close the modal.
+         */
+        closeModal() {
+            this.showModal = false;
+            this.editingEntry = null;
+            this.form = { code: '', label: '', description: '', category: '' };
+            this.modalError = null;
+            this.showNewCategory = false;
+        },
+
+        /**
+         * Submit the form (create or update).
+         */
+        async submitForm() {
+            if (this.submitting) return;
+
+            // Basic validation
+            if (!this.form.code || !this.form.label) {
+                this.modalError = 'Code and label are required.';
+                return;
+            }
+
+            this.submitting = true;
+            this.modalError = null;
+
+            try {
+                const payload = {
+                    code: this.form.code.trim(),
+                    label: this.form.label.trim(),
+                    description: this.form.description.trim() || null,
+                    category: this.form.category.trim() || null,
+                    query_design_id: this.designId,
+                };
+
+                let resp;
+                if (this.editingEntry) {
+                    // Update existing entry
+                    resp = await fetch(`/codebooks/${this.editingEntry.id}`, {
+                        method: 'PATCH',
+                        credentials: 'include',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                    });
+                } else {
+                    // Create new entry
+                    resp = await fetch('/codebooks/', {
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                    });
+                }
+
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.detail || `Operation failed (HTTP ${resp.status})`);
+                }
+
+                // Reload the codebook
+                await this.loadCodebook();
+                this.closeModal();
+
+            } catch (err) {
+                this.modalError = err.message || 'An error occurred.';
+            } finally {
+                this.submitting = false;
+            }
+        },
+
+        /**
+         * Confirm and delete an entry.
+         */
+        async confirmDelete(entry) {
+            if (!confirm(`Delete codebook entry "${entry.label}"?\n\nAnnotations that use this code will not be deleted, but will become orphaned.`)) {
+                return;
+            }
+
+            try {
+                const resp = await fetch(`/codebooks/${entry.id}`, {
+                    method: 'DELETE',
+                    credentials: 'include',
+                });
+
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.detail || `Delete failed (HTTP ${resp.status})`);
+                }
+
+                // Reload the codebook
+                await this.loadCodebook();
+
+            } catch (err) {
+                this.error = err.message || 'An error occurred deleting the entry.';
+                setTimeout(() => { this.error = null; }, 5000);
+            }
+        },
+    };
+}
+</script>
+{% endblock %}

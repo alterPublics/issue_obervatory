@@ -830,10 +830,54 @@ def enrich_collection_run(
         if len(batch) < 100:  # noqa: PLR2004 — batch size constant
             break  # last partial batch; no more rows
 
+    # -----------------------------------------------------------------------
+    # SB-03: Post-Collection Discovery Notification
+    #
+    # After enrichment completes, compute and emit discovery stats (suggested
+    # terms count, discovered links count) to the event bus so the collection
+    # detail page can display them.
+    # -----------------------------------------------------------------------
+    discovery_summary: dict[str, int] = {}
+    try:
+        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+            get_discovery_summary,
+        )
+
+        discovery_summary = asyncio.run(get_discovery_summary(run_id))
+        if discovery_summary:
+            # Emit via event bus for SSE consumers
+            try:
+                from issue_observatory.core.event_bus import emit_event  # noqa: PLC0415
+
+                emit_event(
+                    run_id,
+                    {
+                        "event": "discovery_summary",
+                        "suggested_terms": discovery_summary.get("suggested_terms", 0),
+                        "discovered_links": discovery_summary.get("discovered_links", 0),
+                        "telegram_links": discovery_summary.get("telegram_links", 0),
+                    },
+                )
+                log.info(
+                    "enrich_collection_run: discovery summary emitted", **discovery_summary
+                )
+            except Exception as event_exc:
+                log.warning(
+                    "enrich_collection_run: event bus emission failed",
+                    error=str(event_exc),
+                )
+    except Exception as disco_exc:
+        log.warning(
+            "enrich_collection_run: discovery summary computation failed",
+            error=str(disco_exc),
+            exc_info=True,
+        )
+
     summary = {
         "records_processed": records_processed,
         "enrichments_applied": enrichments_applied,
         "error_count": error_count,
+        "discovery": discovery_summary,
     }
     log.info("enrich_collection_run: complete", **summary)
     try:

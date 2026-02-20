@@ -315,6 +315,7 @@ def create_app() -> FastAPI:
         analysis,
         annotations,
         arenas as arenas_routes,
+        codebooks,
         collections,
         content,
         credits,
@@ -336,6 +337,7 @@ def create_app() -> FastAPI:
     application.include_router(collections.router, prefix="/collections", tags=["collections"])
     application.include_router(content.router, prefix="/content", tags=["content"])
     application.include_router(annotations.router, prefix="/annotations", tags=["annotations"])
+    application.include_router(codebooks.router, prefix="/codebooks", tags=["codebooks"])
     application.include_router(actors.router, prefix="/actors", tags=["actors"])
     application.include_router(analysis.router, prefix="/analysis", tags=["analysis"])
     application.include_router(credits.router, prefix="/credits", tags=["credits"])

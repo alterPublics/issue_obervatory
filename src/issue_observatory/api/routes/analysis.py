@@ -48,11 +48,18 @@ from sqlalchemy import distinct, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from issue_observatory.analysis.descriptive import (
+    compare_runs,
+    get_arena_comparison,
+    get_coordination_signals,
     get_emergent_terms,
     get_engagement_distribution,
+    get_language_distribution,
+    get_propagation_patterns,
     get_run_summary,
+    get_temporal_comparison,
     get_top_actors,
     get_top_actors_unified,
+    get_top_named_entities,
     get_top_terms,
     get_volume_over_time,
 )
@@ -213,6 +220,66 @@ async def run_summary(
     """
     await _get_run_or_raise(run_id, db, current_user)
     return await get_run_summary(db, run_id=run_id)
+
+
+# ---------------------------------------------------------------------------
+# Cross-run comparison (SB-06)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/compare")
+async def compare_collection_runs(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    run_ids: str = Query(
+        ...,
+        description="Comma-separated list of exactly two run UUIDs to compare (baseline,new).",
+    ),
+) -> dict[str, Any]:
+    """Compare two collection runs and return delta metrics.
+
+    Computes volume deltas, new actors in run 2 not in run 1, new terms,
+    and content overlap (via content_hash). Run 1 is treated as the baseline,
+    run 2 as the new run.
+
+    The requesting user must own both runs (or be an admin).
+
+    Args:
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        run_ids: Comma-separated pair of run UUIDs, e.g. ``run1_id,run2_id``.
+
+    Returns:
+        Dict with ``volume_delta``, ``new_actors``, ``new_terms``, and
+        ``content_overlap`` keys. See ``compare_runs`` in
+        ``analysis.descriptive`` for the full schema.
+
+    Raises:
+        HTTPException 400: If ``run_ids`` does not contain exactly 2 UUIDs.
+        HTTPException 404: If either run does not exist.
+        HTTPException 403: If the current user does not own both runs.
+    """
+    parts = [p.strip() for p in run_ids.split(",") if p.strip()]
+    if len(parts) != 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="run_ids must contain exactly two comma-separated UUIDs.",
+        )
+
+    try:
+        run_id_1 = uuid.UUID(parts[0])
+        run_id_2 = uuid.UUID(parts[1])
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid UUID format in run_ids: {exc}",
+        ) from exc
+
+    # Verify ownership of both runs
+    await _get_run_or_raise(run_id_1, db, current_user)
+    await _get_run_or_raise(run_id_2, db, current_user)
+
+    return await compare_runs(db, run_id_1=run_id_1, run_id_2=run_id_2)
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +464,118 @@ async def engagement_distribution(
         date_from=date_from,
         date_to=date_to,
     )
+
+
+# ---------------------------------------------------------------------------
+# Temporal comparison (IP2-033)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{run_id}/temporal-comparison")
+async def temporal_comparison(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    period: str = Query(
+        default="week",
+        description="Time period for comparison: 'week' or 'month'.",
+    ),
+    date_from: Optional[datetime] = Query(
+        default=None,
+        description="Optional start of current period (ISO 8601).",
+    ),
+    date_to: Optional[datetime] = Query(
+        default=None,
+        description="Optional end of current period (ISO 8601).",
+    ),
+) -> dict[str, Any]:
+    """Period-over-period volume comparison (current vs previous period).
+
+    Computes volume for the current period and the immediately preceding
+    period of equal length, returning delta and percentage change metrics.
+    Includes per-arena breakdown.
+
+    Args:
+        run_id: UUID of the collection run.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        period: Time period — ``"week"`` (default) or ``"month"``.
+        date_from: Optional start of the current period. If not provided,
+            uses the latest record date as the end of the current period.
+        date_to: Optional end of the current period.
+
+    Returns:
+        Dict with ``current_period``, ``previous_period``, ``delta``,
+        ``pct_change``, and ``per_arena`` breakdown.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the current user does not own the run.
+        HTTPException 422: If ``period`` is invalid.
+    """
+    await _get_run_or_raise(run_id, db, current_user)
+    try:
+        return await get_temporal_comparison(
+            db,
+            run_id=run_id,
+            period=period,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Arena comparison (IP2-037)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{run_id}/arena-comparison")
+async def arena_comparison(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> dict[str, Any]:
+    """Side-by-side arena metrics for a collection run.
+
+    Returns per-arena breakdown with record count, unique actors, unique
+    search terms matched, average engagement score, and date range.
+    Includes an aggregate totals row.
+
+    Args:
+        run_id: UUID of the collection run.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        Dict with ``by_arena`` list and ``totals`` aggregate::
+
+            {
+              "by_arena": [
+                {
+                  "arena": "news_media",
+                  "record_count": 1234,
+                  "unique_actors": 87,
+                  "unique_terms": 23,
+                  "avg_engagement": 42.5,
+                  "earliest_record": "2026-02-01T00:00:00+00:00",
+                  "latest_record": "2026-02-17T23:59:59+00:00",
+                },
+                ...
+              ],
+              "totals": {...},
+            }
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the current user does not own the run.
+    """
+    await _get_run_or_raise(run_id, db, current_user)
+    return await get_arena_comparison(db, run_id=run_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1574,6 +1753,43 @@ async def design_top_actors(
     )
 
 
+@router.get("/design/{design_id}/terms")
+async def design_top_terms(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    date_from: Optional[datetime] = Query(default=None),
+    date_to: Optional[datetime] = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=200, description="Maximum terms to return."),
+) -> list[dict[str, Any]]:
+    """Return top search terms by match frequency across all runs in a query design.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        date_from: Optional lower bound on ``published_at``.
+        date_to: Optional upper bound on ``published_at``.
+        limit: Maximum number of terms to return (1–200, default 20).
+
+    Returns:
+        List of dicts with ``term`` and ``count``, ordered by count descending.
+
+    Raises:
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    return await get_top_terms(
+        db,
+        query_design_id=design_id,
+        run_id=None,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+    )
+
+
 @router.get("/design/{design_id}/network/actors")
 async def design_network_actors(
     design_id: uuid.UUID,
@@ -1683,3 +1899,164 @@ async def design_network_bipartite(
         arena=arena,
         limit=limit,
     )
+
+
+# ---------------------------------------------------------------------------
+# SB-15: Enrichment Results Dashboard (P3)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{run_id}/enrichments/languages")
+async def enrichment_languages(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> list[dict[str, Any]]:
+    """Return language distribution from language detection enrichment results.
+
+    Queries the ``language_detector`` enrichment data in
+    ``raw_metadata.enrichments`` and aggregates by detected language code.
+
+    Args:
+        run_id: UUID of the collection run.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        List of dicts ordered by count descending::
+
+            [
+              {"language": "da", "count": 523, "percentage": 68.5},
+              {"language": "en", "count": 142, "percentage": 18.6},
+              ...
+            ]
+
+        Returns an empty list when no language enrichment data exists.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the current user does not own the run.
+    """
+    await _get_run_or_raise(run_id, db, current_user)
+    return await get_language_distribution(db, run_id=run_id)
+
+
+@router.get("/{run_id}/enrichments/entities")
+async def enrichment_entities(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    limit: int = Query(default=20, ge=1, le=100, description="Maximum entities to return."),
+) -> list[dict[str, Any]]:
+    """Return most frequent named entities from NER enrichment results.
+
+    Queries the ``named_entity_extractor`` enrichment data and returns the
+    top-N most frequently mentioned entities.
+
+    Args:
+        run_id: UUID of the collection run.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        limit: Maximum number of entities to return (1–100, default 20).
+
+    Returns:
+        List of dicts ordered by count descending::
+
+            [
+              {"entity": "Danmark", "count": 142, "types": ["GPE", "LOC"]},
+              {"entity": "København", "count": 87, "types": ["GPE"]},
+              ...
+            ]
+
+        Returns an empty list when no NER enrichment data exists.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the current user does not own the run.
+    """
+    await _get_run_or_raise(run_id, db, current_user)
+    return await get_top_named_entities(db, run_id=run_id, limit=limit)
+
+
+@router.get("/{run_id}/enrichments/propagation")
+async def enrichment_propagation(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> list[dict[str, Any]]:
+    """Return cross-arena propagation patterns from enrichment results.
+
+    Queries the ``propagation_detector`` enrichment data and returns stories
+    that propagated across 2 or more arenas.
+
+    Args:
+        run_id: UUID of the collection run.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        List of dicts ordered by story size descending::
+
+            [
+              {
+                "story_id": "abc123...",
+                "arenas": ["news_media", "social_media"],
+                "platforms": ["rss_feeds", "reddit", "bluesky"],
+                "record_count": 24,
+                "first_seen": "2026-02-10T08:30:00+00:00",
+                "last_seen": "2026-02-15T14:22:00+00:00",
+              },
+              ...
+            ]
+
+        Returns an empty list when no propagation enrichment data exists.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the current user does not own the run.
+    """
+    await _get_run_or_raise(run_id, db, current_user)
+    return await get_propagation_patterns(db, run_id=run_id)
+
+
+@router.get("/{run_id}/enrichments/coordination")
+async def enrichment_coordination(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> list[dict[str, Any]]:
+    """Return coordination signals from enrichment results.
+
+    Queries the ``coordination_detector`` enrichment data and returns detected
+    patterns of coordinated posting activity (burst patterns, identical content
+    from multiple actors within short time windows).
+
+    Args:
+        run_id: UUID of the collection run.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        List of dicts ordered by signal strength descending::
+
+            [
+              {
+                "coordination_type": "burst",
+                "actor_count": 12,
+                "record_count": 87,
+                "content_hash": "abc123...",
+                "time_window_hours": 2.5,
+                "first_post": "2026-02-14T10:00:00+00:00",
+                "last_post": "2026-02-14T12:30:00+00:00",
+              },
+              ...
+            ]
+
+        Returns an empty list when no coordination enrichment data exists.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the current user does not own the run.
+    """
+    await _get_run_or_raise(run_id, db, current_user)
+    return await get_coordination_signals(db, run_id=run_id)

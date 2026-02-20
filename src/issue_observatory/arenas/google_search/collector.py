@@ -39,7 +39,7 @@ from typing import Any
 
 import httpx
 
-from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.google_search._client import fetch_serper, fetch_serpapi
 from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.google_search.config import (
@@ -88,6 +88,7 @@ class GoogleSearchCollector(ArenaCollector):
     arena_name: str = "google_search"
     platform_name: str = "google_search"
     supported_tiers: list[Tier] = [Tier.MEDIUM, Tier.PREMIUM]
+    temporal_mode: TemporalMode = TemporalMode.RECENT
 
     def __init__(
         self,

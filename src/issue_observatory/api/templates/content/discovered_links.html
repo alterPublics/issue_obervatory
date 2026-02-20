@@ -161,6 +161,39 @@
     </div>
 
     {# ------------------------------------------------------------------ #}
+    {# Scope toggle (YF-13: This Design vs All My Designs)                #}
+    {# ------------------------------------------------------------------ #}
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200 px-5 py-4">
+        <div class="flex items-center gap-3">
+            <span class="text-xs font-medium text-gray-600 uppercase tracking-wider">Scope:</span>
+            <div class="inline-flex rounded-md shadow-sm" role="group" x-data="{ scope: '{{ 'user' if not active_query_design_id else 'design' }}' }">
+                <button type="button"
+                        @click="scope = 'design'; window.location.href = scope === 'design' && '{{ query_designs[0].id if query_designs else '' }}' ? '/content/discovered-links?query_design_id={{ query_designs[0].id if query_designs else '' }}' : '/content/discovered-links?query_design_id={{ active_query_design_id }}'"
+                        :class="scope === 'design' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'"
+                        class="px-4 py-2 text-xs font-medium border border-gray-200 rounded-l-md transition-colors">
+                    This Design
+                </button>
+                <button type="button"
+                        @click="scope = 'user'; window.location.href = '/content/discovered-links'"
+                        :class="scope === 'user' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'"
+                        class="px-4 py-2 text-xs font-medium border border-gray-200 border-l-0 rounded-r-md transition-colors">
+                    All My Designs
+                </button>
+            </div>
+            <span class="text-xs text-gray-500" x-show="scope === 'user'">
+                Showing links from all your query designs
+            </span>
+            <span class="text-xs text-gray-500" x-show="scope === 'design'" x-cloak>
+                {% if active_query_design_id %}
+                    Showing links from selected design only
+                {% else %}
+                    Select a design to filter
+                {% endif %}
+            </span>
+        </div>
+    </div>
+
+    {# ------------------------------------------------------------------ #}
     {# Filter bar                                                          #}
     {# ------------------------------------------------------------------ #}
     <div class="bg-white rounded-lg shadow-sm border border-gray-200 px-5 py-4">
@@ -398,20 +431,57 @@
                             {{ link.last_seen | default('') | truncate(10, true, '') }}
                         </td>
 
-                        {# Add to collection button — opens quick-add modal pre-filled #}
+                        {# SB-02: Action buttons — either "Add to [arena] config" or "Add to collection" #}
                         <td class="px-4 py-3 text-right">
-                            <button type="button"
-                                    @click.stop="openQuickAdd({
-                                        platform: '{{ p }}',
-                                        identifier: '{{ link.target_identifier | default('') | replace("'", "\\'") }}'
-                                    })"
-                                    class="inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 text-blue-700 text-xs font-medium rounded border border-blue-200 hover:bg-blue-100 hover:border-blue-300 transition-colors">
-                                <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                                     stroke="currentColor" stroke-width="2" aria-hidden="true">
-                                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-                                </svg>
-                                Add
-                            </button>
+                            {# SB-02: Show "Add to config" button for source-list arenas #}
+                            <template x-if="isSourceListArena('{{ p }}') && queryDesignId">
+                                <button type="button"
+                                        @click.stop="addSourceToConfig('{{ link.id | default(loop.index) }}', '{{ p }}', '{{ link.target_identifier | default('') | replace("'", "\\'") }}')"
+                                        :disabled="isSourceConfigured('{{ p }}', '{{ link.target_identifier | default('') | replace("'", "\\'") }}') || addedSources.has('{{ link.id | default(loop.index) }}')"
+                                        :class="isSourceConfigured('{{ p }}', '{{ link.target_identifier | default('') | replace("'", "\\'") }}') || addedSources.has('{{ link.id | default(loop.index) }}')
+                                            ? 'inline-flex items-center gap-1.5 px-2.5 py-1 bg-green-50 text-green-700 text-xs font-medium rounded border border-green-200 cursor-default'
+                                            : 'inline-flex items-center gap-1.5 px-2.5 py-1 bg-purple-50 text-purple-700 text-xs font-medium rounded border border-purple-200 hover:bg-purple-100 hover:border-purple-300 transition-colors disabled:opacity-50'"
+                                >
+                                    <svg x-show="addingSource.has('{{ link.id | default(loop.index) }}')"
+                                         class="animate-spin w-3 h-3" xmlns="http://www.w3.org/2000/svg"
+                                         fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                    </svg>
+                                    <svg x-show="!addingSource.has('{{ link.id | default(loop.index) }}') && (isSourceConfigured('{{ p }}', '{{ link.target_identifier | default('') | replace("'", "\\'") }}') || addedSources.has('{{ link.id | default(loop.index) }}'))"
+                                         class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                         stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                                    </svg>
+                                    <svg x-show="!addingSource.has('{{ link.id | default(loop.index) }}') && !isSourceConfigured('{{ p }}', '{{ link.target_identifier | default('') | replace("'", "\\'") }}') && !addedSources.has('{{ link.id | default(loop.index) }}')"
+                                         class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                         stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+                                    </svg>
+                                    <span x-text="isSourceConfigured('{{ p }}', '{{ link.target_identifier | default('') | replace("'", "\\'") }}')
+                                        ? 'Already tracked'
+                                        : addedSources.has('{{ link.id | default(loop.index) }}')
+                                            ? 'Added'
+                                            : 'Add to {{ p | capitalize }} config'">
+                                    </span>
+                                </button>
+                            </template>
+
+                            {# Fallback: "Add to collection" button for non-source-list arenas or when no design selected #}
+                            <template x-if="!isSourceListArena('{{ p }}') || !queryDesignId">
+                                <button type="button"
+                                        @click.stop="openQuickAdd({
+                                            platform: '{{ p }}',
+                                            identifier: '{{ link.target_identifier | default('') | replace("'", "\\'") }}'
+                                        })"
+                                        class="inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 text-blue-700 text-xs font-medium rounded border border-blue-200 hover:bg-blue-100 hover:border-blue-300 transition-colors">
+                                    <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                         stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+                                    </svg>
+                                    Add to actors
+                                </button>
+                            </template>
                         </td>
                     </tr>
                     {% endfor %}
@@ -590,6 +660,8 @@
  * Alpine component for the Discovered Sources page.
  * Manages checkbox selection state and bulk import.
  *
+ * SB-02: One-click source addition from discovered links
+ *
  * @param {string} queryDesignId - Active query design UUID (from Jinja context, may be empty).
  */
 function discoveredSources(queryDesignId) {
@@ -601,11 +673,21 @@ function discoveredSources(queryDesignId) {
         bulkLoading: false,
         bulkResult: null,
         minCount: 1,
+        // SB-02: Track which sources are already configured per platform
+        configuredSources: new Map(), // platform -> Set(identifier)
+        // Track sources being added (for loading state)
+        addingSource: new Set(), // Set of linkId
+        // Track sources successfully added (for UI feedback)
+        addedSources: new Set(), // Set of linkId
 
         init() {
             // Count visible rows on init so the "select all" checkbox header works.
             this.$nextTick(() => {
                 this.updateVisibleCount();
+                // SB-02: Load configured sources for the active query design
+                if (this.queryDesignId) {
+                    this.loadConfiguredSources();
+                }
             });
         },
 
@@ -646,6 +728,156 @@ function discoveredSources(queryDesignId) {
          */
         openQuickAdd(data) {
             this.$dispatch('quick-add-discovered', data);
+        },
+
+        /**
+         * SB-02: Load configured sources from the query design's arena config
+         * to pre-mark sources that are already tracked.
+         */
+        async loadConfiguredSources() {
+            if (!this.queryDesignId) return;
+            try {
+                const res = await fetch(`/api/query-designs/${this.queryDesignId}/arena-config`, {
+                    credentials: 'include',
+                });
+                if (!res.ok) return;
+                const data = await res.json();
+                const config = data.arenas_config || {};
+
+                // Extract source lists from arena configs
+                const sourceListArenas = {
+                    telegram: 'custom_channels',
+                    reddit: 'custom_subreddits',
+                    rss_feeds: 'custom_feeds',
+                    discord: 'custom_channel_ids',
+                    wikipedia: 'seed_articles',
+                };
+
+                for (const [platform, configKey] of Object.entries(sourceListArenas)) {
+                    const platformConfig = config[platform];
+                    if (platformConfig && Array.isArray(platformConfig[configKey])) {
+                        this.configuredSources.set(
+                            platform,
+                            new Set(platformConfig[configKey].map(s => s.toLowerCase()))
+                        );
+                    }
+                }
+            } catch (e) {
+                console.warn('Could not load configured sources:', e);
+            }
+        },
+
+        /**
+         * SB-02: Check if a source is already configured for its platform
+         */
+        isSourceConfigured(platform, identifier) {
+            const platformSources = this.configuredSources.get(platform);
+            if (!platformSources) return false;
+            // Normalize identifier for comparison
+            let normalized = identifier.toLowerCase();
+            // Strip @ prefix for telegram, r/ prefix for reddit
+            if (platform === 'telegram' && normalized.startsWith('@')) {
+                normalized = normalized.substring(1);
+            } else if (platform === 'reddit' && normalized.startsWith('r/')) {
+                normalized = normalized.substring(2);
+            }
+            return platformSources.has(normalized);
+        },
+
+        /**
+         * SB-02: Determine if a platform supports source-list configuration
+         */
+        isSourceListArena(platform) {
+            return ['telegram', 'reddit', 'rss_feeds', 'discord', 'wikipedia'].includes(platform);
+        },
+
+        /**
+         * SB-02: Add a discovered source to the query design's arena config
+         */
+        async addSourceToConfig(linkId, platform, identifier) {
+            if (!this.queryDesignId || !platform || !identifier) return;
+
+            // Map platform to config key
+            const configKeyMap = {
+                telegram: 'custom_channels',
+                reddit: 'custom_subreddits',
+                rss_feeds: 'custom_feeds',
+                discord: 'custom_channel_ids',
+                wikipedia: 'seed_articles',
+            };
+
+            const configKey = configKeyMap[platform];
+            if (!configKey) return;
+
+            this.addingSource = new Set([...this.addingSource, linkId]);
+
+            try {
+                // Fetch current config to append (not replace)
+                const getRes = await fetch(`/api/query-designs/${this.queryDesignId}/arena-config`, {
+                    credentials: 'include',
+                });
+                if (!getRes.ok) throw new Error('Could not fetch current arena config');
+
+                const currentData = await getRes.json();
+                const currentConfig = currentData.arenas_config || {};
+                const currentPlatformConfig = currentConfig[platform] || {};
+                const currentList = currentPlatformConfig[configKey] || [];
+
+                // Normalize identifier for storage
+                let normalizedIdentifier = identifier;
+                if (platform === 'telegram' && !identifier.startsWith('@')) {
+                    normalizedIdentifier = '@' + identifier;
+                } else if (platform === 'reddit' && !identifier.startsWith('r/')) {
+                    normalizedIdentifier = 'r/' + identifier;
+                }
+
+                // Check if already in list (case-insensitive)
+                const alreadyExists = currentList.some(
+                    s => s.toLowerCase() === normalizedIdentifier.toLowerCase()
+                );
+
+                if (alreadyExists) {
+                    // Mark as already configured
+                    if (!this.configuredSources.has(platform)) {
+                        this.configuredSources.set(platform, new Set());
+                    }
+                    this.configuredSources.get(platform).add(normalizedIdentifier.toLowerCase());
+                    this.configuredSources = new Map(this.configuredSources);
+                } else {
+                    // Append to list
+                    const updatedList = [...currentList, normalizedIdentifier];
+                    const payload = { [configKey]: updatedList };
+
+                    const patchRes = await fetch(
+                        `/query-designs/${this.queryDesignId}/arena-config/${platform}`,
+                        {
+                            method: 'PATCH',
+                            credentials: 'include',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload),
+                        }
+                    );
+
+                    if (!patchRes.ok) {
+                        const errData = await patchRes.json().catch(() => ({}));
+                        throw new Error(errData.detail || `HTTP ${patchRes.status}`);
+                    }
+
+                    // Mark as added
+                    this.addedSources = new Set([...this.addedSources, linkId]);
+                    // Update configured sources
+                    if (!this.configuredSources.has(platform)) {
+                        this.configuredSources.set(platform, new Set());
+                    }
+                    this.configuredSources.get(platform).add(normalizedIdentifier.toLowerCase());
+                    this.configuredSources = new Map(this.configuredSources);
+                }
+            } catch (e) {
+                alert(`Could not add source: ${e.message}`);
+            } finally {
+                this.addingSource.delete(linkId);
+                this.addingSource = new Set(this.addingSource);
+            }
         },
 
         /**

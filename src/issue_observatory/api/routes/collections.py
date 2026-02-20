@@ -233,6 +233,38 @@ async def create_collection_run(  # type: ignore[misc]
         merged_arenas_count=len(merged_arenas_config),
     )
 
+    # -----------------------------------------------------------------------
+    # SB-05: Date range capability check
+    #
+    # When the user specifies date_from/date_to for a batch collection, check
+    # each enabled arena's temporal_mode and warn if any have RECENT or
+    # FORWARD_ONLY modes that will not respect the date range.
+    # -----------------------------------------------------------------------
+    date_range_warnings: list[str] = []
+    if payload.mode == "batch" and (payload.date_from or payload.date_to):
+        from issue_observatory.arenas.base import TemporalMode
+        from issue_observatory.arenas.registry import autodiscover, get_arena
+
+        autodiscover()
+        limited_arenas: list[str] = []
+
+        # Check all arenas that are enabled in the merged config
+        for platform_name in merged_arenas_config.keys():
+            try:
+                collector_cls = get_arena(platform_name)
+                temporal_mode = getattr(collector_cls, "temporal_mode", None)
+                if temporal_mode in (TemporalMode.RECENT, TemporalMode.FORWARD_ONLY):
+                    limited_arenas.append(platform_name)
+            except KeyError:
+                # Arena not registered; skip
+                continue
+
+        if limited_arenas:
+            date_range_warnings.append(
+                f"The following arenas will not respect your date range: {', '.join(limited_arenas)}. "
+                "They will return recent/current content only."
+            )
+
     run = CollectionRun(
         query_design_id=payload.query_design_id,
         initiated_by=current_user.id,
@@ -260,8 +292,13 @@ async def create_collection_run(  # type: ignore[misc]
         mode=run.mode,
         query_design_id=str(payload.query_design_id),
         user_id=str(current_user.id),
+        warnings_count=len(date_range_warnings),
     )
-    return run
+
+    # Build response with warnings
+    response = CollectionRunRead.model_validate(run)
+    response.warnings = date_range_warnings
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +323,12 @@ async def estimate_collection_credits(
     Estimates are heuristic-based and may vary from actual costs by ±50%.
     They provide order-of-magnitude accuracy for budget planning.
 
+    SB-14: This endpoint now returns real estimates based on:
+    - Number of active search terms in the query design
+    - Number of enabled arenas per tier
+    - Date range (for batch mode, defaults to 30 days for live mode)
+    - Each arena collector's estimate_credits() implementation
+
     Args:
         payload: Validated ``CreditEstimateRequest`` body.
         db: Injected async database session.
@@ -298,21 +341,11 @@ async def estimate_collection_credits(
         HTTPException 404: If the query design does not exist.
         HTTPException 403: If the caller does not own the query design.
     """
-    # Import here to avoid circular dependencies
-    from datetime import timedelta
-
-    from issue_observatory.arenas.base import Tier
-    from issue_observatory.arenas.registry import autodiscover, get_arena
     from issue_observatory.core.credit_service import CreditService
 
-    # Load query design with search terms and actor lists eagerly
+    # Load query design and verify ownership
     qd_result = await db.execute(
-        select(QueryDesign)
-        .where(QueryDesign.id == payload.query_design_id)
-        .options(
-            selectinload(QueryDesign.search_terms),
-            selectinload(QueryDesign.actor_lists),
-        )
+        select(QueryDesign).where(QueryDesign.id == payload.query_design_id)
     )
     query_design = qd_result.scalar_one_or_none()
     if query_design is None:
@@ -322,92 +355,41 @@ async def estimate_collection_credits(
         )
     ownership_guard(query_design.owner_id, current_user)
 
-    # Ensure arena registry is populated
-    autodiscover()
-
     # Merge arena config: query design base + launcher override
     merged_arenas_config = {**query_design.arenas_config, **payload.arenas_config}
 
-    # Extract active search terms and count enabled arenas
-    active_search_terms = [st for st in query_design.search_terms if st.is_active]
-    term_count = len(active_search_terms)
-
-    # Calculate date range in days (for volume-based estimates)
-    date_range_days = 30  # default for live mode or when dates are unspecified
-    if payload.date_from and payload.date_to:
-        delta = payload.date_to - payload.date_from
-        date_range_days = max(1, delta.days)
-
-    # Convert global tier string to Tier enum
-    default_tier = Tier(payload.tier)
-
-    # Compute per-arena estimates
-    per_arena: dict[str, int] = {}
-    from issue_observatory.arenas.registry import list_arenas
-
-    for arena_meta in list_arenas():
-        platform_name = arena_meta["platform_name"]
-
-        # Determine the effective tier for this arena (IP2-022 precedence)
-        arena_tier_value = merged_arenas_config.get(platform_name, payload.tier)
-        try:
-            arena_tier = Tier(arena_tier_value)
-        except ValueError:
-            # Invalid tier string, skip this arena
-            logger.warning(
-                "Invalid tier for arena",
-                platform_name=platform_name,
-                tier_value=arena_tier_value,
-            )
-            continue
-
-        # Skip arenas that don't support the requested tier
-        if arena_tier.value not in arena_meta["supported_tiers"]:
-            continue
-
-        try:
-            # Get the collector class and call estimate_credits
-            collector_cls = get_arena(platform_name)
-            collector = collector_cls()  # Instantiate without credentials/rate limiter
-
-            estimate = await collector.estimate_credits(
-                terms=[st.term for st in active_search_terms],
-                actor_ids=None,  # Actor-based estimates not yet implemented
-                tier=arena_tier,
-                date_from=payload.date_from,
-                date_to=payload.date_to,
-                max_results=None,  # Use tier default
-            )
-
-            if estimate > 0:
-                per_arena[platform_name] = estimate
-
-        except Exception as exc:  # noqa: BLE001
-            # Log but don't fail the entire estimate if one arena errors
-            logger.warning(
-                "Arena estimation failed",
-                platform_name=platform_name,
-                error=str(exc),
-                exc_info=True,
-            )
-            continue
-
-    # Sum total credits
-    total_credits = sum(per_arena.values())
+    # Use CreditService to compute the estimate
+    credit_service = CreditService(db)
+    estimate = await credit_service.estimate(
+        query_design_id=payload.query_design_id,
+        tier=payload.tier,
+        arenas_config=merged_arenas_config,
+        date_from=payload.date_from,
+        date_to=payload.date_to,
+    )
 
     # Get user's available credit balance
-    credit_service = CreditService(db)
     balance = await credit_service.get_balance(current_user.id)
     available_credits = balance["available"]
 
     # Determine if run can proceed
+    total_credits = estimate["total_credits"]
     can_run = total_credits <= available_credits
+
+    logger.info(
+        "credit_estimate_requested",
+        query_design_id=str(payload.query_design_id),
+        user_id=str(current_user.id),
+        total_credits=total_credits,
+        available_credits=available_credits,
+        can_run=can_run,
+    )
 
     return CreditEstimateResponse(
         total_credits=total_credits,
         available_credits=available_credits,
         can_run=can_run,
-        per_arena=per_arena,
+        per_arena=estimate["per_arena"],
     )
 
 
@@ -676,6 +658,80 @@ async def get_collection_schedule(
         "timezone": _DAILY_COLLECTION_TIMEZONE,
         "last_triggered_at": run.started_at.isoformat() if run.started_at else None,
         "suspended_at": run.suspended_at.isoformat() if run.suspended_at else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Refresh engagement metrics (IP2-035)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{run_id}/refresh-engagement", status_code=status.HTTP_202_ACCEPTED)
+@limiter.limit("5/minute")
+async def refresh_engagement_metrics_endpoint(
+    request: Request,
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> dict[str, str]:
+    """Launch an asynchronous task to refresh engagement metrics for a run.
+
+    Re-fetches current likes, shares, comments, and views counts for all
+    content records in the specified collection run. Engagement metrics
+    change over time, so this endpoint allows researchers to update
+    historical data with fresh counts.
+
+    The refresh task groups records by platform and calls each arena's
+    ``refresh_engagement()`` method (if implemented). Arenas that do not
+    support metric refresh are skipped silently.
+
+    Only completed runs can be refreshed. The task processes records in
+    batches (50 external_ids per API call) to respect rate limits.
+
+    This endpoint is rate-limited to 5 requests per minute per user.
+
+    Args:
+        request: The incoming HTTP request (used by rate limiter).
+        run_id: UUID of the collection run to refresh.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        Dict with ``task_id`` and ``run_id`` for tracking the refresh task.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the caller did not initiate the run (and is not admin).
+        HTTPException 409: If the run is not in 'completed' status.
+    """
+    run = await _get_run_or_404(run_id, db)
+    ownership_guard(run.initiated_by, current_user)
+
+    if run.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Cannot refresh engagement for a run with status '{run.status}'. "
+                "Only completed runs can be refreshed."
+            ),
+        )
+
+    # Launch the Celery task asynchronously
+    from issue_observatory.workers.maintenance_tasks import refresh_engagement_metrics
+
+    task = refresh_engagement_metrics.delay(str(run_id))
+
+    logger.info(
+        "refresh_engagement_launched",
+        run_id=str(run_id),
+        task_id=task.id,
+        user_id=str(current_user.id),
+    )
+
+    return {
+        "task_id": task.id,
+        "run_id": str(run_id),
+        "message": "Engagement metric refresh task launched. This may take several minutes.",
     }
 
 

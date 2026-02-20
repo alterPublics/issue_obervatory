@@ -277,6 +277,46 @@ async def query_designs_edit(
     )
 
 
+@router.get("/query-designs/{design_id}/codebook", response_class=HTMLResponse)
+async def query_design_codebook_manager(
+    request: Request,
+    design_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> HTMLResponse:
+    """Render the codebook manager page for a query design.
+
+    Provides a full CRUD interface for managing structured qualitative coding
+    schemes (codebook entries) scoped to a specific query design.
+
+    Args:
+        request: The current HTTP request.
+        design_id: UUID of the query design.
+        current_user: The authenticated, active user.
+        db: Injected async database session.
+
+    Returns:
+        Rendered ``annotations/codebook_manager.html`` template.
+    """
+    # Fetch the query design to get its name for breadcrumb navigation
+    stmt = select(QueryDesign).where(QueryDesign.id == design_id)
+    result = await db.execute(stmt)
+    design = result.scalar_one_or_none()
+
+    design_name = design.name if design else "Query Design"
+
+    tpl = _templates(request)
+    return tpl.TemplateResponse(
+        "annotations/codebook_manager.html",
+        {
+            "request": request,
+            "user": current_user,
+            "design_id": str(design_id),
+            "design_name": design_name,
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Collections
 # ---------------------------------------------------------------------------

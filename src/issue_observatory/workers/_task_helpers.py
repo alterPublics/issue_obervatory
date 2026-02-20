@@ -26,7 +26,8 @@ from issue_observatory.core.models.collection import (
     CollectionTask,
     CreditTransaction,
 )
-from issue_observatory.core.models.query_design import ActorList, QueryDesign
+from issue_observatory.core.models.content import ContentRecord, DiscoveredSource
+from issue_observatory.core.models.query_design import ActorList, QueryDesign, SuggestedTerm
 from issue_observatory.core.models.users import User
 from issue_observatory.core.retention_service import RetentionService
 
@@ -420,3 +421,65 @@ async def fetch_search_terms_for_arena(
         result = await db.execute(stmt)
         rows = result.scalars().all()
         return [str(term) for term in rows]
+
+
+# ---------------------------------------------------------------------------
+# SB-03: Post-Collection Discovery Summary (enrichment completion)
+# ---------------------------------------------------------------------------
+
+
+async def get_discovery_summary(run_id: str) -> dict[str, int]:
+    """Compute discovery statistics for a completed collection run.
+
+    Queries the database to count:
+    - Suggested terms added during this run (from analysis/suggested_terms)
+    - Discovered sources/links extracted from collected content
+
+    Used by SB-03 to emit a post-collection summary notification.
+
+    Args:
+        run_id: UUID string of the CollectionRun to analyze.
+
+    Returns:
+        Dict with keys:
+        - ``suggested_terms``: Count of suggested_terms rows for this run
+        - ``discovered_links``: Total discovered_sources count
+        - ``telegram_links``: Count of Telegram-specific discovered sources
+    """
+    from sqlalchemy import func  # noqa: PLC0415
+    from uuid import UUID  # noqa: PLC0415
+
+    run_uuid = UUID(run_id)
+
+    async with AsyncSessionLocal() as db:
+        # Count suggested terms for this run
+        suggested_terms_stmt = select(func.count()).select_from(SuggestedTerm).where(
+            SuggestedTerm.collection_run_id == run_uuid
+        )
+        suggested_terms_result = await db.execute(suggested_terms_stmt)
+        suggested_terms_count = suggested_terms_result.scalar_one()
+
+        # Count total discovered sources
+        discovered_links_stmt = select(func.count()).select_from(DiscoveredSource).where(
+            DiscoveredSource.collection_run_id == run_uuid
+        )
+        discovered_links_result = await db.execute(discovered_links_stmt)
+        discovered_links_count = discovered_links_result.scalar_one()
+
+        # Count Telegram-specific discovered sources
+        telegram_links_stmt = (
+            select(func.count())
+            .select_from(DiscoveredSource)
+            .where(
+                DiscoveredSource.collection_run_id == run_uuid,
+                DiscoveredSource.platform == "telegram",
+            )
+        )
+        telegram_links_result = await db.execute(telegram_links_stmt)
+        telegram_links_count = telegram_links_result.scalar_one()
+
+    return {
+        "suggested_terms": suggested_terms_count,
+        "discovered_links": discovered_links_count,
+        "telegram_links": telegram_links_count,
+    }

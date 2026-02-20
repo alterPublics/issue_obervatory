@@ -28,7 +28,7 @@ from typing import Any
 
 import httpx
 
-from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.web.common_crawl._fetcher import (
@@ -87,6 +87,7 @@ class CommonCrawlCollector(ArenaCollector):
     arena_name: str = "web"
     platform_name: str = "common_crawl"
     supported_tiers: list[Tier] = [Tier.FREE]
+    temporal_mode: TemporalMode = TemporalMode.HISTORICAL
 
     def __init__(
         self,

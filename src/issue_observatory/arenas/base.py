@@ -53,14 +53,37 @@ class Tier(str, Enum):
     PREMIUM = "premium"
 
 
+class TemporalMode(str, Enum):
+    """Temporal capabilities of an arena collector.
+
+    Attributes:
+        HISTORICAL: Supports deep historical search, can retrieve content
+            from years ago (e.g. GDELT, Common Crawl, Wayback Machine, Event Registry).
+        RECENT: Limited to recent content only, typically within the last
+            few days or weeks. Date filters may be ignored or return incomplete
+            results (e.g. Google Search, X/Twitter, Reddit, Bluesky).
+        FORWARD_ONLY: Real-time or near-real-time only, cannot backfill
+            historical content. Useful for monitoring from collection start
+            onward (e.g. RSS feeds, Via Ritzau).
+        MIXED: Supports both historical search (via API) and real-time
+            streaming (e.g. YouTube: historical via Data API, real-time via RSS).
+    """
+
+    HISTORICAL = "historical"
+    RECENT = "recent"
+    FORWARD_ONLY = "forward_only"
+    MIXED = "mixed"
+
+
 class ArenaCollector(ABC):
     """Abstract base class for all Issue Observatory arena collectors.
 
     Subclasses must define the class-level attributes ``arena_name``,
-    ``platform_name``, and ``supported_tiers``, and implement all abstract
-    methods. The constructor injects a ``CredentialPool`` and a
-    ``RateLimiter`` so that individual arena implementations do not need
-    to manage credential rotation or rate-limit state directly.
+    ``platform_name``, ``supported_tiers``, and ``temporal_mode``, and
+    implement all abstract methods. The constructor injects a
+    ``CredentialPool`` and a ``RateLimiter`` so that individual arena
+    implementations do not need to manage credential rotation or rate-limit
+    state directly.
 
     Class Attributes:
         arena_name: Logical arena group (e.g. ``"google_search"``,
@@ -71,6 +94,9 @@ class ArenaCollector(ABC):
             column in ``content_records``.
         supported_tiers: List of ``Tier`` values this collector can operate
             at. Collectors that support only free access list ``[Tier.FREE]``.
+        temporal_mode: ``TemporalMode`` value describing the arena's date
+            range capabilities. Used to warn researchers when date filters
+            may be ignored or incomplete.
 
     Args:
         credential_pool: Optional shared credential pool. If ``None``,
@@ -83,6 +109,7 @@ class ArenaCollector(ABC):
     arena_name: str
     platform_name: str
     supported_tiers: list[Tier]
+    temporal_mode: TemporalMode
 
     def __init__(
         self,
@@ -303,6 +330,59 @@ class ArenaCollector(ABC):
             Estimated credit cost as a non-negative integer.
         """
         return 0
+
+    async def refresh_engagement(
+        self,
+        external_ids: list[str],
+        tier: Tier = Tier.FREE,
+    ) -> dict[str, dict[str, int]]:
+        """Re-fetch engagement metrics for existing content records.
+
+        This optional method allows arenas to update engagement counts
+        (likes, shares, comments, views) for previously collected content.
+        Not all arenas support metric refresh — the default implementation
+        returns an empty dict, signaling that refresh is not available.
+
+        Arenas that support refresh should:
+        1. Query the platform API to fetch current engagement counts for
+           each external_id
+        2. Return a mapping of external_id → {metric_name: count}
+        3. Handle API errors gracefully (skip unavailable records)
+        4. Respect rate limits (use the injected rate_limiter)
+
+        Standard metric names:
+        - ``likes_count``
+        - ``shares_count``
+        - ``comments_count``
+        - ``views_count``
+
+        Args:
+            external_ids: List of platform-native content identifiers
+                (e.g. tweet IDs, YouTube video IDs, Reddit submission IDs).
+            tier: Operational tier controlling which API provider is used.
+
+        Returns:
+            Mapping of external_id (str) to engagement metrics (dict).
+            Missing external_ids indicate the arena could not refresh
+            those records (e.g. content deleted, API error).
+
+        Example return value::
+
+            {
+                "1234567890": {
+                    "likes_count": 42,
+                    "shares_count": 7,
+                    "comments_count": 13,
+                    "views_count": 1500,
+                },
+                "9876543210": {
+                    "likes_count": 3,
+                    "shares_count": 0,
+                    "comments_count": 1,
+                },
+            }
+        """
+        return {}
 
     async def health_check(self) -> dict:  # type: ignore[type-arg]
         """Verify that the arena's upstream data sources are reachable.

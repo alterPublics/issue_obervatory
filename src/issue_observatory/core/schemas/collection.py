@@ -58,6 +58,9 @@ class CollectionRunRead(BaseModel):
         estimated_credits: Credits reserved at run start (pre-flight estimate).
         credits_spent: Actual credits consumed (settled on completion).
         records_collected: Total content records ingested by this run.
+        warnings: Optional list of warning messages (e.g. date range capability
+            warnings from SB-05). Not persisted to the database; computed at
+            response time.
     """
 
     id: uuid.UUID
@@ -74,6 +77,7 @@ class CollectionRunRead(BaseModel):
     estimated_credits: int
     credits_spent: int
     records_collected: int
+    warnings: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 

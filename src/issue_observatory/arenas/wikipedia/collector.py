@@ -41,7 +41,7 @@ from typing import Any
 
 import httpx
 
-from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.wikipedia.config import (
     DEFAULT_MAX_RESULTS,
@@ -105,6 +105,7 @@ class WikipediaCollector(ArenaCollector):
     arena_name: str = "reference"
     platform_name: str = "wikipedia"
     supported_tiers: list[Tier] = [Tier.FREE]
+    temporal_mode: TemporalMode = TemporalMode.FORWARD_ONLY
 
     def __init__(
         self,

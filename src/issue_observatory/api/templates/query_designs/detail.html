@@ -18,7 +18,8 @@
 {% set runs = runs | default([]) %}
 {% set actors = actors | default([]) %}
 
-<div class="max-w-4xl mx-auto space-y-6">
+<div class="max-w-4xl mx-auto space-y-6"
+     x-data="liveTrackingPromotion('{{ design_id }}', '{{ design.default_tier | default('free') }}')">
 
     {# Header #}
     <div class="flex items-center gap-3">
@@ -31,6 +32,15 @@
             </svg>
         </a>
         <h1 class="text-xl font-bold text-gray-900 flex-1">{{ design.name | default('Query Design') }}</h1>
+        <a href="/query-designs/{{ design_id }}/codebook"
+           class="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-indigo-700 border border-indigo-200 rounded-md hover:bg-indigo-50 transition-colors">
+            <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+            </svg>
+            Manage Codebook
+        </a>
         <a href="/query-designs/{{ design_id }}/edit"
            class="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-gray-600 border border-gray-200 rounded-md hover:bg-gray-50 transition-colors">
             <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
@@ -57,6 +67,19 @@
             </svg>
             Clone this design
         </button>
+        {# SB-08: "Promote to Live Tracking" button — shows only when at least one completed run exists #}
+        {% if runs and runs | selectattr('status', 'equalto', 'completed') | list | length > 0 %}
+        <button type="button"
+                @click="openDialog()"
+                class="inline-flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white text-sm font-medium rounded-md hover:bg-green-700 transition-colors">
+            <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            </svg>
+            Start Live Tracking
+        </button>
+        {% endif %}
         <a href="/collections/new?design_id={{ design_id }}"
            class="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
             <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
@@ -66,13 +89,115 @@
                 <path stroke-linecap="round" stroke-linejoin="round"
                       d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
             </svg>
-            Run collection
+            Run batch collection
         </a>
     </div>
 
+    {# SB-12: Research Lifecycle Indicator #}
+    <div class="bg-white rounded-lg shadow px-6 py-5">
+        <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-4">Research Lifecycle</h2>
+        {% set has_runs = runs and runs | length > 0 %}
+        {% set has_completed = runs and runs | selectattr('status', 'equalto', 'completed') | list | length > 0 %}
+        {% set has_live = runs and runs | selectattr('mode', 'equalto', 'live') | selectattr('status', 'in', ['running', 'completed']) | list | length > 0 %}
+        {% set has_suspended = runs and runs | selectattr('mode', 'equalto', 'live') | selectattr('suspended_at', 'defined') | list | length > 0 %}
+
+        {# Determine current stage #}
+        {% if has_suspended %}
+            {% set current_stage = 'paused' %}
+        {% elif has_live %}
+            {% set current_stage = 'tracking' %}
+        {% elif has_completed %}
+            {% set current_stage = 'exploring' %}
+        {% else %}
+            {% set current_stage = 'design' %}
+        {% endif %}
+
+        {# Horizontal stepper #}
+        <div class="flex items-center justify-between">
+            {% set stages = [
+                ('design', 'Design', 'Query design created, no collections yet'),
+                ('exploring', 'Exploring', 'At least one batch run completed'),
+                ('tracking', 'Tracking', 'Active live tracking run exists'),
+                ('paused', 'Paused', 'Live tracking run is suspended')
+            ] %}
+
+            {% for stage_id, stage_label, stage_desc in stages %}
+            <div class="flex items-center flex-1 {% if not loop.last %}mr-4{% endif %}">
+                <div class="flex flex-col items-center flex-1">
+                    {# Stage indicator circle #}
+                    <div class="relative flex items-center justify-center w-10 h-10 rounded-full border-2 transition-colors
+                        {% if current_stage == stage_id %}
+                            bg-blue-600 border-blue-600
+                        {% elif (current_stage == 'exploring' and stage_id == 'design') or (current_stage == 'tracking' and stage_id in ['design', 'exploring']) or (current_stage == 'paused' and stage_id in ['design', 'exploring', 'tracking']) %}
+                            bg-green-100 border-green-500
+                        {% else %}
+                            bg-gray-100 border-gray-300
+                        {% endif %}">
+
+                        {% if current_stage == stage_id %}
+                            {# Current stage — pulse animation #}
+                            <div class="absolute inset-0 rounded-full bg-blue-600 animate-ping opacity-20"></div>
+                            <span class="relative text-sm font-semibold text-white">{{ loop.index }}</span>
+                        {% elif (current_stage == 'exploring' and stage_id == 'design') or (current_stage == 'tracking' and stage_id in ['design', 'exploring']) or (current_stage == 'paused' and stage_id in ['design', 'exploring', 'tracking']) %}
+                            {# Completed stage — checkmark #}
+                            <svg class="w-5 h-5 text-green-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                 stroke="currentColor" stroke-width="3" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                            </svg>
+                        {% else %}
+                            {# Future stage — number #}
+                            <span class="text-sm font-medium text-gray-400">{{ loop.index }}</span>
+                        {% endif %}
+                    </div>
+
+                    {# Stage label and description #}
+                    <div class="mt-2 text-center">
+                        <p class="text-xs font-medium
+                            {% if current_stage == stage_id %}text-blue-700
+                            {% elif (current_stage == 'exploring' and stage_id == 'design') or (current_stage == 'tracking' and stage_id in ['design', 'exploring']) or (current_stage == 'paused' and stage_id in ['design', 'exploring', 'tracking']) %}text-green-700
+                            {% else %}text-gray-500{% endif %}">
+                            {{ stage_label }}
+                        </p>
+                        <p class="text-xs text-gray-400 mt-0.5 max-w-[100px]" title="{{ stage_desc }}">
+                            {{ stage_desc | truncate(40, true, '...') }}
+                        </p>
+                    </div>
+                </div>
+
+                {# Connecting line #}
+                {% if not loop.last %}
+                <div class="h-0.5 flex-1 mx-2 -mt-10 transition-colors
+                    {% if (current_stage == 'exploring' and stage_id == 'design') or (current_stage == 'tracking' and stage_id in ['design', 'exploring']) or (current_stage == 'paused' and stage_id in ['design', 'exploring']) %}
+                        bg-green-500
+                    {% else %}
+                        bg-gray-300
+                    {% endif %}">
+                </div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
     {# Design metadata card #}
-    <div class="bg-white rounded-lg shadow p-6">
-        <h2 class="text-sm font-semibold text-gray-900 border-b border-gray-200 pb-3 mb-4">Basic Information</h2>
+    <div class="bg-white rounded-lg shadow p-6"
+         x-data="codebookCounter('{{ design_id }}')"
+         x-init="loadCodebookCount()">
+        <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4">
+            <h2 class="text-sm font-semibold text-gray-900">Basic Information</h2>
+            {# SB-16: Codebook indicator badge #}
+            <a x-show="codebookCount > 0"
+               x-cloak
+               :href="'/query-designs/{{ design_id }}/codebook'"
+               class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-indigo-100 text-indigo-700 text-xs font-medium hover:bg-indigo-200 transition-colors">
+                <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+                <span x-text="codebookCount + ' code' + (codebookCount !== 1 ? 's' : '')"></span>
+            </a>
+        </div>
         <dl class="grid grid-cols-2 gap-x-8 gap-y-4 text-sm">
             {% if design.description | default('') %}
             <div class="col-span-2">
@@ -295,6 +420,106 @@
             </div>
         </div>
 
+        {# SB-08: Live Tracking Confirmation Dialog #}
+        <div x-show="showDialog"
+             x-cloak
+             class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40"
+             @keydown.escape.window="showDialog && closeDialog()">
+
+            <div class="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4" @click.stop>
+
+                <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+                    <h3 class="text-base font-semibold text-gray-900">Start Live Tracking</h3>
+                    <button type="button" @click="closeDialog()"
+                            class="text-gray-400 hover:text-gray-600 transition-colors">
+                        <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                             stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <div x-show="successMsg" x-cloak
+                     class="mx-6 mt-4 flex items-center gap-2 bg-green-50 border border-green-200 rounded-md px-4 py-2.5">
+                    <svg class="w-4 h-4 text-green-600 flex-shrink-0" xmlns="http://www.w3.org/2000/svg"
+                         fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                    </svg>
+                    <p class="text-sm text-green-800" x-text="successMsg"></p>
+                </div>
+
+                <div x-show="errorMsg" x-cloak
+                     class="mx-6 mt-4 flex items-center gap-2 bg-red-50 border border-red-200 rounded-md px-4 py-2.5">
+                    <svg class="w-4 h-4 text-red-500 flex-shrink-0" xmlns="http://www.w3.org/2000/svg"
+                         fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                              d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    <p class="text-sm text-red-700" x-text="errorMsg"></p>
+                </div>
+
+                <div class="px-6 py-5 space-y-4">
+
+                    <div class="bg-blue-50 border border-blue-200 rounded-md px-4 py-3">
+                        <div class="flex items-start gap-2">
+                            <svg class="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg"
+                                 fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                      d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            <div class="text-sm text-blue-800">
+                                <p class="font-medium mb-1">Live tracking will run continuously</p>
+                                <p class="text-xs">This will create a recurring collection job that runs on a schedule. Date ranges do not apply in live mode.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div>
+                        <h4 class="text-sm font-medium text-gray-900 mb-2">Configuration Summary</h4>
+                        <dl class="space-y-2 text-sm">
+                            <div class="flex justify-between">
+                                <dt class="text-gray-600">Default tier:</dt>
+                                <dd class="font-medium text-gray-900 capitalize" x-text="defaultTier"></dd>
+                            </div>
+                            <div>
+                                <dt class="text-gray-600 mb-1">Enabled arenas:</dt>
+                                <dd x-show="loadingArenas" class="text-xs text-gray-400 italic">Loading...</dd>
+                                <dd x-show="!loadingArenas && enabledArenas.length > 0"
+                                    class="flex flex-wrap gap-1">
+                                    <template x-for="arena in enabledArenas" :key="arena">
+                                        <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700"
+                                              x-text="arena"></span>
+                                    </template>
+                                </dd>
+                                <dd x-show="!loadingArenas && enabledArenas.length === 0"
+                                    class="text-xs text-gray-400 italic">
+                                    All arenas with configured credentials will be used
+                                </dd>
+                            </div>
+                        </dl>
+                    </div>
+
+                </div>
+
+                <div class="px-6 py-4 border-t border-gray-200 flex items-center justify-between">
+                    <button type="button" @click="closeDialog()"
+                            class="text-sm text-gray-500 hover:text-gray-700 transition-colors">Cancel</button>
+                    <button type="button"
+                            @click="startLiveTracking()"
+                            :disabled="submitting"
+                            class="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-md hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                        <svg x-show="submitting" class="animate-spin w-4 h-4"
+                             xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                        </svg>
+                        <span x-text="submitting ? 'Starting...' : 'Start Live Tracking'"></span>
+                    </button>
+                </div>
+
+            </div>
+        </div>
+
         {% if runs %}
         <table class="min-w-full divide-y divide-gray-200 text-sm">
             <thead class="bg-gray-50">
@@ -429,6 +654,137 @@ function _arenaLabelDetail(arenaName) {
         'gab':                 'Gab',
     };
     return labels[arenaName] || arenaName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+/**
+ * SB-16: Codebook counter component
+ * Loads the codebook count for this query design to show a badge indicator.
+ */
+function codebookCounter(designId) {
+    return {
+        codebookCount: 0,
+
+        async loadCodebookCount() {
+            try {
+                const resp = await fetch(`/codebooks/?query_design_id=${designId}`, {
+                    credentials: 'include',
+                });
+                if (!resp.ok) return;
+                const data = await resp.json();
+                this.codebookCount = data.total || 0;
+            } catch (e) {
+                // Silently fail — badge is optional
+                console.warn('Could not load codebook count:', e);
+            }
+        },
+    };
+}
+
+/**
+ * SB-08: Live Tracking Promotion component
+ * Handles "Promote to Live Tracking" button and confirmation dialog.
+ */
+function liveTrackingPromotion(designId, defaultTier) {
+    return {
+        designId,
+        defaultTier,
+        showDialog: false,
+        submitting: false,
+        successMsg: null,
+        errorMsg: null,
+        loadingArenas: false,
+        enabledArenas: [],
+
+        openDialog() {
+            this.showDialog = true;
+            this.successMsg = null;
+            this.errorMsg = null;
+            this.loadEnabledArenas();
+        },
+
+        closeDialog() {
+            this.showDialog = false;
+            this.successMsg = null;
+            this.errorMsg = null;
+        },
+
+        async loadEnabledArenas() {
+            this.loadingArenas = true;
+            try {
+                const res = await fetch(`/api/query-designs/${this.designId}/arena-config`, {
+                    credentials: 'include',
+                });
+                if (!res.ok) {
+                    this.enabledArenas = [];
+                    return;
+                }
+                const data = await res.json();
+                const arenas = data.arenas || [];
+                this.enabledArenas = arenas
+                    .filter(a => a.enabled)
+                    .map(a => _arenaLabelDetail(a.id));
+            } catch (e) {
+                console.warn('Could not load arena config:', e);
+                this.enabledArenas = [];
+            } finally {
+                this.loadingArenas = false;
+            }
+        },
+
+        async startLiveTracking() {
+            if (this.submitting) return;
+            this.submitting = true;
+            this.successMsg = null;
+            this.errorMsg = null;
+
+            try {
+                // Fetch the current arena config from the design
+                const configRes = await fetch(`/api/query-designs/${this.designId}/arena-config`, {
+                    credentials: 'include',
+                });
+                let arenasConfig = {};
+                if (configRes.ok) {
+                    const configData = await configRes.json();
+                    arenasConfig = configData.arenas_config || {};
+                }
+
+                // Create live tracking run
+                const payload = {
+                    query_design_id: this.designId,
+                    mode: 'live',
+                    tier: this.defaultTier,
+                    arenas_config: arenasConfig,
+                    date_from: null,
+                    date_to: null,
+                };
+
+                const res = await fetch('/collections/', {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+
+                if (!res.ok) {
+                    const errData = await res.json().catch(() => ({}));
+                    throw new Error(errData.detail || `HTTP ${res.status}: ${res.statusText}`);
+                }
+
+                const result = await res.json();
+                this.successMsg = 'Live tracking started successfully!';
+
+                // Redirect to the collection detail page after a brief delay
+                setTimeout(() => {
+                    window.location.href = `/collections/${result.id}`;
+                }, 1500);
+
+            } catch (e) {
+                this.errorMsg = e.message || 'An unexpected error occurred.';
+            } finally {
+                this.submitting = false;
+            }
+        },
+    };
 }
 </script>
 {% endblock %}

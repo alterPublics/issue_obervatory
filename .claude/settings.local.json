@@ -44,7 +44,14 @@
       "Bash(/tmp/test_diag.py:*)",
       "Bash(DATABASE_URL=\"postgresql+asyncpg://postgres:test@localhost:5432/test_observatory\" SECRET_KEY=\"test-secret-key\" CREDENTIAL_ENCRYPTION_KEY=\"dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==\" PSEUDONYMIZATION_SALT=\"test-salt\" REDIS_URL=\"redis://localhost:6379/0\" FIRST_ADMIN_EMAIL=\"admin@test.com\" FIRST_ADMIN_PASSWORD=\"test123\" .venv/bin/python /tmp/test_diag.py)",
       "Bash(/Users/jakobbk/Documents/postdoc/codespace/issue_observatory/.venv/bin/pytest tests/unit/ -v --tb=short)",
-      "Bash(/Users/jakobbk/Documents/postdoc/codespace/issue_observatory/.venv/bin/pytest:*)"
+      "Bash(/Users/jakobbk/Documents/postdoc/codespace/issue_observatory/.venv/bin/pytest:*)",
+      "Bash(/tmp/update_collectors.sh:*)",
+      "Bash(done)",
+      "Bash(/usr/bin/python3:*)",
+      "Bash(xargs:*)",
+      "Bash(alembic current:*)",
+      "Bash(python -m alembic:*)",
+      "Bash(.venv/bin/alembic current:*)"
     ]
   }
 }

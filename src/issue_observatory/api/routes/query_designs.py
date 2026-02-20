@@ -1792,3 +1792,217 @@ async def get_volume_spike_alerts(
         user_id=str(current_user.id),
     )
     return alerts
+
+
+# ---------------------------------------------------------------------------
+# SB-09: RSS feed autodiscovery (P2)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{design_id}/discover-feeds")
+async def discover_rss_feeds(
+    design_id: uuid.UUID,
+    url: Annotated[str, Body(embed=True)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> list[dict[str, str]]:
+    """Discover RSS/Atom feeds from a website URL.
+
+    Performs automated feed discovery for a given website URL:
+    1. Fetches the page HTML.
+    2. Parses ``<link rel="alternate" type="application/rss+xml">`` and
+       ``<link rel="alternate" type="application/atom+xml">`` tags.
+    3. If no link tags are found, probes common feed path patterns
+       (``/rss``, ``/feed``, ``/atom.xml``, etc.).
+    4. Returns a list of discovered feed URLs with titles for one-click
+       addition to the query design's ``arenas_config["rss"]["custom_feeds"]``.
+
+    This endpoint is part of SB-09 (socialt bedrageri recommendations, P2) to
+    help researchers quickly discover and add new Danish RSS feeds.
+
+    Args:
+        design_id: UUID of the query design.
+        url: Website URL to discover feeds from (request body).
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        List of dicts, each with keys:
+        - ``url`` (str): Absolute feed URL.
+        - ``title`` (str): Feed title extracted from the ``<link>`` tag's
+          ``title`` attribute, or derived from the URL path if not available.
+        - ``feed_type`` (str): ``"rss"`` or ``"atom"`` based on the declared
+          content type or discovered path pattern.
+
+        Returns an empty list when no feeds are found.
+
+    Raises:
+        HTTPException 400: If ``url`` is empty after stripping whitespace.
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the caller does not own the query design (and
+            is not an admin user).
+        HTTPException 500: If feed discovery fails due to a connection error
+            or timeout.
+    """
+    from issue_observatory.arenas.rss_feeds.feed_discovery import (  # noqa: PLC0415
+        discover_feeds,
+    )
+
+    url = url.strip()
+    if not url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="URL must not be empty.",
+        )
+
+    design = await _get_design_or_404(design_id, db)
+    ownership_guard(design.owner_id, current_user)
+
+    try:
+        feeds = await discover_feeds(url)
+    except Exception as exc:
+        logger.error(
+            "discover_feeds_failed",
+            design_id=str(design_id),
+            url=url,
+            error=str(exc),
+            user_id=str(current_user.id),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Feed discovery failed: {exc}",
+        ) from exc
+
+    logger.info(
+        "rss_feeds_discovered",
+        design_id=str(design_id),
+        url=url,
+        feed_count=len(feeds),
+        user_id=str(current_user.id),
+    )
+    return feeds
+
+
+# ---------------------------------------------------------------------------
+# SB-10: Reddit subreddit suggestion (P2)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{design_id}/suggest-subreddits")
+async def suggest_subreddits(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    query: Optional[str] = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Suggest Reddit subreddits relevant to a query design's search terms.
+
+    Uses the query design's search terms as the search query (unless
+    ``query`` is explicitly provided) to search Reddit's subreddit directory
+    via the ``/subreddits/search`` API.  Returns a list of suggested
+    subreddits with metadata (name, subscriber count, description) for
+    one-click addition to the query design's
+    ``arenas_config["reddit"]["custom_subreddits"]``.
+
+    This is a FREE-tier Reddit API call via asyncpraw (SB-10).
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        query: Optional explicit search query.  When ``None``, uses the
+            concatenation of all active search terms from the query design.
+        limit: Maximum number of subreddit results to return.  Defaults to 20.
+            Must not exceed 100 (Reddit API limit).
+
+    Returns:
+        List of dicts, each with keys:
+        - ``name`` (str): Subreddit name without the ``r/`` prefix.
+        - ``display_name`` (str): Subreddit display name (same as ``name``).
+        - ``display_name_prefixed`` (str): Subreddit name with ``r/`` prefix.
+        - ``subscribers`` (int): Subscriber count.
+        - ``description`` (str): Public description.
+        - ``active_user_count`` (int | None): Current active user count (may be null).
+
+        Returns an empty list when no matching subreddits are found or when
+        Reddit API credentials are unavailable.
+
+    Raises:
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the caller does not own the query design (and
+            is not an admin user).
+        HTTPException 422: If ``limit`` is not in the valid range (1-100).
+        HTTPException 500: If the Reddit API call fails due to rate limiting,
+            authentication failure, or other API errors.
+    """
+    from issue_observatory.arenas.reddit.collector import (  # noqa: PLC0415
+        RedditCollector,
+    )
+    from issue_observatory.arenas.reddit.subreddit_suggestion import (  # noqa: PLC0415
+        suggest_subreddits as suggest_subreddits_impl,
+    )
+    from issue_observatory.core.credential_pool import (  # noqa: PLC0415
+        CredentialPool,
+    )
+
+    if limit < 1 or limit > 100:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="limit must be between 1 and 100.",
+        )
+
+    design = await _get_design_or_404(design_id, db, load_terms=True)
+    ownership_guard(design.owner_id, current_user)
+
+    # Build search query from the query design's active search terms if not provided
+    if query is None or not query.strip():
+        active_terms = [t.term for t in design.search_terms if t.is_active]
+        if not active_terms:
+            logger.warning(
+                "suggest_subreddits: no active search terms in design_id=%s",
+                design_id,
+            )
+            return []
+        query = " ".join(active_terms[:3])  # Use first 3 terms to avoid overly complex queries
+
+    # Acquire a Reddit credential and build an asyncpraw client
+    # Use the RedditCollector's credential acquisition logic
+    collector = RedditCollector(credential_pool=None)  # Env-var fallback
+    try:
+        cred = await collector._acquire_credential()  # noqa: SLF001
+    except Exception as exc:
+        logger.warning(
+            "suggest_subreddits: failed to acquire Reddit credential: %s",
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Reddit API credentials not available.",
+        ) from exc
+
+    try:
+        reddit = await collector._build_reddit_client(cred)  # noqa: SLF001
+        async with reddit:
+            suggestions = await suggest_subreddits_impl(reddit, query, limit)
+    except Exception as exc:
+        logger.error(
+            "suggest_subreddits_failed",
+            design_id=str(design_id),
+            query=query,
+            error=str(exc),
+            user_id=str(current_user.id),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Subreddit suggestion failed: {exc}",
+        ) from exc
+
+    logger.info(
+        "subreddits_suggested",
+        design_id=str(design_id),
+        query=query,
+        result_count=len(suggestions),
+        user_id=str(current_user.id),
+    )
+    return suggestions

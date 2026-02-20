@@ -360,6 +360,8 @@ def list_arenas() -> list[dict]:  # type: ignore[type-arg]
         - ``platform_name`` (str): Unique platform identifier used as the
           registry key (e.g. ``"reddit"``, ``"youtube"``).
         - ``supported_tiers`` (list[str]): Tier values the collector supports.
+        - ``temporal_mode`` (str): Temporal capability mode (``"historical"``,
+          ``"recent"``, ``"forward_only"``, or ``"mixed"``).
         - ``description`` (str): One-line human-readable description from
           :data:`ARENA_DESCRIPTIONS`, looked up first by ``platform_name``
           then by ``arena_name`` (empty string if neither is defined).
@@ -375,6 +377,11 @@ def list_arenas() -> list[dict]:  # type: ignore[type-arg]
             "supported_tiers": [
                 t.value for t in cls.supported_tiers  # type: ignore[attr-defined]
             ],
+            "temporal_mode": (
+                cls.temporal_mode.value  # type: ignore[attr-defined]
+                if hasattr(cls, "temporal_mode")
+                else "recent"  # default fallback for arenas not yet updated
+            ),
             "description": (
                 ARENA_DESCRIPTIONS.get(cls.platform_name)  # type: ignore[attr-defined]
                 or ARENA_DESCRIPTIONS.get(cls.arena_name, "")  # type: ignore[attr-defined]

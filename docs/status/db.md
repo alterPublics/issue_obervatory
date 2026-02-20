@@ -12,6 +12,8 @@
 - [x] `008_add_query_design_cloning` — adds `parent_design_id UUID NULL REFERENCES query_designs(id) ON DELETE SET NULL` with `idx_query_design_parent` B-tree index (IP2-051)
 - [x] `009_add_public_figure_flag_to_actors` — adds `public_figure BOOLEAN NOT NULL DEFAULT false` to `actors`; GDPR Art. 89(1) research exemption for public-figure pseudonymization bypass (GR-14)
 - [x] `010_add_target_arenas_to_search_terms` — adds `target_arenas JSONB NULL` to `search_terms`; implements YF-01 per-arena search term scoping (2026-02-19)
+- [x] `011_add_gin_index_target_arenas` — adds GIN index on `search_terms.target_arenas` for YF-01 query performance (2026-02-19)
+- [x] `012_add_codebook_entries` — creates `codebook_entries` table for managing qualitative coding schemes (SB-16); query-design-scoped or global codebooks (2026-02-20)
 
 ## Models (Task 0.2 — COMPLETE)
 
@@ -23,6 +25,7 @@
 - [x] `core/models/collection.py` — `CollectionRun`, `CollectionTask`, `CreditTransaction`
 - [x] `core/models/credentials.py` — `ApiCredential`
 - [x] `core/models/annotations.py` — `ContentAnnotation` (IP2-043)
+- [x] `core/models/codebook.py` — `CodebookEntry` (SB-16)
 - [x] `core/models/__init__.py` — all models exported for Alembic discovery and application use
 - [x] `core/database.py` — async engine, `AsyncSessionLocal`, `get_db()` FastAPI dependency
 
@@ -227,6 +230,8 @@ job (`0 2 * * * docker compose --profile backup run --rm backup`) — see
 - [x] IP2-055: Filtered export — `GET /analysis/{run_id}/filtered-export` endpoint with format/platform/arena/date/search_term/top_actors/min_engagement filters; "Export filtered records" section added to analysis dashboard — Phase D COMPLETE
 - [x] IP2-056: RIS/BibTeX export — `export_ris()` and `export_bibtex()` methods added to `ContentExporter`; both formats added to `/content/export` and `/analysis/{run_id}/filtered-export`; format selector in analysis dashboard now shows RIS and BibTeX options with tooltips — Phase D COMPLETE
 - [x] IP2-053: Suggested terms — `GET /analysis/{run_id}/suggested-terms` endpoint added returning emergent terms not yet in query design; "Suggested terms" panel with "Add to query design" HTMX button added to analysis dashboard — Phase D COMPLETE
+- [x] SB-15: Enrichment Results Dashboard Tab — Data Layer — four analysis functions added to `descriptive.py`: `get_language_distribution()`, `get_top_named_entities()`, `get_propagation_patterns()`, `get_coordination_signals()`; four API endpoints added to `routes/analysis.py`: `/enrichments/languages`, `/enrichments/entities`, `/enrichments/propagation`, `/enrichments/coordination` — Phase 3 COMPLETE (2026-02-20)
+- [x] SB-16: Annotation Codebook Management — Data Layer — `CodebookEntry` model created in `core/models/codebook.py`; migration 012 added; unique constraint on (query_design_id, code); supports both global and query-design-specific codebooks — Phase 3 COMPLETE (2026-02-20)
 
 ## Descriptive Statistics (Task 3.1 — COMPLETE)
 
@@ -556,6 +561,147 @@ record = normalizer.normalize(
 ```
 
 The `normalize()` method signature should also be extended to accept and forward `is_public_figure` and `platform_username` to `pseudonymize_author()`.
+
+---
+
+## SB-15: Enrichment Results Dashboard Tab — Data Layer (P3 COMPLETE — 2026-02-20)
+
+### Deliverables
+
+- [x] `analysis/descriptive.py` — four new enrichment query functions
+- [x] `api/routes/analysis.py` — four new enrichment API endpoints
+
+### Analysis Functions
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `get_language_distribution(db, run_id)` | `list[dict]` | Queries `raw_metadata.enrichments.language_detector.language` and aggregates by language code with counts and percentages |
+| `get_top_named_entities(db, run_id, limit)` | `list[dict]` | Queries `raw_metadata.enrichments.named_entity_extractor.entities` array, unnests via `jsonb_array_elements()`, aggregates by entity text, returns top-N with entity types |
+| `get_propagation_patterns(db, run_id)` | `list[dict]` | Queries `raw_metadata.enrichments.propagation_detector` for stories flagged as propagated (`propagated=true`), groups by `story_id`, returns stories that crossed 2+ arenas with first/last seen timestamps |
+| `get_coordination_signals(db, run_id)` | `list[dict]` | Queries `raw_metadata.enrichments.coordination_detector` for records flagged as coordinated (`coordinated=true`), groups by `content_hash`, returns clusters with 3+ distinct actors within tight time windows |
+
+### API Endpoints
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/analysis/{run_id}/enrichments/languages` | GET | ownership or admin | Returns language distribution from language detection enrichment |
+| `/analysis/{run_id}/enrichments/entities` | GET | ownership or admin | Returns top-N named entities from NER enrichment (default limit: 20, max: 100) |
+| `/analysis/{run_id}/enrichments/propagation` | GET | ownership or admin | Returns cross-arena propagation patterns (stories in 2+ arenas) |
+| `/analysis/{run_id}/enrichments/coordination` | GET | ownership or admin | Returns coordination signals (3+ actors posting similar content in <24h window) |
+
+### Design Notes
+
+- **JSONB path queries**: All functions query `raw_metadata.enrichments.{enricher_name}` paths directly using PostgreSQL JSONB operators (`->`, `->>`).
+- **Graceful degradation**: All functions return empty lists when no enrichment data exists for the specified enricher. No exceptions are raised.
+- **Duplicate exclusion**: All queries use the `_build_content_filters()` helper from `_filters.py`, which automatically excludes records flagged as duplicates (`(raw_metadata->>'duplicate_of') IS NULL`).
+- **Entity type aggregation**: `get_top_named_entities()` uses `array_agg(DISTINCT entity->>'label')` to collect all unique entity types (e.g., `["GPE", "LOC"]`) for entities mentioned in multiple contexts.
+- **Propagation filtering**: Only stories with `COUNT(DISTINCT arena) >= 2` are returned, so single-arena stories are excluded automatically.
+- **Coordination threshold**: Coordination signals require `COUNT(DISTINCT pseudonymized_author_id) >= 3` and a non-null `content_hash` to ensure meaningful clusters.
+- **Time window computation**: `EXTRACT(EPOCH FROM (MAX(published_at) - MIN(published_at))) / 3600.0` computes the posting time window in hours (PostgreSQL interval arithmetic).
+
+### Frontend Integration (Pending)
+
+The enrichment results dashboard tab UI is **not implemented** in this data layer task. The Frontend Engineer will need to:
+
+1. Add an "Enrichments" tab to the analysis dashboard (`templates/analysis/index.html`)
+2. Create four chart/table sections: Language Distribution (bar chart), Top Entities (table), Propagation Stories (timeline/network view), Coordination Clusters (table)
+3. Wire up HTMX calls to the four endpoints listed above
+4. Handle empty-list cases gracefully (e.g., "No enrichment data available — run enrichments first")
+
+---
+
+## SB-16: Annotation Codebook Management — Data Layer (P3 COMPLETE — 2026-02-20)
+
+### Deliverables
+
+- [x] `core/models/codebook.py` — `CodebookEntry` ORM model
+- [x] `core/models/__init__.py` — `CodebookEntry` exported
+- [x] `alembic/versions/012_add_codebook_entries.py` — reversible migration
+
+### Schema Design
+
+**Table**: `codebook_entries`
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | UUID | PRIMARY KEY | Application-generated via `uuid.uuid4()` |
+| `query_design_id` | UUID | FK `query_designs(id) ON DELETE CASCADE`, NULL allowed | NULL = global/shared codebook; non-NULL = query-design-specific |
+| `code` | VARCHAR(100) | NOT NULL | Machine-readable code (e.g., `"punitive_frame"`) used as stable identifier in annotations |
+| `label` | VARCHAR(200) | NOT NULL | Human-readable label for UI display (e.g., "Punitive Framing") |
+| `description` | TEXT | NULL | Optional detailed explanation of when to apply this code |
+| `category` | VARCHAR(100) | NULL, indexed | Optional grouping label (e.g., `"framing"`, `"stance"`, `"topic"`) for hierarchical UI organization |
+| `created_at` | TIMESTAMPTZ | NOT NULL, server default `NOW()` | TimestampMixin |
+| `updated_at` | TIMESTAMPTZ | NOT NULL, server default `NOW()`, on update `NOW()` | TimestampMixin |
+
+**Constraints**:
+- `uq_codebook_entry_scope_code` UNIQUE on `(query_design_id, code)` — prevents duplicate codes within the same codebook scope. PostgreSQL treats NULL as a distinct value per row, so global codes (`query_design_id = NULL`) are unique separately from query-design-specific codes.
+
+**Indexes**:
+- `idx_codebook_entry_qd` B-tree on `query_design_id` — for scoped lookups (e.g., "list all codes for this query design")
+- `idx_codebook_entry_category` B-tree on `category` — for grouping/filtering in the UI
+
+### Design Decisions
+
+- **Scope design (global vs. query-design-specific)**: `query_design_id` is nullable to support both use cases:
+  - **Global codebooks** (`query_design_id = NULL`): Shared code vocabularies available across all query designs (e.g., a standard framing taxonomy defined by the research institution).
+  - **Query-design-specific codebooks** (`query_design_id = <uuid>`): Custom codes defined for a single research project.
+
+  The unique constraint on `(query_design_id, code)` ensures that:
+  - Global codes are unique within the global scope.
+  - Query-design-specific codes are unique within each query design's scope.
+  - A code like `"economic_impact"` can exist once in the global scope AND once per query design scope without collision.
+
+- **No FK to content_annotations**: Codebooks are reference data used by researchers during annotation, not directly linked to annotation records. The annotation layer stores the applied code as a string in the `frame` field. This decouples codebook management from annotation data and allows codebooks to evolve (e.g., adding/removing codes) without migrating annotation records.
+
+- **Category grouping**: The `category` field supports hierarchical organization in the UI. Examples:
+  - `category="framing"` — all framing codes displayed in a "Framing" section
+  - `category="stance"` — all stance codes displayed in a "Stance" section
+  - `category="topic"` — all topical codes displayed in a "Topics" section
+  - `category=NULL` — ungrouped codes
+
+- **ON DELETE CASCADE on query_design_id**: Deleting a query design removes its codebook entries automatically. This is safe because codebooks are primarily used during the annotation process (which references a `query_design_id`), and orphaned codebook entries would be unusable.
+
+### Usage Pattern (for Frontend Engineer)
+
+When a researcher annotates a content record:
+
+1. UI fetches available codebook entries:
+   - **Global codes**: `SELECT * FROM codebook_entries WHERE query_design_id IS NULL ORDER BY category, label`
+   - **Query-design-specific codes**: `SELECT * FROM codebook_entries WHERE query_design_id = :qd_id ORDER BY category, label`
+   - **Combined**: Merge global + query-design-specific codes in the UI, preferring query-design-specific on code collision.
+
+2. Researcher selects a code (e.g., `code="punitive_frame"`, `label="Punitive Framing"`) from a dropdown.
+
+3. UI stores the **code string** (not the UUID) in the `content_annotations.frame` field:
+   ```json
+   {
+     "stance": "negative",
+     "frame": "punitive_frame",
+     "notes": "Article emphasizes criminal penalties and enforcement."
+   }
+   ```
+
+4. Later retrieval: UI can lookup the `label` and `description` by joining `content_annotations.frame` with `codebook_entries.code`, but the annotation record remains valid even if the codebook entry is later deleted or modified.
+
+### API Implementation (Pending — for Core Application Engineer)
+
+The **API routes for codebook CRUD** are **not implemented** in this data layer task. The Core Application Engineer will need to add:
+
+- `GET /codebooks?query_design_id={uuid or "global"}` — list codebook entries
+- `POST /codebooks` — create a new codebook entry (body: `code`, `label`, `description`, `category`, `query_design_id`)
+- `PATCH /codebooks/{id}` — update an entry (label/description/category only; code is immutable)
+- `DELETE /codebooks/{id}` — delete a codebook entry
+- Ownership scoping: non-admin users can only manage codebooks for query designs they own
+
+### Frontend Integration (Pending — for Frontend Engineer)
+
+The **codebook management UI** is **not implemented** in this data layer task. The Frontend Engineer will need to:
+
+1. Add a "Manage Codebook" button to the query design detail page
+2. Create a modal/page listing codebook entries grouped by category
+3. Add "New Code" form with fields: `code`, `label`, `description`, `category`
+4. Render codebook codes as a dropdown in the annotation panel on the content detail page
+5. Distinguish global vs. query-design-specific codes visually (e.g., badge/icon)
 
 ---
 

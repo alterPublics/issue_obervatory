@@ -29,7 +29,7 @@ from typing import Any
 
 import httpx
 
-from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.google_autocomplete.config import (
     DANISH_PARAMS,
     FREE_AUTOCOMPLETE_URL,
@@ -83,6 +83,7 @@ class GoogleAutocompleteCollector(ArenaCollector):
     arena_name: str = "google_autocomplete"
     platform_name: str = "google_autocomplete"
     supported_tiers: list[Tier] = [Tier.FREE, Tier.MEDIUM, Tier.PREMIUM]
+    temporal_mode: TemporalMode = TemporalMode.RECENT
 
     def __init__(
         self,

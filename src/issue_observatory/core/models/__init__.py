@@ -15,7 +15,7 @@ All models are imported here so that:
 from __future__ import annotations
 
 from issue_observatory.core.models.base import Base, TimestampMixin, UserOwnedMixin
-from issue_observatory.core.models.annotations import ContentAnnotation
+from issue_observatory.core.models.annotations import ContentAnnotation, CodebookEntry
 from issue_observatory.core.models.actors import (
     Actor,
     ActorAlias,
@@ -48,6 +48,8 @@ __all__ = [
     "UserOwnedMixin",
     # Annotations
     "ContentAnnotation",
+    # Codebook
+    "CodebookEntry",
     # Users
     "User",
     "CreditAllocation",

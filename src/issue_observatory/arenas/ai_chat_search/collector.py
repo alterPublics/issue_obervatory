@@ -57,7 +57,7 @@ from issue_observatory.arenas.ai_chat_search.config import (
     get_chat_model,
     get_n_phrasings,
 )
-from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.registry import register
 from issue_observatory.config.tiers import TierConfig
@@ -114,6 +114,7 @@ class AiChatSearchCollector(ArenaCollector):
     arena_name: str = "ai_chat_search"
     platform_name: str = "openrouter"
     supported_tiers: list[Tier] = [Tier.MEDIUM, Tier.PREMIUM]
+    temporal_mode: TemporalMode = TemporalMode.RECENT
 
     def __init__(
         self,

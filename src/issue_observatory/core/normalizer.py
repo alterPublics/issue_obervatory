@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import re
 import unicodedata
 from datetime import datetime, timezone
@@ -47,6 +48,60 @@ _REQUIRED_FIELDS: frozenset[str] = frozenset(
         "collection_tier",
     }
 )
+
+# Platform-specific engagement normalization configuration (IP2-030).
+# Each platform defines: weights for engagement metrics, and a scale_factor
+# to map typical content to 30-50 range after log-scaling.
+_ENGAGEMENT_WEIGHTS: dict[str, dict[str, float]] = {
+    "reddit": {
+        "likes": 1.0,
+        "comments": 2.0,
+        "scale_factor": 8.0,
+    },
+    "youtube": {
+        "views": 0.001,
+        "likes": 0.1,
+        "comments": 1.0,
+        "scale_factor": 6.0,
+    },
+    "bluesky": {
+        "likes": 1.0,
+        "shares": 2.0,
+        "comments": 1.0,
+        "scale_factor": 8.0,
+    },
+    "x_twitter": {
+        "likes": 0.5,
+        "shares": 2.0,
+        "comments": 1.0,
+        "scale_factor": 7.0,
+    },
+    "facebook": {
+        "likes": 1.0,
+        "shares": 3.0,
+        "comments": 2.0,
+        "scale_factor": 7.0,
+    },
+    "instagram": {
+        "likes": 0.5,
+        "comments": 2.0,
+        "scale_factor": 7.0,
+    },
+    "tiktok": {
+        "views": 0.001,
+        "likes": 0.1,
+        "shares": 1.0,
+        "comments": 1.0,
+        "scale_factor": 5.0,
+    },
+    # Default weights for platforms not explicitly configured
+    "_default": {
+        "likes": 1.0,
+        "shares": 2.0,
+        "comments": 1.0,
+        "scale_factor": 8.0,
+    },
+}
 
 
 class Normalizer:
@@ -275,6 +330,17 @@ class Normalizer:
             ["media_urls", "media", "images", "attachments"],
         )
 
+        # IP2-030: compute normalized engagement score if any metrics present.
+        normalized_engagement: float | None = None
+        if any([views_count, likes_count, shares_count, comments_count]):
+            normalized_engagement = self.compute_normalized_engagement(
+                platform=platform,
+                likes=likes_count,
+                shares=shares_count,
+                comments=comments_count,
+                views=views_count,
+            )
+
         # GR-14: Build the raw_metadata dict.  When the public-figure bypass
         # was applied, annotate the record so the DPO audit trail is complete.
         raw_metadata: dict[str, Any] = dict(raw_item)
@@ -313,7 +379,7 @@ class Normalizer:
             "likes_count": likes_count,
             "shares_count": shares_count,
             "comments_count": comments_count,
-            "engagement_score": raw_item.get("engagement_score"),  # may be set by collector or analysis layer
+            "engagement_score": normalized_engagement,  # IP2-030: normalized 0-100 score
             # Collection context
             "collection_run_id": collection_run_id,
             "query_design_id": query_design_id,
@@ -378,6 +444,64 @@ class Normalizer:
             return None
         payload = f"{platform}:{platform_user_id}:{self._salt}"
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def compute_normalized_engagement(
+        self,
+        platform: str,
+        likes: int | None = None,
+        shares: int | None = None,
+        comments: int | None = None,
+        views: int | None = None,
+    ) -> float:
+        """Compute a cross-platform normalized engagement score (0-100).
+
+        Uses platform-specific weights and log-scaling to produce a
+        0-100 score where typical content scores 30-50 and viral content
+        approaches 100.  The formula is:
+
+            weighted_sum = (likes * w_likes) + (shares * w_shares) + …
+            score = min(100, log1p(weighted_sum) * scale_factor)
+
+        Platform weights are defined in ``_ENGAGEMENT_WEIGHTS``.  Platforms
+        not explicitly configured use the ``_default`` weights.
+
+        Args:
+            platform: Platform identifier (e.g. ``"reddit"``, ``"youtube"``).
+            likes: Raw like/upvote count.
+            shares: Raw share/retweet/repost count.
+            comments: Raw comment/reply count.
+            views: Raw view count (only used by video platforms).
+
+        Returns:
+            Normalized engagement score on a 0-100 scale.  Returns 0.0 when
+            all metrics are None or zero.
+
+        Example:
+            >>> normalizer = Normalizer()
+            >>> normalizer.compute_normalized_engagement(
+            ...     "reddit", likes=100, comments=25
+            ... )
+            42.5
+        """
+        weights = _ENGAGEMENT_WEIGHTS.get(platform, _ENGAGEMENT_WEIGHTS["_default"])
+        weighted_sum = 0.0
+
+        if likes is not None and likes > 0:
+            weighted_sum += likes * weights.get("likes", 0.0)
+        if shares is not None and shares > 0:
+            weighted_sum += shares * weights.get("shares", 0.0)
+        if comments is not None and comments > 0:
+            weighted_sum += comments * weights.get("comments", 0.0)
+        if views is not None and views > 0:
+            weighted_sum += views * weights.get("views", 0.0)
+
+        if weighted_sum <= 0.0:
+            return 0.0
+
+        scale_factor = weights.get("scale_factor", 8.0)
+        # log1p avoids log(0) and handles small values gracefully.
+        score = math.log1p(weighted_sum) * scale_factor
+        return min(100.0, round(score, 2))
 
     def compute_content_hash(self, text: str) -> str:
         """Compute a content deduplication hash.

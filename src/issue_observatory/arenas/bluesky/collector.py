@@ -27,7 +27,7 @@ from typing import Any
 
 import httpx
 
-from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.bluesky.config import (
     BLUESKY_TIERS,
@@ -75,6 +75,7 @@ class BlueskyCollector(ArenaCollector):
     arena_name: str = "bluesky"
     platform_name: str = "bluesky"
     supported_tiers: list[Tier] = [Tier.FREE]
+    temporal_mode: TemporalMode = TemporalMode.RECENT
 
     def __init__(
         self,

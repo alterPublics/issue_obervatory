@@ -999,6 +999,206 @@
 
     </div>{# /network section #}
 
+    {# ---- Enrichment Results section (SB-15) ------------------------- #}
+    {#
+        SB-15: Enrichment Results Dashboard Tab
+
+        Four panels showing enrichment analysis results:
+        1. Language Distribution - bar chart/table of detected languages
+        2. Named Entities - top entities from NER enricher
+        3. Propagation Patterns - stories that propagated across 2+ arenas
+        4. Coordination Signals - coordinated posting patterns
+
+        All data is fetched from existing API endpoints:
+        - GET /analysis/{run_id}/enrichments/languages
+        - GET /analysis/{run_id}/enrichments/entities
+        - GET /analysis/{run_id}/enrichments/propagation
+        - GET /analysis/{run_id}/enrichments/coordination
+    #}
+    <div
+        class="bg-white rounded-lg shadow p-5"
+        x-data="enrichmentResults('{{ run_id }}')"
+        x-init="init()"
+    >
+        <h2 class="text-sm font-semibold text-gray-900 mb-4">Enrichment Analysis</h2>
+        <p class="text-xs text-gray-500 mb-4">
+            Automated enrichment results from post-collection analysis. Enrichments are applied
+            after collection completes and may take a few minutes to process.
+        </p>
+
+        {# Grid of four enrichment panels #}
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+            {# Panel 1: Language Distribution #}
+            <div class="border border-gray-200 rounded-lg p-4">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-medium text-gray-900">Language Distribution</h3>
+                    <span x-show="languagesLoading" class="text-xs text-gray-400 animate-pulse">Loading...</span>
+                </div>
+
+                {# Error state #}
+                <p x-show="languagesError" class="text-sm text-red-600 mb-2" x-text="languagesError"></p>
+
+                {# Empty state #}
+                <div x-show="!languagesLoading && !languagesError && languages.length === 0"
+                     class="flex items-center justify-center h-32 text-sm text-gray-400 italic">
+                    No language enrichment data available.
+                </div>
+
+                {# Data table #}
+                <div x-show="!languagesLoading && !languagesError && languages.length > 0">
+                    <table class="min-w-full text-sm">
+                        <thead class="border-b border-gray-200">
+                            <tr>
+                                <th class="text-left py-1 px-2 text-xs font-medium text-gray-500 uppercase">Language</th>
+                                <th class="text-right py-1 px-2 text-xs font-medium text-gray-500 uppercase">Count</th>
+                                <th class="text-right py-1 px-2 text-xs font-medium text-gray-500 uppercase">%</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="lang in languages.slice(0, 10)" :key="lang.language">
+                                <tr class="border-b border-gray-100 last:border-0">
+                                    <td class="py-1.5 px-2 text-gray-700 font-mono text-xs" x-text="lang.language"></td>
+                                    <td class="py-1.5 px-2 text-right text-gray-900" x-text="lang.count.toLocaleString()"></td>
+                                    <td class="py-1.5 px-2 text-right text-gray-600" x-text="lang.percentage.toFixed(1) + '%'"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                    <p x-show="languages.length > 10" class="text-xs text-gray-400 mt-2">
+                        Showing top 10 of <span x-text="languages.length"></span> languages detected.
+                    </p>
+                </div>
+            </div>
+
+            {# Panel 2: Named Entities #}
+            <div class="border border-gray-200 rounded-lg p-4">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-medium text-gray-900">Top Named Entities</h3>
+                    <span x-show="entitiesLoading" class="text-xs text-gray-400 animate-pulse">Loading...</span>
+                </div>
+
+                {# Error state #}
+                <p x-show="entitiesError" class="text-sm text-red-600 mb-2" x-text="entitiesError"></p>
+
+                {# Empty state #}
+                <div x-show="!entitiesLoading && !entitiesError && entities.length === 0"
+                     class="flex items-center justify-center h-32 text-sm text-gray-400 italic">
+                    No named entity extraction data available.
+                </div>
+
+                {# Data list #}
+                <div x-show="!entitiesLoading && !entitiesError && entities.length > 0">
+                    <ul class="space-y-2">
+                        <template x-for="ent in entities.slice(0, 10)" :key="ent.entity">
+                            <li class="flex items-baseline justify-between py-1 border-b border-gray-100 last:border-0">
+                                <span class="text-sm text-gray-900 font-medium" x-text="ent.entity"></span>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-xs text-gray-500"
+                                          x-text="ent.types ? ent.types.join(', ') : ''"></span>
+                                    <span class="text-sm text-gray-600 font-medium"
+                                          x-text="ent.count.toLocaleString()"></span>
+                                </div>
+                            </li>
+                        </template>
+                    </ul>
+                    <p x-show="entities.length > 10" class="text-xs text-gray-400 mt-2">
+                        Showing top 10 of <span x-text="entities.length"></span> entities extracted.
+                    </p>
+                </div>
+            </div>
+
+            {# Panel 3: Propagation Patterns #}
+            <div class="border border-gray-200 rounded-lg p-4">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-medium text-gray-900">Cross-Arena Propagation</h3>
+                    <span x-show="propagationLoading" class="text-xs text-gray-400 animate-pulse">Loading...</span>
+                </div>
+
+                {# Error state #}
+                <p x-show="propagationError" class="text-sm text-red-600 mb-2" x-text="propagationError"></p>
+
+                {# Empty state #}
+                <div x-show="!propagationLoading && !propagationError && propagation.length === 0"
+                     class="flex items-center justify-center h-32 text-sm text-gray-400 italic">
+                    No cross-arena propagation patterns detected.
+                </div>
+
+                {# Data list #}
+                <div x-show="!propagationLoading && !propagationError && propagation.length > 0">
+                    <ul class="space-y-2.5">
+                        <template x-for="story in propagation.slice(0, 5)" :key="story.story_id">
+                            <li class="py-2 border-b border-gray-100 last:border-0">
+                                <div class="flex items-start justify-between mb-1">
+                                    <span class="text-xs font-mono text-gray-400"
+                                          x-text="'Story ' + story.story_id.slice(0, 8) + '...'"></span>
+                                    <span class="text-xs font-medium text-blue-600"
+                                          x-text="story.record_count + ' records'"></span>
+                                </div>
+                                <div class="text-xs text-gray-600 mb-1">
+                                    <span x-text="story.platforms ? story.platforms.join(', ') : ''"></span>
+                                </div>
+                                <div class="text-xs text-gray-400">
+                                    <span x-text="story.first_seen ? new Date(story.first_seen).toLocaleDateString() : ''"></span>
+                                    <span> → </span>
+                                    <span x-text="story.last_seen ? new Date(story.last_seen).toLocaleDateString() : ''"></span>
+                                </div>
+                            </li>
+                        </template>
+                    </ul>
+                    <p x-show="propagation.length > 5" class="text-xs text-gray-400 mt-2">
+                        Showing top 5 of <span x-text="propagation.length"></span> propagation patterns detected.
+                    </p>
+                </div>
+            </div>
+
+            {# Panel 4: Coordination Signals #}
+            <div class="border border-gray-200 rounded-lg p-4">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-medium text-gray-900">Coordination Signals</h3>
+                    <span x-show="coordinationLoading" class="text-xs text-gray-400 animate-pulse">Loading...</span>
+                </div>
+
+                {# Error state #}
+                <p x-show="coordinationError" class="text-sm text-red-600 mb-2" x-text="coordinationError"></p>
+
+                {# Empty state #}
+                <div x-show="!coordinationLoading && !coordinationError && coordination.length === 0"
+                     class="flex items-center justify-center h-32 text-sm text-gray-400 italic">
+                    No coordinated posting patterns detected.
+                </div>
+
+                {# Data list #}
+                <div x-show="!coordinationLoading && !coordinationError && coordination.length > 0">
+                    <ul class="space-y-2.5">
+                        <template x-for="signal in coordination.slice(0, 5)" :key="signal.content_hash || Math.random()">
+                            <li class="py-2 border-b border-gray-100 last:border-0">
+                                <div class="flex items-start justify-between mb-1">
+                                    <span class="text-xs font-medium text-gray-700 uppercase"
+                                          x-text="signal.coordination_type"></span>
+                                    <span class="text-xs text-gray-600"
+                                          x-text="signal.actor_count + ' actors'"></span>
+                                </div>
+                                <div class="text-xs text-gray-600 mb-1">
+                                    <span x-text="signal.record_count + ' posts'"></span>
+                                    <span class="text-gray-400"> in </span>
+                                    <span x-text="signal.time_window_hours ? signal.time_window_hours.toFixed(1) + 'h' : 'N/A'"></span>
+                                </div>
+                                <div class="text-xs text-gray-400">
+                                    <span x-text="signal.first_post ? new Date(signal.first_post).toLocaleString() : ''"></span>
+                                </div>
+                            </li>
+                        </template>
+                    </ul>
+                    <p x-show="coordination.length > 5" class="text-xs text-gray-400 mt-2">
+                        Showing top 5 of <span x-text="coordination.length"></span> coordination signals detected.
+                    </p>
+                </div>
+            </div>
+
+        </div>{# /grid #}
+    </div>{# /enrichment results section #}
+
     {# ---- Export section --------------------------------------------- #}
     <div
         class="bg-white rounded-lg shadow p-5"
@@ -1247,17 +1447,28 @@
                                     <button
                                         type="button"
                                         @click="addTerm(t.term)"
-                                        :disabled="!queryDesignId || addedTerms.has(t.term)"
+                                        :disabled="!queryDesignId || isExistingTerm(t.term) || addedTerms.has(t.term)"
                                         :title="!queryDesignId
                                             ? 'No query design linked to this run'
-                                            : addedTerms.has(t.term)
-                                                ? 'Already added'
-                                                : 'Add to query design'"
-                                        :class="addedTerms.has(t.term)
+                                            : isExistingTerm(t.term)
+                                                ? 'Already in query design'
+                                                : addedTerms.has(t.term)
+                                                    ? 'Successfully added'
+                                                    : 'Add to query design'"
+                                        :class="isExistingTerm(t.term) || addedTerms.has(t.term)
                                             ? 'inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-green-700 bg-green-50 rounded-md cursor-default'
                                             : 'inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 rounded-md hover:bg-blue-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed'"
                                     >
-                                        <span x-text="addedTerms.has(t.term) ? 'Added' : 'Add to query design'"></span>
+                                        <svg x-show="isExistingTerm(t.term) || addedTerms.has(t.term)"
+                                             class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                             stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                                        </svg>
+                                        <span x-text="isExistingTerm(t.term)
+                                            ? 'Already added'
+                                            : addedTerms.has(t.term)
+                                                ? 'Added'
+                                                : 'Add to design'"></span>
                                     </button>
                                 </td>
                             </tr>
@@ -2421,11 +2632,151 @@ function exportPanel(runId) {
     };
 }
 
-// ---- Suggested terms panel component (IP2-053) ----------------------------
+// ---- Enrichment Results component (SB-15) ---------------------------------
+//
+// SB-15: Enrichment Results Dashboard Tab
+//
+// Loads and displays four enrichment analysis panels:
+// 1. Language Distribution - from language_detector enricher
+// 2. Named Entities - from named_entity_extractor enricher
+// 3. Propagation Patterns - from propagation_detector enricher
+// 4. Coordination Signals - from coordination_detector enricher
+//
+// All data is fetched from the existing enrichment endpoints in routes/analysis.py.
+//
+function enrichmentResults(runId) {
+    return {
+        runId,
+
+        // Language distribution state
+        languagesLoading: false,
+        languagesError: null,
+        languages: [],  // [{ language: "da", count: 523, percentage: 68.5 }, ...]
+
+        // Named entities state
+        entitiesLoading: false,
+        entitiesError: null,
+        entities: [],  // [{ entity: "Danmark", count: 142, types: ["GPE", "LOC"] }, ...]
+
+        // Propagation patterns state
+        propagationLoading: false,
+        propagationError: null,
+        propagation: [],  // [{ story_id, arenas, platforms, record_count, first_seen, last_seen }, ...]
+
+        // Coordination signals state
+        coordinationLoading: false,
+        coordinationError: null,
+        coordination: [],  // [{ coordination_type, actor_count, record_count, time_window_hours, ... }, ...]
+
+        init() {
+            // Load all four enrichment types in parallel
+            this.loadLanguages();
+            this.loadEntities();
+            this.loadPropagation();
+            this.loadCoordination();
+        },
+
+        async loadLanguages() {
+            this.languagesLoading = true;
+            this.languagesError = null;
+            try {
+                const res = await fetch(`/analysis/${this.runId}/enrichments/languages`, {
+                    credentials: 'include',
+                });
+                if (!res.ok) {
+                    if (res.status === 404) {
+                        // Run not found or no enrichment data — show empty state
+                        this.languages = [];
+                        return;
+                    }
+                    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                }
+                this.languages = await res.json();
+            } catch (e) {
+                this.languagesError = e.message;
+            } finally {
+                this.languagesLoading = false;
+            }
+        },
+
+        async loadEntities() {
+            this.entitiesLoading = true;
+            this.entitiesError = null;
+            try {
+                const res = await fetch(`/analysis/${this.runId}/enrichments/entities?limit=20`, {
+                    credentials: 'include',
+                });
+                if (!res.ok) {
+                    if (res.status === 404) {
+                        this.entities = [];
+                        return;
+                    }
+                    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                }
+                this.entities = await res.json();
+            } catch (e) {
+                this.entitiesError = e.message;
+            } finally {
+                this.entitiesLoading = false;
+            }
+        },
+
+        async loadPropagation() {
+            this.propagationLoading = true;
+            this.propagationError = null;
+            try {
+                const res = await fetch(`/analysis/${this.runId}/enrichments/propagation`, {
+                    credentials: 'include',
+                });
+                if (!res.ok) {
+                    if (res.status === 404) {
+                        this.propagation = [];
+                        return;
+                    }
+                    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                }
+                this.propagation = await res.json();
+            } catch (e) {
+                this.propagationError = e.message;
+            } finally {
+                this.propagationLoading = false;
+            }
+        },
+
+        async loadCoordination() {
+            this.coordinationLoading = true;
+            this.coordinationError = null;
+            try {
+                const res = await fetch(`/analysis/${this.runId}/enrichments/coordination`, {
+                    credentials: 'include',
+                });
+                if (!res.ok) {
+                    if (res.status === 404) {
+                        this.coordination = [];
+                        return;
+                    }
+                    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                }
+                this.coordination = await res.json();
+            } catch (e) {
+                this.coordinationError = e.message;
+            } finally {
+                this.coordinationLoading = false;
+            }
+        },
+    };
+}
+
+// ---- Suggested terms panel component (IP2-053 + SB-01) --------------------
 //
 // Loads emergent terms that are not yet in the query design from the endpoint:
 //   GET /analysis/{run_id}/suggested-terms
 // Response: [{ term: string, score: float, document_frequency: int }]
+//
+// SB-01: One-click term addition from analysis dashboard
+// - Pre-marks terms that are already in the query design
+// - Sets group_label to "auto_discovered" when adding terms
+// - Shows inline success feedback
 //
 // If a queryDesignId is available, the "Add to query design" button POSTs to:
 //   POST /query-designs/{design_id}/terms  (HTMX form, application/x-www-form-urlencoded)
@@ -2437,6 +2788,7 @@ function suggestedTermsPanel(runId, queryDesignId) {
         loading: false,
         error: null,
         terms: [],
+        existingTerms: new Set(),
         addedTerms: new Set(),
         addError: null,
 
@@ -2444,6 +2796,7 @@ function suggestedTermsPanel(runId, queryDesignId) {
             this.loading = true;
             this.error = null;
             try {
+                // Fetch suggested terms
                 const p = new URLSearchParams({ top_n: 10 });
                 const res = await fetch(`/analysis/${runId}/suggested-terms?${p}`, { credentials: 'include' });
                 if (res.status === 404) {
@@ -2453,6 +2806,11 @@ function suggestedTermsPanel(runId, queryDesignId) {
                 }
                 if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                 this.terms = await res.json();
+
+                // SB-01: Fetch existing terms from the query design to pre-mark them
+                if (this.queryDesignId) {
+                    await this.loadExistingTerms();
+                }
             } catch (e) {
                 this.error = e.message;
             } finally {
@@ -2460,11 +2818,40 @@ function suggestedTermsPanel(runId, queryDesignId) {
             }
         },
 
+        async loadExistingTerms() {
+            try {
+                const res = await fetch(`/query-designs/${this.queryDesignId}`, {
+                    credentials: 'include',
+                    headers: { 'Accept': 'application/json' },
+                });
+                if (!res.ok) return;
+                const data = await res.json();
+                if (data.search_terms && Array.isArray(data.search_terms)) {
+                    this.existingTerms = new Set(
+                        data.search_terms
+                            .filter(t => t.is_active)
+                            .map(t => t.term.toLowerCase())
+                    );
+                }
+            } catch (e) {
+                console.warn('Could not load existing terms:', e);
+            }
+        },
+
+        isExistingTerm(term) {
+            return this.existingTerms.has(term.toLowerCase());
+        },
+
         async addTerm(term) {
             if (!this.queryDesignId) return;
             this.addError = null;
             try {
-                const body = new URLSearchParams({ term, term_type: 'keyword' });
+                // SB-01: Set group_label to "auto_discovered" for terms added from analysis
+                const body = new URLSearchParams({
+                    term,
+                    term_type: 'keyword',
+                    group_label: 'auto_discovered'
+                });
                 const res = await fetch(`/query-designs/${this.queryDesignId}/terms`, {
                     method: 'POST',
                     credentials: 'include',

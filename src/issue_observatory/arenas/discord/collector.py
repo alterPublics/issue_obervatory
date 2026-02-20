@@ -30,7 +30,7 @@ from typing import Any
 
 import httpx
 
-from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.discord._http import (
     enrich_message,
     fetch_channel_messages,
@@ -89,6 +89,7 @@ class DiscordCollector(ArenaCollector):
     arena_name: str = "social_media"
     platform_name: str = "discord"
     supported_tiers: list[Tier] = [Tier.FREE]
+    temporal_mode: TemporalMode = TemporalMode.RECENT
 
     def __init__(
         self,

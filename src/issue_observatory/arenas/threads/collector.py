@@ -37,7 +37,7 @@ from typing import Any
 
 import httpx
 
-from issue_observatory.arenas.base import ArenaCollector, Tier
+from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.query_builder import build_boolean_query_groups
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.threads.config import (
@@ -88,6 +88,7 @@ class ThreadsCollector(ArenaCollector):
     arena_name: str = "social_media"
     platform_name: str = "threads"
     supported_tiers: list[Tier] = [Tier.FREE, Tier.MEDIUM]
+    temporal_mode: TemporalMode = TemporalMode.RECENT
 
     def __init__(
         self,

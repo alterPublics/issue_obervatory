@@ -190,14 +190,15 @@
     {% endif %}
 
     {# ------------------------------------------------------------------ #}
-    {# Annotation panel — IP2-043                                        #}
+    {# Annotation panel — IP2-043 + SB-16 codebook integration          #}
     {# Loads the current user's annotation via GET /annotations/{id},   #}
     {# then lets the researcher save changes via HTMX POST.              #}
+    {# If a codebook exists for the run's query design, shows dropdown.  #}
     {# ------------------------------------------------------------------ #}
     {% if record.id | default('') and record.published_at | default('') %}
     <div class="border-t border-gray-200 pt-4"
-         x-data="annotationPanel('{{ record.id }}', '{{ record.published_at }}')"
-         x-init="loadAnnotation()">
+         x-data="annotationPanel('{{ record.id }}', '{{ record.published_at }}', '{{ record.run_id | default('') }}')"
+         x-init="loadAnnotation(); loadCodebook()">
 
         <div class="flex items-center justify-between mb-3">
             <h3 class="text-xs font-semibold text-gray-700 uppercase tracking-wider">Annotation</h3>
@@ -285,10 +286,54 @@
                 </div>
             </div>
 
-            {# Frame input #}
+            {# Frame/Code input — SB-16: switches to codebook dropdown when available #}
             <div>
-                <label class="block text-xs font-medium text-gray-600 mb-1">Frame</label>
-                <input type="text"
+                <div class="flex items-center justify-between mb-1">
+                    <label class="block text-xs font-medium text-gray-600">
+                        <span x-show="!codebookAvailable">Frame</span>
+                        <span x-show="codebookAvailable" x-cloak>Code</span>
+                    </label>
+                    <a x-show="codebookAvailable && queryDesignId"
+                       x-cloak
+                       :href="'/query-designs/' + queryDesignId + '/codebook'"
+                       class="text-xs text-indigo-600 hover:text-indigo-800"
+                       target="_blank">
+                        Manage codebook
+                    </a>
+                </div>
+
+                {# Codebook dropdown — shown when codebook is available and custom input is not active #}
+                <div x-show="codebookAvailable && !useCustomCode"
+                     x-cloak>
+                    <select x-model="form.frame"
+                            @change="saveAnnotation()"
+                            class="w-full border border-gray-300 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                        <option value="">— select a code —</option>
+                        <template x-for="(entries, category) in groupedCodebook" :key="category">
+                            <optgroup :label="category || 'Uncategorized'">
+                                <template x-for="entry in entries" :key="entry.id">
+                                    <option :value="entry.code"
+                                            x-text="entry.code + ' — ' + entry.label"></option>
+                                </template>
+                            </optgroup>
+                        </template>
+                    </select>
+                    <div class="flex items-center gap-1.5 mt-1.5">
+                        <input type="checkbox"
+                               x-model="useCustomCode"
+                               id="use-custom-code-{{ record.id }}"
+                               class="text-blue-600 focus:ring-blue-500 rounded">
+                        <label for="use-custom-code-{{ record.id }}"
+                               class="text-xs text-gray-500 cursor-pointer">
+                            Use custom code
+                        </label>
+                    </div>
+                </div>
+
+                {# Free-text input — shown when no codebook or custom code is selected #}
+                <input x-show="!codebookAvailable || useCustomCode"
+                       x-cloak
+                       type="text"
                        x-model="form.frame"
                        @blur="saveAnnotation()"
                        placeholder="e.g. economic, environmental"
@@ -382,13 +427,18 @@
  * Manages loading, saving, and deleting annotations for a single content
  * record via the /annotations/{record_id} API.
  *
+ * SB-16: Integrates codebook support — if the record's collection run has a
+ * query_design_id with a codebook, shows a dropdown of codes instead of free-text.
+ *
  * @param {string} recordId  - UUID of the content record.
  * @param {string} publishedAt - ISO 8601 published_at timestamp.
+ * @param {string} runId - UUID of the collection run (optional, for codebook lookup).
  */
-function annotationPanel(recordId, publishedAt) {
+function annotationPanel(recordId, publishedAt, runId) {
     return {
         recordId,
         publishedAt,
+        runId,
 
         // UI state
         loading: true,
@@ -396,6 +446,12 @@ function annotationPanel(recordId, publishedAt) {
         saved: false,
         error: null,
         saveError: null,
+
+        // Codebook state (SB-16)
+        codebookEntries: [],
+        codebookAvailable: false,
+        useCustomCode: false,
+        queryDesignId: null,
 
         // Form state
         tagsInput: '',
@@ -430,6 +486,67 @@ function annotationPanel(recordId, publishedAt) {
             } finally {
                 this.loading = false;
             }
+        },
+
+        /**
+         * SB-16: Load codebook entries for this content record's query design.
+         * Fetches the collection run to get query_design_id, then loads the codebook.
+         */
+        async loadCodebook() {
+            if (!this.runId) {
+                // No run ID available, skip codebook loading
+                return;
+            }
+
+            try {
+                // Fetch collection run to get query_design_id
+                const runResp = await fetch(`/collections/${this.runId}`, {
+                    credentials: 'include',
+                });
+                if (!runResp.ok) {
+                    // Silently fail — codebook is optional
+                    return;
+                }
+                const runData = await runResp.json();
+                const designId = runData.query_design_id;
+
+                if (!designId) {
+                    // No query design associated with this run
+                    return;
+                }
+
+                this.queryDesignId = designId;
+
+                // Fetch codebook entries for this query design
+                const codebookResp = await fetch(`/codebooks/?query_design_id=${designId}`, {
+                    credentials: 'include',
+                });
+                if (!codebookResp.ok) {
+                    return;
+                }
+                const codebookData = await codebookResp.json();
+                this.codebookEntries = codebookData.entries || [];
+
+                if (this.codebookEntries.length > 0) {
+                    this.codebookAvailable = true;
+                }
+            } catch (err) {
+                // Silently fail — codebook is optional
+                console.warn('Could not load codebook:', err);
+            }
+        },
+
+        /**
+         * SB-16: Group codebook entries by category for dropdown optgroups.
+         */
+        get groupedCodebook() {
+            const groups = {};
+            this.codebookEntries.forEach(e => {
+                const cat = e.category || '';
+                if (!groups[cat]) groups[cat] = [];
+                groups[cat].push(e);
+            });
+            return groups;
         },
 
         /**

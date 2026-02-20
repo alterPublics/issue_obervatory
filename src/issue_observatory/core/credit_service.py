@@ -190,6 +190,13 @@ class CreditService:
     ) -> dict:
         """Compute pre-flight credit estimate without committing any state.
 
+        SB-14: Implements credit estimation logic based on:
+        - Number of enabled arenas per tier
+        - Number of active search terms in the query design
+        - Date range (for batch mode, defaults to 30 days for live mode)
+        - Each arena collector's estimate_credits() implementation
+        - Historical cost data from tier defaults when collector unavailable
+
         For each arena listed in *arenas_config*, the method attempts to
         call ``estimate_credits()`` on the registered collector. If the
         arena is not in the registry (e.g. during Phase 0 before arenas are
@@ -199,8 +206,7 @@ class CreditService:
 
         Args:
             query_design_id: UUID of the query design being estimated.
-                Reserved for future use (e.g. counting terms to refine
-                the estimate).
+                Used to count active search terms for per-term cost models.
             tier: Default tier (``"free"``, ``"medium"``, ``"premium"``)
                 applied to arenas not listed in *arenas_config*.
             arenas_config: Per-arena tier overrides, e.g.
@@ -219,6 +225,24 @@ class CreditService:
         from issue_observatory.arenas import registry as _registry  # noqa: PLC0415
         from issue_observatory.config.tiers import TIER_DEFAULTS, Tier as TierEnum  # noqa: PLC0415
 
+        # Load query design to extract search terms for estimation
+        from issue_observatory.core.models.query_design import QueryDesign, SearchTerm  # noqa: PLC0415
+
+        qd_stmt = select(QueryDesign).where(QueryDesign.id == query_design_id)
+        qd_result = await self.session.execute(qd_stmt)
+        query_design = qd_result.scalar_one_or_none()
+
+        # Extract active search terms if query design exists
+        active_terms: list[str] = []
+        if query_design is not None:
+            terms_stmt = (
+                select(SearchTerm.term)
+                .where(SearchTerm.query_design_id == query_design_id)
+                .where(SearchTerm.is_active.is_(True))
+            )
+            terms_result = await self.session.execute(terms_stmt)
+            active_terms = [row[0] for row in terms_result.fetchall()]
+
         per_arena: dict[str, int] = {}
 
         # arenas_config keys are platform_name values (e.g. "youtube", "bluesky"),
@@ -236,9 +260,12 @@ class CreditService:
                 collector_cls = _registry.get_arena(platform_name)
                 collector = collector_cls()
                 credits_for_arena = await collector.estimate_credits(
+                    terms=active_terms,
+                    actor_ids=None,  # Actor-based estimates not yet implemented
                     tier=resolved_tier,
                     date_from=date_from,
                     date_to=date_to,
+                    max_results=None,  # Use tier default
                 )
             except KeyError:
                 # Arena not in registry — fall back to TIER_DEFAULTS
@@ -271,6 +298,8 @@ class CreditService:
             extra={
                 "query_design_id": str(query_design_id),
                 "tier": tier,
+                "term_count": len(active_terms),
+                "arena_count": len(arenas_config),
                 "total_credits": total_credits,
                 "per_arena": per_arena,
             },
