@@ -423,6 +423,9 @@ function actorsChart(designId) {
                 }
 
                 if (typeof window.initActorsChart === 'function') {
+                    // Ensure axis labels are present for consistency
+                    if (!data.xLabel) data.xLabel = 'Record count';
+                    if (!data.yLabel) data.yLabel = 'Actor';
                     this.chart = window.initActorsChart('actorsChart', data);
                 } else {
                     console.warn('initActorsChart not found; chart will not render');

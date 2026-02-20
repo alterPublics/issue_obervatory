@@ -1760,6 +1760,7 @@ function actorsChart(runId) {
                         labels,
                         values: rows.map(r => r.count),
                         xLabel: 'Record count',
+                        yLabel: 'Actor',
                     });
                 }
             } catch (e) {
@@ -1793,6 +1794,7 @@ function termsChart(runId) {
                         labels: rows.map(r => r.term),
                         values: rows.map(r => r.count),
                         xLabel: 'Record count',
+                        yLabel: 'Search term',
                     });
                 }
             } catch (e) {
@@ -1899,6 +1901,7 @@ function emergentTermsPanel(runId) {
                     labels: this.terms.map(t => t.term),
                     values: this.terms.map(t => t.score),
                     xLabel: 'Emergence score',
+                    yLabel: 'Term',
                 });
                 return;
             }
@@ -1948,6 +1951,7 @@ function emergentTermsPanel(runId) {
                             y: {
                                 ticks: { color: '#374151', font: { size: 11 } },
                                 grid: { display: false },
+                                title: { display: true, text: 'Term', color: '#6b7280', font: { size: 11 } },
                             },
                         },
                     },

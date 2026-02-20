@@ -249,7 +249,7 @@
             {% if design.created_at | default('') %}
             <div>
                 <dt class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Created</dt>
-                <dd class="text-gray-700 font-mono text-xs">{{ design.created_at | truncate(16, true, '') }}</dd>
+                <dd class="text-gray-700 font-mono text-xs">{{ design.created_at | truncate(16, true, '') }} <span class="text-gray-400">UTC</span></dd>
             </div>
             {% endif %}
         </dl>
@@ -561,7 +561,7 @@
                         {{ run.credits_spent | default(0) }}
                     </td>
                     <td class="px-6 py-3 text-xs text-gray-500">
-                        {{ run.created_at | default('') | truncate(16, true, '') }}
+                        {{ run.created_at | default('') | truncate(16, true, '') }} <span class="text-gray-400">UTC</span>
                     </td>
                 </tr>
                 {% endfor %}

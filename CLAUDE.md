@@ -78,7 +78,7 @@ This file provides essential context for AI agents working on the Issue Observat
 | Normalizer | `core/normalizer.py` | Complete -- SHA-256 pseudonymization with public figure bypass |
 | Credential pool | `core/credential_pool.py` | Complete -- DB-backed, Fernet encryption, Redis lease/quota/cooldown |
 | Rate limiter | `workers/rate_limiter.py` | Complete -- Redis sliding window Lua script |
-| Credit service | `core/credit_service.py` | Partial -- model exists, route handler is a stub |
+| Credit service | `core/credit_service.py` | Complete -- balance, reservation, settlement, refund, estimation (SB-14) |
 | Entity resolver | `core/entity_resolver.py` | Complete |
 | Deduplication | `core/deduplication.py` | Complete -- URL, content hash, SimHash near-duplicate |
 | Retention service | `core/retention_service.py` | Complete |
@@ -100,6 +100,7 @@ This file provides essential context for AI agents working on the Issue Observat
 | 009 | `public_figure BOOLEAN` on actors (GR-14) |
 | 010 | `target_arenas JSONB` on search_terms (YF-01, per-arena term scoping) |
 | 011 | GIN index on `search_terms.target_arenas` for YF-01 query performance |
+| 012 | `codebook_entries` table (SB-16, annotation codebook management) |
 
 ### Analysis Module
 
@@ -165,6 +166,7 @@ All major templates are implemented:
 | `routes/actors.py` | `/actors` | CRUD, presences, quick-add, bulk-add, snowball |
 | `routes/analysis.py` | `/analysis` | Descriptive stats, network data, filtered export, suggested terms |
 | `routes/annotations.py` | `/annotations` | GET, POST, DELETE content annotations |
+| `routes/codebooks.py` | `/codebooks` | Codebook CRUD (SB-16) |
 | `routes/arenas.py` | `/api/arenas` | List registered arenas, health status |
 | `routes/auth.py` | `/auth` | Login, register, password reset |
 | `routes/credits.py` | `/admin/credits` | Credit allocation |
@@ -369,7 +371,7 @@ The authoritative improvement roadmap is at `/docs/research_reports/implementati
 | IP2-025 | GEXF export uses network.py | Done |
 | IP2-031 | Boolean query support | Done -- `query_builder.py`, `group_id`/`group_label` on SearchTerm |
 | IP2-032 | Near-duplicate detection (SimHash) | Done -- migration 007, `compute_simhash` |
-| IP2-036 | Enrichment pipeline architecture | Done -- `ContentEnricher` base class, 4 enrichers |
+| IP2-036 | Enrichment pipeline architecture | Done -- `ContentEnricher` base class, 6 enrichers |
 | IP2-043 | Content annotation layer | Done -- model, migration 005, routes, UI |
 | IP2-046 | Term grouping in query design | Done -- migration 006 |
 | IP2-048 | Platform attribute on bipartite GEXF | Done |
@@ -445,12 +447,40 @@ The authoritative improvement roadmap is at `/docs/research_reports/implementati
 | YF-14 | Google Search free-tier guidance | Done -- amber badge on Google arenas |
 | YF-16 | Actor platform presence inline add | Done -- inline form in QD editor |
 
+### Socialt Bedrageri Report Items (all 16 implemented)
+
+| ID | Description | Status |
+|----|-------------|--------|
+| SB-01 | One-click term addition from suggested terms | Done |
+| SB-02 | One-click source addition from discovered links | Done |
+| SB-03 | Post-collection discovery notification | Done |
+| SB-04 | Arena temporal capability metadata | Done -- `TemporalMode` enum on ArenaCollector |
+| SB-05 | Date range warning on collection launch | Done |
+| SB-06 | Cross-run comparison endpoint | Done |
+| SB-07 | Design-level analysis aggregation | Done |
+| SB-08 | Promote to live tracking button | Done |
+| SB-09 | RSS feed autodiscovery | Done -- `feed_discovery.py` |
+| SB-10 | Reddit subreddit suggestion | Done |
+| SB-11 | AI Chat Search as discovery accelerator | Done |
+| SB-12 | Research lifecycle indicator | Done |
+| SB-13 | Content source labeling (batch/live) | Done |
+| SB-14 | Credit estimation implementation | Done -- real per-arena values |
+| SB-15 | Enrichment results dashboard tab | Done |
+| SB-16 | Annotation codebook management | Done -- migration 012, CRUD routes |
+
 ### Not Yet Implemented (key remaining items)
 
-| ID | Description | Phase |
-|----|-------------|-------|
-| IP2-054 | Topic modeling (BERTopic) | D -- requires GPU, heavy dependencies |
-| IP2-057 | Folketinget.dk arena | D -- arena brief required |
+| ID | Description | Phase | Notes |
+|----|-------------|-------|-------|
+| IP2-011--029 | 15 Phase A frontend polish items | A | Label changes, tooltips, dropdowns, timezone display (~5-8 person-days total) |
+| IP2-041 | Entity resolution UI (full researcher-facing) | C | Backend exists; UI partial |
+| IP2-052 | Multilingual query design | D | GR-05 multi-language selector partially covers |
+| IP2-054 | Topic modeling (BERTopic) | D | Requires GPU, heavy dependencies |
+| IP2-057 | Folketinget.dk arena | D | Arena brief required |
+| IP2-061 | Mixed hash/name resolution in charts | D | Low priority |
+| YF-12 | RSS feed preview | -- | Low priority polish |
+
+For the full item-by-item tracker (61 IP2 items + all 6 reports), see `/docs/release_notes/release_notes_2026_02_20.md`.
 
 ---
 
