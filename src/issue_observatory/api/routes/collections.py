@@ -173,7 +173,7 @@ async def _get_run_or_404(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/")
+@router.get("/", response_model=None)
 async def list_collection_runs(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
@@ -443,7 +443,7 @@ async def create_collection_run(  # type: ignore[misc]
 # ---------------------------------------------------------------------------
 
 
-@router.post("/estimate")
+@router.post("/estimate", response_model=None)
 async def estimate_collection_credits(
     request: Request,
     payload: CreditEstimateRequest,

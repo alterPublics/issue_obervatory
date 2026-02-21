@@ -38,7 +38,7 @@ This file provides essential context for AI agents working on the Issue Observat
 
 ## Current Implementation Status
 
-### Implemented Arenas (24 directories, 21 functional)
+### Implemented Arenas (25 implementations)
 
 | Arena | Directory | Status | Tiers | Notes |
 |-------|-----------|--------|-------|-------|
@@ -50,7 +50,7 @@ This file provides essential context for AI agents working on the Issue Observat
 | RSS Feeds | `arenas/rss_feeds/` | Fully implemented | FREE | 28+ Danish feeds, configurable custom feeds (GR-01) |
 | GDELT | `arenas/gdelt/` | Fully implemented | FREE | `sourcelang:danish`, `sourcecountry:DA` |
 | Telegram | `arenas/telegram/` | Fully implemented | FREE | MTProto via Telethon, configurable channels (GR-02) |
-| TikTok | `arenas/tiktok/` | Fully implemented | MEDIUM | 10-day engagement lag |
+| TikTok | `arenas/tiktok/` | Fully implemented | FREE | FREE tier only (MEDIUM tier documented but not implemented), 10-day engagement lag |
 | Via Ritzau | `arenas/ritzau_via/` | Fully implemented | FREE | Unauthenticated JSON API |
 | Gab | `arenas/gab/` | Fully implemented | FREE | Mastodon-compatible API |
 | Event Registry | `arenas/event_registry/` | Fully implemented | MEDIUM, PREMIUM | ISO 639-3 `"dan"` |

@@ -427,7 +427,7 @@ _SUPPORTED_ZEESCHUIMER_PLATFORMS: frozenset[str] = frozenset({
     status_code=status.HTTP_200_OK,
 )
 async def zeeschuimer_import_dataset(
-    request: Annotated[Request, Depends()],
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     x_zeeschuimer_platform: Annotated[
