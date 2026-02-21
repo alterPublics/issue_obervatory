@@ -273,7 +273,7 @@ class ZeeschuimerProcessor:
             stmt = text(
                 f"INSERT INTO content_records ({col_list}) "  # noqa: S608
                 f"VALUES ({placeholders}) "
-                f"ON CONFLICT (content_hash) WHERE content_hash IS NOT NULL DO NOTHING"
+                f"ON CONFLICT (content_hash, published_at) WHERE content_hash IS NOT NULL DO NOTHING"
             )
 
             try:

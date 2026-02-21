@@ -53,12 +53,13 @@ def upgrade() -> None:
     # Drop the existing non-unique index created in migration 001
     _exec("DROP INDEX IF EXISTS idx_content_hash")
 
-    # Create a unique partial index that excludes NULL values
-    # This allows ON CONFLICT (content_hash) DO NOTHING in INSERT statements
-    # while permitting multiple records with NULL content_hash
+    # Create a unique partial index that excludes NULL values.
+    # Must include published_at because content_records is partitioned by it —
+    # PostgreSQL requires all partition key columns in unique indexes.
+    # ON CONFLICT clauses must reference (content_hash, published_at) accordingly.
     _exec("""
         CREATE UNIQUE INDEX idx_content_hash_unique
-        ON content_records (content_hash)
+        ON content_records (content_hash, published_at)
         WHERE content_hash IS NOT NULL
     """)
 
@@ -69,4 +70,4 @@ def downgrade() -> None:
     _exec("DROP INDEX IF EXISTS idx_content_hash_unique")
 
     # Recreate the original non-unique B-tree index from migration 001
-    _exec("CREATE INDEX idx_content_hash ON content_records (content_hash)")
+    _exec("CREATE INDEX idx_content_hash ON content_records (content_hash, published_at)")

@@ -230,8 +230,8 @@ Have someone unfamiliar with the codebase attempt key workflows using only the U
 |-------|-----------|------|-------|
 | P0-1: Test suite green | YES | 2026-02-21 | 1790 passed, 1 skipped, 0 failures (49.73s). Coverage: 51%. |
 | P0-2: Coherency audit triage | RESOLVED | 2026-02-21 | All 4 blockers fixed: BB-1 enrichment button added, BB-2 spike alerts on dashboard, BB-3 SMTP status on health page, BB-4 30 retention service tests written. |
-| P0-3: Docker smoke test | SKIPPED | 2026-02-21 | Docker not available on dev machine. Must test in deployment environment. |
-| P0-4: E2E collection workflow | SKIPPED | 2026-02-21 | Requires running infrastructure (Postgres, Redis). Must test in deployment environment. |
+| P0-3: Docker smoke test | PASSED (with fix) | 2026-02-21 | Found & fixed migration 015 bug: unique index on partitioned table must include partition key. All 15 migrations now apply cleanly. Admin bootstrap works. |
+| P0-4: E2E collection workflow | DEFERRED | 2026-02-21 | Requires API keys for FREE-tier arenas. Test manually in deployment environment with credentials configured. |
 | P0-5: Secrets audit | RESOLVED | 2026-02-21 | All 3 blockers fixed: BB-01 salt now raises on empty, BB-02 weak SECRET_KEY rejected at startup, BB-03 Fernet key validated at startup. |
 | P1-6: Security review | | | |
 | P1-7: Migration rollback | | | |

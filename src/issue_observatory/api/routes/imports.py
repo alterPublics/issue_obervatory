@@ -191,7 +191,7 @@ async def _bulk_insert(
         stmt = text(
             f"INSERT INTO content_records ({col_list}) "  # noqa: S608
             f"VALUES ({placeholders}) "
-            f"ON CONFLICT (content_hash) WHERE content_hash IS NOT NULL DO NOTHING"
+            f"ON CONFLICT (content_hash, published_at) WHERE content_hash IS NOT NULL DO NOTHING"
         )
         result = await db.execute(stmt, {col: record[col] for col in columns})
         if result.rowcount == 1:

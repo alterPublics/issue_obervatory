@@ -58,7 +58,12 @@
       "Bash(git clone:*)",
       "Bash(awk:*)",
       "Bash(docker:*)",
-      "Bash(docker-compose:*)"
+      "Bash(docker-compose:*)",
+      "Bash(DATABASE_URL=\"postgresql+asyncpg://observatory:observatory@localhost:5432/observatory\" /Users/jakobbk/Documents/postdoc/codespace/issue_observatory/.venv/bin/python:*)",
+      "Bash(lsof:*)",
+      "Bash(DATABASE_URL=\"postgresql+asyncpg://observatory:observatory@172.18.0.2:5432/observatory\" /Users/jakobbk/Documents/postdoc/codespace/issue_observatory/.venv/bin/python -m alembic upgrade head:*)",
+      "Bash(DATABASE_URL=\"postgresql+asyncpg://jakobbk@localhost:5432/observatory_smoke_test\" /Users/jakobbk/Documents/postdoc/codespace/issue_observatory/.venv/bin/python:*)",
+      "Bash(DATABASE_URL=\"postgresql+asyncpg://jakobbk@localhost:5432/observatory_smoke_test\" FIRST_ADMIN_EMAIL=\"admin@test.local\" FIRST_ADMIN_PASSWORD=\"SmokeTest2026!\" SECRET_KEY=\"smoke-test-secret-key-min-32-chars-long\" PSEUDONYMIZATION_SALT=\"smoke-test-salt-value\" /Users/jakobbk/Documents/postdoc/codespace/issue_observatory/.venv/bin/python:*)"
     ]
   }
 }
