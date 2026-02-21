@@ -98,3 +98,30 @@
         Select a query design and tier to see an estimate.
     </p>
 {% endif %}
+
+{#
+    Dispatch a custom event after HTMX swaps this fragment into the DOM.
+    The launcher Alpine component listens for this event to update its
+    credit-gating logic without parsing the DOM.
+#}
+<script>
+(function() {
+    {% if estimate %}
+    // Dispatch the estimate result to the Alpine component
+    if (typeof dispatchEstimateResult === 'function') {
+        dispatchEstimateResult(
+            {{ estimate.total_credits | default(0) }},
+            {{ estimate.available_credits | default(0) }}
+        );
+    } else {
+        // Fallback: dispatch a native custom event
+        document.dispatchEvent(new CustomEvent('estimate:result', {
+            detail: {
+                credits: {{ estimate.total_credits | default(0) }},
+                availableCredits: {{ estimate.available_credits | default(0) }}
+            }
+        }));
+    }
+    {% endif %}
+})();
+</script>

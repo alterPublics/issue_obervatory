@@ -487,72 +487,110 @@ async def estimate_collection_credits(
     """
     from issue_observatory.core.credit_service import CreditService
 
-    # Load query design and verify ownership
-    qd_result = await db.execute(
-        select(QueryDesign).where(QueryDesign.id == payload.query_design_id)
-    )
-    query_design = qd_result.scalar_one_or_none()
-    if query_design is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Query design '{payload.query_design_id}' not found.",
+    try:
+        # Load query design and verify ownership
+        qd_result = await db.execute(
+            select(QueryDesign).where(QueryDesign.id == payload.query_design_id)
         )
-    ownership_guard(query_design.owner_id, current_user)
+        query_design = qd_result.scalar_one_or_none()
+        if query_design is None:
+            error_msg = f"Query design '{payload.query_design_id}' not found."
+            if hx_request:
+                templates = _templates(request)
+                return templates.TemplateResponse(
+                    "_fragments/credit_estimate.html",
+                    {
+                        "request": request,
+                        "estimate": None,
+                        "error": error_msg,
+                    },
+                )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=error_msg,
+            )
+        ownership_guard(query_design.owner_id, current_user)
 
-    # Merge arena config: query design base + launcher override
-    merged_arenas_config = {**query_design.arenas_config, **payload.arenas_config}
+        # Merge arena config: query design base + launcher override
+        merged_arenas_config = {**query_design.arenas_config, **payload.arenas_config}
 
-    # Use CreditService to compute the estimate
-    credit_service = CreditService(db)
-    estimate = await credit_service.estimate(
-        query_design_id=payload.query_design_id,
-        tier=payload.tier,
-        arenas_config=merged_arenas_config,
-        date_from=payload.date_from,
-        date_to=payload.date_to,
-    )
+        # Use CreditService to compute the estimate
+        credit_service = CreditService(db)
+        estimate = await credit_service.estimate(
+            query_design_id=payload.query_design_id,
+            tier=payload.tier,
+            arenas_config=merged_arenas_config,
+            date_from=payload.date_from,
+            date_to=payload.date_to,
+        )
 
-    # Get user's available credit balance
-    balance = await credit_service.get_balance(current_user.id)
-    available_credits = balance["available"]
+        # Get user's available credit balance
+        balance = await credit_service.get_balance(current_user.id)
+        available_credits = balance["available"]
 
-    # Determine if run can proceed
-    total_credits = estimate["total_credits"]
-    can_run = total_credits <= available_credits
+        # Determine if run can proceed
+        total_credits = estimate["total_credits"]
+        can_run = total_credits <= available_credits
 
-    logger.info(
-        "credit_estimate_requested",
-        query_design_id=str(payload.query_design_id),
-        user_id=str(current_user.id),
-        total_credits=total_credits,
-        available_credits=available_credits,
-        can_run=can_run,
-    )
+        logger.info(
+            "credit_estimate_requested",
+            query_design_id=str(payload.query_design_id),
+            user_id=str(current_user.id),
+            total_credits=total_credits,
+            available_credits=available_credits,
+            can_run=can_run,
+        )
 
-    # When called via HTMX, render the credit_estimate fragment
-    if hx_request:
-        templates = _templates(request)
-        return templates.TemplateResponse(
-            "_fragments/credit_estimate.html",
-            {
-                "request": request,
-                "estimate": {
-                    "total_credits": total_credits,
-                    "available_credits": available_credits,
-                    "sufficient": can_run,
-                    "per_arena": estimate["per_arena"],
+        # When called via HTMX, render the credit_estimate fragment
+        if hx_request:
+            templates = _templates(request)
+            return templates.TemplateResponse(
+                "_fragments/credit_estimate.html",
+                {
+                    "request": request,
+                    "estimate": {
+                        "total_credits": total_credits,
+                        "available_credits": available_credits,
+                        "sufficient": can_run,
+                        "per_arena": estimate["per_arena"],
+                    },
+                    "error": None,
                 },
-                "error": None,
-            },
+            )
+
+        # Otherwise return JSON
+        return CreditEstimateResponse(
+            total_credits=total_credits,
+            available_credits=available_credits,
+            can_run=can_run,
+            per_arena=estimate["per_arena"],
         )
 
-    # Otherwise return JSON
-    return CreditEstimateResponse(
-        total_credits=total_credits,
-        available_credits=available_credits,
-        can_run=can_run,
-        per_arena=estimate["per_arena"],
-    )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "credit_estimate_error",
+            query_design_id=str(payload.query_design_id),
+            user_id=str(current_user.id),
+            error=str(exc),
+            exc_info=True,
+        )
+        error_msg = "An unexpected error occurred while estimating credits."
+        if hx_request:
+            templates = _templates(request)
+            return templates.TemplateResponse(
+                "_fragments/credit_estimate.html",
+                {
+                    "request": request,
+                    "estimate": None,
+                    "error": error_msg,
+                },
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=error_msg,
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

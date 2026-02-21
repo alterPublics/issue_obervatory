@@ -139,7 +139,8 @@ class ZeeschuimerImport(Base, TimestampMixin):
         nullable=True,
         comment="Path to the uploaded NDJSON file (deleted after processing)",
     )
-    metadata: Mapped[Optional[dict]] = mapped_column(
+    import_metadata: Mapped[Optional[dict]] = mapped_column(
+        "metadata",
         JSONB,
         nullable=True,
         server_default=sa.text("'{}'"),

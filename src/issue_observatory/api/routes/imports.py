@@ -548,7 +548,7 @@ async def zeeschuimer_import_dataset(
         zeeschuimer_import.rows_total = rows_total
         zeeschuimer_import.file_path = str(temp_path)
         zeeschuimer_import.status = "processing"
-        zeeschuimer_import.metadata = {"file_size_bytes": bytes_written}
+        zeeschuimer_import.import_metadata = {"file_size_bytes": bytes_written}
         await db.commit()
 
         # Process the file synchronously (can be moved to Celery task for large files)

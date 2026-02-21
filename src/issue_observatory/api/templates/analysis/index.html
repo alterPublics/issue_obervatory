@@ -1485,6 +1485,99 @@
         </div>
     </div>{# /suggested terms #}
 
+    {# m-06: Cross-run comparison modal (SB-06) #}
+    <div x-data="compareRunsModal('{{ run_id }}', {{ run.query_design_id | tojson if run.query_design_id else 'null' }})"
+         x-show="showModal"
+         x-cloak
+         @open-compare-modal.window="openModal()"
+         @keydown.escape.window="showModal && closeModal()"
+         class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40">
+
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-4xl mx-4 max-h-[90vh] overflow-hidden flex flex-col" @click.stop>
+
+            <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+                <h3 class="text-base font-semibold text-gray-900">Compare Collection Runs</h3>
+                <button type="button" @click="closeModal()"
+                        class="text-gray-400 hover:text-gray-600 transition-colors">
+                    <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                         stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+
+                <div x-show="error" x-cloak
+                     class="flex items-center gap-2 bg-red-50 border border-red-200 rounded-md px-4 py-2.5">
+                    <svg class="w-4 h-4 text-red-500 flex-shrink-0" xmlns="http://www.w3.org/2000/svg"
+                         fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                              d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    <p class="text-sm text-red-700" x-text="error"></p>
+                </div>
+
+                <div class="bg-blue-50 border border-blue-200 rounded-md px-4 py-3">
+                    <p class="text-sm text-blue-800">
+                        <strong>Current run (baseline):</strong> <span class="font-mono text-xs" x-text="currentRunId.slice(0,8)"></span>
+                    </p>
+                    <p class="text-xs text-blue-600 mt-1">Select another run from the same query design to compare metrics.</p>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Select run to compare with</label>
+                    <div x-show="loadingRuns" class="text-sm text-gray-400 animate-pulse">Loading runs...</div>
+
+                    <div x-show="!loadingRuns && availableRuns.length === 0" class="text-sm text-gray-400 italic">
+                        No other completed runs available for comparison.
+                    </div>
+
+                    <div x-show="!loadingRuns && availableRuns.length > 0" class="space-y-2 max-h-64 overflow-y-auto">
+                        <template x-for="run in availableRuns" :key="run.id">
+                            <label class="flex items-center gap-3 p-3 border rounded-md cursor-pointer transition-colors hover:bg-gray-50"
+                                   :class="selectedRunId === run.id ? 'border-blue-500 bg-blue-50' : 'border-gray-200'">
+                                <input type="radio"
+                                       :value="run.id"
+                                       x-model="selectedRunId"
+                                       class="text-blue-600 focus:ring-blue-500">
+                                <div class="flex-1 text-sm">
+                                    <div class="font-medium text-gray-900">
+                                        <span class="font-mono text-xs" x-text="run.id.slice(0,8)"></span>
+                                        <span x-show="run.mode === 'live'" class="ml-2 text-xs text-purple-600">(live)</span>
+                                    </div>
+                                    <div class="text-xs text-gray-500 mt-0.5">
+                                        <span x-text="run.started_at ? new Date(run.started_at).toLocaleDateString() : 'Unknown'"></span>
+                                        <span class="mx-1">•</span>
+                                        <span x-text="run.total_records ? run.total_records.toLocaleString() + ' records' : '0 records'"></span>
+                                    </div>
+                                </div>
+                            </label>
+                        </template>
+                    </div>
+                </div>
+
+            </div>
+
+            <div class="px-6 py-4 border-t border-gray-200 flex items-center justify-between">
+                <button type="button" @click="closeModal()"
+                        class="text-sm text-gray-500 hover:text-gray-700 transition-colors">Cancel</button>
+                <button type="button"
+                        @click="compare()"
+                        :disabled="!selectedRunId || loading"
+                        class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                    <svg x-show="loading" class="animate-spin w-4 h-4"
+                         xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    <span x-text="loading ? 'Loading...' : 'Compare'"></span>
+                </button>
+            </div>
+
+        </div>
+    </div>
+
 </div>{# /analysisDashboard #}
 
 {# ------------------------------------------------------------------ #}
@@ -2867,6 +2960,84 @@ function suggestedTermsPanel(runId, queryDesignId) {
                 this.addedTerms = new Set([...this.addedTerms, term]);
             } catch (e) {
                 this.addError = `Could not add "${term}": ${e.message}`;
+            }
+        },
+    };
+}
+
+// ---- m-06: Compare Runs Modal Component (SB-06) --------------------------
+//
+// Fetches available completed runs from the same query design and allows the
+// user to select one to compare with the current run.
+// On submission, navigates to GET /analysis/compare?run_ids={baseline},{new}
+//
+function compareRunsModal(currentRunId, queryDesignId) {
+    return {
+        showModal: false,
+        currentRunId,
+        queryDesignId,
+        loadingRuns: false,
+        loading: false,
+        error: null,
+        availableRuns: [],
+        selectedRunId: null,
+
+        openModal() {
+            this.showModal = true;
+            this.error = null;
+            this.selectedRunId = null;
+            if (this.queryDesignId) {
+                this.loadAvailableRuns();
+            } else {
+                this.error = 'Cannot compare runs: this run is not associated with a query design.';
+            }
+        },
+
+        closeModal() {
+            this.showModal = false;
+            this.error = null;
+            this.selectedRunId = null;
+        },
+
+        async loadAvailableRuns() {
+            this.loadingRuns = true;
+            this.error = null;
+            try {
+                const res = await fetch(`/collections?design_id=${this.queryDesignId}`, {
+                    credentials: 'include',
+                    headers: { 'Accept': 'application/json' },
+                });
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                }
+                const data = await res.json();
+                // Filter to completed runs, excluding the current run
+                this.availableRuns = (data.runs || [])
+                    .filter(r => r.status === 'completed' && r.id !== this.currentRunId)
+                    .sort((a, b) => {
+                        // Sort by started_at descending (newest first)
+                        const dateA = a.started_at ? new Date(a.started_at) : new Date(0);
+                        const dateB = b.started_at ? new Date(b.started_at) : new Date(0);
+                        return dateB - dateA;
+                    });
+            } catch (e) {
+                this.error = `Could not load runs: ${e.message}`;
+            } finally {
+                this.loadingRuns = false;
+            }
+        },
+
+        async compare() {
+            if (!this.selectedRunId) return;
+            this.loading = true;
+            this.error = null;
+            try {
+                // Navigate to the comparison endpoint
+                // The endpoint expects run_ids as "baseline,new"
+                window.location.href = `/analysis/compare?run_ids=${this.currentRunId},${this.selectedRunId}`;
+            } catch (e) {
+                this.error = `Comparison failed: ${e.message}`;
+                this.loading = false;
             }
         },
     };

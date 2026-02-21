@@ -82,7 +82,9 @@ def normalize_raw_record(
     )
 
     # pseudonymized_author_id: domain treated as the "author".
-    pseudonymized_author_id: str | None = normalizer.pseudonymize_author(domain)
+    pseudonymized_author_id: str | None = normalizer.pseudonymize_author(
+        platform_name, domain
+    )
 
     # published_at: best-effort date resolution.
     html: str | None = raw.get("html")
