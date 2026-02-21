@@ -1,13 +1,14 @@
-"""Async DB helpers for the enrich_collection_run Celery task.
+"""Synchronous DB helpers for the enrich_collection_run Celery task.
 
 Separated from ``workers/_task_helpers.py`` to keep each file under 400 lines
 and to make the individual helpers unit-testable without importing the Celery
 application.
 
-All functions open their own ``AsyncSessionLocal`` context managers and
-commit before returning.  This is intentional: Celery workers call these
-via ``asyncio.run()`` from synchronous task bodies, so each invocation
-requires a fresh event loop with no pre-existing session.
+All functions use the synchronous ``get_sync_session()`` context manager
+(psycopg2 driver) rather than ``AsyncSessionLocal`` (asyncpg driver).  This
+avoids the "Future attached to a different loop" error that occurs when Celery
+workers call ``asyncio.run()`` for the collector then attempt to re-use
+asyncpg connections on a second ``asyncio.run()`` call.
 """
 
 from __future__ import annotations
@@ -18,13 +19,13 @@ from typing import Any
 
 from sqlalchemy import text
 
-from issue_observatory.core.database import AsyncSessionLocal
+from issue_observatory.core.database import get_sync_session
 
 # Batch size for fetching content records per DB round-trip.
 _BATCH_SIZE = 100
 
 
-async def fetch_content_records_for_run(
+def fetch_content_records_for_run(
     run_id: str,
     offset: int,
     limit: int = _BATCH_SIZE,
@@ -40,17 +41,17 @@ async def fetch_content_records_for_run(
         List of dicts with at minimum the keys ``id``, ``text_content``,
         ``language``, and ``raw_metadata``.
     """
-    async with AsyncSessionLocal() as db:
+    with get_sync_session() as db:
         stmt = text(
             """
             SELECT id, text_content, language, raw_metadata
             FROM content_records
-            WHERE collection_run_id = :run_id
+            WHERE collection_run_id = CAST(:run_id AS uuid)
             ORDER BY id
             LIMIT :limit OFFSET :offset
             """
         )
-        result = await db.execute(
+        result = db.execute(
             stmt,
             {"run_id": run_id, "limit": limit, "offset": offset},
         )
@@ -58,7 +59,7 @@ async def fetch_content_records_for_run(
         return [dict(row) for row in rows]
 
 
-async def write_enrichment(
+def write_enrichment(
     record_id: uuid.UUID | str,
     enricher_name: str,
     enrichment_data: dict[str, Any],
@@ -73,7 +74,7 @@ async def write_enrichment(
         enricher_name: Key under ``raw_metadata.enrichments`` to write.
         enrichment_data: The enrichment result dict to store.
     """
-    async with AsyncSessionLocal() as db:
+    with get_sync_session() as db:
         # Two-level jsonb_set:
         # 1. Ensure raw_metadata is non-null by coalescing with '{}'.
         # 2. Ensure the top-level 'enrichments' sub-object exists.
@@ -94,17 +95,17 @@ async def write_enrichment(
                         true
                     ),
                     '{{enrichments,{enricher_name}}}',
-                    :data::jsonb,
+                    CAST(:data AS jsonb),
                     true
                 )
-            WHERE id = :record_id
+            WHERE id = CAST(:record_id AS uuid)
             """
         )
-        await db.execute(
+        db.execute(
             stmt,
             {
                 "data": json.dumps(enrichment_data),
                 "record_id": str(record_id),
             },
         )
-        await db.commit()
+        db.commit()

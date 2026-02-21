@@ -253,7 +253,7 @@ def instagram_collect_terms(
         error_message=None,
         elapsed_seconds=elapsed_since(_task_start),
     )
-        return {
+    return {
         "records_collected": count,
         "status": "completed",
         "arena": _ARENA,
@@ -400,7 +400,7 @@ def instagram_collect_actors(
         error_message=None,
         elapsed_seconds=elapsed_since(_task_start),
     )
-        return {
+    return {
         "records_collected": count,
         "status": "completed",
         "arena": _ARENA,

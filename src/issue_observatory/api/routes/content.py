@@ -393,12 +393,12 @@ async def _fetch_recent_runs(
         ``created_at``.
     """
     if current_user.role == "admin":
-        stmt = select(CollectionRun).order_by(CollectionRun.created_at.desc()).limit(limit)
+        stmt = select(CollectionRun).order_by(CollectionRun.started_at.desc().nulls_last()).limit(limit)
     else:
         stmt = (
             select(CollectionRun)
             .where(CollectionRun.initiated_by == current_user.id)
-            .order_by(CollectionRun.created_at.desc())
+            .order_by(CollectionRun.started_at.desc().nulls_last())
             .limit(limit)
         )
     result = await db.execute(stmt)
@@ -407,8 +407,8 @@ async def _fetch_recent_runs(
         {
             "id": str(r.id),
             "status": r.status,
-            "query_design_name": getattr(r, "query_design_name", None),
-            "created_at": r.created_at.isoformat() if r.created_at else "",
+            "query_design_name": getattr(r, "query_design_name", "") or "Run",
+            "created_at": r.started_at.isoformat() if r.started_at else "",
         }
         for r in rows
     ]
@@ -496,7 +496,7 @@ def _orm_row_to_template_dict(row: Any) -> dict[str, Any]:  # noqa: ANN401
     terms = _get("search_terms_matched") or []
 
     # SB-13: Extract mode from the joined collection_runs table
-    mode = _get("mode") or ""
+    mode = _get("mode") or _get("_browse_mode") or ""
 
     return {
         "id": str(_get("id") or ""),
@@ -622,12 +622,25 @@ async def content_browser_page(
         limit=_BROWSE_LIMIT,
     )
     result = await db.execute(stmt)
-    records = list(result.mappings().all())
+    raw_rows = list(result.mappings().all())
+
+    # Unpack the ORM instance + mode from the JOIN mapping.
+    records: list[dict[str, Any]] = []
+    for rrow in raw_rows:
+        ucr_obj = rrow.get("UniversalContentRecord")
+        if ucr_obj is None:
+            continue
+        # Attach mode from the joined CollectionRun so the template can show it.
+        ucr_obj._browse_mode = rrow.get("mode", "")  # type: ignore[attr-defined]
+        records.append(ucr_obj)
 
     cursor: Optional[str] = None
     if len(records) == _BROWSE_LIMIT:
-        last = records[-1]
-        cursor = _encode_cursor(last["published_at"], last["id"])
+        last_rec = records[-1]
+        pub_at = getattr(last_rec, "published_at", None)
+        rec_id = getattr(last_rec, "id", None)
+        if pub_at and rec_id:
+            cursor = _encode_cursor(pub_at, rec_id)
 
     # Fetch recent collection runs for the sidebar run selector (last 20).
     recent_runs = await _fetch_recent_runs(db, current_user)
@@ -993,87 +1006,12 @@ async def get_discovered_links(
 
 
 # ---------------------------------------------------------------------------
-# Detail — HTML panel or standalone page
-# ---------------------------------------------------------------------------
-
-
-@router.get("/{record_id}")
-async def get_content_record_html(
-    record_id: uuid.UUID,
-    request: Request,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(get_current_active_user)],
-    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
-) -> Response:
-    """Return a content record as an HTML detail panel or standalone page.
-
-    When the request includes the ``HX-Request`` header (HTMX partial load),
-    the template is rendered without ``standalone=True`` so it outputs only
-    the inner panel markup.  Otherwise the full ``base.html`` wrapper is used.
-
-    Args:
-        record_id: UUID of the target content record.
-        request: The incoming HTTP request.
-        db: Injected async database session.
-        current_user: The authenticated, active user making the request.
-        hx_request: Value of the ``HX-Request`` header (injected by FastAPI).
-
-    Returns:
-        ``TemplateResponse`` rendering ``content/record_detail.html``.
-
-    Raises:
-        HTTPException 404: If the record does not exist or is not accessible
-            by the current user.
-    """
-    templates = request.app.state.templates
-
-    if templates is None:
-        raise HTTPException(status_code=500, detail="Template engine not initialised.")
-
-    if current_user.role == "admin":
-        stmt = select(UniversalContentRecord).where(
-            UniversalContentRecord.id == record_id
-        )
-    else:
-        user_run_ids_subq = (
-            select(CollectionRun.id)
-            .where(CollectionRun.initiated_by == current_user.id)
-            .scalar_subquery()
-        )
-        stmt = select(UniversalContentRecord).where(
-            UniversalContentRecord.id == record_id,
-            UniversalContentRecord.collection_run_id.in_(user_run_ids_subq),
-        )
-
-    db_result = await db.execute(stmt)
-    orm_record = db_result.scalar_one_or_none()
-
-    if orm_record is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Content record '{record_id}' not found.",
-        )
-
-    record_ctx = _orm_to_detail_dict(orm_record)
-    is_panel = hx_request is not None
-
-    return templates.TemplateResponse(
-        "content/record_detail.html",
-        {
-            "request": request,
-            "record": record_ctx,
-            "standalone": not is_panel,
-        },
-    )
-
-
-# ---------------------------------------------------------------------------
 # Export — synchronous (up to 10 K records, returns file directly)
 # ---------------------------------------------------------------------------
 
 
 @router.get("/export")
-@limiter.limit("10/minute")
+# @limiter.limit("10/minute")  # Disabled: slowapi corrupts FastAPI param parsing
 async def export_content_sync(  # type: ignore[misc]
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1581,3 +1519,67 @@ async def get_duplicates(
         "url_groups": url_groups,
         "hash_groups": hash_groups,
     }
+
+
+# ---------------------------------------------------------------------------
+# Detail — HTML panel or standalone page
+# ---------------------------------------------------------------------------
+# NOTE: This route MUST be defined after all named routes (e.g. /export,
+# /records, /duplicates) because FastAPI matches routes in definition order
+# and /{record_id} would shadow them otherwise.
+
+
+@router.get("/{record_id}")
+async def get_content_record_html(
+    record_id: uuid.UUID,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
+) -> Response:
+    """Return a content record as an HTML detail panel or standalone page.
+
+    When the request includes the ``HX-Request`` header (HTMX partial load),
+    the template is rendered without ``standalone=True`` so it outputs only
+    the inner panel markup.  Otherwise the full ``base.html`` wrapper is used.
+    """
+    templates = request.app.state.templates
+
+    if templates is None:
+        raise HTTPException(status_code=500, detail="Template engine not initialised.")
+
+    if current_user.role == "admin":
+        stmt = select(UniversalContentRecord).where(
+            UniversalContentRecord.id == record_id
+        )
+    else:
+        user_run_ids_subq = (
+            select(CollectionRun.id)
+            .where(CollectionRun.initiated_by == current_user.id)
+            .scalar_subquery()
+        )
+        stmt = select(UniversalContentRecord).where(
+            UniversalContentRecord.id == record_id,
+            UniversalContentRecord.collection_run_id.in_(user_run_ids_subq),
+        )
+
+    db_result = await db.execute(stmt)
+    orm_record = db_result.scalar_one_or_none()
+
+    if orm_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Content record '{record_id}' not found.",
+        )
+
+    record_ctx = _orm_to_detail_dict(orm_record)
+    is_panel = hx_request is not None
+
+    return templates.TemplateResponse(
+        "content/record_detail.html",
+        {
+            "request": request,
+            "record": record_ctx,
+            "standalone": not is_panel,
+        },
+    )

@@ -542,3 +542,152 @@ async def get_discovery_summary(run_id: str) -> dict[str, int]:
         "discovered_links": discovered_links_count,
         "telegram_links": telegram_links_count,
     }
+
+
+# ---------------------------------------------------------------------------
+# Record persistence for arena collection tasks
+# ---------------------------------------------------------------------------
+
+
+def persist_collected_records(
+    records: list[dict[str, Any]],
+    collection_run_id: str,
+    query_design_id: str | None = None,
+) -> tuple[int, int]:
+    """Bulk-insert normalized content records into the database.
+
+    Uses a synchronous session (safe for Celery worker context) with
+    ``INSERT ... ON CONFLICT DO NOTHING`` to skip duplicate records
+    (matched on ``content_hash`` + ``published_at``).
+
+    Args:
+        records: List of normalized record dicts from a collector's
+            ``collect_by_terms()`` or ``collect_by_actors()``.
+        collection_run_id: UUID string of the parent collection run,
+            used to update ``collection_runs.records_collected``.
+        query_design_id: Optional UUID string of the owning query design.
+            Injected into each record if not already set.
+
+    Returns:
+        Tuple of ``(inserted_count, skipped_count)``.
+    """
+    import json
+
+    import structlog
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+
+    logger = structlog.get_logger("issue_observatory.workers._task_helpers")
+
+    if not records:
+        return 0, 0
+
+    # Columns that need explicit CAST() for psycopg2 type inference.
+    _JSONB_COLS = {"raw_metadata"}
+    _TEXT_ARRAY_COLS = {"search_terms_matched", "media_urls"}
+    _UUID_COLS = {"collection_run_id", "query_design_id", "author_id"}
+    _TIMESTAMP_COLS = {"published_at", "collected_at"}
+
+    inserted = 0
+    skipped = 0
+
+    with get_sync_session() as db:
+        for record in records:
+            # Inject run/design IDs if the normalizer didn't set them.
+            if not record.get("collection_run_id"):
+                record["collection_run_id"] = collection_run_id
+            if not record.get("query_design_id") and query_design_id:
+                record["query_design_id"] = query_design_id
+
+            columns = [k for k, v in record.items() if v is not None]
+            if not columns:
+                skipped += 1
+                continue
+
+            # Build placeholder list with CAST() for types the driver may
+            # not infer correctly from plain strings.
+            placeholders = []
+            params: dict[str, Any] = {}
+            for col in columns:
+                val = record[col]
+                if col in _JSONB_COLS:
+                    placeholders.append(f"CAST(:{col} AS jsonb)")
+                    params[col] = json.dumps(val) if not isinstance(val, str) else val
+                elif col in _TEXT_ARRAY_COLS:
+                    # text[] columns — convert Python list to PostgreSQL array literal.
+                    placeholders.append(f"CAST(:{col} AS text[])")
+                    if isinstance(val, list):
+                        params[col] = "{" + ",".join(
+                            '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"'
+                            for v in val
+                        ) + "}"
+                    else:
+                        params[col] = str(val)
+                elif col in _UUID_COLS:
+                    placeholders.append(f"CAST(:{col} AS uuid)")
+                    params[col] = str(val)
+                elif col in _TIMESTAMP_COLS:
+                    placeholders.append(f"CAST(:{col} AS timestamptz)")
+                    # Strip trailing 'Z' if offset already present.
+                    sval = str(val)
+                    if sval.endswith("+00:00Z"):
+                        sval = sval[:-1]
+                    params[col] = sval
+                else:
+                    placeholders.append(f":{col}")
+                    # Clamp simhash to signed bigint range.
+                    if col == "simhash" and isinstance(val, int) and val > 9223372036854775807:
+                        params[col] = val - 18446744073709551616  # 2^64
+                    else:
+                        params[col] = val
+
+            col_list = ", ".join(columns)
+            val_list = ", ".join(placeholders)
+
+            stmt = text(
+                f"INSERT INTO content_records ({col_list}) "  # noqa: S608
+                f"VALUES ({val_list}) "
+                f"ON CONFLICT (content_hash, published_at) "
+                f"WHERE content_hash IS NOT NULL DO NOTHING"
+            )
+            try:
+                # Use a SAVEPOINT so individual failures don't kill the batch.
+                db.begin_nested()
+                result = db.execute(stmt, params)
+                if result.rowcount == 1:
+                    inserted += 1
+                else:
+                    skipped += 1
+                db.commit()  # release savepoint
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "persist_collected_records: insert failed",
+                    error=str(exc),
+                    platform=record.get("platform"),
+                    url=record.get("url", "")[:100],
+                )
+                db.rollback()  # rollback to savepoint only
+                skipped += 1
+
+        db.commit()
+
+        # Update the collection run's records_collected counter.
+        if inserted > 0:
+            db.execute(
+                text(
+                    "UPDATE collection_runs "
+                    "SET records_collected = records_collected + :count "
+                    "WHERE id = CAST(:run_id AS uuid)"
+                ),
+                {"count": inserted, "run_id": collection_run_id},
+            )
+            db.commit()
+
+    logger.info(
+        "persist_collected_records: done",
+        inserted=inserted,
+        skipped=skipped,
+        run_id=collection_run_id,
+    )
+    return inserted, skipped

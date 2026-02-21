@@ -781,9 +781,7 @@ def enrich_collection_run(
 
     while True:
         try:
-            batch = asyncio.run(
-                fetch_content_records_for_run(run_id, offset=offset)
-            )
+            batch = fetch_content_records_for_run(run_id, offset=offset)
         except Exception as exc:
             log.error(
                 "enrich_collection_run: DB error fetching batch",
@@ -816,9 +814,7 @@ def enrich_collection_run(
                     continue
                 try:
                     result = asyncio.run(enricher.enrich(record))
-                    asyncio.run(
-                        write_enrichment(record_id, enricher.enricher_name, result)
-                    )
+                    write_enrichment(record_id, enricher.enricher_name, result)
                     enrichments_applied += 1
                     log.debug(
                         "enrich_collection_run: enrichment written",

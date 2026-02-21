@@ -27,8 +27,9 @@
 
 {% if standalone %}
 {% extends "base.html" %}
-{% block title %}Content Record — {{ record.platform | default('') | capitalize }}{% endblock %}
+{% endif %}
 {% block content %}
+{% if standalone %}
 <div class="max-w-3xl mx-auto space-y-6">
     <div class="flex items-center gap-3">
         <a href="/content"
@@ -789,5 +790,5 @@ function annotationPanel(recordId, publishedAt, runId) {
 
 {% if standalone %}
 </div>
-{% endblock %}
 {% endif %}
+{% endblock %}
