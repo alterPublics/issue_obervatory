@@ -40,8 +40,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 _TEST_ENV_DEFAULTS: dict[str, str] = {
     "DATABASE_URL": "postgresql+asyncpg://postgres:test@localhost:5432/test_observatory",
-    "SECRET_KEY": "test-secret-key-for-tests-only-not-production",
-    "CREDENTIAL_ENCRYPTION_KEY": "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==",
+    "SECRET_KEY": "test-secret-key-for-tests-only-not-production-32-chars-minimum",
+    "CREDENTIAL_ENCRYPTION_KEY": "3R4m3UGrbnnULx1hLD87ZfV4XIgLnpoEhCn85UPmCvA=",
     "PSEUDONYMIZATION_SALT": "test-pseudonymization-salt-for-unit-tests",
     "REDIS_URL": "redis://localhost:6379/0",
     "FIRST_ADMIN_EMAIL": "admin@test.example.com",

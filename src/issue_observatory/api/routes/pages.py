@@ -873,12 +873,21 @@ async def admin_health(
         admin_user: Verified admin user from the ``require_admin`` dependency.
 
     Returns:
-        Rendered ``admin/health.html`` template.
+        Rendered ``admin/health.html`` template with SMTP status (BB-3).
     """
+    from issue_observatory.core.email_service import get_email_service
+
+    email_service = get_email_service()
+    smtp_configured = email_service.is_configured()
+
     tpl = _templates(request)
     return tpl.TemplateResponse(
         "admin/health.html",
-        {"request": request, "user": admin_user},
+        {
+            "request": request,
+            "user": admin_user,
+            "smtp_configured": smtp_configured,
+        },
     )
 
 

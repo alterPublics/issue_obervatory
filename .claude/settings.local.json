@@ -56,7 +56,9 @@
       "WebFetch(domain:developers.tiktok.com)",
       "WebFetch(domain:docs.twitterapi.io)",
       "Bash(git clone:*)",
-      "Bash(awk:*)"
+      "Bash(awk:*)",
+      "Bash(docker:*)",
+      "Bash(docker-compose:*)"
     ]
   }
 }

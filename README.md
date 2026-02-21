@@ -1,6 +1,6 @@
 # The Issue Observatory
 
-A modular multi-platform media data collection and analysis application for media and communications research. Tracks mediated content around specific issues across diverse platforms, initially targeting a Danish context with architecture for international expansion.
+A modular multi-platform media data collection and analysis application for media and communications research. Tracks mediated content around specific issues across 25 platform arenas, initially targeting a Danish context with architecture for international expansion.
 
 ## Architecture
 
@@ -70,14 +70,16 @@ issue_observatory/
 ├── src/issue_observatory/       # Python package
 │   ├── config/                  # Settings, tiers, Danish defaults
 │   ├── core/                    # Models, schemas, normalizer, services
-│   ├── arenas/                  # Platform collectors (one dir per arena)
+│   ├── arenas/                  # 25 platform collectors (one dir per arena)
+│   ├── imports/                 # Zeeschuimer / manual data import
 │   ├── sampling/                # Actor discovery and snowball sampling
-│   ├── analysis/                # Descriptive stats, network analysis, export
+│   ├── analysis/                # Descriptive stats, network analysis, enrichments, export
+│   ├── scraper/                 # URL content extraction (httpx + Playwright)
 │   ├── workers/                 # Celery app, beat schedule, rate limiter
 │   └── api/                     # FastAPI routes, templates, static files
-├── alembic/                     # Database migrations
-├── tests/                       # Test suite
-├── docs/                        # Status files, arena briefs, ADRs
+├── alembic/                     # Database migrations (15 revisions)
+├── tests/                       # Test suite (1790 tests)
+├── docs/                        # Status files, arena briefs, research reports
 ├── reports/                     # Research knowledge base
 └── docker-compose.yml
 ```
@@ -86,6 +88,8 @@ issue_observatory/
 
 - `IMPLEMENTATION_PLAN.md` — Full architecture, schema, phased build plan
 - `AGENTS.md` — Agent roles and coordination protocol
+- `docs/release_notes/` — Implementation status and release notes
+- `docs/arenas/` — Research briefs for each platform arena
 - `reports/cross_platform_data_collection.md` — Platform API/access research
 - `reports/danish_context_guide.md` — Denmark-specific sources, legal, GDPR
 

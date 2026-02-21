@@ -1,0 +1,82 @@
+{#
+    Volume spike alerts fragment for the dashboard.
+
+    Displays recent volume spikes detected across all the user's query designs
+    in a compact alert banner. Only renders when spikes exist.
+
+    Context:
+        - spikes: list of spike dicts with keys:
+            - run_id, query_design_name, completed_at
+            - arena_name, platform, current_count, rolling_7d_average, ratio
+            - top_terms (list of strings)
+#}
+{% if spikes %}
+<div class="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-lg shadow-sm p-5 mb-6">
+    <div class="flex items-start gap-4">
+        <div class="flex-shrink-0">
+            <svg class="w-8 h-8 text-amber-500" xmlns="http://www.w3.org/2000/svg" fill="none"
+                 viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+            </svg>
+        </div>
+        <div class="flex-1">
+            <h3 class="text-sm font-semibold text-amber-900 mb-2">
+                Volume Spike Alert
+                {% if spikes | length > 1 %}({{ spikes | length }} recent spikes){% endif %}
+            </h3>
+            <p class="text-sm text-amber-800 mb-3">
+                Unusual volume detected in recent collection runs. Collection volume exceeded 2x the rolling 7-day average.
+            </p>
+
+            <div class="space-y-2">
+                {% for spike in spikes %}
+                <div class="bg-white rounded-md border border-amber-100 px-4 py-3">
+                    <div class="flex items-start justify-between gap-4">
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center gap-2 mb-1">
+                                <span class="text-sm font-medium text-gray-900 truncate">
+                                    {{ spike.query_design_name }}
+                                </span>
+                                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
+                                    {{ spike.platform }}
+                                </span>
+                            </div>
+                            <div class="text-xs text-gray-600">
+                                <span class="font-medium text-amber-700">{{ spike.current_count }}</span> records
+                                ({{ spike.ratio | round(1) }}x normal baseline of {{ spike.rolling_7d_average | round(0) }})
+                            </div>
+                            {% if spike.top_terms %}
+                            <div class="flex flex-wrap gap-1 mt-2">
+                                <span class="text-xs text-gray-400">Top terms:</span>
+                                {% for term in spike.top_terms[:3] %}
+                                <span class="inline-flex px-1.5 py-0.5 rounded text-xs bg-gray-50 text-gray-600 border border-gray-200">
+                                    {{ term }}
+                                </span>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+                        </div>
+                        <div class="flex-shrink-0 text-right">
+                            <a href="/collections/{{ spike.run_id }}"
+                               class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-600 hover:text-blue-700 border border-blue-200 rounded hover:bg-blue-50 transition-colors">
+                                View run
+                                <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none"
+                                     viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
+                                </svg>
+                            </a>
+                            <div class="text-xs text-gray-400 mt-1">
+                                {% if spike.completed_at %}
+                                {{ spike.completed_at[:10] }}
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}

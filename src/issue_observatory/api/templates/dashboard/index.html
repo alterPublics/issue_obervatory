@@ -92,6 +92,17 @@
         </div>
     </div>
 
+    {# Volume spike alerts (BB-2) #}
+    <div id="volume-spike-alerts"
+         hx-get="/collections/volume-spikes/recent?days=7&limit=5"
+         hx-trigger="load, every 60s"
+         hx-target="#volume-spike-alerts"
+         hx-swap="innerHTML"
+         class="hidden"
+         x-data="{ spikes: [] }"
+         x-init="$watch('spikes', value => { if (value && value.length > 0) { $el.classList.remove('hidden'); } })">
+    </div>
+
     {# Recent collection runs #}
     <div class="bg-white rounded-lg shadow">
         <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">

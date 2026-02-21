@@ -14,11 +14,14 @@ Usage::
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from typing import Optional
 
-from pydantic import EmailStr
+from pydantic import EmailStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -223,6 +226,92 @@ class Settings(BaseSettings):
     where the metrics path must not be publicly reachable and a network-level
     restriction is not practical).
     """
+
+    # ------------------------------------------------------------------
+    # Security validators (BB-02, BB-03)
+    # ------------------------------------------------------------------
+
+    @field_validator("secret_key")
+    @classmethod
+    def validate_secret_key(cls, v: str) -> str:
+        """Reject known-weak placeholder values for SECRET_KEY (BB-02).
+
+        Args:
+            v: The SECRET_KEY value from the environment.
+
+        Returns:
+            The validated secret key.
+
+        Raises:
+            ValueError: When the secret key is a known placeholder or empty.
+        """
+        weak_values = {
+            "change-me-in-production",
+            "changeme",
+            "secret",
+            "password",
+            "insecure",
+            "",
+        }
+        if v.lower() in weak_values:
+            logger.critical(
+                "SECRET_KEY is set to a known weak or placeholder value: '%s'. "
+                "Generate a strong secret with: openssl rand -hex 32",
+                v,
+            )
+            raise ValueError(
+                f"SECRET_KEY cannot be '{v}'. Generate a strong secret with: openssl rand -hex 32"
+            )
+        if len(v) < 32:
+            logger.warning(
+                "SECRET_KEY is shorter than 32 characters (%d). "
+                "Consider generating a stronger key with: openssl rand -hex 32",
+                len(v),
+            )
+        return v
+
+    @field_validator("credential_encryption_key")
+    @classmethod
+    def validate_credential_encryption_key(cls, v: str) -> str:
+        """Verify that CREDENTIAL_ENCRYPTION_KEY is a valid Fernet key (BB-03).
+
+        Args:
+            v: The CREDENTIAL_ENCRYPTION_KEY value from the environment.
+
+        Returns:
+            The validated Fernet key.
+
+        Raises:
+            ValueError: When the key is invalid or empty.
+        """
+        if not v:
+            logger.warning(
+                "CREDENTIAL_ENCRYPTION_KEY is empty. "
+                "This is acceptable in development environments with no stored credentials, "
+                "but will cause runtime errors if credentials are accessed."
+            )
+            return v
+
+        # Attempt to instantiate a Fernet cipher with this key.
+        # If the key is malformed, Fernet() will raise an exception.
+        try:
+            from cryptography.fernet import Fernet  # noqa: PLC0415
+
+            Fernet(v.encode("utf-8") if isinstance(v, str) else v)
+        except Exception as e:
+            logger.critical(
+                "CREDENTIAL_ENCRYPTION_KEY is not a valid Fernet key: %s. "
+                "Generate a valid key with: "
+                "python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'",
+                e,
+            )
+            raise ValueError(
+                f"CREDENTIAL_ENCRYPTION_KEY is not a valid Fernet key: {e}. "
+                "Generate a valid key with: "
+                "python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
+            ) from e
+
+        return v
 
 
 @lru_cache

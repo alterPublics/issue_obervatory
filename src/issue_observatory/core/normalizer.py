@@ -116,11 +116,11 @@ class Normalizer:
             If ``None``, the salt is read from
             ``Settings().pseudonymization_salt``.
 
-    Notes:
-        When the salt is empty a WARNING is logged.  ``pseudonymize_author()``
-        will return ``None`` for all records, which means
-        ``pseudonymized_author_id`` will not be populated.  Always configure
-        ``PSEUDONYMIZATION_SALT`` in production.
+    Raises:
+        NormalizationError: When the pseudonymization salt is empty or
+            missing. This is a GDPR hard requirement — collection cannot
+            proceed without a valid salt. Always configure
+            ``PSEUDONYMIZATION_SALT`` in production.
     """
 
     def __init__(self, pseudonymization_salt: str | None = None) -> None:
@@ -148,12 +148,21 @@ class Normalizer:
             except Exception:
                 self._salt = os.environ.get(PSEUDONYMIZATION_SALT_ENV_VAR, "")
 
+        # BB-01: GDPR compliance requires a valid pseudonymization salt.
+        # Collection must not proceed without it. Raise an error rather than
+        # silently degrading to None pseudonymized_author_id values.
         if not self._salt:
-            logger.warning(
-                "PSEUDONYMIZATION_SALT is empty. "
-                "pseudonymized_author_id will be None for all records. "
-                "Set the %s environment variable before collecting data.",
+            from issue_observatory.core.exceptions import NormalizationError  # noqa: PLC0415
+
+            logger.critical(
+                "PSEUDONYMIZATION_SALT is empty or missing. "
+                "Data collection cannot proceed without a valid salt. "
+                "Set the %s environment variable.",
                 "PSEUDONYMIZATION_SALT",
+            )
+            raise NormalizationError(
+                "PSEUDONYMIZATION_SALT is required for GDPR-compliant data collection. "
+                "Set the PSEUDONYMIZATION_SALT environment variable before starting the application."
             )
 
     # ------------------------------------------------------------------

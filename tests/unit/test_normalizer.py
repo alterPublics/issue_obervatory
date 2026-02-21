@@ -416,16 +416,18 @@ class TestEngagementMetrics:
 
 
 class TestNormalizerConstruction:
-    def test_empty_salt_logs_warning_and_pseudonymize_returns_none(self) -> None:
-        """An empty pseudonymization salt logs a warning at construction and
-        causes pseudonymize_author() to return None for all records.
+    def test_empty_salt_raises_normalization_error(self) -> None:
+        """An empty pseudonymization salt raises NormalizationError at construction.
 
-        This graceful degradation allows the application to run in environments
-        where the salt is not yet configured, while flagging the misconfiguration.
+        BB-01: GDPR compliance requires a valid pseudonymization salt.
+        Collection must not proceed without it. This is a security hard requirement.
         """
-        norm = Normalizer(pseudonymization_salt="")
-        result = norm.pseudonymize_author("bluesky", "user123")
-        assert result is None
+        from issue_observatory.core.exceptions import NormalizationError
+
+        with pytest.raises(NormalizationError) as exc_info:
+            Normalizer(pseudonymization_salt="")
+
+        assert "PSEUDONYMIZATION_SALT is required" in str(exc_info.value)
 
     def test_explicit_salt_overrides_settings(self) -> None:
         """An explicitly passed salt does not read from settings."""

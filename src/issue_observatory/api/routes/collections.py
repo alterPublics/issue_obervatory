@@ -1016,6 +1016,104 @@ async def trigger_enrichment(
 # ---------------------------------------------------------------------------
 
 
+@router.get("/volume-spikes/recent", response_model=None)
+async def get_recent_volume_spikes_all_designs(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    days: int = Query(default=7, ge=1, le=30, description="Number of past days to include."),
+    limit: int = Query(default=5, ge=1, le=20, description="Maximum number of spikes to return."),
+    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
+) -> list[dict[str, Any]] | str:
+    """Return recent volume spike alerts across all query designs owned by the user.
+
+    This endpoint is designed for the dashboard alert widget. It queries all completed
+    runs for query designs owned by the current user and returns the most recent spikes
+    detected in the last N days.
+
+    Args:
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        days: Number of past days to include (1-30, default 7).
+        limit: Maximum number of spike events to return (1-20, default 5).
+
+    Returns:
+        List of spike event dicts, each containing::
+
+            {
+              "run_id": "...",
+              "query_design_name": "...",
+              "completed_at": "2026-02-15T10:00:00+00:00",
+              "arena_name": "social_media",
+              "platform": "bluesky",
+              "current_count": 523,
+              "rolling_7d_average": 145.2,
+              "ratio": 3.6,
+              "top_terms": ["term1", "term2"]
+            }
+
+        Ordered by completion time descending (most recent first).
+        Empty list when no spikes exist in the window.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # Find all completed runs for this user's query designs that have volume_spikes
+    stmt = (
+        select(CollectionRun)
+        .join(QueryDesign, CollectionRun.query_design_id == QueryDesign.id)
+        .where(
+            and_(
+                QueryDesign.owner_id == current_user.id,
+                CollectionRun.status == "completed",
+                CollectionRun.completed_at >= cutoff,
+                CollectionRun.arenas_config.contains({"_volume_spikes": []}),
+            )
+        )
+        .order_by(CollectionRun.completed_at.desc())
+        .options(selectinload(CollectionRun.query_design))
+    )
+
+    result = await db.execute(stmt)
+    runs = result.scalars().all()
+
+    # Flatten spike events from all runs
+    all_spikes = []
+    for run in runs:
+        spikes_data = run.arenas_config.get("_volume_spikes", [])
+        for spike in spikes_data:
+            all_spikes.append(
+                {
+                    "run_id": str(run.id),
+                    "query_design_name": run.query_design.name if run.query_design else "Unknown",
+                    "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+                    "arena_name": spike.get("arena_name"),
+                    "platform": spike.get("platform"),
+                    "current_count": spike.get("current_count"),
+                    "rolling_7d_average": spike.get("rolling_7d_average"),
+                    "ratio": spike.get("ratio"),
+                    "top_terms": spike.get("top_terms", []),
+                }
+            )
+
+    # Return most recent spikes up to limit
+    spikes = all_spikes[:limit]
+
+    # When called via HTMX, render the alert fragment
+    if hx_request:
+        templates = _templates(request)
+        return templates.TemplateResponse(
+            "_fragments/volume_spike_alerts.html",
+            {
+                "request": request,
+                "spikes": spikes,
+            },
+        ).body.decode("utf-8")
+
+    return spikes
+
+
 @router.get("/volume-spikes")
 async def get_volume_spikes(
     db: Annotated[AsyncSession, Depends(get_db)],
