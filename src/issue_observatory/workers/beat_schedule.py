@@ -95,28 +95,6 @@ beat_schedule: dict[str, dict] = {  # type: ignore[type-arg]
         },
     },
     # ------------------------------------------------------------------
-    # RSS Feeds — every 15 minutes (feeds update frequently)
-    # ------------------------------------------------------------------
-    "rss_feeds_collect_terms": {
-        "task": "issue_observatory.arenas.rss_feeds.tasks.collect_by_terms",
-        "schedule": crontab(minute="*/15"),
-        "options": {
-            "queue": "celery",
-            "expires": 840,  # discard if not started within 14 minutes
-        },
-    },
-    # ------------------------------------------------------------------
-    # GDELT — every 15 minutes (index updates every 15 min)
-    # ------------------------------------------------------------------
-    "gdelt_collect_terms": {
-        "task": "issue_observatory.arenas.gdelt.tasks.collect_by_terms",
-        "schedule": crontab(minute="*/15"),
-        "options": {
-            "queue": "celery",
-            "expires": 840,  # discard if not started within 14 minutes
-        },
-    },
-    # ------------------------------------------------------------------
     # Threads — daily token refresh (tokens expire after 60 days)
     # Runs at 02:00 Copenhagen time to avoid overlap with daily collection.
     # ------------------------------------------------------------------

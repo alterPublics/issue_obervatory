@@ -362,25 +362,36 @@ def health_check_all_arenas() -> dict[str, Any]:  # noqa: PLR0912
 
     checked_arenas: list[str] = []
 
+    # m-03: Skip deferred stub arenas (Twitch and VKontakte) from automated health checks.
+    # These arenas are not fully implemented and should not appear in health dashboards.
+    _SKIP_ARENAS = {"twitch", "vkontakte"}
+
     for arena_info in arenas:
         arena_name: str = arena_info["arena_name"]
         platform_name: str = arena_info["platform_name"]
         collector_class: str = arena_info.get("collector_class", "")
+
+        # Skip deferred stub arenas
+        if platform_name in _SKIP_ARENAS:
+            log.debug(
+                "health_check_all_arenas: skipping deferred stub arena",
+                platform=platform_name,
+            )
+            continue
         try:
             # collector_class = "issue_observatory.arenas.{...}.collector.ClassName"
             # Drop the class name to get the module, then drop ".collector"
             # to get the arena package.
             module_parts = collector_class.split(".")[:-1]  # drop class name
             arena_package = ".".join(module_parts[:-1])     # drop ".collector"
-            # Task naming convention: {arena_package}.tasks.{platform_name}_health_check
-            # (platform_name is the unique per-collector identifier; arena_name is a
-            # shared grouping label that multiple collectors share, so it cannot be
-            # used unambiguously as a task name component).
-            task_name = f"{arena_package}.tasks.{platform_name}_health_check"
+            # Task naming convention: {arena_package}.tasks.health_check
+            # All arena health_check tasks are registered with the same name "health_check"
+            # (not platform_name-prefixed) in each arena's tasks module.
+            task_name = f"{arena_package}.tasks.health_check"
         except Exception:
             task_name = (
                 f"issue_observatory.arenas.{platform_name}"
-                f".tasks.{platform_name}_health_check"
+                f".tasks.health_check"
             )
 
         try:
@@ -847,20 +858,24 @@ def enrich_collection_run(
         if discovery_summary:
             # Emit via event bus for SSE consumers
             try:
-                from issue_observatory.core.event_bus import emit_event  # noqa: PLC0415
+                import json  # noqa: PLC0415
+                import redis as redis_lib  # noqa: PLC0415
 
-                emit_event(
-                    run_id,
-                    {
-                        "event": "discovery_summary",
-                        "suggested_terms": discovery_summary.get("suggested_terms", 0),
-                        "discovered_links": discovery_summary.get("discovered_links", 0),
-                        "telegram_links": discovery_summary.get("telegram_links", 0),
-                    },
-                )
-                log.info(
-                    "enrich_collection_run: discovery summary emitted", **discovery_summary
-                )
+                payload = {
+                    "event": "discovery_summary",
+                    "suggested_terms": discovery_summary.get("suggested_terms", 0),
+                    "discovered_links": discovery_summary.get("discovered_links", 0),
+                    "telegram_links": discovery_summary.get("telegram_links", 0),
+                }
+                channel = f"collection:{run_id}"
+                r = redis_lib.from_url(settings.redis_url, decode_responses=True)
+                try:
+                    r.publish(channel, json.dumps(payload))
+                    log.info(
+                        "enrich_collection_run: discovery summary emitted", **discovery_summary
+                    )
+                finally:
+                    r.close()
             except Exception as event_exc:
                 log.warning(
                     "enrich_collection_run: event bus emission failed",

@@ -24,9 +24,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from issue_observatory.arenas.bluesky.collector import BlueskyCollector
+from issue_observatory.config.settings import get_settings
+from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
@@ -150,12 +153,26 @@ def bluesky_collect_terms(
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "bluesky: collect_by_terms started — run=%s terms=%d",
         collection_run_id,
         len(terms),
     )
     _update_task_status(collection_run_id, "bluesky", "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="bluesky",
+        platform="bluesky",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     collector = BlueskyCollector()
 
@@ -175,6 +192,16 @@ def bluesky_collect_terms(
         msg = f"bluesky: credential error (unexpected): {exc}"
         logger.error(msg)
         _update_task_status(collection_run_id, "bluesky", "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="bluesky",
+            platform="bluesky",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise ArenaCollectionError(msg, arena="bluesky", platform="bluesky") from exc
     except ArenaRateLimitError:
         logger.warning(
@@ -186,6 +213,16 @@ def bluesky_collect_terms(
         msg = str(exc)
         logger.error("bluesky: collection error for run=%s: %s", collection_run_id, msg)
         _update_task_status(collection_run_id, "bluesky", "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="bluesky",
+            platform="bluesky",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -195,6 +232,16 @@ def bluesky_collect_terms(
         count,
     )
     _update_task_status(collection_run_id, "bluesky", "completed", records_collected=count)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="bluesky",
+        platform="bluesky",
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
     return {
         "records_collected": count,
         "status": "completed",
@@ -245,12 +292,26 @@ def bluesky_collect_actors(
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "bluesky: collect_by_actors started — run=%s actors=%d",
         collection_run_id,
         len(actor_ids),
     )
     _update_task_status(collection_run_id, "bluesky", "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="bluesky",
+        platform="bluesky",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     collector = BlueskyCollector()
 
@@ -274,6 +335,16 @@ def bluesky_collect_actors(
         msg = str(exc)
         logger.error("bluesky: actor collection error for run=%s: %s", collection_run_id, msg)
         _update_task_status(collection_run_id, "bluesky", "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="bluesky",
+            platform="bluesky",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -283,6 +354,16 @@ def bluesky_collect_actors(
         count,
     )
     _update_task_status(collection_run_id, "bluesky", "completed", records_collected=count)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="bluesky",
+        platform="bluesky",
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
     return {
         "records_collected": count,
         "status": "completed",

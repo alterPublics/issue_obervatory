@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from issue_observatory.arenas.web.wayback.collector import WaybackCollector
@@ -28,6 +29,8 @@ from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
 )
+from issue_observatory.config.settings import get_settings
+from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -150,6 +153,10 @@ def wayback_collect_terms(
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     fetch_content: bool = bool(
         (arenas_config or {}).get("wayback", {}).get("fetch_content", False)
     )
@@ -162,6 +169,16 @@ def wayback_collect_terms(
         fetch_content,
     )
     _update_task_status(collection_run_id, _ARENA, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="web",
+        platform="wayback",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     try:
         tier_enum = Tier(tier)
@@ -169,6 +186,16 @@ def wayback_collect_terms(
         msg = f"wayback: invalid tier '{tier}'. Only 'free' is supported."
         logger.error(msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="web",
+            platform="wayback",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
     collector = WaybackCollector()
@@ -195,6 +222,16 @@ def wayback_collect_terms(
         msg = str(exc)
         logger.error("wayback: collection error for run=%s: %s", collection_run_id, msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="web",
+            platform="wayback",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -205,6 +242,16 @@ def wayback_collect_terms(
         fetch_content,
     )
     _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="web",
+        platform="wayback",
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     return {
         "records_collected": count,
@@ -278,6 +325,16 @@ def wayback_collect_actors(
         msg = f"wayback: invalid tier '{tier}'. Only 'free' is supported."
         logger.error(msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="web",
+            platform="wayback",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
     collector = WaybackCollector()
@@ -303,6 +360,16 @@ def wayback_collect_actors(
         msg = str(exc)
         logger.error("wayback: collection error for run=%s: %s", collection_run_id, msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="web",
+            platform="wayback",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -313,6 +380,16 @@ def wayback_collect_actors(
         fetch_content,
     )
     _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="web",
+        platform="wayback",
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     return {
         "records_collected": count,

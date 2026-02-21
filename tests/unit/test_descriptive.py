@@ -35,7 +35,6 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
 from issue_observatory.analysis.descriptive import (  # noqa: E402
-    DescriptiveStats,
     _build_content_filters,
     _dt_iso,
     get_engagement_distribution,
@@ -725,30 +724,3 @@ class TestGetRunSummary:
         result = await get_run_summary(db, run_id=uuid.uuid4())
         assert result["status"] == "completed"
         assert result["mode"] == "batch"
-
-
-# ---------------------------------------------------------------------------
-# DescriptiveStats dataclass
-# ---------------------------------------------------------------------------
-
-
-class TestDescriptiveStats:
-    def test_descriptive_stats_default_construction(self) -> None:
-        """DescriptiveStats() can be instantiated with no arguments."""
-        stats = DescriptiveStats()
-        assert stats.volume_over_time == []
-        assert stats.top_actors == []
-        assert stats.top_terms == []
-        assert stats.engagement_distribution == {}
-
-    def test_descriptive_stats_accepts_values(self) -> None:
-        """DescriptiveStats() accepts values for all fields."""
-        stats = DescriptiveStats(
-            volume_over_time=[{"period": "2026-01-01", "count": 10}],
-            top_actors=[{"author_display_name": "DR", "count": 5}],
-            top_terms=[{"term": "klimaforandringer", "count": 100}],
-            engagement_distribution={"likes": {"mean": 5.0}},
-        )
-        assert stats.volume_over_time[0]["count"] == 10
-        assert stats.top_actors[0]["author_display_name"] == "DR"
-        assert stats.top_terms[0]["term"] == "klimaforandringer"

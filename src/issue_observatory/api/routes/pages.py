@@ -446,27 +446,9 @@ async def collections_detail(
 # ---------------------------------------------------------------------------
 # Content browser
 # ---------------------------------------------------------------------------
-
-
-@router.get("/content", response_class=HTMLResponse)
-async def content_browser(
-    request: Request,
-    current_user: Annotated[User, Depends(get_current_active_user)],
-) -> HTMLResponse:
-    """Render the content browser page.
-
-    Args:
-        request: The current HTTP request.
-        current_user: The authenticated, active user.
-
-    Returns:
-        Rendered ``content/browser.html`` template.
-    """
-    tpl = _templates(request)
-    return tpl.TemplateResponse(
-        "content/browser.html",
-        {"request": request, "user": current_user},
-    )
+# NOTE: The main content browser page (/content) is served by content.py
+# which includes full data fetching and filtering. Only auxiliary routes
+# (like discovered-links) are defined here.
 
 
 @router.get("/content/discovered-links", response_class=HTMLResponse)
@@ -498,7 +480,7 @@ async def discovered_links_page(
     # Fetch user's query designs for the dropdown selector.
     stmt = (
         select(QueryDesign)
-        .where(QueryDesign.created_by == current_user.id)
+        .where(QueryDesign.owner_id == current_user.id)
         .order_by(QueryDesign.created_at.desc())
     )
     result = await db.execute(stmt)
@@ -525,6 +507,171 @@ async def discovered_links_page(
             },
             "query_designs": query_designs_list,
             "active_query_design_id": str(query_design_id) if query_design_id else "",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Actors
+# ---------------------------------------------------------------------------
+
+
+@router.get("/actors", response_class=HTMLResponse)
+async def actors_list(
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    pagination: Annotated[PaginationParams, Depends(get_pagination)],
+) -> HTMLResponse:
+    """Render the actor directory list page.
+
+    Args:
+        request: The current HTTP request.
+        current_user: The authenticated, active user.
+        db: Injected async database session.
+        pagination: Pagination parameters (limit, cursor).
+
+    Returns:
+        Rendered ``actors/list.html`` template with actor list data.
+    """
+    from issue_observatory.core.models.actors import Actor
+
+    tpl = _templates(request)
+
+    # Query actors owned by current user
+    stmt = (
+        select(Actor)
+        .where(Actor.owner_id == current_user.id)
+        .order_by(Actor.created_at.desc())
+        .limit(pagination.limit)
+    )
+
+    result = await db.execute(stmt)
+    actors = result.scalars().all()
+
+    # Build actor list with stats (simple version - templates don't require complex stats)
+    actors_list = [
+        {
+            "id": str(actor.id),
+            "name": actor.name,
+            "type": actor.type,
+            "description": actor.description,
+            "public_figure": actor.public_figure,
+            "platforms": [],  # Would need to join presences for full data
+            "content_count": 0,  # Would need to query content_records
+            "last_seen": actor.updated_at.isoformat() if actor.updated_at else "",
+        }
+        for actor in actors
+    ]
+
+    return tpl.TemplateResponse(
+        "actors/list.html",
+        {
+            "request": request,
+            "user": current_user,
+            "actors": actors_list,
+            "total_count": len(actors_list),
+            "cursor": None,
+        },
+    )
+
+
+@router.get("/actors/{actor_id}", response_class=HTMLResponse)
+async def actors_detail(
+    request: Request,
+    actor_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> HTMLResponse:
+    """Render the actor detail page.
+
+    Args:
+        request: The current HTTP request.
+        actor_id: UUID of the actor to display.
+        current_user: The authenticated, active user.
+        db: Injected async database session.
+
+    Returns:
+        Rendered ``actors/detail.html`` template with actor detail, presences,
+        and recent content.
+    """
+    from issue_observatory.core.models.actors import Actor, ActorPlatformPresence
+
+    tpl = _templates(request)
+
+    # Load actor with presences
+    result = await db.execute(
+        select(Actor)
+        .where(Actor.id == actor_id)
+        .options(selectinload(Actor.platform_presences))
+    )
+    actor_record = result.scalar_one_or_none()
+
+    if not actor_record:
+        raise HTTPException(status_code=404, detail="Actor not found")
+
+    # Count content records for this actor
+    content_count_stmt = select(func.count()).select_from(UniversalContentRecord).where(
+        UniversalContentRecord.author_id == actor_id
+    )
+    content_count_result = await db.execute(content_count_stmt)
+    content_count = content_count_result.scalar() or 0
+
+    # Build actor context
+    actor_context = {
+        "id": str(actor_record.id),
+        "name": actor_record.name,
+        "type": actor_record.type,
+        "description": actor_record.description,
+        "public_figure": actor_record.public_figure,
+        "content_count": content_count,
+        "created_at": actor_record.created_at.isoformat() if actor_record.created_at else "",
+    }
+
+    # Build presences list
+    presences_list = [
+        {
+            "id": str(p.id),
+            "platform": p.platform,
+            "username": p.username,
+            "profile_url": p.profile_url,
+            "follower_count": p.follower_count,
+            "verified": p.verified,
+            "last_checked": p.last_checked.isoformat() if p.last_checked else "",
+        }
+        for p in (actor_record.platform_presences or [])
+    ]
+
+    # Load recent content (limit 20)
+    recent_content_stmt = (
+        select(UniversalContentRecord)
+        .where(UniversalContentRecord.author_id == actor_id)
+        .order_by(UniversalContentRecord.published_at.desc())
+        .limit(20)
+    )
+    recent_content_result = await db.execute(recent_content_stmt)
+    recent_content_records = recent_content_result.scalars().all()
+
+    recent_content_list = [
+        {
+            "id": str(r.id),
+            "platform": r.platform,
+            "title": r.title,
+            "text": r.text_content,
+            "published_at": r.published_at.isoformat() if r.published_at else "",
+        }
+        for r in recent_content_records
+    ]
+
+    return tpl.TemplateResponse(
+        "actors/detail.html",
+        {
+            "request": request,
+            "user": current_user,
+            "actor": actor_context,
+            "presences": presences_list,
+            "recent_content": recent_content_list,
+            "content_cursor": None,
         },
     )
 
@@ -558,6 +705,90 @@ async def login_page(
         {
             "request": request,
             "session_expired": session_expired == "1",
+        },
+    )
+
+
+@router.get("/auth/forgot-password", response_class=HTMLResponse)
+async def forgot_password_page(
+    request: Request,
+) -> HTMLResponse:
+    """Render the forgot password page.
+
+    Users enter their email to receive a password reset link.
+    No authentication required.
+
+    Args:
+        request: The current HTTP request.
+
+    Returns:
+        Rendered ``auth/reset_password.html`` template without token.
+    """
+    tpl = _templates(request)
+    return tpl.TemplateResponse(
+        "auth/reset_password.html",
+        {
+            "request": request,
+            "token": None,
+            "error": None,
+            "success": False,
+        },
+    )
+
+
+@router.get("/auth/reset-password", response_class=HTMLResponse)
+async def reset_password_page(
+    request: Request,
+    token: Optional[str] = None,
+) -> HTMLResponse:
+    """Render the reset password form page.
+
+    When a token is present in the query string (from the email link),
+    displays the new password form. Otherwise, shows the request-reset form.
+    No authentication required.
+
+    Args:
+        request: The current HTTP request.
+        token: Password reset token from the email link.
+
+    Returns:
+        Rendered ``auth/reset_password.html`` template.
+    """
+    tpl = _templates(request)
+    return tpl.TemplateResponse(
+        "auth/reset_password.html",
+        {
+            "request": request,
+            "token": token,
+            "error": None,
+            "success": False,
+        },
+    )
+
+
+@router.get("/auth/register", response_class=HTMLResponse)
+async def register_page(
+    request: Request,
+    success: Optional[str] = None,
+) -> HTMLResponse:
+    """Render the user registration page.
+
+    No authentication required. New accounts are created with
+    ``is_verified=False`` and require admin activation.
+
+    Args:
+        request: The current HTTP request.
+        success: When ``'1'``, displays success message.
+
+    Returns:
+        Rendered ``auth/register.html`` template.
+    """
+    tpl = _templates(request)
+    return tpl.TemplateResponse(
+        "auth/register.html",
+        {
+            "request": request,
+            "register_success": success == "1",
         },
     )
 
@@ -648,4 +879,57 @@ async def admin_health(
     return tpl.TemplateResponse(
         "admin/health.html",
         {"request": request, "user": admin_user},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
+
+
+@router.get("/scraping-jobs", response_class=HTMLResponse)
+async def scraping_jobs_page(
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> HTMLResponse:
+    """Render the scraping jobs management page.
+
+    Allows researchers to create and monitor scraping jobs that enrich
+    collected URLs with full-text content extraction.
+
+    Args:
+        request: The current HTTP request.
+        current_user: The authenticated, active user.
+
+    Returns:
+        Rendered ``scraping/index.html`` template.
+    """
+    tpl = _templates(request)
+    return tpl.TemplateResponse(
+        "scraping/index.html",
+        {"request": request, "user": current_user},
+    )
+
+
+@router.get("/imports", response_class=HTMLResponse)
+async def imports_page(
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> HTMLResponse:
+    """Render the data import page.
+
+    Allows researchers to upload CSV or NDJSON files for import, including
+    Zeeschuimer-captured data from platforms without API access.
+
+    Args:
+        request: The current HTTP request.
+        current_user: The authenticated, active user.
+
+    Returns:
+        Rendered ``imports/index.html`` template.
+    """
+    tpl = _templates(request)
+    return tpl.TemplateResponse(
+        "imports/index.html",
+        {"request": request, "user": current_user},
     )

@@ -356,6 +356,8 @@ def create_app() -> FastAPI:
     application.include_router(imports.router, prefix="/api", tags=["imports"])
     # Admin user management (activation, role changes, API key management)
     application.include_router(users.router, prefix="/admin/users", tags=["admin:users"])
+    # Admin credit management (allocation)
+    application.include_router(credits.router, prefix="/admin/credits", tags=["admin:credits"])
     # HTML page routes (Jinja2 templates, no API prefix)
     application.include_router(pages.router)
 
@@ -378,6 +380,14 @@ def create_app() -> FastAPI:
             debug=settings.debug,
             log_level=settings.log_level,
         )
+
+        # Warn if SMTP is not configured (email notifications will silently no-op)
+        if not settings.smtp_host:
+            logger.warning(
+                "email_notifications_disabled",
+                detail="SMTP is not configured. Email notifications are disabled. "
+                       "Set SMTP_HOST to enable collection alerts and credit warnings.",
+            )
 
     @application.on_event("shutdown")
     async def on_shutdown() -> None:

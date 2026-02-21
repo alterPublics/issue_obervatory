@@ -17,73 +17,16 @@ Owned by the Core Application Engineer (engagement refresh) and DB Engineer (ded
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import structlog
 
+from issue_observatory.core.deduplication import normalise_url as _normalise_url
+from issue_observatory.workers._db_helpers import _build_sync_dsn
 from issue_observatory.workers.celery_app import celery_app
 
 logger = structlog.get_logger(__name__)
-
-# ---------------------------------------------------------------------------
-# Sync DSN helper (shared pattern with export_tasks)
-# ---------------------------------------------------------------------------
-
-_STRIP_PARAMS: frozenset[str] = frozenset(
-    {
-        "utm_source",
-        "utm_medium",
-        "utm_campaign",
-        "utm_content",
-        "utm_term",
-        "fbclid",
-        "gclid",
-        "ref",
-        "source",
-        "_ga",
-    }
-)
-
-
-def _build_sync_dsn(async_dsn: str) -> str:
-    """Convert an asyncpg DSN to a psycopg2-compatible DSN.
-
-    Args:
-        async_dsn: The application DATABASE_URL (asyncpg scheme).
-
-    Returns:
-        A psycopg2-compatible DSN string.
-    """
-    return re.sub(r"^postgresql\+asyncpg://", "postgresql://", async_dsn)
-
-
-def _normalise_url(url: str) -> str:
-    """Normalise a URL for deduplication comparison.
-
-    See ``core.deduplication.normalise_url`` for the full specification.
-    Duplicated here to keep the synchronous Celery task self-contained.
-
-    Args:
-        url: Raw URL string.
-
-    Returns:
-        Normalised URL string.
-    """
-    lowered = url.strip().lower()
-    parsed = urlparse(lowered)
-    if not parsed.netloc:
-        return lowered
-    host = parsed.netloc
-    if host.startswith("www."):
-        host = host[4:]
-    qs_pairs = [(k, v) for k, v in parse_qsl(parsed.query) if k not in _STRIP_PARAMS]
-    qs_pairs.sort()
-    new_query = urlencode(qs_pairs)
-    path = parsed.path.rstrip("/") if parsed.path != "/" else parsed.path
-    return urlunparse((parsed.scheme, host, path, parsed.params, new_query, parsed.fragment))
 
 
 # ---------------------------------------------------------------------------
@@ -414,15 +357,9 @@ def _refresh_engagement_sync(sync_dsn: str, run_id: str, settings: Any) -> dict[
                         )
 
                         # Call the arena's refresh_engagement() method
-                        # Run in a temporary asyncio event loop
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        try:
-                            engagement_map = loop.run_until_complete(
-                                collector.refresh_engagement(platform_ids, tier=tier)
-                            )
-                        finally:
-                            loop.close()
+                        engagement_map = asyncio.run(
+                            collector.refresh_engagement(platform_ids, tier=tier)
+                        )
 
                         if not engagement_map:
                             # Arena doesn't support refresh or returned no data

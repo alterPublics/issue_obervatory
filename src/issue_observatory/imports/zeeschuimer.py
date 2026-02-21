@@ -66,6 +66,7 @@ class ZeeschuimerProcessor:
         io_platform: str,
         zeeschuimer_import_id: UUID,
         user_id: UUID,
+        skip_pseudonymization: bool = False,
     ) -> dict[str, Any]:
         """Process a Zeeschuimer NDJSON file and import records.
 
@@ -78,6 +79,9 @@ class ZeeschuimerProcessor:
             io_platform: IO platform name (e.g., "linkedin").
             zeeschuimer_import_id: UUID of the ZeeschuimerImport tracking this import.
             user_id: UUID of the user who initiated the import.
+            skip_pseudonymization: When True, store plain author
+                identifiers instead of SHA-256 hashes. Defaults to
+                False (pseudonymization enabled).
 
         Returns:
             Dict with import statistics:
@@ -171,8 +175,9 @@ class ZeeschuimerProcessor:
                         platform=io_platform,
                         arena="social_media",
                         collection_tier="manual",
-                        collection_run_id=None,  # No collection run for Zeeschuimer imports
-                        search_terms_matched=[],  # Manual imports have no term matching
+                        collection_run_id=None,
+                        search_terms_matched=[],
+                        skip_pseudonymization=skip_pseudonymization,
                     )
 
                     # Override collected_at with Zeeschuimer's timestamp if available (WARNING-6)

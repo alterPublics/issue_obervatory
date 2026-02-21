@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from issue_observatory.arenas.threads.collector import ThreadsCollector
@@ -37,6 +38,8 @@ from issue_observatory.core.exceptions import (
     ArenaRateLimitError,
     NoCredentialAvailableError,
 )
+from issue_observatory.config.settings import get_settings
+from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -157,6 +160,10 @@ def threads_collect_terms(
     from issue_observatory.core.credential_pool import get_credential_pool  # noqa: PLC0415
     from issue_observatory.workers.rate_limiter import get_redis_client  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "threads: collect_by_terms started — run=%s terms=%d tier=%s",
         collection_run_id,
@@ -164,6 +171,16 @@ def threads_collect_terms(
         tier,
     )
     _update_task_status(collection_run_id, _PLATFORM, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="threads",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     tier_enum = Tier.FREE if tier == "free" else Tier.MEDIUM
     credential_pool = get_credential_pool()
@@ -196,11 +213,31 @@ def threads_collect_terms(
         msg = f"threads: no credential available: {exc}"
         logger.error(msg)
         _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="threads",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM) from exc
     except ArenaAuthError as exc:
         msg = f"threads: auth error (token may have expired): {exc}"
         logger.error(msg)
         _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="threads",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
     except ArenaRateLimitError:
         logger.warning(
@@ -214,6 +251,16 @@ def threads_collect_terms(
             "threads: collection error for run=%s: %s", collection_run_id, msg
         )
         _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="threads",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -224,6 +271,16 @@ def threads_collect_terms(
     )
     _update_task_status(
         collection_run_id, _PLATFORM, "completed", records_collected=count
+    )
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="threads",
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
     )
     return {
         "records_collected": count,
@@ -278,6 +335,10 @@ def threads_collect_actors(
     from issue_observatory.core.credential_pool import get_credential_pool  # noqa: PLC0415
     from issue_observatory.workers.rate_limiter import get_redis_client  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "threads: collect_by_actors started — run=%s actors=%d tier=%s",
         collection_run_id,
@@ -285,6 +346,16 @@ def threads_collect_actors(
         tier,
     )
     _update_task_status(collection_run_id, _PLATFORM, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="threads",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     tier_enum = Tier.FREE if tier == "free" else Tier.MEDIUM
     credential_pool = get_credential_pool()
@@ -316,11 +387,31 @@ def threads_collect_actors(
         msg = f"threads: no credential available: {exc}"
         logger.error(msg)
         _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="threads",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM) from exc
     except ArenaAuthError as exc:
         msg = f"threads: auth error (token may have expired): {exc}"
         logger.error(msg)
         _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="threads",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
     except ArenaRateLimitError:
         logger.warning(
@@ -334,6 +425,16 @@ def threads_collect_actors(
             "threads: actor collection error for run=%s: %s", collection_run_id, msg
         )
         _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="threads",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -344,6 +445,16 @@ def threads_collect_actors(
     )
     _update_task_status(
         collection_run_id, _PLATFORM, "completed", records_collected=count
+    )
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="threads",
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
     )
     return {
         "records_collected": count,

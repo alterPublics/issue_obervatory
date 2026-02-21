@@ -36,10 +36,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from issue_observatory.arenas.youtube.collector import YouTubeCollector
+from issue_observatory.config.settings import get_settings
 from issue_observatory.core.credential_pool import CredentialPool
+from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
@@ -173,6 +176,10 @@ def youtube_collect_terms(
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "youtube: collect_by_terms started — run=%s terms=%d tier=%s",
         collection_run_id,
@@ -180,6 +187,16 @@ def youtube_collect_terms(
         tier,
     )
     _update_task_status(collection_run_id, _ARENA, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena=_ARENA,
+        platform=_PLATFORM,
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     try:
         tier_enum = Tier(tier)
@@ -187,6 +204,16 @@ def youtube_collect_terms(
         msg = f"youtube: invalid tier '{tier}'. Valid values: free, medium, premium."
         logger.error(msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena=_ARENA,
+            platform=_PLATFORM,
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
     credential_pool = CredentialPool()
@@ -207,6 +234,16 @@ def youtube_collect_terms(
         msg = f"youtube: all API keys exhausted — no credential available: {exc}"
         logger.critical(msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena=_ARENA,
+            platform=_PLATFORM,
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
     except ArenaRateLimitError as exc:
         # Attempt credential rotation before Celery retries the task.
@@ -221,6 +258,16 @@ def youtube_collect_terms(
         msg = str(exc)
         logger.error("youtube: collection error for run=%s: %s", collection_run_id, msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena=_ARENA,
+            platform=_PLATFORM,
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -230,6 +277,16 @@ def youtube_collect_terms(
         count,
     )
     _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena=_ARENA,
+        platform=_PLATFORM,
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     return {
         "records_collected": count,
@@ -285,6 +342,10 @@ def youtube_collect_actors(
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "youtube: collect_by_actors started — run=%s channels=%d tier=%s",
         collection_run_id,
@@ -292,6 +353,16 @@ def youtube_collect_actors(
         tier,
     )
     _update_task_status(collection_run_id, _ARENA, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena=_ARENA,
+        platform=_PLATFORM,
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     try:
         tier_enum = Tier(tier)
@@ -299,6 +370,16 @@ def youtube_collect_actors(
         msg = f"youtube: invalid tier '{tier}'. Valid values: free, medium, premium."
         logger.error(msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena=_ARENA,
+            platform=_PLATFORM,
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
     credential_pool = CredentialPool()
@@ -318,6 +399,16 @@ def youtube_collect_actors(
         msg = f"youtube: all API keys exhausted — no credential available: {exc}"
         logger.critical(msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena=_ARENA,
+            platform=_PLATFORM,
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
     except ArenaRateLimitError:
         logger.warning(
@@ -329,6 +420,16 @@ def youtube_collect_actors(
         msg = str(exc)
         logger.error("youtube: collection error for run=%s: %s", collection_run_id, msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena=_ARENA,
+            platform=_PLATFORM,
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -338,6 +439,16 @@ def youtube_collect_actors(
         count,
     )
     _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena=_ARENA,
+        platform=_PLATFORM,
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     return {
         "records_collected": count,

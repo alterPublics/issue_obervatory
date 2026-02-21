@@ -23,9 +23,10 @@ from typing import Annotated, AsyncGenerator, Optional
 
 import redis.asyncio as aioredis
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.templating import Jinja2Templates
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -47,12 +48,86 @@ from issue_observatory.core.schemas.collection import (
     CreditEstimateRequest,
     CreditEstimateResponse,
 )
+from issue_observatory.analysis.alerting import fetch_recent_volume_spikes
 
 from issue_observatory.api.limiter import limiter
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Helper: template resolver
+# ---------------------------------------------------------------------------
+
+
+def _templates(request: Request) -> Jinja2Templates:
+    """Resolve the Jinja2Templates instance from the app state.
+
+    Args:
+        request: The incoming HTTP request.
+
+    Returns:
+        The app's Jinja2Templates instance.
+
+    Raises:
+        RuntimeError: If templates are not configured on app.state.
+    """
+    templates = request.app.state.templates
+    if templates is None:
+        raise RuntimeError("Templates not configured on app.state")
+    return templates
+
+
+# ---------------------------------------------------------------------------
+# Active count (dashboard polling)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/active-count")
+async def get_active_collection_count(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> str:
+    """Return an HTML fragment with the count of active collection runs.
+
+    Polls pending and running runs initiated by the current user.  Returns
+    a minimal HTML snippet suitable for direct insertion into the dashboard's
+    active-runs card via HTMX ``hx-target`` swap.
+
+    Args:
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        HTML fragment string with the active run count.
+    """
+    stmt = (
+        select(func.count(CollectionRun.id))
+        .where(
+            and_(
+                CollectionRun.initiated_by == current_user.id,
+                or_(
+                    CollectionRun.status == "pending",
+                    CollectionRun.status == "running",
+                ),
+            )
+        )
+    )
+    result = await db.execute(stmt)
+    count = result.scalar() or 0
+
+    # Return the same HTML structure as the dashboard's initial placeholder
+    # so the swap is smooth.
+    return f"""<div id="dashboard-active-runs"
+         hx-get="/collections/active-count"
+         hx-trigger="every 15s"
+         hx-target="#dashboard-active-runs"
+         hx-swap="outerHTML">
+    <p class="text-2xl font-bold text-gray-900">{count}</p>
+    <p class="text-xs text-gray-500 mt-1">Active collection{"s" if count != 1 else ""}</p>
+</div>"""
 
 
 # ---------------------------------------------------------------------------
@@ -98,14 +173,15 @@ async def _get_run_or_404(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/", response_model=list[CollectionRunRead])
+@router.get("/")
 async def list_collection_runs(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     pagination: Annotated[PaginationParams, Depends(get_pagination)],
     status_filter: Optional[str] = None,
     query_design_id: Optional[uuid.UUID] = None,
-) -> list[CollectionRun]:
+    format: Optional[str] = None,
+) -> list[CollectionRun] | str:
     """List collection runs initiated by the current user.
 
     Results are ordered by run start time descending (newest first) and
@@ -119,9 +195,13 @@ async def list_collection_runs(
             ``'running'``, ``'completed'``, ``'failed'``).
         query_design_id: Optional filter to show runs for a specific
             query design.
+        format: When set to ``"fragment"``, returns an HTML table fragment
+            suitable for direct insertion into the dashboard.  Otherwise
+            returns JSON list of ``CollectionRunRead`` dicts.
 
     Returns:
-        A list of ``CollectionRunRead`` dicts for runs initiated by the caller.
+        A list of ``CollectionRunRead`` dicts (JSON response) or an HTML
+        fragment (when ``format="fragment"``).
     """
     stmt = (
         select(CollectionRun)
@@ -147,7 +227,62 @@ async def list_collection_runs(
         stmt = stmt.where(CollectionRun.id < cursor_id)
 
     result = await db.execute(stmt)
-    return list(result.scalars().all())
+    runs = list(result.scalars().all())
+
+    # If format=fragment, render an HTML table for dashboard HTMX consumption
+    if format == "fragment":
+        if not runs:
+            return """<div class="px-6 py-8 text-center text-sm text-gray-500">
+    No collection runs yet. <a href="/collections/new" class="text-blue-600 hover:underline">Start your first collection</a>.
+</div>"""
+
+        # Build a simple HTML table with run summaries
+        rows_html = ""
+        for run in runs:
+            status_badge_class = {
+                "pending": "bg-yellow-100 text-yellow-800",
+                "running": "bg-blue-100 text-blue-800",
+                "completed": "bg-green-100 text-green-800",
+                "failed": "bg-red-100 text-red-800",
+                "suspended": "bg-gray-100 text-gray-800",
+            }.get(run.status, "bg-gray-100 text-gray-800")
+
+            started_at_str = run.started_at.strftime("%Y-%m-%d %H:%M") if run.started_at else "—"
+
+            rows_html += f"""<tr class="hover:bg-gray-50">
+    <td class="px-6 py-3 text-sm">
+        <a href="/collections/{run.id}" class="text-blue-600 hover:underline font-medium">
+            {run.mode.capitalize()} Collection
+        </a>
+    </td>
+    <td class="px-6 py-3 text-sm">
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {status_badge_class}">
+            {run.status.capitalize()}
+        </span>
+    </td>
+    <td class="px-6 py-3 text-sm text-gray-900">{run.records_collected:,}</td>
+    <td class="px-6 py-3 text-sm text-gray-500">{started_at_str}</td>
+</tr>
+"""
+
+        return f"""<table class="min-w-full divide-y divide-gray-200">
+    <thead class="bg-gray-50">
+        <tr>
+            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Collection</th>
+            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Records</th>
+            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Started</th>
+        </tr>
+    </thead>
+    <tbody class="bg-white divide-y divide-gray-200">
+{rows_html}    </tbody>
+</table>
+<div class="px-6 py-3 border-t border-gray-200 text-center">
+    <a href="/collections" class="text-sm text-blue-600 hover:underline">View all collections →</a>
+</div>"""
+
+    # Default: return JSON list of CollectionRunRead
+    return runs
 
 
 # ---------------------------------------------------------------------------
@@ -308,12 +443,14 @@ async def create_collection_run(  # type: ignore[misc]
 # ---------------------------------------------------------------------------
 
 
-@router.post("/estimate", response_model=CreditEstimateResponse)
+@router.post("/estimate")
 async def estimate_collection_credits(
+    request: Request,
     payload: CreditEstimateRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-) -> CreditEstimateResponse:
+    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
+) -> CreditEstimateResponse | HTMLResponse:
     """Calculate a pre-flight credit cost estimate for a proposed collection run.
 
     This endpoint is non-destructive — no credits are reserved and no run
@@ -329,13 +466,20 @@ async def estimate_collection_credits(
     - Date range (for batch mode, defaults to 30 days for live mode)
     - Each arena collector's estimate_credits() implementation
 
+    When the ``HX-Request`` header is present, renders the
+    ``_fragments/credit_estimate.html`` template fragment. Otherwise returns
+    JSON.
+
     Args:
+        request: The incoming HTTP request.
         payload: Validated ``CreditEstimateRequest`` body.
         db: Injected async database session.
         current_user: The authenticated, active user making the request.
+        hx_request: HTMX header; when set, response is HTML.
 
     Returns:
-        A ``CreditEstimateResponse`` with total and per-arena credit estimates.
+        A ``CreditEstimateResponse`` with total and per-arena credit estimates
+        (JSON), or an HTML fragment when ``hx_request`` is set.
 
     Raises:
         HTTPException 404: If the query design does not exist.
@@ -385,6 +529,24 @@ async def estimate_collection_credits(
         can_run=can_run,
     )
 
+    # When called via HTMX, render the credit_estimate fragment
+    if hx_request:
+        templates = _templates(request)
+        return templates.TemplateResponse(
+            "_fragments/credit_estimate.html",
+            {
+                "request": request,
+                "estimate": {
+                    "total_credits": total_credits,
+                    "available_credits": available_credits,
+                    "sufficient": can_run,
+                    "per_arena": estimate["per_arena"],
+                },
+                "error": None,
+            },
+        )
+
+    # Otherwise return JSON
     return CreditEstimateResponse(
         total_credits=total_credits,
         available_credits=available_credits,
@@ -490,6 +652,19 @@ async def cancel_collection_run(
             arena="all",
             error="Collection run cancelled by user.",
         )
+    )
+
+    # M-05: Publish run_complete event to SSE subscribers
+    from issue_observatory.config.settings import get_settings
+    from issue_observatory.core.event_bus import publish_run_complete
+
+    settings = get_settings()
+    publish_run_complete(
+        redis_url=settings.redis_url,
+        run_id=str(run_id),
+        status="failed",
+        records_collected=run.records_collected,
+        credits_spent=run.credits_spent,
     )
 
     return run
@@ -733,6 +908,151 @@ async def refresh_engagement_metrics_endpoint(
         "run_id": str(run_id),
         "message": "Engagement metric refresh task launched. This may take several minutes.",
     }
+
+
+# ---------------------------------------------------------------------------
+# Enrichment pipeline trigger (1.4/2.1)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{run_id}/enrich")
+async def trigger_enrichment(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> dict[str, str]:
+    """Dispatch the enrichment pipeline for a completed collection run.
+
+    Triggers the ``enrich_collection_run`` Celery task which applies all
+    configured enrichers (language detection, NER, sentiment, coordination,
+    propagation) to the collected content records.
+
+    The run must be in ``completed`` status before enrichment can be triggered.
+
+    Args:
+        run_id: UUID of the collection run to enrich.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        Dict with ``task_id`` and ``run_id`` for tracking the enrichment task.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the caller did not initiate the run (and is not admin).
+        HTTPException 409: If the run is not in 'completed' status.
+    """
+    run = await _get_run_or_404(run_id, db)
+    ownership_guard(run.initiated_by, current_user)
+
+    if run.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Cannot enrich a run with status '{run.status}'. "
+                "Only completed runs can be enriched."
+            ),
+        )
+
+    # Launch the Celery enrichment task asynchronously
+    from issue_observatory.workers.tasks import enrich_collection_run
+
+    task = enrich_collection_run.delay(str(run_id))
+
+    logger.info(
+        "enrichment_pipeline_launched",
+        run_id=str(run_id),
+        task_id=task.id,
+        user_id=str(current_user.id),
+    )
+
+    return {
+        "task_id": task.id,
+        "run_id": str(run_id),
+        "message": "Enrichment pipeline task launched. This may take several minutes.",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Volume spike alerts (2.4)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/volume-spikes")
+async def get_volume_spikes(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    query_design_id: uuid.UUID = Query(..., description="UUID of the query design to query."),
+    days: int = Query(default=30, ge=1, le=365, description="Number of past days to include."),
+) -> list[dict[str, Any]]:
+    """Return volume spike alerts for a query design from the last N days.
+
+    Volume spikes are detected when collection volume for an arena exceeds 2x
+    the rolling 7-day average. Spike events are stored in
+    ``collection_runs.arenas_config["_volume_spikes"]`` when detected.
+
+    Args:
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        query_design_id: UUID of the query design to query spikes for.
+        days: Number of past days to include (1-365, default 30).
+
+    Returns:
+        List of dicts, each containing run metadata and spike details::
+
+            [
+              {
+                "run_id": "...",
+                "completed_at": "2026-02-15T10:00:00+00:00",
+                "volume_spikes": [
+                  {
+                    "arena_name": "social_media",
+                    "platform": "bluesky",
+                    "current_count": 523,
+                    "rolling_7d_average": 145.2,
+                    "ratio": 3.6,
+                    "top_terms": ["term1", "term2", "term3"]
+                  },
+                  ...
+                ]
+              },
+              ...
+            ]
+
+        Returns an empty list when no spikes exist in the window.
+
+    Raises:
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the caller does not own the query design.
+    """
+    # Verify the query design exists and is owned by this user
+    qd_result = await db.execute(
+        select(QueryDesign).where(QueryDesign.id == query_design_id)
+    )
+    query_design = qd_result.scalar_one_or_none()
+    if query_design is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Query design '{query_design_id}' not found.",
+        )
+    ownership_guard(query_design.owner_id, current_user)
+
+    # Fetch recent volume spikes from the alerting module
+    spikes = await fetch_recent_volume_spikes(
+        session=db,
+        query_design_id=query_design_id,
+        days=days,
+    )
+
+    logger.info(
+        "volume_spikes_fetched",
+        query_design_id=str(query_design_id),
+        user_id=str(current_user.id),
+        spike_count=len(spikes),
+        days=days,
+    )
+
+    return spikes
 
 
 # ---------------------------------------------------------------------------

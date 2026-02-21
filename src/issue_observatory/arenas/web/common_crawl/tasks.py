@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from issue_observatory.arenas.web.common_crawl.collector import CommonCrawlCollector
@@ -28,6 +29,8 @@ from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
 )
+from issue_observatory.config.settings import get_settings
+from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -147,6 +150,10 @@ def common_crawl_collect_terms(
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
     from issue_observatory.arenas.web.common_crawl.config import CC_DEFAULT_INDEX  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "common_crawl: collect_by_terms started — run=%s terms=%d tier=%s",
         collection_run_id,
@@ -154,6 +161,16 @@ def common_crawl_collect_terms(
         tier,
     )
     _update_task_status(collection_run_id, _ARENA, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="web",
+        platform="common_crawl",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     try:
         tier_enum = Tier(tier)
@@ -161,6 +178,16 @@ def common_crawl_collect_terms(
         msg = f"common_crawl: invalid tier '{tier}'. Only 'free' is supported."
         logger.error(msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="web",
+            platform="common_crawl",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
     collector = CommonCrawlCollector(cc_index=cc_index or CC_DEFAULT_INDEX)
@@ -186,6 +213,16 @@ def common_crawl_collect_terms(
         msg = str(exc)
         logger.error("common_crawl: collection error for run=%s: %s", collection_run_id, msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="web",
+            platform="common_crawl",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -195,6 +232,16 @@ def common_crawl_collect_terms(
         count,
     )
     _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="web",
+        platform="common_crawl",
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     return {
         "records_collected": count,
@@ -259,6 +306,16 @@ def common_crawl_collect_actors(
         msg = f"common_crawl: invalid tier '{tier}'. Only 'free' is supported."
         logger.error(msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="web",
+            platform="common_crawl",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
     collector = CommonCrawlCollector(cc_index=cc_index or CC_DEFAULT_INDEX)
@@ -283,6 +340,16 @@ def common_crawl_collect_actors(
         msg = str(exc)
         logger.error("common_crawl: collection error for run=%s: %s", collection_run_id, msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="web",
+            platform="common_crawl",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -292,6 +359,16 @@ def common_crawl_collect_actors(
         count,
     )
     _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="web",
+        platform="common_crawl",
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     return {
         "records_collected": count,

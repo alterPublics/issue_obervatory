@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from issue_observatory.arenas.gab.collector import GabCollector
+from issue_observatory.config.settings import get_settings
+from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.core.exceptions import (
     ArenaAuthError,
     ArenaCollectionError,
@@ -136,12 +139,26 @@ def gab_collect_terms(
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "gab: collect_by_terms started — run=%s terms=%d",
         collection_run_id,
         len(terms),
     )
     _update_task_status(collection_run_id, "gab", "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="gab",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     collector = GabCollector()
 

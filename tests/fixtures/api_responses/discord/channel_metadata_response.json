@@ -1,0 +1,12 @@
+{
+  "id": "9876543210987654321",
+  "type": 0,
+  "guild_id": "5555555555555555555",
+  "name": "dansk-politik",
+  "topic": "Diskussion om dansk politik og samfund",
+  "position": 3,
+  "permission_overwrites": [],
+  "rate_limit_per_user": 0,
+  "nsfw": false,
+  "guild_name": "Danmark Debat Server"
+}

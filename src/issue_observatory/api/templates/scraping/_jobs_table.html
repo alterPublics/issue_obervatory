@@ -1,0 +1,101 @@
+{#
+    HTMX fragment: Scraping jobs table
+    Context: jobs (list of ScrapingJobRead)
+#}
+{% if jobs | default([]) | length > 0 %}
+<table class="min-w-full divide-y divide-gray-200 text-sm">
+    <thead class="bg-gray-50">
+        <tr>
+            <th class="text-left px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Source</th>
+            <th class="text-left px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Status</th>
+            <th class="text-right px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Total</th>
+            <th class="text-right px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Enriched</th>
+            <th class="text-right px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Failed</th>
+            <th class="text-left px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Created</th>
+            <th class="px-6 py-3"><span class="sr-only">Actions</span></th>
+        </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-100">
+        {% for job in jobs %}
+        <tr class="hover:bg-gray-50 transition-colors">
+            <td class="px-6 py-4">
+                <div class="text-sm">
+                    {% if job.source_type == 'collection_run' %}
+                        <span class="text-gray-700 font-medium">Collection</span>
+                        {% if job.source_collection_run_id %}
+                        <a href="/collections/{{ job.source_collection_run_id }}"
+                           class="block text-xs text-blue-600 hover:underline font-mono mt-0.5">
+                            {{ job.source_collection_run_id | string | truncate(8, true, '') }}
+                        </a>
+                        {% endif %}
+                    {% else %}
+                        <span class="text-gray-700 font-medium">Manual URLs</span>
+                        <span class="block text-xs text-gray-500 mt-0.5">{{ job.source_urls | length }} URLs</span>
+                    {% endif %}
+                </div>
+            </td>
+            <td class="px-6 py-4">
+                {% set status = job.status | default('pending') %}
+                {% if status == 'running' %}
+                    <span class="inline-flex items-center gap-1.5 text-blue-600 text-xs font-medium">
+                        <svg class="animate-spin w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                        </svg>
+                        Running
+                    </span>
+                {% elif status == 'completed' %}
+                    <span class="text-green-600 text-xs font-medium">Completed</span>
+                {% elif status == 'failed' %}
+                    <span class="text-red-600 text-xs font-medium">Failed</span>
+                {% elif status == 'cancelled' %}
+                    <span class="text-gray-400 text-xs font-medium">Cancelled</span>
+                {% else %}
+                    <span class="text-gray-400 text-xs font-medium">Pending</span>
+                {% endif %}
+            </td>
+            <td class="px-6 py-4 text-right text-gray-700 font-mono text-xs">
+                {{ job.total_urls | default(0) }}
+            </td>
+            <td class="px-6 py-4 text-right text-green-600 font-mono text-xs">
+                {{ job.urls_enriched | default(0) }}
+            </td>
+            <td class="px-6 py-4 text-right text-red-600 font-mono text-xs">
+                {{ job.urls_failed | default(0) }}
+            </td>
+            <td class="px-6 py-4 text-gray-500 text-xs">
+                {{ job.created_at | default('') | truncate(16, true, '') }}
+            </td>
+            <td class="px-6 py-4 text-right">
+                <div class="flex items-center justify-end gap-2">
+                    {% if job.status in ('running', 'pending') %}
+                    <button type="button"
+                            hx-post="/scraping-jobs/{{ job.id }}/cancel"
+                            hx-confirm="Cancel this scraping job?"
+                            hx-target="#jobs-container"
+                            hx-swap="innerHTML"
+                            class="text-xs text-amber-600 hover:text-amber-800">
+                        Cancel
+                    </button>
+                    {% endif %}
+                    {% if job.status in ('completed', 'failed', 'cancelled') %}
+                    <button type="button"
+                            hx-delete="/scraping-jobs/{{ job.id }}"
+                            hx-confirm="Delete this scraping job?"
+                            hx-target="#jobs-container"
+                            hx-swap="innerHTML"
+                            class="text-xs text-red-400 hover:text-red-600">
+                        Delete
+                    </button>
+                    {% endif %}
+                </div>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+{% set empty_title = 'No scraping jobs yet' %}
+{% set empty_message = 'Create a scraping job to enrich collected URLs with full-text content extraction.' %}
+{% include '_partials/empty_state.html' %}
+{% endif %}

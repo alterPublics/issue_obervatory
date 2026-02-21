@@ -260,6 +260,9 @@ async def mark_runs_failed(run_ids: list[Any]) -> int:
     Also marks any non-terminal ``CollectionTask`` rows for those runs as
     failed with an explanatory error message.
 
+    M-05: Publishes a run_complete event to the Redis event bus for each
+    run so that SSE streams can close properly.
+
     Args:
         run_ids: List of CollectionRun UUIDs to mark as failed.
 
@@ -273,6 +276,15 @@ async def mark_runs_failed(run_ids: list[Any]) -> int:
         "Marked as failed by stale_run_cleanup: exceeded 24h without completion"
     )
     async with AsyncSessionLocal() as db:
+        # Fetch run details before updating so we can publish accurate counts
+        run_data_stmt = select(
+            CollectionRun.id,
+            CollectionRun.records_collected,
+            CollectionRun.credits_spent,
+        ).where(CollectionRun.id.in_(run_ids))
+        run_data_result = await db.execute(run_data_stmt)
+        run_data_rows = run_data_result.all()
+
         run_result = await db.execute(
             update(CollectionRun)
             .where(CollectionRun.id.in_(run_ids))
@@ -287,6 +299,20 @@ async def mark_runs_failed(run_ids: list[Any]) -> int:
             .values(status="failed", error_message=stale_msg)
         )
         await db.commit()
+
+    # M-05: Publish run_complete events for SSE subscribers
+    from issue_observatory.config.settings import get_settings
+    from issue_observatory.core.event_bus import publish_run_complete
+
+    settings = get_settings()
+    for row in run_data_rows:
+        publish_run_complete(
+            redis_url=settings.redis_url,
+            run_id=str(row.id),
+            status="failed",
+            records_collected=row.records_collected or 0,
+            credits_spent=row.credits_spent or 0,
+        )
 
     return run_result.rowcount or 0
 

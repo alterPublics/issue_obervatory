@@ -47,6 +47,7 @@ from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import distinct, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from issue_observatory.analysis.coordination import get_coordination_events
 from issue_observatory.analysis.descriptive import (
     compare_runs,
     get_arena_comparison,
@@ -56,6 +57,7 @@ from issue_observatory.analysis.descriptive import (
     get_language_distribution,
     get_propagation_patterns,
     get_run_summary,
+    get_sentiment_distribution,
     get_temporal_comparison,
     get_top_actors,
     get_top_actors_unified,
@@ -63,6 +65,7 @@ from issue_observatory.analysis.descriptive import (
     get_top_terms,
     get_volume_over_time,
 )
+from issue_observatory.analysis.propagation import get_propagation_flows
 from issue_observatory.analysis.export import ContentExporter
 from issue_observatory.analysis.network import (
     build_bipartite_network,
@@ -1122,6 +1125,78 @@ async def network_temporal_period(
 
 
 # ---------------------------------------------------------------------------
+# Temporal GEXF export (1.3)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{run_id}/network/temporal/export-gexf")
+async def export_temporal_network_gexf(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    interval: str = Query(default="week", description="Time bucket: day, week, month."),
+    network_type: str = Query(default="actor", description="Network type: actor or term."),
+    limit_per_snapshot: int = Query(default=100, ge=10, le=500),
+) -> Response:
+    """Export temporal network snapshots as dynamic GEXF file for Gephi Timeline.
+
+    Creates a GEXF 1.3 document with ``mode="dynamic"`` and ``<spells>``
+    elements on nodes and edges. Suitable for import into Gephi's Timeline
+    visualization plugin.
+
+    Args:
+        run_id: UUID of the collection run.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        interval: Time bucket size (default "week").
+        network_type: Network to compute — "actor" or "term" (default "actor").
+        limit_per_snapshot: Maximum edges per snapshot (default 100).
+
+    Returns:
+        A Response with GEXF XML bytes and Content-Disposition header for download.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the current user does not own the run.
+        HTTPException 422: If interval or network_type is invalid.
+    """
+    await _get_run_or_raise(run_id, db, current_user)
+
+    try:
+        snapshots = await get_temporal_network_snapshots(
+            db,
+            run_id=run_id,
+            interval=interval,
+            network_type=network_type,
+            limit_per_snapshot=limit_per_snapshot,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+    exporter = ContentExporter()
+    gexf_bytes = await exporter.export_temporal_gexf(snapshots)
+
+    filename = f"run_{run_id}_temporal_{network_type}_{interval}.gexf"
+
+    logger.info(
+        "analysis.export_temporal_gexf",
+        run_id=str(run_id),
+        network_type=network_type,
+        interval=interval,
+        snapshot_count=len(snapshots),
+    )
+
+    return Response(
+        content=gexf_bytes,
+        media_type="application/xml",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Filter options — distinct platforms and arenas for a run
 # ---------------------------------------------------------------------------
 
@@ -2019,6 +2094,75 @@ async def enrichment_propagation(
     return await get_propagation_patterns(db, run_id=run_id)
 
 
+# ---------------------------------------------------------------------------
+# Propagation flows query (1.2)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{run_id}/propagation/flows")
+async def propagation_flows(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    min_arenas_reached: int = Query(default=2, ge=2, description="Minimum arenas reached."),
+    limit: int = Query(default=100, ge=1, le=200, description="Maximum flows to return."),
+) -> list[dict[str, Any]]:
+    """Return top propagation flows sorted by number of arenas reached.
+
+    A propagation flow is a near-duplicate cluster where content first appeared
+    in one arena and subsequently spread to one or more other arenas. Returns
+    the origin record for each qualifying cluster, enriched with the full
+    propagation sequence.
+
+    Args:
+        run_id: UUID of the collection run.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        min_arenas_reached: Minimum number of distinct arenas required (default 2).
+        limit: Maximum number of flows to return (default 100).
+
+    Returns:
+        List of dicts ordered by total_arenas_reached descending, then by
+        max_lag_hours descending::
+
+            [
+              {
+                "cluster_id": "...",
+                "record_id": "...",
+                "arena": "gdelt",
+                "platform": "gdelt",
+                "origin_published_at": "2026-02-19T14:00:00+00:00",
+                "total_arenas_reached": 4,
+                "max_lag_hours": 2.5,
+                "propagation_sequence": [
+                    {
+                        "arena": "news",
+                        "platform": "dr",
+                        "published_at": "...",
+                        "lag_minutes": 90.0
+                    },
+                    ...
+                ],
+                "computed_at": "2026-02-19T16:00:00+00:00"
+              },
+              ...
+            ]
+
+        Returns an empty list when no propagation-enriched records match the filters.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the current user does not own the run.
+    """
+    await _get_run_or_raise(run_id, db, current_user)
+    return await get_propagation_flows(
+        db,
+        collection_run_id=run_id,
+        min_arenas_reached=min_arenas_reached,
+        limit=limit,
+    )
+
+
 @router.get("/{run_id}/enrichments/coordination")
 async def enrichment_coordination(
     run_id: uuid.UUID,
@@ -2060,3 +2204,100 @@ async def enrichment_coordination(
     """
     await _get_run_or_raise(run_id, db, current_user)
     return await get_coordination_signals(db, run_id=run_id)
+
+
+@router.get("/{run_id}/enrichments/sentiment")
+async def enrichment_sentiment(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> dict[str, Any]:
+    """Return sentiment distribution from sentiment analysis enrichment results.
+
+    Queries the ``sentiment_analyzer`` enrichment data and aggregates sentiment
+    scores across all enriched records.
+
+    Args:
+        run_id: UUID of the collection run.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        Dict with sentiment counts and average score::
+
+            {
+              "positive": 145,
+              "negative": 67,
+              "neutral": 423,
+              "average_score": 0.12,
+              "total_records": 635
+            }
+
+        All counts default to 0 when no sentiment enrichment data exists.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the current user does not own the run.
+    """
+    await _get_run_or_raise(run_id, db, current_user)
+    return await get_sentiment_distribution(db, run_id=run_id)
+
+
+# ---------------------------------------------------------------------------
+# Coordination events query (1.1)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{run_id}/coordination/events")
+async def coordination_events(
+    run_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    min_score: float = Query(default=0.5, ge=0.0, le=1.0, description="Minimum coordination score."),
+    limit: int = Query(default=50, ge=1, le=200, description="Maximum events to return."),
+) -> list[dict[str, Any]]:
+    """Return clusters flagged as potential coordination events, sorted by score.
+
+    Queries the coordination enrichment data for records flagged as potential
+    coordinated posting patterns. Returns one representative record per cluster,
+    ordered by coordination_score descending.
+
+    Args:
+        run_id: UUID of the collection run.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        min_score: Minimum coordination score (0-1) to include (default 0.5).
+        limit: Maximum number of distinct cluster summaries to return (default 50).
+
+    Returns:
+        List of dicts ordered by coordination_score descending::
+
+            [
+              {
+                "cluster_id": "...",
+                "record_id": "...",
+                "flagged": true,
+                "distinct_authors_in_window": 12,
+                "time_window_hours": 1.0,
+                "coordination_score": 0.85,
+                "earliest_in_window": "2026-02-19T14:00:00+00:00",
+                "latest_in_window": "2026-02-19T14:45:00+00:00",
+                "platforms_involved": ["gab", "reddit", "telegram"],
+                "computed_at": "2026-02-19T16:00:00+00:00"
+              },
+              ...
+            ]
+
+        Returns an empty list when no coordination-enriched records match the filters.
+
+    Raises:
+        HTTPException 404: If the run does not exist.
+        HTTPException 403: If the current user does not own the run.
+    """
+    await _get_run_or_raise(run_id, db, current_user)
+    return await get_coordination_events(
+        db,
+        collection_run_id=run_id,
+        min_score=min_score,
+        limit=limit,
+    )

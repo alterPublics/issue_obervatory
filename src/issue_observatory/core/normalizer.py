@@ -172,6 +172,7 @@ class Normalizer:
         is_public_figure: bool = False,
         platform_username: str | None = None,
         public_figure_ids: set[str] | None = None,
+        skip_pseudonymization: bool = False,
     ) -> dict[str, Any]:
         """Map a raw platform record to the universal ``content_records`` schema.
 
@@ -187,6 +188,11 @@ class Normalizer:
         ``platform_username`` (or ``author_platform_id`` as fallback) is
         stored instead of the hash.  An audit note is added to
         ``raw_metadata`` in both cases.
+
+        When ``skip_pseudonymization`` is ``True``, author identifiers
+        are stored in plain text for all records regardless of public
+        figure status.  The researcher assumes full GDPR responsibility.
+        An audit note is added to ``raw_metadata``.
 
         The ``content_hash`` is computed from the normalized text content for
         cross-platform deduplication.
@@ -207,6 +213,10 @@ class Normalizer:
                 The plain ``platform_username`` is stored as
                 ``pseudonymized_author_id`` instead of the hash.  Defaults to
                 ``False`` — existing callers are unaffected.
+            skip_pseudonymization: When ``True``, store plain author
+                identifiers for all records.  Pseudonymization is on by
+                default; the researcher opts out explicitly.  Defaults
+                to ``False``.
             platform_username: Plain-text platform handle to use as the
                 ``pseudonymized_author_id`` when ``is_public_figure=True``.
                 If not supplied, ``author_platform_id`` is used as fallback.
@@ -285,6 +295,11 @@ class Normalizer:
         ):
             effective_is_public_figure = True
 
+        # When pseudonymization is explicitly skipped by the researcher,
+        # treat every author as a public figure so plain IDs are stored.
+        if skip_pseudonymization:
+            effective_is_public_figure = True
+
         # Pseudonymize the author if we have an identifier.
         # For public figures (GR-14) the plain handle is stored instead.
         pseudonymized_author_id: str | None = None
@@ -348,13 +363,20 @@ class Normalizer:
         # GR-14: Build the raw_metadata dict.  When the public-figure bypass
         # was applied, annotate the record so the DPO audit trail is complete.
         raw_metadata: dict[str, Any] = dict(raw_item)
-        if effective_is_public_figure:
+        if skip_pseudonymization:
+            raw_metadata["pseudonymization_disabled"] = True
+            raw_metadata["bypass_reason"] = (
+                "Pseudonymization disabled by researcher"
+            )
+        elif effective_is_public_figure:
             raw_metadata["public_figure_bypass"] = True
             raw_metadata["bypass_reason"] = (
-                "Actor flagged as public figure per GDPR Art. 89(1) research exemption"
+                "Actor flagged as public figure per GDPR "
+                "Art. 89(1) research exemption"
             )
             logger.debug(
-                "normalizer: GR-14 bypass applied — author_platform_id=%s platform=%s",
+                "normalizer: GR-14 bypass applied "
+                "— author_platform_id=%s platform=%s",
                 author_platform_id,
                 platform,
             )

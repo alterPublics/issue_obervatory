@@ -23,10 +23,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from issue_observatory.arenas.google_autocomplete.collector import GoogleAutocompleteCollector
+from issue_observatory.config.settings import get_settings
 from issue_observatory.core.credential_pool import CredentialPool
+from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
@@ -146,6 +149,10 @@ def google_autocomplete_collect_terms(
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "google_autocomplete: collect_by_terms started — run=%s terms=%d tier=%s",
         collection_run_id,
@@ -153,6 +160,16 @@ def google_autocomplete_collect_terms(
         tier,
     )
     _update_task_status(collection_run_id, "google_autocomplete", "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="google_autocomplete",
+        platform="google",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     try:
         tier_enum = Tier(tier)
@@ -163,6 +180,16 @@ def google_autocomplete_collect_terms(
         )
         logger.error(msg)
         _update_task_status(collection_run_id, "google_autocomplete", "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="google_autocomplete",
+            platform="google",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise ArenaCollectionError(msg, arena="google_autocomplete", platform="google")
 
     credential_pool = CredentialPool()
@@ -181,6 +208,16 @@ def google_autocomplete_collect_terms(
         msg = f"google_autocomplete: no credential for tier={tier}: {exc}"
         logger.error(msg)
         _update_task_status(collection_run_id, "google_autocomplete", "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="google_autocomplete",
+            platform="google",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
     except ArenaRateLimitError:
         logger.warning(
@@ -194,6 +231,16 @@ def google_autocomplete_collect_terms(
             "google_autocomplete: collection error for run=%s: %s", collection_run_id, msg
         )
         _update_task_status(collection_run_id, "google_autocomplete", "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="google_autocomplete",
+            platform="google",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -204,6 +251,16 @@ def google_autocomplete_collect_terms(
     )
     _update_task_status(
         collection_run_id, "google_autocomplete", "completed", records_collected=count
+    )
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="google_autocomplete",
+        platform="google",
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
     )
     return {
         "records_collected": count,

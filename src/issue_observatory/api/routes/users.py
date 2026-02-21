@@ -268,3 +268,91 @@ async def revoke_api_key(
     """
     current_user.api_key = None
     await db.commit()
+
+
+# ------------------------------------------------------------------
+# Self-service preferences
+# ------------------------------------------------------------------
+
+
+class PreferencesRead(BaseModel):
+    """User preferences stored in the metadata JSONB column."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    skip_pseudonymization: bool = False
+
+
+class PreferencesUpdate(BaseModel):
+    """Request body for updating user preferences."""
+
+    skip_pseudonymization: bool | None = None
+
+
+@router.get(
+    "/me/preferences",
+    response_model=PreferencesRead,
+    summary="Get the calling user's preferences",
+)
+async def get_preferences(
+    current_user: User = Depends(get_current_active_user),
+) -> PreferencesRead:
+    """Return the authenticated user's preferences.
+
+    Preferences are stored in the ``metadata`` JSONB column on the
+    ``users`` table under the ``preferences`` key.
+
+    Args:
+        current_user: The authenticated user.
+
+    Returns:
+        Current preference values with defaults applied.
+    """
+    prefs = (current_user.metadata_ or {}).get("preferences", {})
+    return PreferencesRead(
+        skip_pseudonymization=prefs.get(
+            "skip_pseudonymization", False
+        ),
+    )
+
+
+@router.patch(
+    "/me/preferences",
+    response_model=PreferencesRead,
+    summary="Update the calling user's preferences",
+)
+async def update_preferences(
+    body: PreferencesUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> PreferencesRead:
+    """Update the authenticated user's preferences.
+
+    Only fields present in the request body are updated; omitted fields
+    retain their current values.  Preferences are stored in the
+    ``metadata`` JSONB column under the ``preferences`` key.
+
+    Args:
+        body: Partial preferences update.
+        db: Injected async database session.
+        current_user: The authenticated user.
+
+    Returns:
+        Updated preference values.
+    """
+    meta = dict(current_user.metadata_ or {})
+    prefs = dict(meta.get("preferences", {}))
+
+    if body.skip_pseudonymization is not None:
+        prefs["skip_pseudonymization"] = body.skip_pseudonymization
+
+    meta["preferences"] = prefs
+    current_user.metadata_ = meta
+    await db.commit()
+    await db.refresh(current_user)
+
+    return PreferencesRead(
+        skip_pseudonymization=prefs.get(
+            "skip_pseudonymization", False
+        ),
+    )

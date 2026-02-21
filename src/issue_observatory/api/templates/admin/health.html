@@ -35,7 +35,7 @@
 
     {# Core infrastructure status — HTMX-polled #}
     <div id="infrastructure-status"
-         hx-get="/admin/health/status"
+         hx-get="/api/health"
          hx-trigger="load, every 15s"
          hx-target="#infrastructure-status"
          hx-swap="innerHTML"
@@ -64,12 +64,70 @@
         </div>
 
         <div id="arena-health"
-             hx-get="/admin/health/arenas"
+             hx-get="/api/arenas/health"
              hx-trigger="load, every 60s"
              hx-target="#arena-health"
              hx-swap="innerHTML">
             <div class="px-6 py-8 text-center">
                 {% include '_partials/loading_spinner.html' %}
+            </div>
+        </div>
+    </div>
+
+    {# Data Retention section #}
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-sm font-semibold text-gray-900 border-b border-gray-200 pb-3 mb-4">Data Retention</h2>
+        <div class="space-y-3">
+            <div class="flex items-start gap-3">
+                <svg class="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg"
+                     fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <div class="flex-1">
+                    <div class="flex items-baseline justify-between">
+                        <dt class="text-sm text-gray-600">Retention window</dt>
+                        <dd class="text-base font-semibold text-gray-900">730 days (2 years)</dd>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-1">
+                        Content records older than the retention window are automatically deleted
+                        to comply with GDPR data minimization principles.
+                    </p>
+                </div>
+            </div>
+
+            <div class="flex items-start gap-3 pt-3 border-t border-gray-100">
+                <svg class="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg"
+                     fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                </svg>
+                <div class="flex-1">
+                    <dt class="text-sm text-gray-600">Cleanup schedule</dt>
+                    <dd class="text-sm text-gray-700 mt-1">
+                        Daily at 03:00 UTC (via Celery Beat)
+                    </dd>
+                    <p class="text-xs text-gray-500 mt-1">
+                        The retention service runs automatically and logs deletion operations for audit purposes.
+                    </p>
+                </div>
+            </div>
+
+            <div class="flex items-start gap-3 pt-3 border-t border-gray-100">
+                <svg class="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg"
+                     fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+                <div class="flex-1">
+                    <dt class="text-sm text-gray-600">Configuration</dt>
+                    <dd class="text-xs text-gray-500 mt-1 font-mono">
+                        DATA_RETENTION_DAYS = 730
+                    </dd>
+                    <p class="text-xs text-gray-500 mt-1">
+                        Configured via environment variable. Contact system administrator to adjust retention policy.
+                    </p>
+                </div>
             </div>
         </div>
     </div>

@@ -1,0 +1,108 @@
+[
+  {
+    "id": "1234567890123456789",
+    "type": 0,
+    "content": "Groen omstilling er afgoerende for dansk klimapolitik. Vi skal diskutere nye tiltag i Koebenhavn og Aalborg.",
+    "channel_id": "9876543210987654321",
+    "author": {
+      "id": "1111111111111111111",
+      "username": "soeren_dk",
+      "global_name": "Soeren Oestergaard",
+      "discriminator": "0",
+      "avatar": "abc123"
+    },
+    "attachments": [],
+    "embeds": [],
+    "mentions": [],
+    "mention_roles": [],
+    "pinned": false,
+    "mention_everyone": false,
+    "tts": false,
+    "timestamp": "2026-02-15T10:30:00.000000+00:00",
+    "edited_timestamp": null,
+    "flags": 0,
+    "components": [],
+    "reactions": [
+      {
+        "emoji": {"id": null, "name": "thumbsup"},
+        "count": 5,
+        "me": false
+      },
+      {
+        "emoji": {"id": null, "name": "heart"},
+        "count": 3,
+        "me": false
+      }
+    ],
+    "referenced_message": null
+  },
+  {
+    "id": "1234567890123456790",
+    "type": 0,
+    "content": "Hvad synes I om folkeskolen i Danmark? Diskussion om aendringer i uddannelsessystemet.",
+    "channel_id": "9876543210987654321",
+    "author": {
+      "id": "2222222222222222222",
+      "username": "anna_laerke",
+      "global_name": "Anna Laerke Hansen",
+      "discriminator": "0",
+      "avatar": "def456"
+    },
+    "attachments": [
+      {
+        "id": "att001",
+        "filename": "folkeskolen.pdf",
+        "url": "https://cdn.discordapp.com/attachments/9876543210987654321/att001/folkeskolen.pdf",
+        "size": 102400,
+        "content_type": "application/pdf"
+      }
+    ],
+    "embeds": [{"type": "link", "url": "https://example.dk"}],
+    "mentions": [
+      {"id": "1111111111111111111", "username": "soeren_dk"}
+    ],
+    "mention_roles": [],
+    "pinned": false,
+    "mention_everyone": false,
+    "tts": false,
+    "timestamp": "2026-02-15T11:00:00.000000+00:00",
+    "edited_timestamp": "2026-02-15T11:05:00.000000+00:00",
+    "flags": 0,
+    "components": [],
+    "reactions": [],
+    "referenced_message": {
+      "id": "1234567890123456789",
+      "content": "Groen omstilling er afgoerende..."
+    },
+    "thread": {
+      "id": "9999999999999999999",
+      "message_count": 12
+    }
+  },
+  {
+    "id": "1234567890123456791",
+    "type": 0,
+    "content": "Velvaerdssamfundet er under pres. AEldre og syge betaler prisen. Aalborg kommune lukker svoemmehallen i Oest.",
+    "channel_id": "9876543210987654321",
+    "author": {
+      "id": "3333333333333333333",
+      "username": "aalborg_borger",
+      "global_name": "Aalborg Borger",
+      "discriminator": "0",
+      "avatar": null
+    },
+    "attachments": [],
+    "embeds": [],
+    "mentions": [],
+    "mention_roles": [],
+    "pinned": false,
+    "mention_everyone": false,
+    "tts": false,
+    "timestamp": "2026-02-14T20:00:00.000000+00:00",
+    "edited_timestamp": null,
+    "flags": 0,
+    "components": [],
+    "reactions": [],
+    "referenced_message": null
+  }
+]

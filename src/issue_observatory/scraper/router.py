@@ -24,7 +24,7 @@ from typing import Annotated, AsyncGenerator, Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -151,23 +151,28 @@ async def create_scraping_job(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/", response_model=list[ScrapingJobRead])
+@router.get("/")
 async def list_scraping_jobs(
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     pagination: Annotated[PaginationParams, Depends(get_pagination)],
     status_filter: Optional[str] = None,
-) -> list[ScrapingJob]:
+):
     """List scraping jobs created by the current user.
 
+    Returns HTML fragment when Accept header includes text/html, otherwise JSON.
+
     Args:
+        request: The current HTTP request.
         db: Injected async database session.
         current_user: The authenticated, active user making the request.
         pagination: Cursor and page-size parameters from query string.
         status_filter: Optional filter on job status.
 
     Returns:
-        A list of :class:`~issue_observatory.core.schemas.scraping.ScrapingJobRead` dicts.
+        A list of :class:`~issue_observatory.core.schemas.scraping.ScrapingJobRead` dicts
+        or an HTML fragment of the jobs table.
     """
     stmt = (
         select(ScrapingJob)
@@ -190,7 +195,22 @@ async def list_scraping_jobs(
         stmt = stmt.where(ScrapingJob.id < cursor_id)
 
     result = await db.execute(stmt)
-    return list(result.scalars().all())
+    jobs = list(result.scalars().all())
+
+    # Return HTML fragment for HTMX requests
+    accept = request.headers.get("Accept", "")
+    if "text/html" in accept:
+        if not hasattr(request.app.state, "templates"):
+            raise RuntimeError("Templates not initialized")
+        templates = request.app.state.templates
+        return templates.TemplateResponse(
+            "scraping/_jobs_table.html",
+            {"request": request, "jobs": jobs, "user": current_user},
+            media_type="text/html",
+        )
+
+    # Return JSON for API requests
+    return jobs
 
 
 # ---------------------------------------------------------------------------

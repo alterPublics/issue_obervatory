@@ -41,13 +41,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 import structlog
 
+from issue_observatory.workers._db_helpers import _build_sync_dsn
 from issue_observatory.workers.celery_app import celery_app
 
 logger = structlog.get_logger(__name__)
@@ -84,26 +84,6 @@ def _set_status(redis_client: Any, job_id: str, payload: dict[str, Any]) -> None
         _STATUS_TTL,
         json.dumps(payload),
     )
-
-
-# ---------------------------------------------------------------------------
-# Sync DB helper
-# ---------------------------------------------------------------------------
-
-
-def _build_sync_dsn(async_dsn: str) -> str:
-    """Convert an asyncpg DSN to a psycopg2-compatible DSN.
-
-    Replaces ``postgresql+asyncpg://`` with ``postgresql://`` so that
-    psycopg2 can connect inside the synchronous Celery worker.
-
-    Args:
-        async_dsn: The application DATABASE_URL (asyncpg scheme).
-
-    Returns:
-        A psycopg2-compatible DSN string.
-    """
-    return re.sub(r"^postgresql\+asyncpg://", "postgresql://", async_dsn)
 
 
 def _query_records(

@@ -89,12 +89,6 @@ ARENA_DESCRIPTIONS: dict[str, str] = {
     "gdelt": (
         "GDELT global event database — open dataset of news mentions worldwide"
     ),
-    # "google" as platform_name is not used by any collector.
-    # Both Google collectors use distinct platform_names (google_search,
-    # google_autocomplete).  Kept as a fallback for any ad-hoc lookups.
-    "google": (
-        "Google services (see google_search and google_autocomplete for specific collectors)"
-    ),
     "google_autocomplete": (
         "Google Autocomplete suggestions revealing real-time public search intent"
     ),
@@ -317,28 +311,6 @@ def get_arena(platform_name: str) -> type[ArenaCollector]:
             f"Registered platforms: {registered}. "
             "Did you forget to call autodiscover() or import the collector module?"
         ) from None
-
-
-def get_arenas_by_arena_name(arena_name: str) -> list[type[ArenaCollector]]:
-    """Retrieve all registered collectors belonging to a logical arena group.
-
-    Multiple collectors may share the same ``arena_name`` grouping label
-    (e.g. ``"social_media"`` is shared by Reddit, YouTube, Telegram, etc.).
-    This function returns all of them.
-
-    Args:
-        arena_name: The ``arena_name`` class attribute value to match
-            (e.g. ``"social_media"``, ``"news_media"``, ``"web"``).
-
-    Returns:
-        List of ``ArenaCollector`` subclasses whose ``arena_name`` matches.
-        Empty list if no collectors are registered for that arena group.
-    """
-    return [
-        cls
-        for cls in _REGISTRY.values()
-        if cls.arena_name == arena_name  # type: ignore[attr-defined]
-    ]
 
 
 def list_arenas() -> list[dict]:  # type: ignore[type-arg]

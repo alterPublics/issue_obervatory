@@ -32,10 +32,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from issue_observatory.arenas.reddit.collector import RedditCollector
+from issue_observatory.config.settings import get_settings
 from issue_observatory.core.credential_pool import CredentialPool
+from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
@@ -195,6 +198,10 @@ def reddit_collect_terms(
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "reddit: collect_by_terms started — run=%s terms=%d tier=%s include_comments=%s",
         collection_run_id,
@@ -203,6 +210,16 @@ def reddit_collect_terms(
         include_comments,
     )
     _update_task_status(collection_run_id, "social_media", "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="reddit",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     # GR-03: read researcher-configured extra subreddits from arenas_config.
     arenas_config = _load_arenas_config(query_design_id)
@@ -219,6 +236,16 @@ def reddit_collect_terms(
         msg = f"reddit: invalid tier '{tier}'. Only 'free' is valid for Reddit."
         logger.error(msg)
         _update_task_status(collection_run_id, "social_media", "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="reddit",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise ArenaCollectionError(msg, arena="social_media", platform="reddit")
 
     credential_pool = CredentialPool()
@@ -241,6 +268,16 @@ def reddit_collect_terms(
         msg = f"reddit: no credential available for tier={tier}: {exc}"
         logger.error(msg)
         _update_task_status(collection_run_id, "social_media", "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="reddit",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
     except ArenaRateLimitError:
         logger.warning(
@@ -252,6 +289,16 @@ def reddit_collect_terms(
         msg = str(exc)
         logger.error("reddit: collection error for run=%s: %s", collection_run_id, msg)
         _update_task_status(collection_run_id, "social_media", "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="reddit",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -262,6 +309,16 @@ def reddit_collect_terms(
     )
     _update_task_status(
         collection_run_id, "social_media", "completed", records_collected=count
+    )
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="reddit",
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
     )
 
     return {
@@ -311,6 +368,10 @@ def reddit_collect_actors(
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "reddit: collect_by_actors started — run=%s actors=%d tier=%s",
         collection_run_id,
@@ -318,6 +379,16 @@ def reddit_collect_actors(
         tier,
     )
     _update_task_status(collection_run_id, "social_media", "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="reddit",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     try:
         tier_enum = Tier(tier)
@@ -325,6 +396,16 @@ def reddit_collect_actors(
         msg = f"reddit: invalid tier '{tier}'. Only 'free' is valid for Reddit."
         logger.error(msg)
         _update_task_status(collection_run_id, "social_media", "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="reddit",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise ArenaCollectionError(msg, arena="social_media", platform="reddit")
 
     credential_pool = CredentialPool()
@@ -342,6 +423,16 @@ def reddit_collect_actors(
         msg = f"reddit: no credential available for tier={tier}: {exc}"
         logger.error(msg)
         _update_task_status(collection_run_id, "social_media", "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="reddit",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
     except ArenaRateLimitError:
         logger.warning(
@@ -353,6 +444,16 @@ def reddit_collect_actors(
         msg = str(exc)
         logger.error("reddit: collection error for run=%s: %s", collection_run_id, msg)
         _update_task_status(collection_run_id, "social_media", "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="reddit",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -363,6 +464,16 @@ def reddit_collect_actors(
     )
     _update_task_status(
         collection_run_id, "social_media", "completed", records_collected=count
+    )
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="reddit",
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
     )
 
     return {

@@ -1,0 +1,269 @@
+{% extends "base.html" %}
+{% block title %}Import Data{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto space-y-6">
+
+    {# Page header #}
+    <div>
+        <h1 class="text-xl font-bold text-gray-900">Import Data</h1>
+        <p class="text-sm text-gray-500 mt-0.5">Upload CSV or NDJSON files to supplement automated collection</p>
+    </div>
+
+    {# Import methods grid #}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+        {# Manual file upload #}
+        <div class="bg-white rounded-lg shadow p-6">
+            <div class="flex items-start gap-4 mb-4">
+                <div class="flex-shrink-0 w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+                    <svg class="w-6 h-6 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none"
+                         viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                              d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                    </svg>
+                </div>
+                <div>
+                    <h2 class="text-base font-semibold text-gray-900">Manual Upload</h2>
+                    <p class="text-sm text-gray-500 mt-1">CSV or NDJSON files (max 50 MB)</p>
+                </div>
+            </div>
+
+            <form hx-post="/content/import"
+                  hx-encoding="multipart/form-data"
+                  hx-target="#upload-result"
+                  hx-indicator="#upload-spinner"
+                  class="space-y-4">
+
+                {# File input #}
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Select file</label>
+                    <input type="file"
+                           name="file"
+                           accept=".csv,.ndjson,.jsonl"
+                           required
+                           class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4
+                                  file:rounded-md file:border-0 file:text-sm file:font-medium
+                                  file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100
+                                  cursor-pointer">
+                </div>
+
+                {# Collection method #}
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Collection method</label>
+                    <select name="collection_method"
+                            class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <option value="manual_csv">Manual CSV</option>
+                        <option value="manual_ndjson">Manual NDJSON</option>
+                        <option value="4cat">4CAT export</option>
+                        <option value="zeeschuimer">Zeeschuimer</option>
+                    </select>
+                </div>
+
+                {# Query design selector (optional) #}
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">
+                        Query design (optional)
+                    </label>
+                    <input type="text"
+                           name="query_design_id"
+                           placeholder="Query design UUID"
+                           class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono">
+                    <p class="text-xs text-gray-500 mt-1">Associate imported records with a query design</p>
+                </div>
+
+                {# Submit button #}
+                <button type="submit"
+                        class="w-full flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+                    <svg id="upload-spinner"
+                         class="htmx-indicator animate-spin w-4 h-4"
+                         xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    Upload and Import
+                </button>
+
+            </form>
+
+            {# Upload result #}
+            <div id="upload-result" class="mt-4"></div>
+
+        </div>
+
+        {# Zeeschuimer info card #}
+        <div class="bg-gradient-to-br from-purple-50 to-indigo-50 rounded-lg shadow border border-purple-200 p-6">
+            <div class="flex items-start gap-4 mb-4">
+                <div class="flex-shrink-0 w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
+                    <svg class="w-6 h-6 text-purple-600" xmlns="http://www.w3.org/2000/svg" fill="none"
+                         viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                              d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
+                    </svg>
+                </div>
+                <div>
+                    <h2 class="text-base font-semibold text-gray-900">Zeeschuimer Integration</h2>
+                    <p class="text-sm text-gray-600 mt-1">Browser extension for manual data capture</p>
+                </div>
+            </div>
+
+            <div class="space-y-3">
+                <p class="text-sm text-gray-700">
+                    Zeeschuimer is a browser extension for capturing social media data that cannot be
+                    accessed via API. Supported platforms:
+                </p>
+                <ul class="space-y-1 text-sm text-gray-600">
+                    <li class="flex items-center gap-2">
+                        <svg class="w-4 h-4 text-green-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+                        </svg>
+                        LinkedIn
+                    </li>
+                    <li class="flex items-center gap-2">
+                        <svg class="w-4 h-4 text-green-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+                        </svg>
+                        Twitter/X (supplement to API)
+                    </li>
+                    <li class="flex items-center gap-2">
+                        <svg class="w-4 h-4 text-green-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+                        </svg>
+                        Instagram
+                    </li>
+                    <li class="flex items-center gap-2">
+                        <svg class="w-4 h-4 text-green-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+                        </svg>
+                        TikTok
+                    </li>
+                    <li class="flex items-center gap-2">
+                        <svg class="w-4 h-4 text-green-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+                        </svg>
+                        Threads
+                    </li>
+                </ul>
+
+                <div class="pt-3 border-t border-purple-200 mt-4">
+                    <a href="https://github.com/digitalmethodsinitiative/zeeschuimer"
+                       target="_blank"
+                       rel="noopener noreferrer"
+                       class="inline-flex items-center gap-1 text-sm text-purple-700 hover:text-purple-900 font-medium">
+                        Install Zeeschuimer
+                        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none"
+                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+                        </svg>
+                    </a>
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+
+    {# File format requirements #}
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-base font-semibold text-gray-900 mb-3">File Format Requirements</h2>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {# CSV format #}
+            <div>
+                <h3 class="text-sm font-medium text-gray-700 mb-2">CSV</h3>
+                <p class="text-sm text-gray-600 mb-2">Required columns:</p>
+                <ul class="text-xs text-gray-500 space-y-1 font-mono">
+                    <li class="bg-gray-50 px-2 py-1 rounded">platform (required)</li>
+                    <li class="bg-gray-50 px-2 py-1 rounded">url (optional)</li>
+                    <li class="bg-gray-50 px-2 py-1 rounded">title (optional)</li>
+                    <li class="bg-gray-50 px-2 py-1 rounded">text (optional)</li>
+                    <li class="bg-gray-50 px-2 py-1 rounded">published_at (optional)</li>
+                    <li class="bg-gray-50 px-2 py-1 rounded">author_display_name (optional)</li>
+                </ul>
+            </div>
+
+            {# NDJSON format #}
+            <div>
+                <h3 class="text-sm font-medium text-gray-700 mb-2">NDJSON</h3>
+                <p class="text-sm text-gray-600 mb-2">One JSON object per line with:</p>
+                <ul class="text-xs text-gray-500 space-y-1 font-mono">
+                    <li class="bg-gray-50 px-2 py-1 rounded">platform (required)</li>
+                    <li class="bg-gray-50 px-2 py-1 rounded">Any platform-specific fields</li>
+                </ul>
+                <p class="text-xs text-gray-500 mt-2">
+                    Platform is auto-detected for Zeeschuimer files.
+                </p>
+            </div>
+        </div>
+
+        <div class="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-md">
+            <p class="text-xs text-amber-800">
+                <strong>Note:</strong> Files larger than 50 MB or with more than 10% row errors will be rejected.
+                Large datasets should be split into multiple files.
+            </p>
+        </div>
+    </div>
+
+</div>
+
+<script>
+// Display import result with colored badges
+document.body.addEventListener('htmx:afterRequest', (event) => {
+    if (event.detail.target.id === 'upload-result') {
+        const xhr = event.detail.xhr;
+        const resultDiv = document.getElementById('upload-result');
+
+        if (xhr.status === 200) {
+            const data = JSON.parse(xhr.responseText);
+            const hasErrors = data.errors && data.errors.length > 0;
+
+            resultDiv.innerHTML = `
+                <div class="p-4 rounded-md ${hasErrors ? 'bg-amber-50 border border-amber-200' : 'bg-green-50 border border-green-200'}">
+                    <div class="flex items-start gap-3">
+                        <svg class="w-5 h-5 ${hasErrors ? 'text-amber-500' : 'text-green-500'} flex-shrink-0"
+                             xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+                        </svg>
+                        <div class="flex-1">
+                            <p class="text-sm font-medium ${hasErrors ? 'text-amber-800' : 'text-green-800'}">
+                                Import ${hasErrors ? 'completed with errors' : 'successful'}
+                            </p>
+                            <div class="mt-2 text-xs ${hasErrors ? 'text-amber-700' : 'text-green-700'}">
+                                <div class="grid grid-cols-2 gap-2">
+                                    <div>
+                                        <span class="font-medium">Imported:</span>
+                                        <span class="font-mono">${data.imported}</span>
+                                    </div>
+                                    <div>
+                                        <span class="font-medium">Skipped:</span>
+                                        <span class="font-mono">${data.skipped}</span>
+                                    </div>
+                                </div>
+                                ${hasErrors ? `
+                                <div class="mt-2">
+                                    <span class="font-medium">Errors:</span>
+                                    <span class="font-mono">${data.errors.length}</span>
+                                </div>
+                                ` : ''}
+                            </div>
+                            ${hasErrors && data.errors.length <= 10 ? `
+                            <details class="mt-3">
+                                <summary class="text-xs font-medium ${hasErrors ? 'text-amber-700' : 'text-green-700'} cursor-pointer">
+                                    View error details
+                                </summary>
+                                <div class="mt-2 text-xs ${hasErrors ? 'text-amber-600' : 'text-green-600'} space-y-1">
+                                    ${data.errors.map(e => `<div>Row ${e.row}: ${e.error}</div>`).join('')}
+                                </div>
+                            </details>
+                            ` : ''}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+    }
+});
+</script>
+
+{% endblock %}

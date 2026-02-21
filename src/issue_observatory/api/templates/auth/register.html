@@ -1,0 +1,216 @@
+{% extends "base_auth.html" %}
+{% block title %}Create Account{% endblock %}
+
+{% block content %}
+<div class="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+    <div class="w-full max-w-md">
+        {# Brand mark #}
+        <div class="text-center mb-8">
+            <h1 class="text-2xl font-bold text-gray-900">Issue Observatory</h1>
+            <p class="text-sm text-gray-500 mt-1">Danish media monitor</p>
+        </div>
+
+        <div class="bg-white rounded-lg shadow px-8 py-8">
+            <h2 class="text-lg font-semibold text-gray-900 mb-6">Create your account</h2>
+
+            {# Registration error #}
+            {% if register_error | default('') %}
+            <div class="rounded-md bg-red-50 border border-red-200 px-4 py-3 mb-5 text-sm text-red-800">
+                {{ register_error }}
+            </div>
+            {% endif %}
+
+            {# Registration success #}
+            {% if register_success | default(false) %}
+            <div class="rounded-md bg-green-50 border border-green-200 px-4 py-3 mb-5 text-sm text-green-800">
+                <p class="font-medium">Account created successfully!</p>
+                <p class="mt-1">Your account is pending activation by an administrator. You will be notified when it is ready.</p>
+            </div>
+            <div class="mt-6 text-center">
+                <a href="/auth/login"
+                   class="text-sm text-blue-600 hover:text-blue-800 font-medium">
+                    Go to sign in
+                </a>
+            </div>
+            {% else %}
+
+            {#
+                FastAPI-Users registration endpoint.
+                On success: account created with is_verified=False (pending admin activation).
+                On error: returns JSON which we catch and display inline.
+            #}
+            <form method="POST" action="/auth/register" id="register-form"
+                  x-data="registerForm()"
+                  @submit.prevent="submitRegister">
+                <div class="space-y-4">
+                    <div>
+                        <label for="email" class="block text-sm font-medium text-gray-700 mb-1">
+                            Email <span class="text-red-500">*</span>
+                        </label>
+                        <input type="email"
+                               id="email"
+                               name="email"
+                               autocomplete="email"
+                               required
+                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                               placeholder="forsker@ku.dk">
+                        <p class="text-xs text-gray-400 mt-1">Use your institutional email address.</p>
+                    </div>
+
+                    <div>
+                        <label for="password" class="block text-sm font-medium text-gray-700 mb-1">
+                            Password <span class="text-red-500">*</span>
+                        </label>
+                        <input type="password"
+                               id="password"
+                               name="password"
+                               autocomplete="new-password"
+                               required
+                               minlength="8"
+                               x-model="password"
+                               @input="checkStrength()"
+                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                               placeholder="At least 8 characters">
+
+                        {# Password strength meter #}
+                        <div class="mt-1.5 flex gap-1">
+                            <template x-for="i in 4" :key="i">
+                                <div class="h-1 flex-1 rounded-full transition-colors"
+                                     :class="{
+                                         'bg-red-400':    strength >= i && strength <= 1,
+                                         'bg-yellow-400': strength >= i && strength === 2,
+                                         'bg-blue-400':   strength >= i && strength === 3,
+                                         'bg-green-500':  strength >= i && strength === 4,
+                                         'bg-gray-200':   strength < i
+                                     }">
+                                </div>
+                            </template>
+                        </div>
+                        <p class="text-xs text-gray-400 mt-1"
+                           x-text="strengthLabel || 'Enter a password'">Enter a password</p>
+                    </div>
+
+                    <div>
+                        <label for="confirm_password" class="block text-sm font-medium text-gray-700 mb-1">
+                            Confirm password <span class="text-red-500">*</span>
+                        </label>
+                        <input type="password"
+                               id="confirm_password"
+                               name="confirm_password"
+                               autocomplete="new-password"
+                               required
+                               x-model="confirmPassword"
+                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                               :class="confirmPassword && password !== confirmPassword ? 'border-red-300 focus:ring-red-500' : ''"
+                               placeholder="Repeat password">
+                        <p class="text-xs text-red-600 mt-1"
+                           x-show="confirmPassword && password !== confirmPassword">
+                            Passwords do not match.
+                        </p>
+                    </div>
+
+                    {# Inline error shown by Alpine on registration failure #}
+                    <div x-show="errorMessage" x-cloak
+                         class="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-800"
+                         x-text="errorMessage">
+                    </div>
+
+                    <button type="submit"
+                            :disabled="loading || !password || password !== confirmPassword || strength < 2"
+                            class="w-full flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                        <svg x-show="loading" class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg"
+                             fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                        </svg>
+                        <span x-text="loading ? 'Creating account...' : 'Create account'">Create account</span>
+                    </button>
+                </div>
+            </form>
+
+            <div class="mt-6 text-center">
+                <p class="text-sm text-gray-500">
+                    Already have an account?
+                    <a href="/auth/login" class="text-blue-600 hover:text-blue-800 font-medium">Sign in</a>
+                </p>
+            </div>
+            {% endif %}
+        </div>
+
+        <p class="text-center text-xs text-gray-400 mt-6">
+            The Issue Observatory &mdash; Aarhus University
+        </p>
+    </div>
+</div>
+
+<script>
+/**
+ * Alpine component for the registration form.
+ * Submits user data as JSON to the FastAPI-Users registration endpoint
+ * and handles error responses inline.
+ */
+function registerForm() {
+    return {
+        loading: false,
+        errorMessage: '',
+        password: '',
+        confirmPassword: '',
+        strength: 0,
+        strengthLabel: '',
+
+        checkStrength() {
+            const p = this.password;
+            let score = 0;
+            if (p.length >= 8)  score++;
+            if (p.length >= 12) score++;
+            if (/[A-Z]/.test(p) && /[a-z]/.test(p)) score++;
+            if (/[0-9]/.test(p) || /[^A-Za-z0-9]/.test(p)) score++;
+            this.strength = score;
+            const labels = ['', 'Weak', 'Fair', 'Good', 'Strong'];
+            this.strengthLabel = labels[score] || '';
+        },
+
+        async submitRegister(event) {
+            this.loading = true;
+            this.errorMessage = '';
+
+            const form = document.getElementById('register-form');
+            const formData = new FormData(form);
+            const email = formData.get('email');
+            const password = formData.get('password');
+
+            try {
+                const response = await fetch('/auth/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email: email,
+                        password: password,
+                    }),
+                });
+
+                if (response.ok) {
+                    // Reload page to show success state
+                    window.location.href = '/auth/register?success=1';
+                } else if (response.status === 400) {
+                    const body = await response.json().catch(() => ({}));
+                    if (body.detail === 'REGISTER_USER_ALREADY_EXISTS') {
+                        this.errorMessage = 'An account with this email already exists.';
+                    } else if (body.detail === 'REGISTER_INVALID_PASSWORD') {
+                        this.errorMessage = 'Password does not meet security requirements.';
+                    } else {
+                        this.errorMessage = body.detail || 'Registration failed. Please try again.';
+                    }
+                } else {
+                    this.errorMessage = 'An unexpected error occurred. Please try again.';
+                }
+            } catch (err) {
+                this.errorMessage = 'Network error. Check your connection.';
+            } finally {
+                this.loading = false;
+            }
+        }
+    };
+}
+</script>
+{% endblock %}

@@ -12,8 +12,6 @@ Available enrichers:
   langdetect, with a configurable expected-language list that tags results as
   ``expected`` or not.  Accepts optional ``expected_languages`` (ISO 639-1
   list) at construction.
-- :class:`DanishLanguageDetector` — deprecated alias for
-  :class:`LanguageDetector`; kept for backwards compatibility.
 - :class:`NamedEntityExtractor` — extracts named entities and classifies
   actor roles in text (stub; full NER requires the ``nlp-ner`` extra).
 - :class:`PropagationEnricher` — GR-08: computes cross-arena temporal
@@ -31,10 +29,7 @@ from __future__ import annotations
 
 from issue_observatory.analysis.enrichments.base import ContentEnricher, EnrichmentError
 from issue_observatory.analysis.enrichments.coordination_detector import CoordinationDetector
-from issue_observatory.analysis.enrichments.language_detector import (
-    DanishLanguageDetector,
-    LanguageDetector,
-)
+from issue_observatory.analysis.enrichments.language_detector import LanguageDetector
 from issue_observatory.analysis.enrichments.named_entity_extractor import NamedEntityExtractor
 from issue_observatory.analysis.enrichments.propagation_detector import PropagationEnricher
 from issue_observatory.analysis.enrichments.sentiment_analyzer import SentimentAnalyzer
@@ -43,7 +38,6 @@ __all__ = [
     "ContentEnricher",
     "EnrichmentError",
     "LanguageDetector",
-    "DanishLanguageDetector",
     "NamedEntityExtractor",
     "PropagationEnricher",
     "CoordinationDetector",

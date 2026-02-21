@@ -23,9 +23,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from issue_observatory.arenas.rss_feeds.collector import RSSFeedsCollector
+from issue_observatory.config.settings import get_settings
+from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
@@ -183,6 +186,10 @@ def rss_feeds_collect_terms(
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "rss_feeds: collect_by_terms started — run=%s terms=%d tier=%s",
         collection_run_id,
@@ -190,6 +197,16 @@ def rss_feeds_collect_terms(
         tier,
     )
     _update_task_status(collection_run_id, _ARENA, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena=_ARENA,
+        platform="rss_feeds",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     # GR-01: read researcher-configured extra feed URLs from arenas_config.
     arenas_config = _load_arenas_config(query_design_id)
@@ -232,6 +249,16 @@ def rss_feeds_collect_terms(
         msg = str(exc)
         logger.error("rss_feeds: collection error for run=%s: %s", collection_run_id, msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena=_ARENA,
+            platform="rss_feeds",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -241,6 +268,16 @@ def rss_feeds_collect_terms(
         count,
     )
     _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena=_ARENA,
+        platform="rss_feeds",
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     return {
         "records_collected": count,
@@ -295,6 +332,10 @@ def rss_feeds_collect_actors(
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "rss_feeds: collect_by_actors started — run=%s actors=%d tier=%s",
         collection_run_id,
@@ -302,6 +343,16 @@ def rss_feeds_collect_actors(
         tier,
     )
     _update_task_status(collection_run_id, _ARENA, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena=_ARENA,
+        platform="rss_feeds",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     try:
         tier_enum = Tier(tier)
@@ -343,6 +394,16 @@ def rss_feeds_collect_actors(
         msg = str(exc)
         logger.error("rss_feeds: collection error for run=%s: %s", collection_run_id, msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena=_ARENA,
+            platform="rss_feeds",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -352,6 +413,16 @@ def rss_feeds_collect_actors(
         count,
     )
     _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena=_ARENA,
+        platform="rss_feeds",
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     return {
         "records_collected": count,

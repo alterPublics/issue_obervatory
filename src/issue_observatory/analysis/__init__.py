@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from issue_observatory.analysis._filters import build_content_filters, build_content_where
+from issue_observatory.analysis.coordination import get_coordination_events
 from issue_observatory.analysis.descriptive import (
-    DescriptiveStats,
     get_emergent_terms,
     get_engagement_distribution,
     get_run_summary,
@@ -30,7 +30,6 @@ __all__ = [
     "build_content_filters",
     "build_content_where",
     # descriptive
-    "DescriptiveStats",
     "get_volume_over_time",
     "get_top_actors",
     "get_top_actors_unified",
@@ -48,6 +47,8 @@ __all__ = [
     # propagation (GR-08)
     "get_propagation_flows",
     "PropagationEnricher",
+    # coordination (GR-11)
+    "get_coordination_events",
     # export
     "ContentExporter",
 ]

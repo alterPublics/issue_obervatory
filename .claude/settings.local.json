@@ -55,7 +55,8 @@
       "Bash(ruff check:*)",
       "WebFetch(domain:developers.tiktok.com)",
       "WebFetch(domain:docs.twitterapi.io)",
-      "Bash(git clone:*)"
+      "Bash(git clone:*)",
+      "Bash(awk:*)"
     ]
   }
 }

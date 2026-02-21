@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block title %}Scraping Jobs{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto space-y-6">
+
+    {# Page header #}
+    <div class="flex items-center justify-between">
+        <div>
+            <h1 class="text-xl font-bold text-gray-900">Scraping Jobs</h1>
+            <p class="text-sm text-gray-500 mt-0.5">Enrich collected content with full-text extraction</p>
+        </div>
+        <button type="button"
+                @click="$refs.createDialog.showModal()"
+                class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+            </svg>
+            New Scraping Job
+        </button>
+    </div>
+
+    {# Jobs table #}
+    <div class="bg-white rounded-lg shadow overflow-hidden">
+        <div id="jobs-container"
+             hx-get="/scraping-jobs/"
+             hx-trigger="load, jobCreated from:body, every 15s"
+             hx-target="#jobs-container"
+             hx-swap="innerHTML">
+            {# Loading state #}
+            <div class="px-6 py-12 text-center">
+                <div class="flex flex-col items-center gap-3">
+                    {% include '_partials/loading_spinner.html' %}
+                    <p class="text-sm text-gray-400">Loading scraping jobs...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+{# Create job dialog #}
+<dialog x-ref="createDialog"
+        class="bg-white rounded-lg shadow-xl max-w-lg w-full p-0 backdrop:bg-black/50"
+        @click.outside="$el.close()">
+    <div class="px-6 py-5 border-b border-gray-200">
+        <h2 class="text-lg font-semibold text-gray-900">Create Scraping Job</h2>
+        <p class="text-sm text-gray-500 mt-1">Extract full-text content from URLs</p>
+    </div>
+
+    <form hx-post="/scraping-jobs/"
+          hx-target="#jobs-container"
+          hx-swap="innerHTML"
+          @htmx:after-request="$refs.createDialog.close(); htmx.trigger(document.body, 'jobCreated')"
+          class="px-6 py-5 space-y-4">
+
+        {# Source type selection #}
+        <div x-data="{ sourceType: 'collection_run' }">
+            <label class="block text-sm font-medium text-gray-700 mb-2">Source</label>
+            <div class="space-y-2">
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="radio"
+                           name="source_type"
+                           value="collection_run"
+                           x-model="sourceType"
+                           class="text-blue-600 focus:ring-blue-500">
+                    <span class="text-sm text-gray-700">Collection run</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="radio"
+                           name="source_type"
+                           value="manual_urls"
+                           x-model="sourceType"
+                           class="text-blue-600 focus:ring-blue-500">
+                    <span class="text-sm text-gray-700">Manual URL list</span>
+                </label>
+            </div>
+
+            {# Collection run selector #}
+            <div x-show="sourceType === 'collection_run'" x-cloak class="mt-3">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Collection Run</label>
+                <input type="text"
+                       name="source_collection_run_id"
+                       placeholder="Run UUID"
+                       class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+
+            {# Manual URL input #}
+            <div x-show="sourceType === 'manual_urls'" x-cloak class="mt-3">
+                <label class="block text-sm font-medium text-gray-700 mb-1">URLs (one per line)</label>
+                <textarea name="source_urls"
+                          rows="6"
+                          placeholder="https://example.com/page1&#10;https://example.com/page2"
+                          class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono resize-y"></textarea>
+            </div>
+        </div>
+
+        {# Advanced options #}
+        <details class="border border-gray-200 rounded-md">
+            <summary class="px-3 py-2 text-sm font-medium text-gray-700 cursor-pointer hover:bg-gray-50">
+                Advanced options
+            </summary>
+            <div class="px-3 py-3 border-t border-gray-200 space-y-3">
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-medium text-gray-600 mb-1">Delay min (sec)</label>
+                        <input type="number"
+                               name="delay_min"
+                               value="1"
+                               min="0"
+                               step="0.5"
+                               class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-600 mb-1">Delay max (sec)</label>
+                        <input type="number"
+                               name="delay_max"
+                               value="3"
+                               min="0"
+                               step="0.5"
+                               class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Timeout (sec)</label>
+                    <input type="number"
+                           name="timeout_seconds"
+                           value="30"
+                           min="5"
+                           max="120"
+                           class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
+                </div>
+                <div class="space-y-2">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox"
+                               name="respect_robots_txt"
+                               checked
+                               class="text-blue-600 focus:ring-blue-500 rounded">
+                        <span class="text-xs text-gray-700">Respect robots.txt</span>
+                    </label>
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox"
+                               name="use_playwright_fallback"
+                               class="text-blue-600 focus:ring-blue-500 rounded">
+                        <span class="text-xs text-gray-700">Use Playwright for JS-rendered pages (slower)</span>
+                    </label>
+                </div>
+            </div>
+        </details>
+
+        {# Submit buttons #}
+        <div class="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
+            <button type="button"
+                    @click="$refs.createDialog.close()"
+                    class="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
+                Cancel
+            </button>
+            <button type="submit"
+                    class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+                Create Job
+            </button>
+        </div>
+
+    </form>
+</dialog>
+
+{% endblock %}

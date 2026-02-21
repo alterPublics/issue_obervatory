@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -39,25 +38,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from issue_observatory.analysis._filters import build_content_where
 
 logger = structlog.get_logger(__name__)
-
-# ---------------------------------------------------------------------------
-# Typed container for the API layer
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class DescriptiveStats:
-    """Aggregated descriptive statistics returned to the API layer.
-
-    Populated by the individual query functions below and serialized to JSON
-    by the route handler.  All datetime values are stored as ISO 8601 strings.
-    """
-
-    volume_over_time: list[dict[str, Any]] = field(default_factory=list)
-    top_actors: list[dict[str, Any]] = field(default_factory=list)
-    top_terms: list[dict[str, Any]] = field(default_factory=list)
-    engagement_distribution: dict[str, Any] = field(default_factory=dict)
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -1431,6 +1411,84 @@ async def get_propagation_patterns(
         }
         for row in rows
     ]
+
+
+async def get_sentiment_distribution(
+    db: AsyncSession,
+    run_id: uuid.UUID,
+) -> dict[str, Any]:
+    """Query sentiment enrichment results and return sentiment distribution.
+
+    Extracts the ``raw_metadata.enrichments.sentiment_analyzer`` field from
+    all records in the specified collection run and aggregates sentiment scores.
+    Returns empty counts when no sentiment enrichment data exists.
+
+    Args:
+        db: Active async database session.
+        run_id: UUID of the collection run to query.
+
+    Returns:
+        Dict with sentiment distribution and average score::
+
+            {
+              "positive": 145,
+              "negative": 67,
+              "neutral": 423,
+              "average_score": 0.12,
+              "total_records": 635
+            }
+
+        All counts default to 0 when no enrichment data exists.
+    """
+    params: dict[str, Any] = {"run_id": str(run_id)}
+
+    # Count records by sentiment polarity (positive, negative, neutral).
+    # The sentiment_analyzer enricher stores a 'sentiment' string field that
+    # can be 'positive', 'negative', or 'neutral', plus a 'score' float.
+    sql = text(
+        """
+        SELECT
+            raw_metadata->'enrichments'->'sentiment_analyzer'->>'sentiment' AS sentiment,
+            COUNT(*) AS cnt,
+            AVG((raw_metadata->'enrichments'->'sentiment_analyzer'->>'score')::float) AS avg_score
+        FROM content_records
+        WHERE collection_run_id = :run_id
+          AND raw_metadata->'enrichments'->'sentiment_analyzer' IS NOT NULL
+        GROUP BY sentiment
+        """
+    )
+
+    result = await db.execute(sql, params)
+    rows = result.fetchall()
+
+    # Build result dict with default zero counts
+    distribution: dict[str, int] = {
+        "positive": 0,
+        "negative": 0,
+        "neutral": 0,
+    }
+    total_records = 0
+    weighted_sum = 0.0
+
+    for row in rows:
+        sentiment = row.sentiment or "neutral"
+        count = int(row.cnt)
+        avg_score_for_sentiment = float(row.avg_score or 0.0)
+
+        if sentiment in distribution:
+            distribution[sentiment] = count
+            total_records += count
+            weighted_sum += avg_score_for_sentiment * count
+
+    average_score = weighted_sum / total_records if total_records > 0 else 0.0
+
+    return {
+        "positive": distribution["positive"],
+        "negative": distribution["negative"],
+        "neutral": distribution["neutral"],
+        "average_score": round(average_score, 3),
+        "total_records": total_records,
+    }
 
 
 async def get_coordination_signals(

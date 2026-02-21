@@ -438,6 +438,7 @@ async def zeeschuimer_import_dataset(
             description="Platform module identifier (e.g., linkedin.com, twitter.com)",
         ),
     ],
+    pseudonymise: str | None = None,
 ) -> dict:
     """Upload Zeeschuimer NDJSON data for import (4CAT-compatible).
 
@@ -456,6 +457,10 @@ async def zeeschuimer_import_dataset(
         db: Database session.
         current_user: Authenticated active user.
         x_zeeschuimer_platform: Platform module identifier from header.
+        pseudonymise: Set to ``"none"`` to disable author pseudonymization.
+            When omitted or set to any other value, SHA-256 pseudonymization
+            is applied (default). The researcher assumes full GDPR
+            responsibility when disabling pseudonymization.
 
     Returns:
         JSON response with status, key, and URL for polling:
@@ -547,6 +552,21 @@ async def zeeschuimer_import_dataset(
         await db.commit()
 
         # Process the file synchronously (can be moved to Celery task for large files)
+        # Resolve pseudonymization preference:
+        # 1. Explicit query param overrides everything
+        # 2. Fall back to user preference in metadata
+        # 3. Default: pseudonymization ON
+        if pseudonymise == "none":
+            skip_pseudo = True
+        elif pseudonymise is not None:
+            skip_pseudo = False
+        else:
+            user_prefs = (current_user.metadata_ or {}).get(
+                "preferences", {}
+            )
+            skip_pseudo = user_prefs.get(
+                "skip_pseudonymization", False
+            )
         processor = ZeeschuimerProcessor(db)
         result = await processor.process_file(
             file_path=temp_path,
@@ -554,6 +574,7 @@ async def zeeschuimer_import_dataset(
             io_platform=io_platform,
             zeeschuimer_import_id=zeeschuimer_import.id,
             user_id=current_user.id,
+            skip_pseudonymization=skip_pseudo,
         )
 
         # Update ZeeschuimerImport status

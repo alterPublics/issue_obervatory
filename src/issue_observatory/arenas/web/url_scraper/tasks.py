@@ -25,10 +25,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from issue_observatory.arenas.web.url_scraper.collector import UrlScraperCollector
 from issue_observatory.core.exceptions import ArenaCollectionError
+from issue_observatory.config.settings import get_settings
+from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -151,6 +154,10 @@ def url_scraper_collect_terms(
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "url_scraper: collect_by_terms started — run=%s urls=%d tier=%s",
         collection_run_id,
@@ -158,6 +165,16 @@ def url_scraper_collect_terms(
         tier,
     )
     _update_task_status(collection_run_id, _ARENA, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="web",
+        platform="url_scraper",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     try:
         tier_enum = Tier(tier)
@@ -165,6 +182,16 @@ def url_scraper_collect_terms(
         msg = f"url_scraper: invalid tier '{tier}'. Valid values: 'free', 'medium'."
         logger.error(msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="web",
+            platform="url_scraper",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
     collector = UrlScraperCollector()
@@ -190,6 +217,16 @@ def url_scraper_collect_terms(
             msg,
         )
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="web",
+            platform="url_scraper",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -199,6 +236,16 @@ def url_scraper_collect_terms(
         count,
     )
     _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="web",
+        platform="url_scraper",
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     return {
         "records_collected": count,
@@ -254,6 +301,10 @@ def url_scraper_collect_actors(
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "url_scraper: collect_by_actors started — run=%s actors=%d tier=%s",
         collection_run_id,
@@ -261,6 +312,16 @@ def url_scraper_collect_actors(
         tier,
     )
     _update_task_status(collection_run_id, _ARENA, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="web",
+        platform="url_scraper",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     try:
         tier_enum = Tier(tier)
@@ -268,6 +329,16 @@ def url_scraper_collect_actors(
         msg = f"url_scraper: invalid tier '{tier}'. Valid values: 'free', 'medium'."
         logger.error(msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="web",
+            platform="url_scraper",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
     collector = UrlScraperCollector()
@@ -291,6 +362,16 @@ def url_scraper_collect_actors(
             msg,
         )
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="web",
+            platform="url_scraper",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -300,6 +381,16 @@ def url_scraper_collect_actors(
         count,
     )
     _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="web",
+        platform="url_scraper",
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     return {
         "records_collected": count,

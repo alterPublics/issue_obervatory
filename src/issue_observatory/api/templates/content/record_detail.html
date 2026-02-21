@@ -164,6 +164,121 @@
     </div>
     {% endif %}
 
+    {# Enrichments section (SB-15) #}
+    {% set enrichments = record.metadata.enrichments | default({}) if record.metadata else {} %}
+    {% if enrichments %}
+    <div class="border-t border-gray-200 pt-4">
+        <h3 class="text-xs font-semibold text-gray-700 uppercase tracking-wider mb-3">Enrichments</h3>
+        <div class="space-y-3">
+
+            {# Language detection #}
+            {% if enrichments.language_detector | default({}) %}
+            <div class="bg-gray-50 rounded-md px-3 py-2 border border-gray-200">
+                <div class="flex items-center justify-between">
+                    <span class="text-xs font-medium text-gray-600">Language</span>
+                    <div class="flex items-center gap-2">
+                        <span class="text-sm font-medium text-gray-900">
+                            {{ enrichments.language_detector.language | default('unknown') | upper }}
+                        </span>
+                        {% if enrichments.language_detector.confidence | default(0) %}
+                        <span class="text-xs text-gray-500">
+                            ({{ (enrichments.language_detector.confidence * 100) | round(1) }}% confidence)
+                        </span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            {# Sentiment analysis #}
+            {% if enrichments.sentiment_analyzer | default({}) %}
+            <div class="bg-gray-50 rounded-md px-3 py-2 border border-gray-200">
+                <div class="flex items-center justify-between">
+                    <span class="text-xs font-medium text-gray-600">Sentiment</span>
+                    <div class="flex items-center gap-2">
+                        {% set sentiment_score = enrichments.sentiment_analyzer.score | default(0) %}
+                        {% set sentiment_label = enrichments.sentiment_analyzer.label | default('neutral') %}
+                        <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium
+                            {% if sentiment_label == 'positive' %}bg-green-100 text-green-800
+                            {% elif sentiment_label == 'negative' %}bg-red-100 text-red-800
+                            {% else %}bg-gray-100 text-gray-700{% endif %}">
+                            {{ sentiment_label | capitalize }}
+                        </span>
+                        <span class="text-xs text-gray-500 font-mono">
+                            {{ sentiment_score | round(2) }}
+                        </span>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            {# Named entity extraction #}
+            {% if enrichments.named_entity_extractor | default({}) and enrichments.named_entity_extractor.entities | default([]) %}
+            <div class="bg-gray-50 rounded-md px-3 py-2 border border-gray-200">
+                <div class="mb-1.5">
+                    <span class="text-xs font-medium text-gray-600">Named Entities</span>
+                    <span class="text-xs text-gray-400 ml-1">({{ enrichments.named_entity_extractor.entities | length }})</span>
+                </div>
+                <div class="flex flex-wrap gap-1.5">
+                    {% for entity in enrichments.named_entity_extractor.entities[:20] %}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs
+                        {% if entity.label == 'PER' or entity.label == 'PERSON' %}bg-blue-100 text-blue-700 border border-blue-200
+                        {% elif entity.label == 'ORG' or entity.label == 'ORGANIZATION' %}bg-purple-100 text-purple-700 border border-purple-200
+                        {% elif entity.label == 'LOC' or entity.label == 'LOCATION' %}bg-green-100 text-green-700 border border-green-200
+                        {% else %}bg-gray-100 text-gray-700 border border-gray-200{% endif %}">
+                        <span class="font-medium">{{ entity.text }}</span>
+                        <span class="text-xs opacity-60">{{ entity.label }}</span>
+                    </span>
+                    {% endfor %}
+                    {% if enrichments.named_entity_extractor.entities | length > 20 %}
+                    <span class="text-xs text-gray-400">
+                        +{{ enrichments.named_entity_extractor.entities | length - 20 }} more
+                    </span>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+
+            {# Coordination detection #}
+            {% if enrichments.coordination | default({}) and enrichments.coordination.flagged | default(false) %}
+            <div class="bg-amber-50 rounded-md px-3 py-2 border border-amber-200">
+                <div class="flex items-center gap-2">
+                    <svg class="w-4 h-4 text-amber-600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                    </svg>
+                    <div class="flex-1">
+                        <span class="text-xs font-medium text-amber-800">Coordinated posting detected</span>
+                        {% if enrichments.coordination.coordination_score | default(0) %}
+                        <span class="text-xs text-amber-600 ml-2">
+                            Score: {{ (enrichments.coordination.coordination_score * 100) | round(1) }}
+                        </span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            {# Propagation detection #}
+            {% if enrichments.propagation | default({}) and enrichments.propagation.sequence_position | default(0) %}
+            <div class="bg-blue-50 rounded-md px-3 py-2 border border-blue-200">
+                <div class="flex items-center justify-between">
+                    <span class="text-xs font-medium text-gray-600">Propagation Sequence</span>
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs text-blue-700">
+                            Position {{ enrichments.propagation.sequence_position }}
+                            {% if enrichments.propagation.total_in_sequence | default(0) %}
+                                of {{ enrichments.propagation.total_in_sequence }}
+                            {% endif %}
+                        </span>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+        </div>
+    </div>
+    {% endif %}
+
     {# Raw JSON viewer — Alpine-toggled #}
     {% if record.metadata | default({}) %}
     <div class="border-t border-gray-200 pt-3">

@@ -25,10 +25,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from issue_observatory.arenas.facebook.collector import FacebookCollector
+from issue_observatory.config.settings import get_settings
 from issue_observatory.core.credential_pool import CredentialPool
+from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
@@ -159,6 +162,10 @@ def facebook_collect_terms(
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "facebook: collect_by_terms started — run=%s tier=%s terms=%d",
         collection_run_id,
@@ -166,6 +173,16 @@ def facebook_collect_terms(
         len(terms),
     )
     _update_task_status(collection_run_id, _ARENA, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="facebook",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     credential_pool = CredentialPool()
     collector = FacebookCollector(credential_pool=credential_pool)
@@ -186,6 +203,16 @@ def facebook_collect_terms(
         msg = f"facebook: no credential available for tier={tier}: {exc}"
         logger.error(msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="facebook",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM) from exc
     except ArenaRateLimitError:
         logger.warning(
@@ -197,6 +224,16 @@ def facebook_collect_terms(
         msg = str(exc)
         logger.error("facebook: collection error for run=%s: %s", collection_run_id, msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="facebook",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -206,6 +243,16 @@ def facebook_collect_terms(
         count,
     )
     _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="facebook",
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
     return {
         "records_collected": count,
         "status": "completed",
@@ -260,6 +307,10 @@ def facebook_collect_actors(
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "facebook: collect_by_actors started — run=%s tier=%s actors=%d",
         collection_run_id,
@@ -267,6 +318,16 @@ def facebook_collect_actors(
         len(actor_ids),
     )
     _update_task_status(collection_run_id, _ARENA, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="facebook",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     credential_pool = CredentialPool()
     collector = FacebookCollector(credential_pool=credential_pool)
@@ -286,6 +347,16 @@ def facebook_collect_actors(
         msg = f"facebook: no credential available for tier={tier}: {exc}"
         logger.error(msg)
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="facebook",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM) from exc
     except ArenaRateLimitError:
         logger.warning(
@@ -299,6 +370,16 @@ def facebook_collect_actors(
             "facebook: actor collection error for run=%s: %s", collection_run_id, msg
         )
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="facebook",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
         raise
 
     count = len(records)
@@ -308,6 +389,16 @@ def facebook_collect_actors(
         count,
     )
     _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="facebook",
+        status="completed",
+        records_collected=count,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
     return {
         "records_collected": count,
         "status": "completed",
