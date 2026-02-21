@@ -54,7 +54,8 @@
       "Bash(.venv/bin/alembic current:*)",
       "Bash(ruff check:*)",
       "WebFetch(domain:developers.tiktok.com)",
-      "WebFetch(domain:docs.twitterapi.io)"
+      "WebFetch(domain:docs.twitterapi.io)",
+      "Bash(git clone:*)"
     ]
   }
 }

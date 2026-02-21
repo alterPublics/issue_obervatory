@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         CreditTransaction,
     )
     from issue_observatory.core.models.query_design import QueryDesign
+    from issue_observatory.core.models.zeeschuimer_import import ZeeschuimerImport
 
 
 class User(Base):
@@ -116,6 +117,11 @@ class User(Base):
     credit_transactions: Mapped[list[CreditTransaction]] = relationship(
         "CreditTransaction",
         back_populates="user",
+    )
+    zeeschuimer_imports: Mapped[list[ZeeschuimerImport]] = relationship(
+        "ZeeschuimerImport",
+        foreign_keys="ZeeschuimerImport.initiated_by",
+        back_populates="initiator",
     )
 
     def __repr__(self) -> str:

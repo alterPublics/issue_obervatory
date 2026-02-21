@@ -1,19 +1,19 @@
-"""Data import routes — multipart file upload for CSV and NDJSON content.
+"""Data import routes — multipart file upload and Zeeschuimer integration.
 
-Supports two collection pathways that cannot be automated via ArenaCollector:
+Supports multiple collection pathways that cannot be automated via ArenaCollector:
 
-- **Zeeschuimer** (LinkedIn, TikTok, Instagram): NDJSON exported from the
-  Firefox browser extension.
-- **4CAT** pipeline exports: CSV or NDJSON files produced by 4CAT analytical
-  tooling.
-- **Manual CSV**: spreadsheet exports with a known column schema.
-- **Manual NDJSON**: line-delimited JSON with a ``platform`` field.
+- **Zeeschuimer protocol** (4CAT-compatible): Raw NDJSON stream from browser extension
+  - ``POST /api/import-dataset/`` — 4CAT-compatible upload endpoint
+  - ``GET /api/check-query/`` — 4CAT-compatible status polling
+  - Supports LinkedIn, Twitter/X, Instagram, TikTok, Threads
+- **Multipart file upload**: CSV or NDJSON file upload
+  - ``POST /content/import`` — Manual file upload with form data
+- **4CAT** pipeline exports: CSV or NDJSON files produced by 4CAT analytical tooling
+- **Manual CSV**: spreadsheet exports with a known column schema
+- **Manual NDJSON**: line-delimited JSON with a ``platform`` field
 
-Routes:
-    POST /content/import — multipart file upload (NDJSON or CSV)
-
-File size limit: 50 MB.  Per-row errors are collected and returned; if more
-than 10% of rows fail the endpoint returns HTTP 422 instead of HTTP 200.
+File size limit: 50 MB for multipart uploads. Per-row errors are collected and
+returned; if more than 10% of rows fail the endpoint returns HTTP 422.
 
 The ``collection_method`` field is injected into each record's ``raw_metadata``
 so downstream analysis can distinguish import pathway from API collection.
@@ -24,11 +24,21 @@ from __future__ import annotations
 import csv
 import io
 import json
-import logging
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+import structlog
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,7 +47,7 @@ from issue_observatory.core.database import get_db
 from issue_observatory.core.models.users import User
 from issue_observatory.core.normalizer import Normalizer
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 
@@ -150,7 +160,8 @@ async def _bulk_insert(
     """Bulk-insert content records, skipping duplicates by content_hash.
 
     Uses ``INSERT ... ON CONFLICT DO NOTHING`` against the
-    ``content_records`` table keyed on ``content_hash``.
+    ``content_records`` table keyed on ``content_hash``. The conflict target
+    must match the partial unique index: ``WHERE content_hash IS NOT NULL``.
 
     Args:
         db: Active async DB session.
@@ -176,10 +187,11 @@ async def _bulk_insert(
         placeholders = ", ".join(f":{col}" for col in columns)
         col_list = ", ".join(columns)
 
+        # BLOCKER-1: Use ON CONFLICT with WHERE clause to match partial unique index
         stmt = text(
             f"INSERT INTO content_records ({col_list}) "  # noqa: S608
             f"VALUES ({placeholders}) "
-            f"ON CONFLICT (content_hash) DO NOTHING"
+            f"ON CONFLICT (content_hash) WHERE content_hash IS NOT NULL DO NOTHING"
         )
         result = await db.execute(stmt, {col: record[col] for col in columns})
         if result.rowcount == 1:
@@ -380,4 +392,282 @@ async def import_content(
         "imported": inserted,
         "skipped": skipped,
         "errors": errors,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Zeeschuimer integration routes (4CAT-compatible protocol)
+# ---------------------------------------------------------------------------
+
+# Platform module_id to IO platform_name mapping (Section 2.3 of spec)
+_ZEESCHUIMER_PLATFORM_MAP: dict[str, str] = {
+    "linkedin.com": "linkedin",
+    "twitter.com": "x_twitter",
+    "instagram.com": "instagram",
+    "tiktok.com": "tiktok",
+    "tiktok-comments": "tiktok_comments",
+    "threads.net": "threads",
+}
+
+# Supported platforms for this release
+_SUPPORTED_ZEESCHUIMER_PLATFORMS: frozenset[str] = frozenset({
+    "linkedin.com",
+    "twitter.com",
+    "instagram.com",
+    "tiktok.com",
+    "tiktok-comments",
+    "threads.net",
+})
+
+
+@router.post(
+    "/import-dataset/",
+    tags=["zeeschuimer"],
+    summary="Upload Zeeschuimer NDJSON data (4CAT-compatible endpoint)",
+    status_code=status.HTTP_200_OK,
+)
+async def zeeschuimer_import_dataset(
+    request: Annotated[Request, Depends()],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    x_zeeschuimer_platform: Annotated[
+        str,
+        Header(
+            ...,
+            alias="X-Zeeschuimer-Platform",
+            description="Platform module identifier (e.g., linkedin.com, twitter.com)",
+        ),
+    ],
+) -> dict:
+    """Upload Zeeschuimer NDJSON data for import (4CAT-compatible).
+
+    This endpoint implements the 4CAT protocol used by the Zeeschuimer browser
+    extension. The request body must be raw NDJSON (not multipart form data).
+
+    Each line in the NDJSON file is a Zeeschuimer item with envelope fields
+    (timestamp_collected, source_platform, source_platform_url, etc.) and a
+    nested ``data`` field containing the raw platform JSON.
+
+    The endpoint streams the request body to a temporary file (4096-byte chunks)
+    to handle large uploads without loading everything into memory.
+
+    Args:
+        request: FastAPI request object (for body streaming).
+        db: Database session.
+        current_user: Authenticated active user.
+        x_zeeschuimer_platform: Platform module identifier from header.
+
+    Returns:
+        JSON response with status, key, and URL for polling:
+        ``{"status": "queued", "key": "{import_key}", "url": "/content/?import_id={key}"}``
+
+    Raises:
+        HTTPException: 404 if platform is not supported.
+        HTTPException: 500 on processing errors.
+    """
+    from datetime import datetime
+    from datetime import timezone as dt_timezone
+    from pathlib import Path
+    import tempfile
+    import uuid as uuid_module
+
+    from issue_observatory.core.models.zeeschuimer_import import ZeeschuimerImport
+    from issue_observatory.imports.zeeschuimer import ZeeschuimerProcessor
+
+    # Validate platform
+    if x_zeeschuimer_platform not in _SUPPORTED_ZEESCHUIMER_PLATFORMS:
+        logger.warning(
+            "zeeschuimer_import.unsupported_platform",
+            platform=x_zeeschuimer_platform,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": (
+                    f"Unknown platform or source format '{x_zeeschuimer_platform}'. "
+                    f"Supported platforms: {', '.join(sorted(_SUPPORTED_ZEESCHUIMER_PLATFORMS))}"
+                )
+            },
+        )
+
+    io_platform = _ZEESCHUIMER_PLATFORM_MAP[x_zeeschuimer_platform]
+    import_key = f"import-{uuid_module.uuid4().hex[:12]}"
+
+    logger.info(
+        "zeeschuimer_import.started",
+        key=import_key,
+        platform=io_platform,
+        user_id=str(current_user.id),
+    )
+
+    # BLOCKER-2: Create a ZeeschuimerImport record to track this import
+    zeeschuimer_import = ZeeschuimerImport(
+        key=import_key,
+        platform=x_zeeschuimer_platform,
+        initiated_by=current_user.id,
+        query_design_id=None,  # Can be extended later
+        status="queued",
+        started_at=datetime.now(dt_timezone.utc),
+    )
+    db.add(zeeschuimer_import)
+    await db.commit()
+    await db.refresh(zeeschuimer_import)
+
+    # Stream request body to temporary file (4096-byte chunks)
+    temp_file = tempfile.NamedTemporaryFile(
+        mode="wb",
+        suffix=".ndjson",
+        prefix=f"zeeschuimer_{io_platform}_",
+        delete=False,
+    )
+    temp_path = Path(temp_file.name)
+
+    try:
+        bytes_written = 0
+        async for chunk in request.stream():
+            temp_file.write(chunk)
+            bytes_written += len(chunk)
+        temp_file.close()
+
+        logger.info(
+            "zeeschuimer_import.stream_complete",
+            key=import_key,
+            bytes=bytes_written,
+        )
+
+        # Count total lines for progress tracking
+        with temp_path.open("r", encoding="utf-8", errors="replace") as f:
+            rows_total = sum(1 for line in f if line.strip())
+
+        # Update ZeeschuimerImport with file info
+        zeeschuimer_import.rows_total = rows_total
+        zeeschuimer_import.file_path = str(temp_path)
+        zeeschuimer_import.status = "processing"
+        zeeschuimer_import.metadata = {"file_size_bytes": bytes_written}
+        await db.commit()
+
+        # Process the file synchronously (can be moved to Celery task for large files)
+        processor = ZeeschuimerProcessor(db)
+        result = await processor.process_file(
+            file_path=temp_path,
+            zeeschuimer_platform=x_zeeschuimer_platform,
+            io_platform=io_platform,
+            zeeschuimer_import_id=zeeschuimer_import.id,
+            user_id=current_user.id,
+        )
+
+        # Update ZeeschuimerImport status
+        zeeschuimer_import.status = "complete" if result["imported"] > 0 else "failed"
+        zeeschuimer_import.rows_processed = rows_total
+        zeeschuimer_import.rows_imported = result["imported"]
+        zeeschuimer_import.completed_at = datetime.now(dt_timezone.utc)
+        if result.get("errors"):
+            zeeschuimer_import.error_message = f"{len(result['errors'])} row errors"
+        await db.commit()
+
+        logger.info(
+            "zeeschuimer_import.complete",
+            key=import_key,
+            imported=result["imported"],
+            skipped=result["skipped"],
+            errors=len(result.get("errors", [])),
+        )
+
+        # Return 4CAT-compatible response
+        return {
+            "status": "complete" if result["imported"] > 0 else "queued",
+            "key": import_key,
+            "url": f"/content/?import_id={import_key}",
+            "done": True,
+            "rows": result["imported"] + result["skipped"],
+            "datasource": io_platform,
+        }
+
+    except Exception as exc:
+        logger.exception(
+            "zeeschuimer_import.error",
+            key=import_key,
+            error=str(exc),
+        )
+
+        # Update ZeeschuimerImport to failed
+        zeeschuimer_import.status = "failed"
+        zeeschuimer_import.completed_at = datetime.now(dt_timezone.utc)
+        zeeschuimer_import.error_message = str(exc)
+        await db.commit()
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Import processing failed: {exc}",
+        ) from exc
+
+    finally:
+        # Clean up temp file after processing
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+@router.get(
+    "/check-query/",
+    tags=["zeeschuimer"],
+    summary="Check Zeeschuimer import status (4CAT-compatible endpoint)",
+    status_code=status.HTTP_200_OK,
+)
+async def zeeschuimer_check_query(
+    key: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],  # BLOCKER-3
+) -> dict:
+    """Poll the status of a Zeeschuimer import (4CAT-compatible).
+
+    This endpoint is compatible with 4CAT's polling protocol. Zeeschuimer calls
+    this endpoint repeatedly (every 1 second) until ``done`` is ``true``.
+
+    Args:
+        key: Import key returned by the upload endpoint.
+        db: Database session.
+        current_user: Authenticated active user (required).
+
+    Returns:
+        JSON response with status:
+        ``{"done": bool, "status": str, "rows": int, "datasource": str, "url": str}``
+
+    Raises:
+        HTTPException: 404 if import key is not found.
+    """
+    from sqlalchemy import select
+
+    from issue_observatory.core.models.zeeschuimer_import import ZeeschuimerImport
+
+    # BLOCKER-2: Query ZeeschuimerImport from database
+    result = await db.execute(
+        select(ZeeschuimerImport).where(ZeeschuimerImport.key == key)
+    )
+    zeeschuimer_import = result.scalar_one_or_none()
+
+    if not zeeschuimer_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": f"Import key '{key}' not found."},
+        )
+
+    # Map IO platform name from Zeeschuimer module_id
+    io_platform = _ZEESCHUIMER_PLATFORM_MAP.get(
+        zeeschuimer_import.platform, zeeschuimer_import.platform
+    )
+
+    # Determine if import is done
+    done = zeeschuimer_import.status in ("complete", "failed")
+
+    # Return status (done or in-progress)
+    return {
+        "done": done,
+        "status": zeeschuimer_import.status,
+        "rows": zeeschuimer_import.rows_total,
+        "datasource": io_platform,
+        "url": f"/content/?import_id={key}",
+        "imported": zeeschuimer_import.rows_imported,
+        "skipped": zeeschuimer_import.rows_total - zeeschuimer_import.rows_imported,
+        "errors": 0,  # Could parse from error_message if needed
+        "progress_percent": zeeschuimer_import.progress_percent,
     }

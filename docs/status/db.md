@@ -14,6 +14,9 @@
 - [x] `010_add_target_arenas_to_search_terms` — adds `target_arenas JSONB NULL` to `search_terms`; implements YF-01 per-arena search term scoping (2026-02-19)
 - [x] `011_add_gin_index_target_arenas` — adds GIN index on `search_terms.target_arenas` for YF-01 query performance (2026-02-19)
 - [x] `012_add_codebook_entries` — creates `codebook_entries` table for managing qualitative coding schemes (SB-16); query-design-scoped or global codebooks (2026-02-20)
+- [x] `013_add_translations_to_search_terms` — adds `translations JSONB` column to `search_terms` for multilingual query support (IP2-052)
+- [x] `014_add_zeeschuimer_imports_table` — creates `zeeschuimer_imports` table for tracking manual NDJSON uploads from Zeeschuimer browser extension (2026-02-21)
+- [x] `015_make_content_hash_unique` — replaces non-unique B-tree index on `content_records.content_hash` with a unique partial index (`WHERE content_hash IS NOT NULL`) to support `ON CONFLICT (content_hash) DO NOTHING` in Zeeschuimer import INSERTs (BLOCKER-1 fix, 2026-02-21)
 
 ## Models (Task 0.2 — COMPLETE)
 
@@ -26,6 +29,7 @@
 - [x] `core/models/credentials.py` — `ApiCredential`
 - [x] `core/models/annotations.py` — `ContentAnnotation` (IP2-043)
 - [x] `core/models/codebook.py` — `CodebookEntry` (SB-16)
+- [x] `core/models/zeeschuimer_import.py` — `ZeeschuimerImport` (2026-02-21)
 - [x] `core/models/__init__.py` — all models exported for Alembic discovery and application use
 - [x] `core/database.py` — async engine, `AsyncSessionLocal`, `get_db()` FastAPI dependency
 
@@ -118,7 +122,7 @@ All indexes are created on the parent table and inherited by all partitions
 | `idx_content_arena` | B-tree | `arena` |
 | `idx_content_published` | B-tree | `published_at` |
 | `idx_content_query` | B-tree | `query_design_id` |
-| `idx_content_hash` | B-tree | `content_hash` |
+| `idx_content_hash_unique` | B-tree (unique partial) | `content_hash WHERE content_hash IS NOT NULL` |
 | `idx_content_author` | B-tree | `author_id` |
 | `idx_content_terms` | GIN | `search_terms_matched` |
 | `idx_content_metadata` | GIN | `raw_metadata` |
@@ -738,3 +742,133 @@ The actor detail/edit form (`templates/actors/detail.html` or equivalent) should
 - When toggled to `True`, display a confirmation dialog:
   > "Are you sure? Setting this actor as a public figure will store their platform username in plain text in collected content records. This is a GDPR-significant action. Confirm only for publicly elected or appointed officials."
 - API call on save: `PATCH /actors/{id}` with body `{"public_figure": true}` or `{"public_figure": false}`.
+
+---
+
+## Zeeschuimer Import Integration — Data Layer (COMPLETE — 2026-02-21)
+
+### Deliverables
+
+- [x] `core/models/zeeschuimer_import.py` — `ZeeschuimerImport` ORM model
+- [x] `core/models/__init__.py` — `ZeeschuimerImport` exported
+- [x] `alembic/versions/014_add_zeeschuimer_imports_table.py` — reversible migration
+- [x] `core/models/users.py` — reverse relationship `zeeschuimer_imports` added to `User`
+- [x] `core/models/query_design.py` — reverse relationship `zeeschuimer_imports` added to `QueryDesign`
+
+### Schema Design
+
+**Table**: `zeeschuimer_imports`
+
+Tracks manual data imports from the Zeeschuimer browser extension. Each record represents a single NDJSON file upload from Zeeschuimer.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | UUID | PRIMARY KEY | Application-generated via `gen_random_uuid()` |
+| `key` | VARCHAR(100) | NOT NULL, UNIQUE, indexed | Short identifier for Zeeschuimer polling (e.g., "import-abc123"). Returned to Zeeschuimer in upload response and used in `/api/check-query/?key={key}` |
+| `initiated_by` | UUID | FK `users(id) ON DELETE RESTRICT`, NOT NULL, indexed | User who initiated the import |
+| `query_design_id` | UUID | FK `query_designs(id) ON DELETE SET NULL`, NULL, indexed | Optional association with a query design for organization. NULL = orphan import |
+| `platform` | VARCHAR(50) | NOT NULL, indexed | Zeeschuimer module_id as received via `X-Zeeschuimer-Platform` header (e.g., "linkedin.com", "twitter.com") |
+| `status` | VARCHAR(20) | NOT NULL, indexed, default `'queued'` | Import status: `queued` → `processing` → `complete` or `failed` |
+| `rows_total` | INTEGER | NOT NULL, default `0` | Total number of NDJSON lines in the upload |
+| `rows_processed` | INTEGER | NOT NULL, default `0` | Number of lines successfully processed (parsing and normalization) |
+| `rows_imported` | INTEGER | NOT NULL, default `0` | Number of content_records created (after deduplication) |
+| `started_at` | TIMESTAMPTZ | NULL | Timestamp when processing started |
+| `completed_at` | TIMESTAMPTZ | NULL | Timestamp when processing completed (success or failure) |
+| `error_message` | TEXT | NULL | Error message if status is `failed` |
+| `file_path` | VARCHAR(500) | NULL | Path to the uploaded NDJSON file (deleted after processing) |
+| `metadata` | JSONB | NULL, default `'{}'` | Additional metadata (e.g., file size, user agent, content type) |
+| `created_at` | TIMESTAMPTZ | NOT NULL, server default `NOW()` | TimestampMixin |
+| `updated_at` | TIMESTAMPTZ | NOT NULL, server default `NOW()`, on update `NOW()` | TimestampMixin |
+
+**Indexes**:
+- `ix_zeeschuimer_imports_key` UNIQUE B-tree on `key` — polling lookup by key
+- `ix_zeeschuimer_imports_initiated_by` B-tree on `initiated_by` — user's import history
+- `ix_zeeschuimer_imports_query_design_id` B-tree on `query_design_id` — query-design-scoped imports
+- `ix_zeeschuimer_imports_platform` B-tree on `platform` — filter by platform
+- `ix_zeeschuimer_imports_status` B-tree on `status` — filter pending/running imports
+
+### Design Decisions
+
+**Why a separate table rather than reusing `collection_runs`?**
+
+1. **Different data flow**: Zeeschuimer imports are push-based (browser sends data to server) rather than pull-based (server queries an API). They don't execute query designs or follow the batch/live collection model.
+2. **Different lifecycle**: Collection runs have tasks, arenas_config, credit transactions, and tier logic. Zeeschuimer imports are simpler: receive NDJSON, parse, normalize, store.
+3. **Different tracking needs**: Imports need a polling key for Zeeschuimer, row-level progress tracking, and platform identification from the upload header. Collection runs track per-arena tasks and credit consumption.
+4. **Cleaner separation**: A dedicated table avoids overloading `collection_runs.mode` with a "zeeschuimer_import" value that would require special-casing in many parts of the codebase.
+
+**Key design (`key` field)**:
+
+- A short, human-readable, URL-safe identifier (e.g., "import-abc123").
+- Returned to Zeeschuimer in the upload response and used for polling status via `/api/check-query/?key={key}`.
+- Unique index supports fast lookups.
+- Suggested generation: `f"import-{uuid.uuid4().hex[:8]}"` (8-character hex suffix for brevity).
+
+**Status progression**:
+
+- `queued` → `processing` → `complete` (happy path)
+- `queued` or `processing` → `failed` (error path)
+
+**Progress tracking**:
+
+- `rows_total`: Total NDJSON lines (counted at upload time or during parsing).
+- `rows_processed`: Lines successfully parsed and normalized (incremented as processing proceeds).
+- `rows_imported`: Content records actually inserted after deduplication (may be lower than `rows_processed`).
+- `progress_percent` property: Calculated as `(rows_processed / rows_total) * 100` (available on the ORM model).
+
+**Platform mapping**:
+
+The `platform` field stores the raw Zeeschuimer module_id (e.g., "linkedin.com", "twitter.com"). The normalizer/processor maps this to IO platform names:
+
+| Zeeschuimer module_id | IO platform_name | Notes |
+|----------------------|------------------|-------|
+| `linkedin.com` | `linkedin` | Primary use case — no automated collection for LinkedIn |
+| `twitter.com` | `x_twitter` | Can supplement automated X/Twitter collection |
+| `instagram.com` | `instagram` | Can supplement automated Instagram collection |
+| `tiktok.com` | `tiktok` | Can supplement automated TikTok collection |
+| `tiktok-comments` | `tiktok_comments` | Comments not available via Research API |
+| `threads.net` | `threads` | Can supplement automated Threads collection |
+
+All imported `content_records` should be tagged with:
+- `collection_tier = "manual"`
+- `raw_metadata.import_source = "zeeschuimer"`
+- `raw_metadata.zeeschuimer_import_id = {import.id}`
+- `raw_metadata.zeeschuimer = {envelope metadata from Zeeschuimer}`
+
+### ORM Model Features
+
+**Relationships**:
+- `initiator: Mapped[User]` — reverse relationship on `User.zeeschuimer_imports`
+- `query_design: Mapped[Optional[QueryDesign]]` — reverse relationship on `QueryDesign.zeeschuimer_imports`
+
+**Property**:
+- `progress_percent` property returns `(rows_processed / rows_total * 100)` rounded to 1 decimal place. Returns 0.0 if `rows_total == 0`.
+
+**TimestampMixin**:
+- Includes `created_at` and `updated_at` columns for audit trail.
+
+### Migration Notes
+
+Migration 014 is fully reversible:
+- `upgrade()`: Creates table with all columns, constraints, and indexes.
+- `downgrade()`: Drops all indexes and the table.
+
+The migration uses Alembic's `op.f()` naming convention for all constraints and indexes to ensure consistent, predictable names.
+
+### Next Steps (for Core Application Engineer)
+
+The **import endpoint and processing logic** are **not implemented** in this data layer task. The Core Application Engineer will need to implement:
+
+1. **FastAPI routes** (`/api/import-dataset/`, `/api/check-query/`) — see `/docs/research_reports/zeeschuimer_4cat_protocol.md` for full specification
+2. **NDJSON parser** — line-by-line streaming parser with NUL byte stripping
+3. **Platform-specific normalizers** — LinkedIn is the priority (Section 5.2 of the spec), with adapters for other platforms
+4. **Processing task** — Celery task or inline processing for NDJSON ingestion
+5. **Status polling** — Update `rows_processed` and `status` as processing proceeds
+6. **Error handling** — Set `status = 'failed'` and populate `error_message` on failures
+
+See `/docs/research_reports/zeeschuimer_4cat_protocol.md` for the complete protocol specification, data schemas, and implementation guidance.
+
+### Reference Documentation
+
+- **Full protocol specification**: `/docs/research_reports/zeeschuimer_4cat_protocol.md`
+- **Zeeschuimer repository**: https://github.com/digitalmethodsinitiative/zeeschuimer
+- **4CAT reference implementation**: https://github.com/digitalmethodsinitiative/4cat (see `webtool/views/api_tool.py` and `backend/lib/search.py`)

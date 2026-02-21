@@ -40,6 +40,7 @@ from issue_observatory.core.models.users import (
     RefreshToken,
     User,
 )
+from issue_observatory.core.models.zeeschuimer_import import ZeeschuimerImport
 
 __all__ = [
     # Base
@@ -73,4 +74,6 @@ __all__ = [
     "ApiCredential",
     # Scraping
     "ScrapingJob",
+    # Zeeschuimer imports
+    "ZeeschuimerImport",
 ]

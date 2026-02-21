@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from issue_observatory.core.models.actors import ActorListMember
     from issue_observatory.core.models.collection import CollectionRun
     from issue_observatory.core.models.users import User
+    from issue_observatory.core.models.zeeschuimer_import import ZeeschuimerImport
 
 
 class QueryDesign(Base):
@@ -135,6 +136,10 @@ class QueryDesign(Base):
     )
     collection_runs: Mapped[list[CollectionRun]] = relationship(
         "CollectionRun",
+        back_populates="query_design",
+    )
+    zeeschuimer_imports: Mapped[list[ZeeschuimerImport]] = relationship(
+        "ZeeschuimerImport",
         back_populates="query_design",
     )
 
