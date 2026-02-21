@@ -42,6 +42,10 @@ cp .env.example .env
 # Edit .env — you MUST set SECRET_KEY, PSEUDONYMIZATION_SALT,
 # and CREDENTIAL_ENCRYPTION_KEY (see .env.example for generation commands)
 
+# Create and activate virtual environment
+python -m venv .venv
+source .venv/bin/activate
+
 # Start infrastructure services
 docker compose up -d postgres redis minio
 
