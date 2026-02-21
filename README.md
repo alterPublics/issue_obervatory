@@ -39,7 +39,8 @@ cd issue_observatory
 
 # Copy environment configuration
 cp .env.example .env
-# Edit .env with your credentials
+# Edit .env — you MUST set SECRET_KEY, PSEUDONYMIZATION_SALT,
+# and CREDENTIAL_ENCRYPTION_KEY (see .env.example for generation commands)
 
 # Start infrastructure services
 docker compose up -d postgres redis minio
@@ -50,17 +51,17 @@ pip install -e ".[dev]"
 # Run database migrations
 alembic upgrade head
 
-# Build CSS (one-off, output is checked in)
-make css
+# Bootstrap admin user
+python scripts/bootstrap_admin.py
 
 # Start the application
-uvicorn src.issue_observatory.api.main:app --reload
+uvicorn issue_observatory.api.main:app --reload
 
 # Start Celery worker (separate terminal)
-celery -A src.issue_observatory.workers.celery_app worker --loglevel=info
+celery -A issue_observatory.workers.celery_app worker --loglevel=info
 
 # Start Celery beat scheduler (separate terminal)
-celery -A src.issue_observatory.workers.celery_app beat --loglevel=info
+celery -A issue_observatory.workers.celery_app beat --loglevel=info
 ```
 
 ## Project Structure
