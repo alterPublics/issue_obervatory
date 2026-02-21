@@ -18,10 +18,17 @@ Supported expansion strategies per platform:
   reveal which external channels the seed channel frequently forwards
   from.  Those source channels are high-value discovery targets.
   Falls back to co-mention detection when no forwarding data exists.
+- **TikTok**: call TikTok Research API ``/v2/research/user/followers/``
+  and ``/v2/research/user/following/`` via OAuth client credentials.
+- **Gab**: Mastodon-compatible API — lookup account ID, then paginate
+  ``/api/v1/accounts/{id}/followers`` and ``/following``.
+- **X/Twitter**: TwitterAPI.io ``/twitter/user/followers`` and
+  ``/twitter/user/followings`` with cursor pagination.
 - **Generic (all platforms)**: co-mention detection against
-  ``content_records`` rows already stored in the database.  This is the
-  fallback strategy for Discord, TikTok, Gab, X/Twitter, Threads,
-  Instagram, Facebook, and any other platform not explicitly handled above.
+  ``content_records`` rows already stored in the database, augmented with
+  URL-based co-mention (extracting platform links via ``link_miner``).
+  This is the fallback strategy for Discord, Threads, Instagram,
+  Facebook, and any other platform not explicitly handled above.
 
 No arena collector classes are imported here — all platform HTTP calls
 are made directly via ``httpx.AsyncClient`` to avoid circular imports.
@@ -60,6 +67,15 @@ _ACTOR_DICT_FIELDS = (
 _BLUESKY_PUBLIC_API = "https://public.api.bsky.app/xrpc"
 _REDDIT_API_BASE = "https://oauth.reddit.com"
 _YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
+_TIKTOK_OAUTH_URL = "https://open.tiktokapis.com/v2/oauth/token/"
+_TIKTOK_FOLLOWERS_URL = "https://open.tiktokapis.com/v2/research/user/followers/"
+_TIKTOK_FOLLOWING_URL = "https://open.tiktokapis.com/v2/research/user/following/"
+
+_GAB_API_BASE = "https://gab.com/api/v1"
+
+_TWITTERAPIIO_FOLLOWERS_URL = "https://api.twitterapi.io/twitter/user/followers"
+_TWITTERAPIIO_FOLLOWING_URL = "https://api.twitterapi.io/twitter/user/followings"
+
 _REDDIT_MENTION_RE = re.compile(r"(?<!\w)u/([A-Za-z0-9_-]{3,20})", re.IGNORECASE)
 
 # Regex that captures @-style mentions across major platforms.
@@ -73,6 +89,20 @@ _COMENTION_MENTION_RE = re.compile(
     r"(?<!\w)@([A-Za-z0-9_](?:[A-Za-z0-9_.%-]{0,48}[A-Za-z0-9_])?)",
     re.UNICODE,
 )
+
+# Mapping from link_miner platform slugs to the platform identifiers used in
+# the actor system.  Used by the URL co-mention detection in
+# _expand_via_comention() to resolve discovered URLs to platform actors.
+_URL_PLATFORM_MAP: dict[str, str] = {
+    "twitter": "x_twitter",
+    "bluesky": "bluesky",
+    "youtube": "youtube",
+    "tiktok": "tiktok",
+    "gab": "gab",
+    "instagram": "instagram",
+    "telegram": "telegram",
+    "reddit_user": "reddit",
+}
 
 # Minimum number of distinct content records in which a username must appear
 # alongside the seed actor before it is considered a significant co-mention.
@@ -141,6 +171,7 @@ class NetworkExpander:
         db: Any,
         credential_pool: Optional[Any] = None,
         depth: int = 1,
+        min_comention_records: int = _COMENTION_MIN_RECORDS,
     ) -> list[ActorDict]:
         """Discover actors connected to *actor_id* on the given platforms.
 
@@ -216,7 +247,29 @@ class NetworkExpander:
                             platform=platform,
                             presence=presence,
                             db=db,
+                            min_records=min_comention_records,
                         )
+                elif platform == "tiktok":
+                    credentials = await self._get_credentials(
+                        credential_pool, "tiktok", "free"
+                    )
+                    results = await self._expand_tiktok(
+                        presence["platform_username"], credentials
+                    )
+                elif platform == "gab":
+                    credentials = await self._get_credentials(
+                        credential_pool, "gab", "free"
+                    )
+                    results = await self._expand_gab(
+                        presence["platform_username"], credentials
+                    )
+                elif platform == "x_twitter":
+                    credentials = await self._get_credentials(
+                        credential_pool, "twitterapi_io", "medium"
+                    )
+                    results = await self._expand_x_twitter(
+                        presence["platform_username"], credentials
+                    )
                 else:
                     logger.debug(
                         "expand_from_actor: no platform-specific expander for %s; "
@@ -228,6 +281,7 @@ class NetworkExpander:
                         platform=platform,
                         presence=presence,
                         db=db,
+                        min_records=min_comention_records,
                     )
 
                 discovered.extend(results)
@@ -817,6 +871,288 @@ class NetworkExpander:
         return results
 
     # ------------------------------------------------------------------
+    # TikTok graph expander
+    # ------------------------------------------------------------------
+
+    async def _get_tiktok_token(
+        self,
+        client_key: str,
+        client_secret: str,
+    ) -> Optional[str]:
+        """Obtain a TikTok Research API bearer token via client credentials.
+
+        Args:
+            client_key: TikTok application client key.
+            client_secret: TikTok application client secret.
+
+        Returns:
+            Bearer token string, or ``None`` on failure.
+        """
+        data = {
+            "client_key": client_key,
+            "client_secret": client_secret,
+            "grant_type": "client_credentials",
+        }
+        result = await self._post_json(_TIKTOK_OAUTH_URL, json_body=data)
+        if result is None:
+            return None
+        return result.get("access_token")
+
+    async def _expand_tiktok(
+        self,
+        username: str,
+        credentials: Optional[dict[str, str]],
+    ) -> list[ActorDict]:
+        """Expand a TikTok actor via Research API follower/following endpoints.
+
+        Uses OAuth 2.0 client credentials flow to obtain a bearer token, then
+        paginates ``POST /v2/research/user/followers/`` and
+        ``/v2/research/user/following/`` (max 500 per direction).
+
+        Args:
+            username: TikTok username (without ``@`` prefix).
+            credentials: Dict with keys ``client_key`` and ``client_secret``.
+
+        Returns:
+            List of actor dicts with ``discovery_method`` set to
+            ``"tiktok_followers"`` or ``"tiktok_following"``.
+        """
+        if not credentials or not credentials.get("client_key"):
+            logger.debug(
+                "_expand_tiktok: no credentials for @%s — skipping", username
+            )
+            return []
+
+        token = await self._get_tiktok_token(
+            credentials["client_key"], credentials["client_secret"]
+        )
+        if not token:
+            logger.warning("_expand_tiktok: failed to obtain OAuth token")
+            return []
+
+        results: list[ActorDict] = []
+        headers = {"Authorization": f"Bearer {token}"}
+
+        for url, method_label in (
+            (_TIKTOK_FOLLOWERS_URL, "tiktok_followers"),
+            (_TIKTOK_FOLLOWING_URL, "tiktok_following"),
+        ):
+            cursor: int = 0
+            fetched = 0
+            max_per_direction = 500
+
+            while fetched < max_per_direction:
+                body: dict[str, Any] = {
+                    "username": username,
+                    "max_count": 100,
+                }
+                if cursor:
+                    body["cursor"] = cursor
+
+                data = await self._post_json(url, json_body=body, headers=headers)
+                if data is None:
+                    break
+
+                users: list[dict[str, Any]] = data.get("data", {}).get("users", [])
+                if not users:
+                    break
+
+                for user in users:
+                    u_name = user.get("username", "")
+                    display = user.get("display_name") or u_name
+                    results.append(
+                        _make_actor_dict(
+                            canonical_name=display,
+                            platform="tiktok",
+                            platform_user_id=u_name,
+                            platform_username=u_name,
+                            profile_url=f"https://www.tiktok.com/@{u_name}",
+                            discovery_method=method_label,
+                        )
+                    )
+                    fetched += 1
+
+                cursor = data.get("data", {}).get("cursor", 0)
+                if not data.get("data", {}).get("has_more", False):
+                    break
+
+        logger.debug(
+            "_expand_tiktok: found %d actors for @%s", len(results), username
+        )
+        return results
+
+    # ------------------------------------------------------------------
+    # Gab graph expander (Mastodon-compatible API)
+    # ------------------------------------------------------------------
+
+    async def _expand_gab(
+        self,
+        username: str,
+        credentials: Optional[dict[str, str]],
+    ) -> list[ActorDict]:
+        """Expand a Gab actor via Mastodon-compatible follower/following API.
+
+        First looks up the account ID via ``GET /api/v1/accounts/lookup``,
+        then paginates followers and following lists using Mastodon ``max_id``
+        cursor (max 40 per page).
+
+        Args:
+            username: Gab username.
+            credentials: Optional dict with key ``access_token``.
+
+        Returns:
+            List of actor dicts with ``discovery_method`` set to
+            ``"gab_followers"`` or ``"gab_following"``.
+        """
+        headers: dict[str, str] = {}
+        if credentials and credentials.get("access_token"):
+            headers["Authorization"] = f"Bearer {credentials['access_token']}"
+
+        # Step 1: Look up account ID.
+        lookup = await self._get_json(
+            f"{_GAB_API_BASE}/accounts/lookup",
+            params={"acct": username},
+            headers=headers,
+        )
+        if lookup is None or not lookup.get("id"):
+            logger.debug(
+                "_expand_gab: account lookup failed for %s", username
+            )
+            return []
+
+        account_id = lookup["id"]
+        results: list[ActorDict] = []
+
+        # Step 2: Paginate followers and following.
+        for endpoint, method_label in (
+            ("followers", "gab_followers"),
+            ("following", "gab_following"),
+        ):
+            max_id: Optional[str] = None
+            fetched = 0
+            max_per_direction = 500
+
+            while fetched < max_per_direction:
+                params: dict[str, Any] = {"limit": 40}
+                if max_id:
+                    params["max_id"] = max_id
+
+                accounts_data = await self._get_json_list(
+                    f"{_GAB_API_BASE}/accounts/{account_id}/{endpoint}",
+                    params=params,
+                    headers=headers,
+                )
+                if accounts_data is None:
+                    break
+
+                accounts: list[dict[str, Any]] = accounts_data
+                if not accounts:
+                    break
+
+                for acct in accounts:
+                    acct_id = str(acct.get("id", ""))
+                    acct_name = acct.get("acct", acct.get("username", ""))
+                    display = acct.get("display_name") or acct_name
+                    results.append(
+                        _make_actor_dict(
+                            canonical_name=display,
+                            platform="gab",
+                            platform_user_id=acct_id,
+                            platform_username=acct_name,
+                            profile_url=acct.get("url", f"https://gab.com/{acct_name}"),
+                            discovery_method=method_label,
+                        )
+                    )
+                    fetched += 1
+
+                # Mastodon-style pagination: use the last item's ID as max_id.
+                max_id = str(accounts[-1].get("id", ""))
+                if len(accounts) < 40:
+                    break
+
+        logger.debug(
+            "_expand_gab: found %d actors for %s", len(results), username
+        )
+        return results
+
+    # ------------------------------------------------------------------
+    # X/Twitter graph expander (via TwitterAPI.io)
+    # ------------------------------------------------------------------
+
+    async def _expand_x_twitter(
+        self,
+        username: str,
+        credentials: Optional[dict[str, str]],
+    ) -> list[ActorDict]:
+        """Expand an X/Twitter actor via TwitterAPI.io follower/following endpoints.
+
+        Paginates ``GET /twitter/user/followers`` and ``/twitter/user/followings``
+        with cursor-based pagination. Requires a TwitterAPI.io API key.
+
+        Args:
+            username: X/Twitter username (without ``@``).
+            credentials: Dict with key ``api_key``.
+
+        Returns:
+            List of actor dicts with ``discovery_method`` set to
+            ``"x_twitter_followers"`` or ``"x_twitter_following"``.
+        """
+        if not credentials or not credentials.get("api_key"):
+            logger.debug(
+                "_expand_x_twitter: no credentials for @%s — skipping", username
+            )
+            return []
+
+        headers = {"X-API-Key": credentials["api_key"]}
+        results: list[ActorDict] = []
+
+        for url, method_label in (
+            (_TWITTERAPIIO_FOLLOWERS_URL, "x_twitter_followers"),
+            (_TWITTERAPIIO_FOLLOWING_URL, "x_twitter_following"),
+        ):
+            cursor: Optional[str] = None
+            fetched = 0
+            max_per_direction = 500
+
+            while fetched < max_per_direction:
+                params: dict[str, Any] = {"userName": username}
+                if cursor:
+                    params["cursor"] = cursor
+
+                data = await self._get_json(url, params=params, headers=headers)
+                if data is None:
+                    break
+
+                users: list[dict[str, Any]] = data.get("users", [])
+                if not users:
+                    break
+
+                for user in users:
+                    screen_name = user.get("userName", user.get("screen_name", ""))
+                    user_id = str(user.get("id", user.get("userId", "")))
+                    display = user.get("name", screen_name)
+                    results.append(
+                        _make_actor_dict(
+                            canonical_name=display,
+                            platform="x_twitter",
+                            platform_user_id=user_id,
+                            platform_username=screen_name,
+                            profile_url=f"https://x.com/{screen_name}",
+                            discovery_method=method_label,
+                        )
+                    )
+                    fetched += 1
+
+                cursor = data.get("next_cursor")
+                if not cursor:
+                    break
+
+        logger.debug(
+            "_expand_x_twitter: found %d actors for @%s", len(results), username
+        )
+        return results
+
+    # ------------------------------------------------------------------
     # Co-mention fallback expander (platform-agnostic)
     # ------------------------------------------------------------------
 
@@ -942,6 +1278,18 @@ class NetworkExpander:
 
         # co_record_ids[username_lower] = set of record IDs where it appears
         co_record_ids: dict[str, set[str]] = {}
+        # URL-based co-mention: track (platform, target_username) -> record IDs
+        url_co_record_ids: dict[tuple[str, str], set[str]] = {}
+
+        # Lazy-import link_miner helpers for URL extraction.
+        try:
+            from issue_observatory.analysis.link_miner import (
+                _classify_url,
+                _extract_urls,
+            )
+            has_link_miner = True
+        except ImportError:
+            has_link_miner = False
 
         for row in seed_rows:
             record_id = str(row.id)
@@ -963,6 +1311,21 @@ class NetworkExpander:
                 if candidate in seed_usernames_lower:
                     continue  # skip the seed actor itself
                 co_record_ids.setdefault(candidate, set()).add(record_id)
+
+            # URL-based co-mention: extract URLs and classify them.
+            if has_link_miner:
+                for url in _extract_urls(text_content):
+                    url_platform, target = _classify_url(url)
+                    actor_platform = _URL_PLATFORM_MAP.get(url_platform)
+                    if actor_platform is None:
+                        continue
+                    target_lower = target.lower()
+                    # Skip if the URL target is the seed actor itself.
+                    if target_lower in seed_usernames_lower:
+                        continue
+                    url_co_record_ids.setdefault(
+                        (actor_platform, target_lower), set()
+                    ).add(record_id)
 
         # Step 3: Filter to candidates that appear in >= min_records distinct
         # records, then sort by frequency descending and take top_n.
@@ -987,13 +1350,44 @@ class NetworkExpander:
                 )
             )
 
+        # Merge URL-discovered candidates (these may be on different platforms).
+        seen_mention_keys: set[str] = {
+            f"{platform}:{u}" for u, _ in qualified
+        }
+        url_qualified: list[tuple[tuple[str, str], int]] = [
+            (key, len(record_set))
+            for key, record_set in url_co_record_ids.items()
+            if len(record_set) >= min_records
+        ]
+        url_qualified.sort(key=lambda x: x[1], reverse=True)
+
+        for (url_platform, url_target), record_count in url_qualified:
+            dedup_key = f"{url_platform}:{url_target}"
+            if dedup_key in seen_mention_keys:
+                continue
+            seen_mention_keys.add(dedup_key)
+            results.append(
+                _make_actor_dict(
+                    canonical_name=url_target,
+                    platform=url_platform,
+                    platform_user_id=url_target,
+                    platform_username=url_target,
+                    profile_url="",
+                    discovery_method="url_comention",
+                )
+            )
+            if len(results) >= top_n:
+                break
+
         logger.debug(
             "_expand_via_comention: found %d co-mentioned actor(s) for %s on %s "
-            "(searched %d content records)",
+            "(searched %d content records, %d via @mention, %d via URL)",
             len(results),
             actor_id,
             platform,
             len(seed_rows),
+            len(qualified),
+            len([r for r in results if r["discovery_method"] == "url_comention"]),
         )
         return results
 
@@ -1068,6 +1462,98 @@ class NetworkExpander:
             logger.debug(
                 "_get_credentials: could not acquire %s/%s credential", platform, tier
             )
+            return None
+
+    async def _get_json_list(
+        self,
+        url: str,
+        params: Optional[dict[str, Any]] = None,
+        headers: Optional[dict[str, str]] = None,
+    ) -> Optional[list[dict[str, Any]]]:
+        """Perform a GET request and return the parsed JSON list body.
+
+        Like ``_get_json`` but for endpoints that return a JSON array
+        (e.g. Mastodon-compatible APIs).
+
+        Args:
+            url: Target URL.
+            params: Query parameters.
+            headers: Additional HTTP headers.
+
+        Returns:
+            Parsed JSON list, or ``None`` on any error.
+        """
+        request_headers = {"User-Agent": "IssueObservatory/1.0 (research)"}
+        if headers:
+            request_headers.update(headers)
+
+        try:
+            if self._http_client is not None:
+                response = await self._http_client.get(
+                    url, params=params, headers=request_headers
+                )
+                response.raise_for_status()
+                return response.json()  # type: ignore[no-any-return]
+            else:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.get(
+                        url, params=params, headers=request_headers
+                    )
+                    response.raise_for_status()
+                    return response.json()  # type: ignore[no-any-return]
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "_get_json_list: HTTP %d from %s", exc.response.status_code, url
+            )
+            return None
+        except Exception:
+            logger.exception("_get_json_list: request failed for %s", url)
+            return None
+
+    async def _post_json(
+        self,
+        url: str,
+        json_body: Optional[dict[str, Any]] = None,
+        headers: Optional[dict[str, str]] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Perform a POST request and return the parsed JSON body.
+
+        Uses the injected ``_http_client`` if available; otherwise creates
+        a transient ``httpx.AsyncClient``.
+
+        Args:
+            url: Target URL.
+            json_body: JSON request body.
+            headers: Additional HTTP headers.
+
+        Returns:
+            Parsed JSON dict, or ``None`` on any error.
+        """
+        request_headers = {"User-Agent": "IssueObservatory/1.0 (research)"}
+        if headers:
+            request_headers.update(headers)
+
+        try:
+            if self._http_client is not None:
+                response = await self._http_client.post(
+                    url, json=json_body, headers=request_headers
+                )
+                response.raise_for_status()
+                return response.json()  # type: ignore[no-any-return]
+            else:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(
+                        url, json=json_body, headers=request_headers
+                    )
+                    response.raise_for_status()
+                    return response.json()  # type: ignore[no-any-return]
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "_post_json: HTTP %d from %s", exc.response.status_code, url
+            )
+            return None
+        except Exception:
+            logger.exception("_post_json: request failed for %s", url)
             return None
 
     async def _get_json(

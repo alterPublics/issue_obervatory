@@ -465,7 +465,7 @@
                                           d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                 </svg>
                                 <div class="text-xs text-blue-800">
-                                    <p class="font-medium">Network expansion is available for Bluesky, Reddit, YouTube, and Telegram</p>
+                                    <p class="font-medium">Network expansion is available for Bluesky, Reddit, YouTube, Telegram, TikTok, Gab, and X/Twitter</p>
                                     <p class="mt-1 text-blue-700">
                                         For other platforms, use Discovered Sources to find connected actors through cross-platform links.
                                     </p>
@@ -513,6 +513,24 @@
                                       focus:outline-none focus:ring-2 focus:ring-blue-500">
                         <p class="text-xs text-gray-400 mt-1">
                             Lower values keep results focused; higher values are more exhaustive.
+                        </p>
+                    </div>
+
+                    {# Min co-mention records threshold #}
+                    <div>
+                        <label class="block text-xs font-medium text-gray-700 mb-1"
+                               for="snow-min-comention">
+                            Min. records for co-mention detection
+                        </label>
+                        <input type="number"
+                               id="snow-min-comention"
+                               min="1" max="50"
+                               x-model.number="minComentionRecords"
+                               class="w-28 border border-gray-300 rounded px-3 py-1.5 text-sm
+                                      focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <p class="text-xs text-gray-400 mt-1"
+                           title="A co-mentioned username must appear in at least this many distinct content records alongside the seed actor to be included. Higher values yield fewer but more significant results.">
+                            Minimum distinct records in which a username must co-occur with the seed actor.
                         </p>
                     </div>
 
@@ -617,6 +635,7 @@
                                     <th class="w-10 px-3 py-2"></th>
                                     <th class="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
                                     <th class="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Platforms</th>
+                                    <th class="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Method</th>
                                     <th class="text-right px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Discovery depth (wave)</th>
                                 </tr>
                             </thead>
@@ -640,6 +659,8 @@
                                                 </template>
                                             </div>
                                         </td>
+                                        <td class="px-4 py-2 text-xs text-gray-600"
+                                            x-text="formatMethod(actor.discovery_method)"></td>
                                         <td class="px-4 py-2 text-right text-gray-600"
                                             x-text="actor.discovery_depth"></td>
                                     </tr>
@@ -684,6 +705,133 @@
         </div>
     </div>{# /snowball panel #}
 
+    {# ---- Corpus Co-occurrence panel -------------------------------------- #}
+    <div id="co-occurrence-panel"
+         class="bg-white rounded-lg shadow"
+         x-data="corpusCoOccurrence()">
+
+        {# Collapsible header #}
+        <button type="button"
+                @click="open = !open"
+                class="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-gray-50 transition-colors rounded-lg">
+            <div class="flex items-center gap-2">
+                <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none"
+                     viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+                </svg>
+                <span class="text-sm font-semibold text-gray-900">Corpus Co-occurrence</span>
+                <span class="text-xs text-gray-400 font-normal">— find actor pairs that frequently appear together</span>
+            </div>
+            <svg class="w-4 h-4 text-gray-400 transition-transform duration-150"
+                 :class="open ? 'rotate-180' : ''"
+                 xmlns="http://www.w3.org/2000/svg" fill="none"
+                 viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+            </svg>
+        </button>
+
+        {# Collapsible body #}
+        <div x-show="open" x-cloak class="border-t border-gray-100 px-6 py-5 space-y-5">
+
+            <p class="text-xs text-gray-500">
+                Find actor pairs that frequently appear together across all collected content in a query design.
+                This uses author-level co-occurrence based on shared search terms.
+            </p>
+
+            {# Error banner #}
+            <div x-show="error"
+                 class="flex items-start gap-2 bg-red-50 border border-red-200 rounded-md px-4 py-3">
+                <svg class="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" xmlns="http://www.w3.org/2000/svg"
+                     fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <p class="text-sm text-red-700" x-text="error"></p>
+            </div>
+
+            <div class="flex items-end gap-4">
+                <div>
+                    <label class="block text-xs font-medium text-gray-700 mb-1" for="cooc-qd-id">
+                        Query Design ID
+                    </label>
+                    <input type="text"
+                           id="cooc-qd-id"
+                           x-model="queryDesignId"
+                           placeholder="UUID"
+                           class="w-80 border border-gray-300 rounded px-3 py-1.5 text-sm
+                                  focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-700 mb-1" for="cooc-min">
+                        Min. co-occurrences
+                    </label>
+                    <input type="number"
+                           id="cooc-min"
+                           min="1" max="100"
+                           x-model.number="minCoOccurrences"
+                           class="w-24 border border-gray-300 rounded px-3 py-1.5 text-sm
+                                  focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <button type="button"
+                        @click="runAnalysis()"
+                        :disabled="loading || !queryDesignId.trim()"
+                        class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white
+                               text-sm font-medium rounded-md hover:bg-blue-700 transition-colors
+                               disabled:opacity-50 disabled:cursor-not-allowed">
+                    <svg x-show="loading"
+                         class="animate-spin w-4 h-4 text-white"
+                         xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor"
+                              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    <span x-text="loading ? 'Analysing...' : 'Run Analysis'"></span>
+                </button>
+            </div>
+
+            {# Results table #}
+            <div x-show="results" x-cloak class="border-t border-gray-200 pt-4 space-y-3">
+                <p class="text-xs font-medium text-gray-700">
+                    <span x-text="results ? results.total_pairs : 0"></span> co-occurring pair<span x-show="!results || results.total_pairs !== 1">s</span> found
+                </p>
+
+                <div x-show="results && results.pairs && results.pairs.length > 0"
+                     class="overflow-x-auto border border-gray-200 rounded-md">
+                    <table class="min-w-full divide-y divide-gray-200 text-sm">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Actor A</th>
+                                <th class="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Actor B</th>
+                                <th class="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Platform</th>
+                                <th class="text-right px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Count</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-100">
+                            <template x-for="pair in results.pairs" :key="`${pair.actor_a}-${pair.actor_b}-${pair.platform}`">
+                                <tr class="hover:bg-gray-50">
+                                    <td class="px-4 py-2 font-medium text-gray-900" x-text="pair.actor_a"></td>
+                                    <td class="px-4 py-2 font-medium text-gray-900" x-text="pair.actor_b"></td>
+                                    <td class="px-4 py-2 text-gray-600">
+                                        <span class="inline-flex px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-600"
+                                              x-text="pair.platform"></span>
+                                    </td>
+                                    <td class="px-4 py-2 text-right text-gray-600 font-mono" x-text="pair.co_occurrence_count"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+
+                <p x-show="results && results.pairs && results.pairs.length === 0"
+                   class="text-sm text-gray-500 italic">
+                    No co-occurring pairs found with the current threshold. Try lowering the minimum.
+                </p>
+            </div>
+
+        </div>
+    </div>{# /co-occurrence panel #}
+
 </div>
 
 <script>
@@ -707,6 +855,7 @@ function snowballSampler() {
         platforms: [],
         maxDepth: 2,
         maxActorsPerStep: 20,
+        minComentionRecords: 2,
         addToList: true,
         results: null,
         selectedActors: [],
@@ -786,6 +935,7 @@ function snowballSampler() {
                     platforms: this.platforms,
                     max_depth: this.maxDepth,
                     max_actors_per_step: this.maxActorsPerStep,
+                    min_comention_records: this.minComentionRecords,
                 };
                 // Only send add_to_actor_list_id when we are in a list context
                 // and the researcher has enabled the toggle.
@@ -805,7 +955,19 @@ function snowballSampler() {
                     throw new Error(data.detail || `HTTP ${res.status}: ${res.statusText}`);
                 }
 
-                this.results = await res.json();
+                const raw = await res.json();
+                // Map API response keys to the template's expected shape.
+                this.results = {
+                    total_found: raw.total_actors,
+                    max_depth_reached: raw.max_depth_reached,
+                    discovered_actors: (raw.actors || []).map(a => ({
+                        id: a.actor_id,
+                        name: a.canonical_name,
+                        platforms: a.platforms || [],
+                        discovery_depth: a.discovery_depth,
+                        discovery_method: a.discovery_method || '',
+                    })),
+                };
                 // Pre-select all discovered actors by default.
                 if (this.results.discovered_actors) {
                     this.selectedActors = this.results.discovered_actors.map(a => a.id);
@@ -815,6 +977,26 @@ function snowballSampler() {
             } finally {
                 this.loading = false;
             }
+        },
+
+        formatMethod(method) {
+            const labels = {
+                seed: 'Seed',
+                bluesky_follows: 'Bluesky Follows',
+                bluesky_followers: 'Bluesky Followers',
+                reddit_comment_mention: 'Reddit Mentions',
+                youtube_featured_channels: 'YouTube Featured',
+                telegram_forwarding_chain: 'Telegram Forwarding',
+                tiktok_followers: 'TikTok Followers',
+                tiktok_following: 'TikTok Following',
+                gab_followers: 'Gab Followers',
+                gab_following: 'Gab Following',
+                x_twitter_followers: 'X/Twitter Followers',
+                x_twitter_following: 'X/Twitter Following',
+                comention_fallback: 'Co-mention',
+                url_comention: 'URL Co-mention',
+            };
+            return labels[method] || method || '—';
         },
 
         async addSelected() {
@@ -845,6 +1027,48 @@ function snowballSampler() {
                 this.bulkError = e.message;
             } finally {
                 this.bulkLoading = false;
+            }
+        },
+    };
+}
+
+function corpusCoOccurrence() {
+    return {
+        open: false,
+        loading: false,
+        queryDesignId: '',
+        minCoOccurrences: 3,
+        results: null,
+        error: null,
+
+        async runAnalysis() {
+            if (!this.queryDesignId.trim()) return;
+
+            this.loading = true;
+            this.error = null;
+            this.results = null;
+
+            try {
+                const res = await fetch('/actors/sampling/co-occurrence', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({
+                        query_design_id: this.queryDesignId.trim(),
+                        min_co_occurrences: this.minCoOccurrences,
+                    }),
+                });
+
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    throw new Error(data.detail || `HTTP ${res.status}: ${res.statusText}`);
+                }
+
+                this.results = await res.json();
+            } catch (e) {
+                this.error = e.message;
+            } finally {
+                this.loading = false;
             }
         },
     };

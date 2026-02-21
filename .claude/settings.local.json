@@ -51,7 +51,10 @@
       "Bash(xargs:*)",
       "Bash(alembic current:*)",
       "Bash(python -m alembic:*)",
-      "Bash(.venv/bin/alembic current:*)"
+      "Bash(.venv/bin/alembic current:*)",
+      "Bash(ruff check:*)",
+      "WebFetch(domain:developers.tiktok.com)",
+      "WebFetch(domain:docs.twitterapi.io)"
     ]
   }
 }

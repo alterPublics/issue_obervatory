@@ -1,7 +1,7 @@
 ---
 name: qa-guardian
 description: "Use this agent when code needs to be reviewed for quality, tests need to be written or maintained, CI/CD pipeline needs configuration, migrations need review, or arena implementations need approval against the project checklist. This agent has blocking authority on merges and owns the test suite.\\n\\nExamples:\\n\\n- User: \"The Bluesky arena collector is ready for review\"\\n  Assistant: \"I'll use the QA Guardian agent to run the full Arena Review Checklist against the Bluesky implementation.\"\\n  [Launches qa-guardian agent via Task tool to evaluate the arena against functional requirements, code quality, testing, documentation, and data quality checklists]\\n\\n- User: \"I just added a new Alembic migration for the actor_platform_presences table\"\\n  Assistant: \"Let me launch the QA Guardian agent to review this migration for correctness and safety.\"\\n  [Launches qa-guardian agent via Task tool to verify upgrade/downgrade paths, data preservation, indexes, and foreign key constraints]\\n\\n- User: \"Can you write tests for the normalizer module?\"\\n  Assistant: \"I'll use the QA Guardian agent to create comprehensive unit tests for the normalizer.\"\\n  [Launches qa-guardian agent via Task tool to write tests covering each platform normalization path, edge cases, and Danish character handling]\\n\\n- User: \"Check why CI is failing\"\\n  Assistant: \"Let me use the QA Guardian agent to diagnose the CI pipeline failure.\"\\n  [Launches qa-guardian agent via Task tool to investigate test failures, coverage drops, or lint issues]\\n\\n- Context: A developer just finished implementing a new collector. The agent should be proactively invoked.\\n  User: \"I've finished the Reddit collector implementation, pushed to the branch\"\\n  Assistant: \"Since a new arena implementation is complete, I'll launch the QA Guardian agent to perform the full review checklist.\"\\n  [Launches qa-guardian agent via Task tool to execute the Arena Review Checklist with blocking authority]"
-model: sonnet
+model: inherit
 color: yellow
 ---
 
@@ -53,14 +53,14 @@ Enforce these minimum coverage thresholds:
 
 | Component | Required | Test Types |
 |-----------|----------|------------|
-| `src/issue_observatory/core/normalizer.py` | 90%+ | Unit: one test per platform path |
-| `src/issue_observatory/core/entity_resolver.py` | 85%+ | Unit: matching accuracy, edge cases |
-| `src/issue_observatory/arenas/*/collector.py` | 80%+ | Unit + Integration with mocked API |
-| `src/issue_observatory/arenas/*/router.py` | 75%+ | Integration: HTTP endpoint tests |
-| `src/issue_observatory/arenas/*/tasks.py` | 70%+ | Unit: retry logic, rate limiting |
-| `src/issue_observatory/core/models/` | 80%+ | Integration: CRUD, constraints, cascades |
-| `src/issue_observatory/analysis/` | 85%+ | Unit: statistical correctness |
-| `src/issue_observatory/api/routes/` | 75%+ | Integration: request/response validation |
+| `core/normalizer.py` | 90%+ | Unit: one test per platform path |
+| `core/entity_resolver.py` | 85%+ | Unit: matching accuracy, edge cases |
+| `arenas/*/collector.py` | 80%+ | Unit + Integration with mocked API |
+| `arenas/*/router.py` | 75%+ | Integration: HTTP endpoint tests |
+| `arenas/*/tasks.py` | 70%+ | Unit: retry logic, rate limiting |
+| `core/models/` | 80%+ | Integration: CRUD, constraints, cascades |
+| `analysis/` | 85%+ | Unit: statistical correctness |
+| `api/routes/` | 75%+ | Integration: request/response validation |
 | **Overall minimum** | **75%** | All types combined |
 
 Flag any PR that decreases overall coverage.

@@ -70,7 +70,9 @@ _py_logger = logging.getLogger(__name__)
 
 #: Platforms that have a dedicated network-expansion strategy in NetworkExpander.
 #: Derived from the if/elif dispatch in NetworkExpander.expand_from_actor().
-_NETWORK_EXPANSION_PLATFORMS: list[str] = ["bluesky", "reddit", "youtube", "telegram"]
+_NETWORK_EXPANSION_PLATFORMS: list[str] = [
+    "bluesky", "reddit", "youtube", "telegram", "tiktok", "gab", "x_twitter",
+]
 
 logger = structlog.get_logger(__name__)
 
@@ -197,6 +199,7 @@ class SnowballRequest(BaseModel):
     max_actors_per_step: int = 20
     add_to_actor_list_id: Optional[uuid.UUID] = None
     auto_create_actors: bool = True
+    min_comention_records: int = 2
 
 
 class SnowballWaveEntry(BaseModel):
@@ -221,12 +224,15 @@ class SnowballActorEntry(BaseModel):
         canonical_name: Human-readable canonical name.
         platforms: Platform name(s) associated with this actor entry.
         discovery_depth: Wave in which this actor was discovered (0 = seed).
+        discovery_method: How this actor was discovered (e.g.
+            ``"bluesky_follows"``, ``"comention_fallback"``, ``"seed"``).
     """
 
     actor_id: str
     canonical_name: str
     platforms: list[str]
     discovery_depth: int
+    discovery_method: str = ""
 
 
 class SnowballResponse(BaseModel):
@@ -271,6 +277,53 @@ class BulkMemberResponse(BaseModel):
 
     added: int
     already_present: int
+
+
+# ---------------------------------------------------------------------------
+# Pydantic schemas for corpus co-occurrence endpoint
+# ---------------------------------------------------------------------------
+
+
+class CorpusCoOccurrenceRequest(BaseModel):
+    """Request body for the corpus-level co-occurrence analysis.
+
+    Attributes:
+        query_design_id: UUID of the query design whose collected content
+            should be analysed for actor co-occurrence.
+        min_co_occurrences: Minimum number of term co-occurrences required
+            for a pair to be returned.
+    """
+
+    query_design_id: uuid.UUID
+    min_co_occurrences: int = 3
+
+
+class CoOccurrencePair(BaseModel):
+    """A single actor pair from corpus co-occurrence analysis.
+
+    Attributes:
+        actor_a: Platform identifier of the first actor.
+        actor_b: Platform identifier of the second actor.
+        platform: Platform on which the co-occurrence was detected.
+        co_occurrence_count: Number of shared term co-occurrences.
+    """
+
+    actor_a: str
+    actor_b: str
+    platform: str
+    co_occurrence_count: int
+
+
+class CorpusCoOccurrenceResponse(BaseModel):
+    """Response body for the corpus co-occurrence endpoint.
+
+    Attributes:
+        pairs: List of co-occurring actor pairs.
+        total_pairs: Total number of pairs returned.
+    """
+
+    pairs: list[CoOccurrencePair]
+    total_pairs: int
 
 
 # ---------------------------------------------------------------------------
@@ -558,10 +611,11 @@ async def list_snowball_platforms(
     """Return the platforms that support network expansion.
 
     Reads the set of platforms with dedicated expansion strategies from the
-    ``NetworkExpander`` implementation (Bluesky, Reddit, YouTube).  All other
-    platforms fall back to co-mention detection which requires stored content
-    records; they are not listed here because the snowball UI should only
-    offer platforms with first-class graph traversal.
+    ``NetworkExpander`` implementation (Bluesky, Reddit, YouTube, Telegram,
+    TikTok, Gab, X/Twitter).  All other platforms fall back to co-mention
+    detection which requires stored content records; they are not listed here
+    because the snowball UI should only offer platforms with first-class
+    graph traversal.
 
     Args:
         current_user: The authenticated, active user making the request.
@@ -629,6 +683,7 @@ async def run_snowball_sampling(
         db=db,
         max_depth=payload.max_depth,
         max_actors_per_step=payload.max_actors_per_step,
+        min_comention_records=payload.min_comention_records,
     )
 
     # GR-20: Auto-create Actor records for newly discovered accounts that are
@@ -694,6 +749,7 @@ async def run_snowball_sampling(
                     [actor_dict["platform"]] if actor_dict.get("platform") else []
                 ),
                 discovery_depth=int(actor_dict.get("discovery_depth", 0)),
+                discovery_method=actor_dict.get("discovery_method", ""),
             )
         )
 
@@ -712,6 +768,63 @@ async def run_snowball_sampling(
         wave_log=wave_log,
         actors=actors_out,
         newly_created_actors=len(result.auto_created_actor_ids),
+    )
+
+
+@router.post(
+    "/sampling/co-occurrence",
+    response_model=CorpusCoOccurrenceResponse,
+    summary="Corpus-level actor co-occurrence analysis",
+)
+async def corpus_co_occurrence(
+    payload: CorpusCoOccurrenceRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> CorpusCoOccurrenceResponse:
+    """Find actor pairs that frequently co-occur across a query design's content.
+
+    Calls ``NetworkExpander.find_co_mentioned_actors()`` to identify pairs of
+    ``author_platform_id`` values that share search-term overlap in
+    ``content_records`` for the given query design.
+
+    Args:
+        payload: Validated ``CorpusCoOccurrenceRequest`` body.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        A ``CorpusCoOccurrenceResponse`` with co-occurring actor pairs.
+    """
+    from issue_observatory.sampling.network_expander import NetworkExpander  # noqa: PLC0415
+
+    expander = NetworkExpander()
+    raw_pairs = await expander.find_co_mentioned_actors(
+        query_design_id=payload.query_design_id,
+        db=db,
+        min_co_occurrences=payload.min_co_occurrences,
+    )
+
+    pairs = [
+        CoOccurrencePair(
+            actor_a=p["actor_a"],
+            actor_b=p["actor_b"],
+            platform=p["platform"],
+            co_occurrence_count=p["co_occurrence_count"],
+        )
+        for p in raw_pairs
+    ]
+
+    logger.info(
+        "corpus_co_occurrence_complete",
+        query_design_id=str(payload.query_design_id),
+        total_pairs=len(pairs),
+        min_co_occurrences=payload.min_co_occurrences,
+        user_id=str(current_user.id),
+    )
+
+    return CorpusCoOccurrenceResponse(
+        pairs=pairs,
+        total_pairs=len(pairs),
     )
 
 

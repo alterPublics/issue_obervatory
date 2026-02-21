@@ -91,7 +91,16 @@ _PLATFORM_RULES: list[tuple[re.Pattern[str], str, str]] = [
         "youtube",
         "target",
     ),
-    # Reddit
+    # Reddit user profile
+    (
+        re.compile(
+            r"https?://(?:www\.)?reddit\.com/u(?:ser)?/(?P<target>[^/?#\s]+)",
+            re.I,
+        ),
+        "reddit_user",
+        "target",
+    ),
+    # Reddit subreddit
     (
         re.compile(
             r"https?://(?:www\.)?reddit\.com/r/(?P<target>[^/?#\s]+)",

@@ -99,6 +99,7 @@ class SnowballSampler:
         credential_pool: Optional[Any] = None,
         max_depth: int = 2,
         max_actors_per_step: int = 20,
+        min_comention_records: int = 2,
     ) -> SnowballResult:
         """Run snowball sampling from the given seed actors.
 
@@ -180,6 +181,7 @@ class SnowballSampler:
                         db=db,
                         credential_pool=credential_pool,
                         depth=1,
+                        min_comention_records=min_comention_records,
                     )
                 except Exception:
                     logger.exception(
