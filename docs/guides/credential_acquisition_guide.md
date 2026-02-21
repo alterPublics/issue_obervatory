@@ -1463,6 +1463,12 @@ To reset a circuit-broken credential:
 
 Use this checklist to set up the Issue Observatory from scratch. Start with the essentials and add arenas as needed.
 
+### Phase 0: Python Environment
+
+- [ ] Create virtual environment: `python -m venv .venv`
+- [ ] Activate it: `source .venv/bin/activate` (Linux/macOS) or `.venv\Scripts\activate` (Windows)
+- [ ] Install the project: `pip install -e ".[dev]"`
+
 ### Phase 1: Core Infrastructure (Required)
 
 - [ ] Generate `SECRET_KEY`: `openssl rand -hex 32`
