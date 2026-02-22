@@ -80,7 +80,9 @@
       "Bash(/tmp/admin_summary.txt:*)",
       "Bash(/Users/jakobbk/Documents/postdoc/codespace/issue_observatory/.venv/bin/python3:*)",
       "WebFetch(domain:localhost)",
-      "Bash(# Check .env file ls -la /Users/jakobbk/Documents/postdoc/codespace/issue_observatory/.env && echo \"\"exists\"\" || echo \"\"no .env\"\" # Check how the server gets the DB URL grep -r \"\"DATABASE_URL\"\" /Users/jakobbk/Documents/postdoc/codespace/issue_observatory/src/issue_observatory/config/)"
+      "Bash(# Check .env file ls -la /Users/jakobbk/Documents/postdoc/codespace/issue_observatory/.env && echo \"\"exists\"\" || echo \"\"no .env\"\" # Check how the server gets the DB URL grep -r \"\"DATABASE_URL\"\" /Users/jakobbk/Documents/postdoc/codespace/issue_observatory/src/issue_observatory/config/)",
+      "Bash(kill:*)",
+      "Bash(pkill:*)"
     ]
   }
 }

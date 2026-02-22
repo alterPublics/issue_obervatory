@@ -122,6 +122,7 @@ def common_crawl_collect_terms(
     max_results: int | None = None,
     cc_index: str | None = None,
     language_filter: list[str] | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Collect Common Crawl index entries for Danish pages matching the terms.
 

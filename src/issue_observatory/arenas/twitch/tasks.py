@@ -125,6 +125,7 @@ def twitch_collect_terms(
     tier: str = "free",
     max_results: int | None = None,
     language_filter: list[str] | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Discover Twitch channels matching the supplied search terms.
 

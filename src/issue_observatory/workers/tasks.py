@@ -253,9 +253,16 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                 # error.  This is expected when YF-01 per-arena scoping is in use.
                 continue
 
-            task_name = (
-                f"issue_observatory.arenas.{arena_name}.tasks.collect_by_terms"
-            )
+            # Derive task module from the collector's actual module path
+            # so nested arenas (web.common_crawl, etc.) resolve correctly.
+            from issue_observatory.arenas.registry import get_task_module as _gtm  # noqa: PLC0415
+
+            try:
+                _task_module = _gtm(arena_name)
+            except KeyError:
+                _task_module = f"issue_observatory.arenas.{arena_name}.tasks"
+            task_name = f"{_task_module}.collect_by_terms"
+
             try:
                 celery_app.send_task(
                     task_name,
@@ -1023,6 +1030,177 @@ def check_volume_spikes_task(
 # ---------------------------------------------------------------------------
 
 
+async def _dispatch_batch_async(
+    run_uuid: Any,
+    run_id: str,
+    log: Any,
+) -> dict[str, Any]:
+    """Inner async function that performs all DB operations in one event loop.
+
+    This consolidates all async DB calls into a single asyncio.run() to avoid
+    event loop corruption from multiple asyncio.run() invocations in the same
+    Celery task (Bug 1 fix).
+
+    Args:
+        run_uuid: Parsed UUID of the CollectionRun.
+        run_id: String representation of the run UUID.
+        log: Structlog logger bound to task context.
+
+    Returns:
+        Dict with keys:
+        - details: Run and design details from DB, or None if not found
+        - public_figure_ids: List of public figure platform IDs
+        - arena_terms_map: Dict[platform_name, list[str]] of search terms
+        - arenas_config: Normalized dict[platform_name, tier]
+        - language_filter: List of language codes
+        - arena_entries: List of dicts for create_collection_tasks
+        - no_arenas_dispatched: bool flag for completion handling
+    """
+    from issue_observatory.arenas.registry import autodiscover, get_arena, list_arenas  # noqa: PLC0415
+
+    # --- Step 1: Load run details ---
+    details = await fetch_batch_run_details(run_uuid)
+    if details is None:
+        return {"details": None, "no_arenas_dispatched": True}
+
+    design_id = details["query_design_id"]
+    raw_arenas_config: dict = details.get("arenas_config") or {}
+    default_tier: str = details.get("default_tier") or "free"
+    date_from = details.get("date_from")
+    date_to = details.get("date_to")
+
+    # --- Step 2: Sync operations (arenas_config normalization) ---
+    # Autodiscover happens in sync context but can run inside async function
+    autodiscover()
+
+    # Normalize arenas_config to flat dict: {"platform_name": "tier", ...}
+    arenas_config: dict[str, str] = {}
+
+    if "arenas" in raw_arenas_config and isinstance(raw_arenas_config["arenas"], list):
+        # Nested list format from the query design editor
+        for entry in raw_arenas_config["arenas"]:
+            if isinstance(entry, dict) and entry.get("enabled", True):
+                platform_id = entry.get("id") or entry.get("platform_name")
+                tier = entry.get("tier", default_tier)
+                if platform_id:
+                    arenas_config[platform_id] = tier
+    else:
+        # Already flat, or has non-arena metadata keys.
+        # Copy platform entries, skip internal keys.
+        for key, value in raw_arenas_config.items():
+            if key.startswith("_") or key == "languages":
+                continue
+            # Value might be a tier string or a dict of settings
+            if isinstance(value, str):
+                arenas_config[key] = value
+            elif isinstance(value, dict) and "tier" in value:
+                arenas_config[key] = value["tier"]
+            # Skip non-arena config entries (rss custom_feeds, etc.)
+
+    # Fallback: if no arenas were configured, dispatch ALL registered arenas.
+    if not arenas_config:
+        for platform_name in list_arenas():
+            arenas_config[platform_name] = default_tier
+        log.info(
+            "dispatch_batch_collection: no arena config; falling back to all %d arenas",
+            len(arenas_config),
+        )
+
+    # Extract language config from the original raw config (not the normalized one)
+    config_languages = raw_arenas_config.get("languages") if isinstance(raw_arenas_config, dict) else None
+    if isinstance(config_languages, list) and config_languages:
+        language_filter: list[str] = [str(lc) for lc in config_languages if lc]
+    else:
+        raw_language: str = details.get("language") or "da"
+        language_filter = parse_language_codes(raw_language)
+
+    # --- Step 3: Set run to running ---
+    await set_run_status(run_uuid, "running", started_at=True)
+
+    # --- Step 4: GR-14: load public-figure IDs ---
+    try:
+        pf_set = await fetch_public_figure_ids_for_design(design_id)
+        public_figure_ids = list(pf_set)
+        if public_figure_ids:
+            log.info(
+                "dispatch_batch_collection: GR-14 public-figure IDs loaded",
+                count=len(public_figure_ids),
+            )
+    except Exception as pf_exc:
+        log.warning(
+            "dispatch_batch_collection: failed to fetch public-figure IDs",
+            error=str(pf_exc),
+        )
+        public_figure_ids = []
+
+    # --- Step 5: Filter arenas to those actually registered ---
+    arena_entries: list[dict[str, str]] = []
+    skipped = 0
+
+    for platform_name in arenas_config:
+        # Verify the arena is registered
+        try:
+            get_arena(platform_name)
+        except KeyError:
+            log.warning(
+                "dispatch_batch_collection: arena not registered; skipping",
+                arena=platform_name,
+            )
+            skipped += 1
+            continue
+
+        arena_entries.append({
+            "arena_name": platform_name,
+            "platform_name": platform_name,
+        })
+
+    # --- Step 6: Create CollectionTask rows ---
+    if arena_entries:
+        await create_collection_tasks(run_uuid, arena_entries)
+        log.info(
+            "dispatch_batch_collection: created CollectionTask rows",
+            count=len(arena_entries),
+        )
+
+    # --- Step 7: Fetch search terms for each arena ---
+    arena_terms_map: dict[str, list[str]] = {}
+    for entry in arena_entries:
+        platform_name = entry["platform_name"]
+        try:
+            arena_terms = await fetch_search_terms_for_arena(design_id, platform_name)
+            arena_terms_map[platform_name] = arena_terms
+        except Exception as terms_exc:
+            log.error(
+                "dispatch_batch_collection: failed to fetch search terms",
+                arena=platform_name,
+                error=str(terms_exc),
+            )
+            # Mark as empty so it gets skipped in dispatch loop
+            arena_terms_map[platform_name] = []
+
+    # --- Step 8: Handle no-arenas case ---
+    no_arenas_dispatched = False
+    if not arena_entries or all(not terms for terms in arena_terms_map.values()):
+        # No arenas dispatched — mark run as completed with 0 records
+        log.warning("dispatch_batch_collection: no arenas to dispatch; completing run")
+        await set_run_status(run_uuid, "completed", completed_at=True)
+        no_arenas_dispatched = True
+
+    return {
+        "details": details,
+        "public_figure_ids": public_figure_ids,
+        "arena_terms_map": arena_terms_map,
+        "arenas_config": arenas_config,
+        "language_filter": language_filter,
+        "arena_entries": arena_entries,
+        "no_arenas_dispatched": no_arenas_dispatched,
+        "skipped": skipped,
+        "date_from": date_from,
+        "date_to": date_to,
+        "default_tier": default_tier,
+    }
+
+
 @celery_app.task(
     name="issue_observatory.workers.tasks.dispatch_batch_collection",
     bind=True,
@@ -1055,13 +1233,13 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
     log = logger.bind(task="dispatch_batch_collection", run_id=run_id)
     log.info("dispatch_batch_collection: starting")
 
-    # --- Load run details ---
+    # --- Single asyncio.run() call to avoid event loop corruption (Bug 1 fix) ---
     try:
         run_uuid = _uuid.UUID(run_id)
-        details = asyncio.run(fetch_batch_run_details(run_uuid))
+        async_result = asyncio.run(_dispatch_batch_async(run_uuid, run_id, log))
     except Exception as exc:
         log.error(
-            "dispatch_batch_collection: failed to load run details",
+            "dispatch_batch_collection: async operations failed",
             error=str(exc),
             exc_info=True,
         )
@@ -1072,113 +1250,35 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
         except Exception:
             return {"error": str(exc), "dispatched": 0}
 
-    if details is None:
+    # Check if run was not found
+    if async_result["details"] is None:
         log.error("dispatch_batch_collection: run not found", run_id=run_id)
         return {"error": "Run not found", "dispatched": 0}
 
-    design_id = details["query_design_id"]
-    arenas_config: dict = details.get("arenas_config") or {}
-    default_tier: str = details.get("default_tier") or "free"
-    date_from = details.get("date_from")
-    date_to = details.get("date_to")
+    # Unpack async results
+    public_figure_ids = async_result["public_figure_ids"]
+    arena_terms_map = async_result["arena_terms_map"]
+    arenas_config = async_result["arenas_config"]
+    language_filter = async_result["language_filter"]
+    arena_entries = async_result["arena_entries"]
+    no_arenas_dispatched = async_result["no_arenas_dispatched"]
+    skipped = async_result["skipped"]
+    date_from = async_result["date_from"]
+    date_to = async_result["date_to"]
+    default_tier = async_result["default_tier"]
 
-    # GR-05: resolve language filter
-    config_languages = arenas_config.get("languages") if isinstance(arenas_config, dict) else None
-    if isinstance(config_languages, list) and config_languages:
-        language_filter: list[str] = [str(lc) for lc in config_languages if lc]
-    else:
-        raw_language: str = details.get("language") or "da"
-        language_filter = parse_language_codes(raw_language)
+    # Import registry helpers for task name resolution
+    from issue_observatory.arenas.registry import get_task_module  # noqa: PLC0415
 
-    # --- Set run to running ---
-    try:
-        asyncio.run(set_run_status(run_uuid, "running", started_at=True))
-    except Exception as exc:
-        log.error(
-            "dispatch_batch_collection: failed to update run status",
-            error=str(exc),
-        )
-
-    # --- Autodiscover arenas ---
-    from issue_observatory.arenas.registry import autodiscover, get_arena  # noqa: PLC0415
-
-    autodiscover()
-
-    # --- GR-14: load public-figure IDs ---
-    public_figure_ids: list[str] = []
-    try:
-        pf_set = asyncio.run(fetch_public_figure_ids_for_design(design_id))
-        public_figure_ids = list(pf_set)
-        if public_figure_ids:
-            log.info(
-                "dispatch_batch_collection: GR-14 public-figure IDs loaded",
-                count=len(public_figure_ids),
-            )
-    except Exception as pf_exc:
-        log.warning(
-            "dispatch_batch_collection: failed to fetch public-figure IDs",
-            error=str(pf_exc),
-        )
-
-    # --- Filter arenas: skip internal keys (starting with _) and non-arena entries ---
-    arena_entries: list[dict[str, str]] = []
+    # --- Dispatch per-arena tasks (sync Celery calls) ---
     dispatched_arenas: list[str] = []
-    skipped = 0
 
-    for platform_name, arena_tier in arenas_config.items():
-        if platform_name.startswith("_") or platform_name == "languages":
-            continue  # skip internal config keys
-
-        # Verify the arena is registered
-        try:
-            get_arena(platform_name)
-        except KeyError:
-            log.warning(
-                "dispatch_batch_collection: arena not registered; skipping",
-                arena=platform_name,
-            )
-            skipped += 1
-            continue
-
-        arena_entries.append({
-            "arena_name": platform_name,
-            "platform_name": platform_name,
-        })
-
-    # --- Create CollectionTask rows ---
-    if arena_entries:
-        try:
-            asyncio.run(create_collection_tasks(run_uuid, arena_entries))
-            log.info(
-                "dispatch_batch_collection: created CollectionTask rows",
-                count=len(arena_entries),
-            )
-        except Exception as exc:
-            log.error(
-                "dispatch_batch_collection: failed to create CollectionTask rows",
-                error=str(exc),
-                exc_info=True,
-            )
-
-    # --- Dispatch per-arena tasks ---
     for entry in arena_entries:
         platform_name = entry["platform_name"]
         tier = arenas_config.get(platform_name) or default_tier
 
-        # YF-01: fetch terms scoped to this arena
-        try:
-            arena_terms = asyncio.run(
-                fetch_search_terms_for_arena(design_id, platform_name)
-            )
-        except Exception as terms_exc:
-            log.error(
-                "dispatch_batch_collection: failed to fetch search terms",
-                arena=platform_name,
-                error=str(terms_exc),
-            )
-            skipped += 1
-            continue
-
+        # Get terms from the map populated in the async function
+        arena_terms = arena_terms_map.get(platform_name, [])
         if not arena_terms:
             log.info(
                 "dispatch_batch_collection: no search terms for arena; skipping",
@@ -1186,11 +1286,18 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
             )
             continue
 
-        task_name = (
-            f"issue_observatory.arenas.{platform_name}.tasks.collect_by_terms"
-        )
+        # Derive the task module from the collector's actual module path so
+        # that nested arenas (e.g. web.common_crawl) resolve correctly.
+        try:
+            task_module = get_task_module(platform_name)
+        except KeyError:
+            task_module = f"issue_observatory.arenas.{platform_name}.tasks"
+        task_name = f"{task_module}.collect_by_terms"
+
+        # Bug 2 fix: Always include language_filter and public_figure_ids
+        # since all arena tasks now accept **_extra
         task_kwargs: dict[str, Any] = {
-            "query_design_id": str(design_id),
+            "query_design_id": str(async_result["details"]["query_design_id"]),
             "collection_run_id": run_id,
             "terms": arena_terms,
             "tier": tier,
@@ -1227,7 +1334,7 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
             )
             skipped += 1
 
-    # --- Schedule completion checker ---
+    # --- Schedule completion checker or emit completion event ---
     if dispatched_arenas:
         check_batch_completion.apply_async(
             kwargs={"run_id": run_id},
@@ -1237,27 +1344,17 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
             "dispatch_batch_collection: scheduled completion checker",
             check_delay_seconds=15,
         )
-    else:
-        # No arenas dispatched — mark run as completed with 0 records
-        log.warning("dispatch_batch_collection: no arenas dispatched; completing run")
-        try:
-            asyncio.run(
-                set_run_status(run_uuid, "completed", completed_at=True)
-            )
-            from issue_observatory.core.event_bus import publish_run_complete  # noqa: PLC0415
+    elif no_arenas_dispatched:
+        # Already marked completed in async function; just emit the event
+        from issue_observatory.core.event_bus import publish_run_complete  # noqa: PLC0415
 
-            publish_run_complete(
-                redis_url=settings.redis_url,
-                run_id=run_id,
-                status="completed",
-                records_collected=0,
-                credits_spent=0,
-            )
-        except Exception as exc:
-            log.error(
-                "dispatch_batch_collection: failed to finalize empty run",
-                error=str(exc),
-            )
+        publish_run_complete(
+            redis_url=settings.redis_url,
+            run_id=run_id,
+            status="completed",
+            records_collected=0,
+            credits_spent=0,
+        )
 
     summary = {
         "dispatched": len(dispatched_arenas),
@@ -1271,6 +1368,39 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Task 9: check_batch_completion (B-1 fix)
 # ---------------------------------------------------------------------------
+
+
+async def _check_batch_async(run_uuid: Any) -> dict[str, Any] | None:
+    """Single async context for check_batch_completion DB operations.
+
+    Consolidates all async DB calls into one event loop to avoid asyncpg
+    connection pool corruption from multiple asyncio.run() calls.
+    """
+    result = await check_all_tasks_terminal(run_uuid)
+    if result is None or not result["all_done"]:
+        return result
+
+    # All tasks terminal: determine final status and update DB
+    if result["failed"] > 0 and result["completed"] == 0:
+        final_status = "failed"
+        error_msg = f"All {result['failed']} arena tasks failed."
+    elif result["failed"] > 0:
+        final_status = "completed"
+        error_msg = f"{result['failed']} of {result['total']} arena tasks failed."
+    else:
+        final_status = "completed"
+        error_msg = None
+
+    await set_run_status(
+        run_uuid,
+        final_status,
+        completed_at=True,
+        error_log=error_msg,
+    )
+
+    result["final_status"] = final_status
+    result["error_msg"] = error_msg
+    return result
 
 
 @celery_app.task(
@@ -1300,9 +1430,10 @@ def check_batch_completion(run_id: str) -> dict[str, Any]:
 
     log = logger.bind(task="check_batch_completion", run_id=run_id)
 
+    # Single asyncio.run() call for all DB operations
     try:
         run_uuid = _uuid.UUID(run_id)
-        result = asyncio.run(check_all_tasks_terminal(run_uuid))
+        result = asyncio.run(_check_batch_async(run_uuid))
     except Exception as exc:
         log.error(
             "check_batch_completion: DB error",
@@ -1329,20 +1460,10 @@ def check_batch_completion(run_id: str) -> dict[str, Any]:
         )
         return {"status": "waiting", **result}
 
-    # --- All tasks terminal: finalize the run ---
+    # --- All tasks terminal: finalize ---
+    final_status = result["final_status"]
     total_records = result["total_records"]
     credits_spent = result["credits_spent"]
-
-    # Determine final status: completed unless ALL tasks failed
-    if result["failed"] > 0 and result["completed"] == 0:
-        final_status = "failed"
-        error_msg = f"All {result['failed']} arena tasks failed."
-    elif result["failed"] > 0:
-        final_status = "completed"
-        error_msg = f"{result['failed']} of {result['total']} arena tasks failed."
-    else:
-        final_status = "completed"
-        error_msg = None
 
     log.info(
         "check_batch_completion: all tasks terminal; finalizing run",
@@ -1352,23 +1473,7 @@ def check_batch_completion(run_id: str) -> dict[str, Any]:
         failed=result["failed"],
     )
 
-    # Update run status
-    try:
-        asyncio.run(
-            set_run_status(
-                run_uuid,
-                final_status,
-                completed_at=True,
-                error_log=error_msg,
-            )
-        )
-    except Exception as exc:
-        log.error(
-            "check_batch_completion: failed to update run status",
-            error=str(exc),
-        )
-
-    # Publish run_complete SSE event
+    # Publish run_complete SSE event (sync Redis, no asyncio needed)
     from issue_observatory.core.event_bus import publish_run_complete  # noqa: PLC0415
 
     publish_run_complete(

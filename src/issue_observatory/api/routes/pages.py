@@ -399,6 +399,12 @@ async def query_designs_edit(
     if design is None:
         raise HTTPException(status_code=404, detail="Query design not found")
 
+    # Sort terms: grouped first (alpha by group_label), ungrouped last
+    sorted_terms = sorted(
+        design.search_terms,
+        key=lambda t: (0 if t.group_label else 1, t.group_label or "", t.term),
+    )
+
     return tpl.TemplateResponse(
         "query_designs/editor.html",
         {
@@ -406,6 +412,7 @@ async def query_designs_edit(
             "user": current_user,
             "design_id": str(design_id),
             "design": design,
+            "terms": sorted_terms,
         },
     )
 

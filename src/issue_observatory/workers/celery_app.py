@@ -24,7 +24,12 @@ Usage (within application code)::
 
 from __future__ import annotations
 
+import logging
+
 from celery import Celery
+from celery.signals import task_postrun, worker_process_init
+
+_logger = logging.getLogger(__name__)
 
 from issue_observatory.config.settings import get_settings
 
@@ -158,3 +163,48 @@ celery_app.conf.update(
 from issue_observatory.workers.beat_schedule import beat_schedule  # noqa: E402
 
 celery_app.conf.beat_schedule = beat_schedule
+
+
+# ---------------------------------------------------------------------------
+# Engine disposal on fork — prevents "attached to a different loop" errors
+# ---------------------------------------------------------------------------
+@worker_process_init.connect
+def _dispose_engines_on_fork(**kwargs: object) -> None:  # noqa: ARG001
+    """Dispose SQLAlchemy engines after Celery forks a worker process.
+
+    The async engine creates connection objects tied to the parent's event
+    loop.  After ``fork()``, those connections cannot be reused because the
+    child process has a different loop.  Disposing the engines forces fresh
+    connections to be created in the child's own event loop when
+    ``asyncio.run()`` is called.
+    """
+    from issue_observatory.core import database as _db  # noqa: PLC0415
+
+    _db.async_engine.sync_engine.dispose(close=False)
+    _db._sync_engine.dispose(close=False)
+
+
+# ---------------------------------------------------------------------------
+# Engine disposal after each task — prevents cross-task event loop errors
+# ---------------------------------------------------------------------------
+@task_postrun.connect
+def _dispose_async_engine_after_task(**kwargs: object) -> None:  # noqa: ARG001
+    """Dispose the async engine's connection pool after each task completes.
+
+    Celery prefork workers reuse the same process for multiple tasks.  If a
+    task called ``asyncio.run()``, asyncpg connections in the pool are bound
+    to the event loop that ``asyncio.run()`` created and then destroyed.
+    When the next task calls ``asyncio.run()`` with a *new* loop, those
+    pooled connections fail with ``RuntimeError: ... attached to a different
+    loop``.
+
+    Disposing the underlying sync engine (which manages the actual socket
+    pool for asyncpg) after each task ensures the next task starts with a
+    clean connection pool.
+    """
+    try:
+        from issue_observatory.core import database as _db  # noqa: PLC0415
+
+        _db.async_engine.sync_engine.dispose(close=False)
+    except Exception:  # noqa: BLE001
+        pass  # Best effort — never let cleanup crash the worker

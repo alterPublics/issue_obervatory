@@ -19,12 +19,13 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from datetime import date
 from typing import Annotated, AsyncGenerator, Optional
 
 import redis.asyncio as aioredis
 import structlog
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -533,6 +534,96 @@ async def create_collection_run(  # type: ignore[misc]
     response = CollectionRunRead.model_validate(run)
     response.warnings = date_range_warnings
     return response
+
+
+@router.post("/form", status_code=status.HTTP_303_SEE_OTHER)
+async def create_collection_run_form(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    query_design_id: Annotated[str, Form()],
+    mode: Annotated[str, Form()] = "batch",
+    tier: Annotated[str, Form()] = "free",
+    date_from: Annotated[Optional[str], Form()] = None,
+    date_to: Annotated[Optional[str], Form()] = None,
+) -> RedirectResponse:
+    """Launch a collection run from a browser form submission.
+
+    Accepts application/x-www-form-urlencoded data from HTMX and delegates
+    to the main create_collection_run function for all validation, credit
+    estimation, reservation, and orchestration logic.
+
+    Args:
+        request: The incoming HTTP request.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        query_design_id: UUID string of the query design (form field).
+        mode: Collection mode - "batch" or "live" (form field, default "batch").
+        tier: Global default tier (form field, default "free").
+        date_from: Optional start date in ISO format YYYY-MM-DD (form field).
+        date_to: Optional end date in ISO format YYYY-MM-DD (form field).
+
+    Returns:
+        HTTP 303 See Other redirect to the collection run detail page.
+
+    Raises:
+        HTTPException 422: If query_design_id is not a valid UUID.
+        HTTPException 422: If date_from or date_to are not valid ISO dates.
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the caller does not own the query design.
+        HTTPException 402: If insufficient credits are available.
+    """
+    # Parse the query design ID
+    try:
+        qd_id = uuid.UUID(query_design_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid query design ID",
+        ) from exc
+
+    # Parse date strings to date objects
+    parsed_date_from: Optional[date] = None
+    parsed_date_to: Optional[date] = None
+    if date_from:
+        try:
+            parsed_date_from = date.fromisoformat(date_from)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid date_from format: {date_from}",
+            ) from exc
+    if date_to:
+        try:
+            parsed_date_to = date.fromisoformat(date_to)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid date_to format: {date_to}",
+            ) from exc
+
+    # Build a CollectionRunCreate payload and delegate to the main function
+    payload = CollectionRunCreate(
+        query_design_id=qd_id,
+        mode=mode,
+        tier=tier,
+        date_from=parsed_date_from,
+        date_to=parsed_date_to,
+    )
+
+    # Delegate to the main create function (reuses all validation and credit logic)
+    run = await create_collection_run(request, payload, db, current_user)
+
+    logger.info(
+        "collection_run_created_via_form",
+        run_id=str(run.id),
+        user_id=str(current_user.id),
+    )
+
+    return RedirectResponse(
+        url=f"/collections/{run.id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 # ---------------------------------------------------------------------------

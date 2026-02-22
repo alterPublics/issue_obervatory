@@ -126,6 +126,7 @@ def majestic_collect_terms(
     date_to: str | None = None,
     max_results: int | None = None,
     language_filter: list[str] | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Collect domain-level metrics for a list of domain names or URLs.
 

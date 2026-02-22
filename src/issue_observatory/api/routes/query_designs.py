@@ -220,6 +220,72 @@ async def create_query_design(
     return await _get_design_or_404(design.id, db, load_terms=True)
 
 
+@router.post("/form", status_code=status.HTTP_303_SEE_OTHER)
+async def create_query_design_form(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    name: Annotated[str, Form()],
+    description: Annotated[Optional[str], Form()] = None,
+    default_tier: Annotated[str, Form()] = "free",
+    language: Annotated[str, Form()] = "da",
+    locale_country: Annotated[str, Form()] = "dk",
+    visibility: Annotated[str, Form()] = "private",
+) -> RedirectResponse:
+    """Create a new query design from a browser form submission.
+
+    Accepts application/x-www-form-urlencoded data from HTMX and creates
+    a minimal query design with no search terms. The user is redirected to
+    the editor page to add terms and configure arenas.
+
+    Args:
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        name: Human-readable name for the query design (form field).
+        description: Optional longer description (form field).
+        default_tier: Default tier (form field, default "free").
+        language: ISO 639-1 language code (form field, default "da").
+        locale_country: ISO 3166-1 country code (form field, default "dk").
+        visibility: Visibility setting (form field, default "private").
+
+    Returns:
+        HTTP 303 See Other redirect to the query design editor page.
+
+    Raises:
+        HTTPException 400: If name is empty after stripping whitespace.
+    """
+    name = name.strip()
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Query design name must not be empty.",
+        )
+
+    design = QueryDesign(
+        owner_id=current_user.id,
+        name=name,
+        description=description.strip() if description else "",
+        visibility=visibility,
+        default_tier=default_tier,
+        language=language,
+        locale_country=locale_country,
+        is_active=True,
+    )
+    db.add(design)
+    await db.commit()
+    await db.refresh(design)
+
+    logger.info(
+        "query_design_created_via_form",
+        design_id=str(design.id),
+        user_id=str(current_user.id),
+    )
+
+    return RedirectResponse(
+        url=f"/query-designs/{design.id}/edit",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Detail
 # ---------------------------------------------------------------------------
@@ -290,6 +356,80 @@ async def update_query_design(
     await db.commit()
     logger.info("query_design_updated", design_id=str(design_id), fields=list(update_data.keys()))
     return await _get_design_or_404(design_id, db, load_terms=True)
+
+
+@router.post("/{design_id:uuid}/update", status_code=status.HTTP_303_SEE_OTHER)
+async def update_query_design_form(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    name: Annotated[Optional[str], Form()] = None,
+    description: Annotated[Optional[str], Form()] = None,
+    default_tier: Annotated[Optional[str], Form()] = None,
+    language: Annotated[Optional[str], Form()] = None,
+    locale_country: Annotated[Optional[str], Form()] = None,
+    visibility: Annotated[Optional[str], Form()] = None,
+) -> RedirectResponse:
+    """Update a query design from a browser form submission.
+
+    Accepts application/x-www-form-urlencoded data from HTMX and applies
+    a partial update. Only form fields that are explicitly provided (not None)
+    are updated; omitted fields retain their current values.
+
+    Args:
+        design_id: UUID of the query design to update.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        name: New name (form field, optional).
+        description: New description (form field, optional).
+        default_tier: New default tier (form field, optional).
+        language: New language code (form field, optional).
+        locale_country: New country code (form field, optional).
+        visibility: New visibility setting (form field, optional).
+
+    Returns:
+        HTTP 303 See Other redirect to the query design detail page.
+
+    Raises:
+        HTTPException 404: If the design does not exist.
+        HTTPException 403: If the caller is not the owner (and not admin).
+    """
+    design = await _get_design_or_404(design_id, db)
+    ownership_guard(design.owner_id, current_user)
+
+    updated_fields: list[str] = []
+    if name is not None:
+        design.name = name.strip()
+        updated_fields.append("name")
+    if description is not None:
+        design.description = description.strip()
+        updated_fields.append("description")
+    if default_tier is not None:
+        design.default_tier = default_tier
+        updated_fields.append("default_tier")
+    if language is not None:
+        design.language = language
+        updated_fields.append("language")
+    if locale_country is not None:
+        design.locale_country = locale_country
+        updated_fields.append("locale_country")
+    if visibility is not None:
+        design.visibility = visibility
+        updated_fields.append("visibility")
+
+    await db.commit()
+
+    logger.info(
+        "query_design_updated_via_form",
+        design_id=str(design_id),
+        fields=updated_fields,
+        user_id=str(current_user.id),
+    )
+
+    return RedirectResponse(
+        url=f"/query-designs/{design_id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 # ---------------------------------------------------------------------------

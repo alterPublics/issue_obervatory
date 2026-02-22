@@ -169,6 +169,7 @@ def reddit_collect_terms(
     tier: str = "free",
     include_comments: bool = False,
     language_filter: list[str] | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Collect Reddit posts (and optionally comments) for a list of search terms.
 

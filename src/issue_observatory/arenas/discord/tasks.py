@@ -159,6 +159,7 @@ def discord_collect_terms(
     date_from: str | None = None,
     date_to: str | None = None,
     max_results: int | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Collect Discord messages matching the supplied search terms.
 

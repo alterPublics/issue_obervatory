@@ -141,6 +141,7 @@ def google_search_collect_terms(
     tier: str = "medium",
     language_filter: list[str] | None = None,
     public_figure_ids: list[str] | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Collect Google Search results for a list of terms.
 

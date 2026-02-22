@@ -370,6 +370,33 @@ def list_arenas() -> list[dict]:  # type: ignore[type-arg]
     ]
 
 
+def get_task_module(platform_name: str) -> str:
+    """Return the Celery task module path for a registered arena.
+
+    Derives the task module from the collector's actual Python module path
+    by replacing ``.collector`` with ``.tasks``.  This correctly handles
+    arenas nested under sub-packages (e.g. ``web.common_crawl``).
+
+    Args:
+        platform_name: The registered platform name (e.g. ``"common_crawl"``).
+
+    Returns:
+        Dotted module path for the arena's tasks module, e.g.
+        ``"issue_observatory.arenas.web.common_crawl.tasks"``.
+
+    Raises:
+        KeyError: If the platform is not registered.
+    """
+    cls = get_arena(platform_name)
+    # cls.__module__ is e.g. "issue_observatory.arenas.web.common_crawl.collector"
+    module_path = cls.__module__
+    if module_path.endswith(".collector"):
+        return module_path[: -len(".collector")] + ".tasks"
+    # Fallback: strip last component and append .tasks
+    parts = module_path.rsplit(".", 1)
+    return parts[0] + ".tasks"
+
+
 def autodiscover() -> None:
     """Import all arena ``collector`` modules to trigger ``@register`` decorators.
 
