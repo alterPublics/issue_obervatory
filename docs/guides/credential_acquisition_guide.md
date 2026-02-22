@@ -527,6 +527,11 @@ No credentials, no signup, no environment variables needed. The API at `https://
    ```
 8. The response includes an `access_token`. Copy it.
 
+**Environment Variables:**
+```
+GAB_ACCESS_TOKEN=your_bearer_token
+```
+
 **Credential Pool (Admin UI):**
 - Platform: `gab`
 - Tier: `free`
@@ -765,6 +770,11 @@ DISCORD_BOT_TOKEN=your_bot_token_here
    ```
 3. The long-lived token is valid for 60 days. The system auto-refreshes tokens at day 55.
 
+**Environment Variables:**
+```
+THREADS_ACCESS_TOKEN=your_long_lived_access_token
+```
+
 **Credential Pool (Admin UI):**
 - Platform: `threads`
 - Tier: `free`
@@ -916,8 +926,13 @@ EVENT_REGISTRY_API_KEY=your_api_key
 5. Copy your API key.
 6. Add credits to your account (pay-as-you-go billing).
 
+**Environment Variables:**
+```
+TWITTERAPIIO_API_KEY=your_twitterapiio_api_key
+```
+
 **Credential Pool (Admin UI):**
-- Platform: `twitterapiio`
+- Platform: `twitterapi_io`
 - Tier: `medium`
 - Payload: `{"api_key": "..."}`
 
@@ -981,6 +996,11 @@ X_API_SECRET=your_api_secret
 7. Copy the API key (format: `sk-or-v1-...`). It is shown only once.
 8. Add credits to your account. Unused credits remain in your account indefinitely (no expiration).
 
+**Environment Variables:**
+```
+OPENROUTER_API_KEY=sk-or-v1-...your_key_here
+```
+
 **Credential Pool (Admin UI):**
 - Platform: `openrouter`
 - Tier: `medium` (a single key covers both MEDIUM and PREMIUM tiers)
@@ -1022,6 +1042,11 @@ X_API_SECRET=your_api_secret
    - Create a new API token.
    - Copy the token.
 8. Add funds to your account (minimum varies; pricing is per-record).
+
+**Environment Variables:**
+```
+BRIGHTDATA_FACEBOOK_API_TOKEN=your_brightdata_api_token
+```
 
 **Credential Pool (Admin UI):**
 - Platform: `brightdata_facebook`
@@ -1079,6 +1104,11 @@ X_API_SECRET=your_api_secret
 2. After signing in, find the **"Instagram"** dataset (dataset ID: `gd_lyclm20il4r5helnj`).
 3. Use the same API token created for Facebook (or create a separate one).
 
+**Environment Variables:**
+```
+BRIGHTDATA_INSTAGRAM_API_TOKEN=your_brightdata_api_token
+```
+
 **Credential Pool (Admin UI):**
 - Platform: `brightdata_instagram`
 - Tier: `medium`
@@ -1111,6 +1141,11 @@ Same as Facebook PREMIUM tier -- see section 5.1. MCL access covers Facebook, In
 5. After signing in, navigate to **"Account" > "API"** (https://majestic.com/account/api).
 6. Generate or find your API key.
 7. Copy the API key.
+
+**Environment Variables:**
+```
+MAJESTIC_API_KEY=your_majestic_api_key
+```
 
 **Credential Pool (Admin UI):**
 - Platform: `majestic`
@@ -1372,9 +1407,12 @@ This is the complete list of arena-related environment variables from `.env.exam
 | `TIKTOK_CLIENT_SECRET` | TikTok | FREE |
 | `TELEGRAM_API_ID` | Telegram | FREE |
 | `TELEGRAM_API_HASH` | Telegram | FREE |
+| `TELEGRAM_SESSION_STRING` | Telegram | FREE |
 | `TELEGRAM_PHONE` | Telegram | FREE |
 | `YOUTUBE_API_KEY` | YouTube | FREE |
 | `DISCORD_BOT_TOKEN` | Discord | FREE |
+| `GAB_ACCESS_TOKEN` | Gab | FREE |
+| `THREADS_ACCESS_TOKEN` | Threads | FREE |
 
 ### News APIs
 
@@ -1383,21 +1421,41 @@ This is the complete list of arena-related environment variables from `.env.exam
 | `EVENT_REGISTRY_API_KEY` | Event Registry | MEDIUM/PREMIUM |
 | `GDELT_DOC_API_URL` | GDELT | FREE (optional override) |
 
-### X/Twitter (Commented Out)
+### X/Twitter
 
 | Variable | Arena | Tier |
 |----------|-------|------|
-| `X_BEARER_TOKEN` | X/Twitter | PREMIUM |
-| `X_API_KEY` | X/Twitter | PREMIUM |
-| `X_API_SECRET` | X/Twitter | PREMIUM |
+| `TWITTERAPIIO_API_KEY` | X/Twitter (TwitterAPI.io) | MEDIUM |
+| `X_BEARER_TOKEN` | X/Twitter (Official API) | PREMIUM |
+| `X_API_KEY` | X/Twitter (Official API) | PREMIUM |
+| `X_API_SECRET` | X/Twitter (Official API) | PREMIUM |
 
-### Wikipedia (Commented Out, Optional)
+### AI Chat Search
+
+| Variable | Arena | Tier |
+|----------|-------|------|
+| `OPENROUTER_API_KEY` | AI Chat Search | MEDIUM/PREMIUM |
+
+### Bright Data (Facebook / Instagram)
+
+| Variable | Arena | Tier |
+|----------|-------|------|
+| `BRIGHTDATA_FACEBOOK_API_TOKEN` | Facebook | MEDIUM |
+| `BRIGHTDATA_INSTAGRAM_API_TOKEN` | Instagram | MEDIUM |
+
+### Majestic
+
+| Variable | Arena | Tier |
+|----------|-------|------|
+| `MAJESTIC_API_KEY` | Majestic | PREMIUM |
+
+### Wikipedia (Optional)
 
 | Variable | Arena | Tier |
 |----------|-------|------|
 | `WIKIPEDIA_USER_AGENT` | Wikipedia | FREE |
 
-### Deferred Arenas (Commented Out)
+### Deferred Arenas
 
 | Variable | Arena | Tier |
 |----------|-------|------|

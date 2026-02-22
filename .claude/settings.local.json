@@ -71,7 +71,12 @@
       "Bash(set:*)",
       "Bash(celery:*)",
       "Bash(curl:*)",
-      "Bash(python -m json.tool:*)"
+      "Bash(python -m json.tool:*)",
+      "Bash(# Check API key logging - search structlog output for any plaintext keys grep -i \"\"api.key\\\\|api_key\\\\|secret\\\\|bearer\\\\|token\"\" /private/tmp/claude-502/-Users-jakobbk-Documents-postdoc-codespace-issue-observatory/tasks/b8487b5.output)",
+      "Bash(# Check the exact routes available curl -s http://localhost:8000/openapi.json | python3 -m json.tool)",
+      "Bash(# Get all routes from OpenAPI curl -s http://localhost:8000/openapi.json)",
+      "Bash(# Stop old celery worker and start new one pkill -f \"\"celery.*worker\"\" ; sleep 2 source .venv/bin/activate && celery -A issue_observatory.workers.celery_app worker -l info --pool=prefork --concurrency=2 2>&1)",
+      "Bash(# Restart FastAPI to pick up the fix pkill -f \"\"uvicorn.*issue_observatory\"\" ; sleep 2 source .venv/bin/activate && uvicorn issue_observatory.api.main:app --host 0.0.0.0 --port 8000 --reload 2>&1 & sleep 4 && curl -s http://localhost:8000/health)"
     ]
   }
 }

@@ -260,11 +260,14 @@ class Normalizer:
             ["content_type", "type", "kind"],
         ) or "post"
 
-        # Publication timestamp
+        # Publication timestamp (fallback to collected_at if not available —
+        # required for content_records partitioning by published_at).
         published_at = self._extract_datetime(
             raw_item,
             ["published_at", "created_at", "timestamp", "date", "pub_date", "created_utc"],
         )
+        if published_at is None:
+            published_at = collected_at
 
         # Author fields
         author_platform_id = self._extract_str(

@@ -68,6 +68,59 @@ _MAX_COOLDOWN_SECONDS: int = 3600
 _LEASE_TTL_SECONDS: int = 3600
 """Redis TTL for active credential leases."""
 
+# ---------------------------------------------------------------------------
+# Platform → env-var mapping for multi-field credentials
+# ---------------------------------------------------------------------------
+
+_PLATFORM_ENV_MAP: dict[tuple[str, str], dict[str, str]] = {
+    ("serper", "medium"): {"api_key": "SERPER_API_KEY"},
+    ("serpapi", "premium"): {"api_key": "SERPAPI_API_KEY"},
+    ("youtube", "free"): {"api_key": "YOUTUBE_API_KEY"},
+    ("reddit", "free"): {
+        "client_id": "REDDIT_CLIENT_ID",
+        "client_secret": "REDDIT_CLIENT_SECRET",
+        "user_agent": "REDDIT_USER_AGENT",
+    },
+    ("tiktok", "free"): {
+        "client_key": "TIKTOK_CLIENT_KEY",
+        "client_secret": "TIKTOK_CLIENT_SECRET",
+    },
+    ("telegram", "free"): {
+        "api_id": "TELEGRAM_API_ID",
+        "api_hash": "TELEGRAM_API_HASH",
+        "session_string": "TELEGRAM_SESSION_STRING",
+    },
+    ("bluesky", "free"): {
+        "handle": "BLUESKY_HANDLE",
+        "app_password": "BLUESKY_APP_PASSWORD",
+    },
+    ("event_registry", "medium"): {"api_key": "EVENT_REGISTRY_API_KEY"},
+    ("event_registry", "premium"): {"api_key": "EVENT_REGISTRY_API_KEY"},
+    ("twitterapi_io", "medium"): {"api_key": "TWITTERAPIIO_API_KEY"},
+    ("x_twitter", "premium"): {
+        "bearer_token": "X_BEARER_TOKEN",
+        "api_key": "X_API_KEY",
+        "api_secret": "X_API_SECRET",
+    },
+    ("discord", "free"): {"bot_token": "DISCORD_BOT_TOKEN"},
+    ("openrouter", "medium"): {"api_key": "OPENROUTER_API_KEY"},
+    ("openrouter", "premium"): {"api_key": "OPENROUTER_API_KEY"},
+    ("gab", "free"): {"access_token": "GAB_ACCESS_TOKEN"},
+    ("threads", "free"): {"access_token": "THREADS_ACCESS_TOKEN"},
+    ("brightdata_facebook", "medium"): {"api_token": "BRIGHTDATA_FACEBOOK_API_TOKEN"},
+    ("brightdata_instagram", "medium"): {"api_token": "BRIGHTDATA_INSTAGRAM_API_TOKEN"},
+    ("majestic", "premium"): {"api_key": "MAJESTIC_API_KEY"},
+    ("twitch", "free"): {
+        "client_id": "TWITCH_CLIENT_ID",
+        "client_secret": "TWITCH_CLIENT_SECRET",
+    },
+}
+"""Maps ``(platform, tier)`` to ``{credential_field: env_var_name}``.
+
+Used by :meth:`CredentialPool._acquire_from_env` to build proper multi-field
+credential dicts from environment variables.  Falls back to the generic
+``{PLATFORM}_{TIER}_API_KEY`` pattern when no mapping exists.
+"""
 
 
 
@@ -552,7 +605,10 @@ class CredentialPool:
     ) -> dict[str, Any] | None:
         """Env-var fallback: read credentials from environment variables.
 
-        Uses the ``{PLATFORM}_{TIER}_API_KEY`` naming convention.
+        First checks :data:`_PLATFORM_ENV_MAP` for a platform-specific
+        multi-field mapping.  If a mapping exists and at least one required
+        env var is set, builds a proper credential dict.  Otherwise falls
+        back to the generic ``{PLATFORM}_{TIER}_API_KEY`` naming convention.
 
         Args:
             platform: Platform identifier.
@@ -561,6 +617,14 @@ class CredentialPool:
         Returns:
             Credential dict or ``None``.
         """
+        # -- Attempt mapped multi-field credentials first ----------------------
+        env_map = _PLATFORM_ENV_MAP.get((platform, tier))
+        if env_map:
+            result = self._acquire_from_env_map(platform, tier, env_map)
+            if result is not None:
+                return result
+
+        # -- Fallback: generic {PLATFORM}_{TIER}_API_KEY pattern ---------------
         prefix = f"{platform.upper()}_{tier.upper()}_"
         candidates = self._discover_env_credentials(prefix)
 
@@ -594,6 +658,59 @@ class CredentialPool:
             prefix,
         )
         return None
+
+    def _acquire_from_env_map(
+        self,
+        platform: str,
+        tier: str,
+        env_map: dict[str, str],
+    ) -> dict[str, Any] | None:
+        """Build a credential dict from a platform-specific env-var mapping.
+
+        Args:
+            platform: Platform identifier.
+            tier: Tier identifier.
+            env_map: Mapping of credential field names to env var names.
+
+        Returns:
+            Credential dict if at least one mapped env var is set, else ``None``.
+        """
+        payload: dict[str, str] = {}
+        for field, env_var in env_map.items():
+            value = self._env.get(env_var, "")
+            if value:
+                payload[field] = value
+
+        if not payload:
+            return None
+
+        cred_id = f"env:{platform}:{tier}"
+        if cred_id in self._cooldown_ids:
+            logger.debug("Env credential '%s' is on cooldown — skipping.", cred_id)
+            return None
+        if self._error_counts[cred_id] >= _CIRCUIT_BREAKER_THRESHOLD:
+            logger.warning(
+                "Env credential '%s' has %d errors — skipping (circuit breaker).",
+                cred_id,
+                self._error_counts[cred_id],
+            )
+            return None
+
+        logger.debug(
+            "Acquired env credential '%s' for %s/%s (mapped).", cred_id, platform, tier
+        )
+        result: dict[str, Any] = {
+            "id": cred_id,
+            "platform": platform,
+            "tier": tier,
+            **payload,
+        }
+        # Ensure api_key is present for backward compatibility
+        if "api_key" not in result:
+            first_val = next(iter(payload.values()), None)
+            if isinstance(first_val, str):
+                result["api_key"] = first_val
+        return result
 
     async def release(
         self,

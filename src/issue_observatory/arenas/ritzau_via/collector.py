@@ -289,7 +289,7 @@ class RitzauViaCollector(ArenaCollector):
 
         url = raw_item.get("url") or None
         language = raw_item.get("language") or RITZAU_DEFAULT_LANGUAGE
-        published_at = raw_item.get("publishedAt") or None
+        published_at = raw_item.get("publishedAt") or raw_item.get("createdAt") or None
 
         # Extract image URLs from the images array.
         images = raw_item.get("images") or []

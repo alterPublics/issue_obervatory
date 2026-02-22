@@ -291,7 +291,7 @@ async def list_collection_runs(
 
 
 @router.post("/", response_model=CollectionRunRead, status_code=status.HTTP_201_CREATED)
-@limiter.limit("20/minute")
+# @limiter.limit("20/minute")  # Disabled: slowapi corrupts FastAPI param parsing
 async def create_collection_run(  # type: ignore[misc]
     request: Request,
     payload: CollectionRunCreate,
@@ -880,7 +880,7 @@ async def get_collection_schedule(
 
 
 @router.post("/{run_id}/refresh-engagement", status_code=status.HTTP_202_ACCEPTED)
-@limiter.limit("5/minute")
+# @limiter.limit("5/minute")  # Disabled: slowapi corrupts FastAPI param parsing
 async def refresh_engagement_metrics_endpoint(
     request: Request,
     run_id: uuid.UUID,

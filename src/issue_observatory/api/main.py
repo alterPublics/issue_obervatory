@@ -22,8 +22,9 @@ from typing import Callable
 
 import structlog
 from fastapi import FastAPI, Request, Response
+from fastapi.exceptions import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from slowapi import _rate_limit_exceeded_handler
@@ -98,6 +99,28 @@ def create_app() -> FastAPI:
     application.add_exception_handler(
         RateLimitExceeded,  # type: ignore[arg-type]
         _rate_limit_exceeded_handler,  # type: ignore[arg-type]
+    )
+
+    # ---- 401 → login redirect for browser requests -----------------------
+    # When a browser request (Accept: text/html) hits a protected page
+    # without a valid session, redirect to the login page instead of
+    # returning a raw JSON {"detail": "Unauthorized"}.
+
+    async def _auth_redirect_handler(
+        request: Request, exc: HTTPException
+    ) -> Response:
+        if exc.status_code == 401:
+            accept = request.headers.get("accept", "")
+            if "text/html" in accept:
+                return RedirectResponse(url="/auth/login", status_code=302)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+        )
+
+    application.add_exception_handler(
+        HTTPException,  # type: ignore[arg-type]
+        _auth_redirect_handler,  # type: ignore[arg-type]
     )
 
     # ---- Middleware --------------------------------------------------------
