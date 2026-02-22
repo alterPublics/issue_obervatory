@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import secrets
 import uuid
-from typing import Optional
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -356,3 +357,194 @@ async def update_preferences(
             "skip_pseudonymization", False
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# HTMX helpers — HTML fragment endpoints for the admin/users.html template
+# ---------------------------------------------------------------------------
+
+
+def _user_row_html(u: User) -> str:
+    """Render a single ``<tr>`` for the users table matching the template structure."""
+    initial = ((u.display_name or u.email or "?")[0]).upper()
+    display = u.display_name or ""
+    email = u.email or ""
+    role = u.role or "researcher"
+    is_active = u.is_active
+
+    if role == "admin":
+        role_badge = (
+            '<span class="inline-flex px-2 py-0.5 rounded text-xs font-medium '
+            'bg-red-100 text-red-800">Admin</span>'
+        )
+    else:
+        role_badge = (
+            '<span class="inline-flex px-2 py-0.5 rounded text-xs font-medium '
+            'bg-gray-100 text-gray-600">Researcher</span>'
+        )
+
+    if is_active:
+        status_badge = (
+            '<span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium '
+            'bg-green-100 text-green-800">Active</span>'
+        )
+    else:
+        status_badge = (
+            '<span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium '
+            'bg-yellow-100 text-yellow-800">Pending</span>'
+        )
+
+    last_login = str(u.last_login_at)[:16] if u.last_login_at else "Never"
+    created = str(u.created_at)[:10] if u.created_at else ""
+
+    if not is_active:
+        action_btn = (
+            f'<button type="button" '
+            f'hx-post="/admin/users/{u.id}/activate" '
+            f'hx-target="#user-row-{u.id}" '
+            f'hx-swap="outerHTML" '
+            f'class="text-sm text-green-700 hover:text-green-900 px-2 py-1 rounded '
+            f'hover:bg-green-50 transition-colors">Activate</button>'
+        )
+    else:
+        action_btn = (
+            f'<button type="button" '
+            f'hx-post="/admin/users/{u.id}/deactivate" '
+            f'hx-target="#user-row-{u.id}" '
+            f'hx-swap="outerHTML" '
+            f'hx-confirm="Deactivate account for {email}?" '
+            f'class="text-sm text-yellow-700 hover:text-yellow-900 px-2 py-1 rounded '
+            f'hover:bg-yellow-50 transition-colors">Deactivate</button>'
+        )
+
+    return (
+        f'<tr class="hover:bg-gray-50" id="user-row-{u.id}">'
+        f'<td class="px-6 py-4">'
+        f'<div class="flex items-center gap-3">'
+        f'<div class="w-8 h-8 rounded-full bg-blue-100 text-blue-700 flex items-center '
+        f'justify-center text-sm font-bold flex-shrink-0">{initial}</div>'
+        f'<div><p class="font-medium text-gray-900">{display}</p>'
+        f'<p class="text-xs text-gray-500">{email}</p></div></div></td>'
+        f'<td class="px-6 py-4">{role_badge}</td>'
+        f'<td class="px-6 py-4">{status_badge}</td>'
+        f'<td class="px-6 py-4 text-gray-500 text-xs">{last_login}</td>'
+        f'<td class="px-6 py-4 text-gray-500 text-xs">{created}</td>'
+        f'<td class="px-6 py-4 text-right"><div class="flex items-center justify-end gap-2">'
+        f'{action_btn}'
+        f'<a href="/admin/credits?user_id={u.id}" '
+        f'class="text-sm text-gray-500 hover:text-blue-600 px-2 py-1 rounded '
+        f'hover:bg-gray-100 transition-colors">Credits</a>'
+        f'</div></td></tr>'
+    )
+
+
+@router.post("/{user_id}/activate", response_class=HTMLResponse)
+async def activate_user(
+    user_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+) -> HTMLResponse:
+    """Activate a user account and return the updated table row as HTML.
+
+    Args:
+        user_id: UUID of the user to activate.
+        db: Injected async database session.
+        _admin: Injected admin user (validates the caller is an admin).
+
+    Returns:
+        HTML ``<tr>`` fragment for HTMX swap.
+    """
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+    user.is_active = True
+    await db.commit()
+    await db.refresh(user)
+    return HTMLResponse(_user_row_html(user))
+
+
+@router.post("/{user_id}/deactivate", response_class=HTMLResponse)
+async def deactivate_user(
+    user_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+) -> HTMLResponse:
+    """Deactivate a user account and return the updated table row as HTML.
+
+    Args:
+        user_id: UUID of the user to deactivate.
+        db: Injected async database session.
+        _admin: Injected admin user (validates the caller is an admin).
+
+    Returns:
+        HTML ``<tr>`` fragment for HTMX swap.
+    """
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+    user.is_active = False
+    await db.commit()
+    await db.refresh(user)
+    return HTMLResponse(_user_row_html(user))
+
+
+@router.post("/create", response_class=HTMLResponse)
+async def admin_create_user(
+    request: Request,
+    email: Annotated[str, Form()],
+    password: Annotated[str, Form()],
+    display_name: Annotated[str, Form()] = "",
+    role: Annotated[str, Form()] = "researcher",
+    is_active: Annotated[bool, Form()] = True,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_admin),
+) -> HTMLResponse:
+    """Create a new user account (admin only) and return a table row as HTML.
+
+    Args:
+        request: The current HTTP request.
+        email: Email address for the new user.
+        password: Plain-text password (will be hashed).
+        display_name: Optional display name.
+        role: User role (``researcher`` or ``admin``).
+        is_active: Whether the account is immediately active.
+        db: Injected async database session.
+        _admin: Injected admin user (validates the caller is an admin).
+
+    Returns:
+        HTML ``<tr>`` fragment for HTMX swap.
+    """
+    from issue_observatory.core.user_manager import UserManager  # noqa: PLC0415
+
+    allowed_roles = {"researcher", "admin"}
+    if role not in allowed_roles:
+        return HTMLResponse(
+            '<div class="p-3 bg-red-50 border border-red-200 rounded text-sm text-red-800">'
+            f"Invalid role '{role}'. Must be one of: {sorted(allowed_roles)}.</div>",
+            status_code=400,
+        )
+
+    existing = await db.execute(select(User).where(User.email == email))
+    if existing.scalar_one_or_none() is not None:
+        return HTMLResponse(
+            '<div class="p-3 bg-red-50 border border-red-200 rounded text-sm text-red-800">'
+            f"A user with email '{email}' already exists.</div>",
+            status_code=400,
+        )
+
+    from fastapi_users.password import PasswordHelper  # noqa: PLC0415
+
+    password_helper = PasswordHelper()
+    hashed = password_helper.hash(password)
+
+    user = User(
+        email=email,
+        hashed_password=hashed,
+        display_name=display_name or None,
+        role=role,
+        is_active=is_active,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return HTMLResponse(_user_row_html(user))

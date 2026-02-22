@@ -87,8 +87,7 @@ def create_app() -> FastAPI:
         ),
         version="0.1.0",
         debug=settings.debug,
-        # Disable automatic redirect for paths with trailing slashes.
-        redirect_slashes=False,
+        redirect_slashes=True,
     )
 
     # ---- Rate limiter state -----------------------------------------------
@@ -353,6 +352,7 @@ def create_app() -> FastAPI:
         codebooks,
         collections,
         content,
+        credentials,
         credits,
         health as health_routes,
         imports,
@@ -368,6 +368,11 @@ def create_app() -> FastAPI:
     # per-arena routers (mounted under /arenas) to avoid path conflicts.
     application.include_router(arenas_routes.router)
 
+    # Priority page routes (e.g. /query-designs/new, /collections/new) must be
+    # registered before API routers whose /{id} catch-all patterns would
+    # otherwise capture literal path segments like "new" and fail UUID validation.
+    application.include_router(pages.priority_router)
+
     application.include_router(query_designs.router, prefix="/query-designs", tags=["query-designs"])
     application.include_router(collections.router, prefix="/collections", tags=["collections"])
     application.include_router(content.router, prefix="/content", tags=["content"])
@@ -381,6 +386,8 @@ def create_app() -> FastAPI:
     application.include_router(users.router, prefix="/admin/users", tags=["admin:users"])
     # Admin credit management (allocation)
     application.include_router(credits.router, prefix="/admin/credits", tags=["admin:credits"])
+    # Admin credential pool management (CRUD)
+    application.include_router(credentials.router, prefix="/admin/credentials", tags=["admin:credentials"])
     # HTML page routes (Jinja2 templates, no API prefix)
     application.include_router(pages.router)
 
@@ -476,6 +483,10 @@ This is the ASGI callable passed to Uvicorn / Gunicorn.
 templates: Jinja2Templates | None = None
 if _TEMPLATES_DIR.exists():
     templates = Jinja2Templates(directory=_TEMPLATES_DIR)
+
+    # Custom Jinja2 filters used by templates.
+    templates.env.filters["format_number"] = lambda x: f"{int(x):,}"
+
     """Jinja2 template engine pointed at ``api/templates/``.
 
     Import this in route modules that render HTML responses::

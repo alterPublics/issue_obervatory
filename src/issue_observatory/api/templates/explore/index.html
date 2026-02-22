@@ -219,7 +219,7 @@ function explorerApp() {
                 const data = await response.json();
 
                 // Filter to FREE tier arenas only (exploration is meant to be no-cost)
-                this.availableArenas = data.arenas
+                this.availableArenas = data
                     .filter(arena => arena.supported_tiers.includes('free'))
                     .map(arena => ({
                         platform_name: arena.platform_name,

@@ -9,6 +9,100 @@
             <h1 class="text-xl font-bold text-gray-900">User Management</h1>
             <p class="text-sm text-gray-500 mt-0.5">Activate accounts, change roles and manage access</p>
         </div>
+        <button type="button"
+                x-data
+                @click="$dispatch('open-create-user')"
+                class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+            </svg>
+            Create User
+        </button>
+    </div>
+
+    {# Create user modal #}
+    <div x-data="{ open: false }"
+         @open-create-user.window="open = true"
+         x-show="open"
+         x-cloak
+         class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40"
+         @keydown.escape.window="open = false">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 p-6"
+             @click.stop>
+            <div class="flex items-center justify-between mb-5">
+                <h2 class="text-base font-semibold text-gray-900">Create User</h2>
+                <button @click="open = false" class="text-gray-400 hover:text-gray-600">
+                    <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                         stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+
+            <form method="POST"
+                  action="/admin/users/create"
+                  hx-post="/admin/users/create"
+                  hx-target="#users-tbody"
+                  hx-swap="beforeend"
+                  hx-on::after-request="if(event.detail.successful){ open = false; this.reset(); }"
+                  class="space-y-4">
+
+                <div>
+                    <label for="create_email" class="block text-sm font-medium text-gray-700 mb-1">
+                        Email <span class="text-red-500">*</span>
+                    </label>
+                    <input type="email" id="create_email" name="email" required
+                           placeholder="user@example.com"
+                           class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+
+                <div>
+                    <label for="create_password" class="block text-sm font-medium text-gray-700 mb-1">
+                        Password <span class="text-red-500">*</span>
+                    </label>
+                    <input type="password" id="create_password" name="password" required
+                           minlength="8"
+                           class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+
+                <div>
+                    <label for="create_display_name" class="block text-sm font-medium text-gray-700 mb-1">
+                        Display Name
+                    </label>
+                    <input type="text" id="create_display_name" name="display_name"
+                           placeholder="Full name"
+                           class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label for="create_role" class="block text-sm font-medium text-gray-700 mb-1">Role</label>
+                        <select id="create_role" name="role"
+                                class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                            <option value="researcher" selected>Researcher</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                    </div>
+                    <div class="flex items-end pb-1">
+                        <label class="flex items-center gap-2 text-sm text-gray-700">
+                            <input type="checkbox" name="is_active" value="true" checked
+                                   class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                            Active
+                        </label>
+                    </div>
+                </div>
+
+                <div class="pt-4 border-t border-gray-200 flex justify-between">
+                    <button type="button" @click="open = false"
+                            class="text-sm text-gray-500 hover:text-gray-700">Cancel</button>
+                    <button type="submit"
+                            class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+                        Create User
+                    </button>
+                </div>
+            </form>
+        </div>
     </div>
 
     <div class="bg-white rounded-lg shadow overflow-hidden">
@@ -53,10 +147,10 @@
                         {% endif %}
                     </td>
                     <td class="px-6 py-4 text-gray-500 text-xs">
-                        {{ u.last_login_at | default('Never') | truncate(16, true, '') }}
+                        {{ (u.last_login_at | string)[:16] if u.last_login_at else 'Never' }}
                     </td>
                     <td class="px-6 py-4 text-gray-500 text-xs">
-                        {{ u.created_at | default('') | truncate(10, true, '') }}
+                        {{ (u.created_at | string)[:10] if u.created_at else '' }}
                     </td>
                     <td class="px-6 py-4 text-right">
                         <div class="flex items-center justify-end gap-2">

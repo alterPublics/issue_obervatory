@@ -38,24 +38,31 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from issue_observatory.api.dependencies import (
+    PaginationParams,
     get_current_active_user,
     get_optional_user,
+    get_pagination,
     require_admin,
 )
+from issue_observatory.core.models.content import UniversalContentRecord
 from issue_observatory.core.database import get_db
 from issue_observatory.core.models.collection import CollectionRun
 from issue_observatory.core.models.query_design import QueryDesign, SearchTerm
-from issue_observatory.core.models.users import User
+from issue_observatory.core.models.users import CreditAllocation, User
 
 router = APIRouter(include_in_schema=False)
+
+# Routes that must be evaluated BEFORE API routers so that literal path
+# segments like ``/new`` are matched before ``/{id}`` catch-all patterns.
+priority_router = APIRouter(include_in_schema=False)
 
 
 def _templates(request: Request) -> Jinja2Templates:
@@ -210,7 +217,7 @@ async def query_designs_list(
     )
 
 
-@router.get("/query-designs/new", response_class=HTMLResponse)
+@priority_router.get("/query-designs/new", response_class=HTMLResponse)
 async def query_designs_new(
     request: Request,
     current_user: Annotated[User, Depends(get_current_active_user)],
@@ -343,7 +350,7 @@ async def collections_list(
     )
 
 
-@router.get("/collections/new", response_class=HTMLResponse)
+@priority_router.get("/collections/new", response_class=HTMLResponse)
 async def collections_new(
     request: Request,
     current_user: Annotated[User, Depends(get_current_active_user)],
@@ -538,28 +545,29 @@ async def actors_list(
 
     tpl = _templates(request)
 
-    # Query actors owned by current user
+    # Query actors created by current user or shared
     stmt = (
         select(Actor)
-        .where(Actor.owner_id == current_user.id)
+        .where(
+            (Actor.created_by == current_user.id) | (Actor.is_shared.is_(True))
+        )
         .order_by(Actor.created_at.desc())
-        .limit(pagination.limit)
+        .limit(pagination.page_size)
     )
 
     result = await db.execute(stmt)
     actors = result.scalars().all()
 
-    # Build actor list with stats (simple version - templates don't require complex stats)
     actors_list = [
         {
             "id": str(actor.id),
-            "name": actor.name,
-            "type": actor.type,
+            "name": actor.canonical_name,
+            "type": actor.actor_type,
             "description": actor.description,
             "public_figure": actor.public_figure,
-            "platforms": [],  # Would need to join presences for full data
-            "content_count": 0,  # Would need to query content_records
-            "last_seen": actor.updated_at.isoformat() if actor.updated_at else "",
+            "platforms": [],
+            "content_count": 0,
+            "last_seen": actor.created_at.isoformat() if actor.created_at else "",
         }
         for actor in actors
     ]
@@ -620,8 +628,8 @@ async def actors_detail(
     # Build actor context
     actor_context = {
         "id": str(actor_record.id),
-        "name": actor_record.name,
-        "type": actor_record.type,
+        "name": actor_record.canonical_name,
+        "type": actor_record.actor_type,
         "description": actor_record.description,
         "public_figure": actor_record.public_figure,
         "content_count": content_count,
@@ -633,11 +641,11 @@ async def actors_detail(
         {
             "id": str(p.id),
             "platform": p.platform,
-            "username": p.username,
+            "username": p.platform_username,
             "profile_url": p.profile_url,
             "follower_count": p.follower_count,
             "verified": p.verified,
-            "last_checked": p.last_checked.isoformat() if p.last_checked else "",
+            "last_checked": p.last_checked_at.isoformat() if p.last_checked_at else "",
         }
         for p in (actor_record.platform_presences or [])
     ]
@@ -802,20 +810,24 @@ async def register_page(
 async def admin_users(
     request: Request,
     admin_user: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
     """Render the admin user management page.
 
     Args:
         request: The current HTTP request.
         admin_user: Verified admin user from the ``require_admin`` dependency.
+        db: Injected async database session.
 
     Returns:
         Rendered ``admin/users.html`` template.
     """
+    result = await db.execute(select(User).order_by(User.created_at))
+    users = result.scalars().all()
     tpl = _templates(request)
     return tpl.TemplateResponse(
         "admin/users.html",
-        {"request": request, "user": admin_user},
+        {"request": request, "user": admin_user, "users": users},
     )
 
 
@@ -823,20 +835,48 @@ async def admin_users(
 async def admin_credits(
     request: Request,
     admin_user: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
     """Render the admin credit allocation page.
 
     Args:
         request: The current HTTP request.
         admin_user: Verified admin user from the ``require_admin`` dependency.
+        db: Injected async database session.
 
     Returns:
         Rendered ``admin/credits.html`` template.
     """
+    users_result = await db.execute(select(User).order_by(User.email))
+    users = users_result.scalars().all()
+
+    alloc_query = (
+        select(CreditAllocation, User.email.label("user_email"))
+        .join(User, CreditAllocation.user_id == User.id)
+        .order_by(CreditAllocation.allocated_at.desc())
+        .limit(50)
+    )
+    rows = (await db.execute(alloc_query)).all()
+    allocations = [
+        {
+            "user_email": r.user_email,
+            "credits_amount": r.CreditAllocation.credits_amount,
+            "valid_until": r.CreditAllocation.valid_until,
+            "memo": r.CreditAllocation.memo,
+            "allocated_at": r.CreditAllocation.allocated_at,
+        }
+        for r in rows
+    ]
+
     tpl = _templates(request)
     return tpl.TemplateResponse(
         "admin/credits.html",
-        {"request": request, "user": admin_user},
+        {
+            "request": request,
+            "user": admin_user,
+            "users": users,
+            "allocations": allocations,
+        },
     )
 
 
@@ -844,20 +884,28 @@ async def admin_credits(
 async def admin_credentials(
     request: Request,
     admin_user: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
     """Render the admin credential pool management page.
 
     Args:
         request: The current HTTP request.
         admin_user: Verified admin user from the ``require_admin`` dependency.
+        db: Injected async database session.
 
     Returns:
         Rendered ``admin/credentials.html`` template.
     """
+    from issue_observatory.core.models.credentials import ApiCredential  # noqa: PLC0415
+
+    result = await db.execute(
+        select(ApiCredential).order_by(ApiCredential.created_at.desc())
+    )
+    credentials = result.scalars().all()
     tpl = _templates(request)
     return tpl.TemplateResponse(
         "admin/credentials.html",
-        {"request": request, "user": admin_user},
+        {"request": request, "user": admin_user, "credentials": credentials},
     )
 
 

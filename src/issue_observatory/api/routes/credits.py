@@ -99,7 +99,9 @@ async def allocate_credits(
         allocation = CreditAllocation(
             user_id=target_user_id,
             credits_amount=credits_amount,
+            valid_from=date.today(),
             valid_until=valid_until_date,
+            allocated_by=admin_user.id,
             memo=memo or "",
         )
         session.add(allocation)
