@@ -122,6 +122,7 @@ def wayback_collect_terms(
     max_results: int | None = None,
     language_filter: list[str] | None = None,
     arenas_config: dict[str, Any] | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Collect Wayback Machine CDX captures for Danish pages matching the terms.
 

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 import structlog
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,6 +41,12 @@ from issue_observatory.api.metrics import (
 
 from issue_observatory.config.settings import get_settings
 from issue_observatory.core.logging_config import configure_logging, request_id_var
+
+# ---------------------------------------------------------------------------
+# M-1 fix: Load .env values into os.environ so credential detection works
+# ---------------------------------------------------------------------------
+
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Logging configuration — applied once at module import time so that log

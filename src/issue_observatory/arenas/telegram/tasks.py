@@ -171,6 +171,7 @@ def telegram_collect_terms(
     max_results: int | None = None,
     channel_ids: list[str] | None = None,
     language_filter: list[str] | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Collect Telegram messages matching a list of search terms.
 

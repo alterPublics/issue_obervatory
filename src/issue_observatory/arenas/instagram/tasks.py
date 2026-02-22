@@ -131,6 +131,7 @@ def instagram_collect_terms(
     date_to: str | None = None,
     max_results: int | None = None,
     language_filter: list[str] | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Collect Instagram posts matching hashtags derived from search terms.
 

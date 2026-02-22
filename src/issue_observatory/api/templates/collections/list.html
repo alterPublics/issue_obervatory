@@ -106,10 +106,18 @@
                         {{ run.started_at | default('') | truncate(16, true, '') }}
                     </td>
                     <td class="px-6 py-4 text-right">
-                        <a href="/collections/{{ run.id }}"
-                           class="text-sm text-blue-600 hover:underline">
-                            Details
-                        </a>
+                        <div class="flex items-center justify-end gap-3">
+                            {% if run.records_collected | default(0) | int > 0 %}
+                            <a href="/analysis/{{ run.id }}"
+                               class="text-xs text-purple-600 hover:underline">
+                                Analyse
+                            </a>
+                            {% endif %}
+                            <a href="/collections/{{ run.id }}"
+                               class="text-sm text-blue-600 hover:underline">
+                                Details
+                            </a>
+                        </div>
                     </td>
                 </tr>
                 {% endfor %}

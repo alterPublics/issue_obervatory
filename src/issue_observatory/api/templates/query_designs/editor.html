@@ -79,13 +79,12 @@
         <h2 class="text-sm font-semibold text-gray-900 border-b border-gray-200 pb-3">Basic Information</h2>
 
         <form method="POST"
-              action="{{ action_url }}"
-              id="design-form"
-              hx-post="{{ action_url if not is_edit else '' }}"
-              hx-put="{{ action_url if is_edit else '' }}"
-              {% if not is_edit %}
-              hx-on::after-request="if(event.detail.successful){ window.location.href = '/query-designs/' + event.detail.xhr.getResponseHeader('HX-Redirect-To') || '/query-designs' }"
-              {% endif %}>
+              {% if is_edit %}
+              action="/query-designs/{{ design_id }}/update"
+              {% else %}
+              action="/query-designs/form"
+              {% endif %}
+              id="design-form">
 
             <div class="grid grid-cols-2 gap-5">
                 {# Name #}
@@ -182,12 +181,7 @@
                 <a href="/query-designs/{{ design_id }}"
                    class="text-sm text-gray-500 hover:text-gray-700">Cancel</a>
                 <button type="submit"
-                        hx-put="{{ action_url }}"
-                        hx-target="#design-form"
-                        hx-swap="none"
-                        hx-indicator="#save-spinner"
                         class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
-                    {% include '_partials/loading_spinner.html' %}
                     Save Changes
                 </button>
             </div>
@@ -1776,9 +1770,9 @@ function arenaConfigGrid(defaultTier) {
                 const data = await resp.json();
                 // Normalise to a consistent internal shape.
                 fetchedArenas = data.map(a => ({
-                    // Use arena_name as the stable identifier (matches saved config id).
-                    id: a.arena_name,
-                    label: _arenaLabel(a.arena_name),
+                    // Use platform_name as the stable identifier (unique per collector).
+                    id: a.platform_name,
+                    label: _arenaLabel(a.platform_name),
                     platform: a.platform_name,
                     description: a.description || '',
                     hasCredentials: a.has_credentials === true,
@@ -1881,8 +1875,8 @@ function arenaConfigGrid(defaultTier) {
 }
 
 /**
- * Convert a snake_case arena_name to a human-readable label.
- * Falls back gracefully for unknown arenas.
+ * Convert a snake_case platform_name to a human-readable label.
+ * Falls back gracefully for unknown platforms.
  */
 function _arenaLabel(arenaName) {
     const labels = {

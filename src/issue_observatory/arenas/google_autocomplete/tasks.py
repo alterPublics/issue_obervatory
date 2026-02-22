@@ -121,6 +121,7 @@ def google_autocomplete_collect_terms(
     terms: list[str],
     tier: str = "free",
     language_filter: list[str] | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Collect Google Autocomplete suggestions for a list of terms.
 

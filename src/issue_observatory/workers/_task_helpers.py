@@ -232,22 +232,14 @@ async def fetch_stale_runs() -> list[dict[str, Any]]:
     """
     cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=24)
     async with AsyncSessionLocal() as db:
+        # Only mark runs as stale when started_at is set AND older than 24h.
+        # Pending runs with started_at=NULL are newly created and waiting for
+        # the Celery worker to pick them up — they are NOT stale.
         stmt = (
             select(CollectionRun.id, CollectionRun.status, CollectionRun.started_at)
             .where(CollectionRun.status.in_(["pending", "running"]))
-            .where(
-                (
-                    (CollectionRun.status == "running")
-                    & (CollectionRun.started_at < cutoff)
-                )
-                | (
-                    (CollectionRun.status == "pending")
-                    & (
-                        (CollectionRun.started_at < cutoff)
-                        | CollectionRun.started_at.is_(None)
-                    )
-                )
-            )
+            .where(CollectionRun.started_at.is_not(None))
+            .where(CollectionRun.started_at < cutoff)
         )
         result = await db.execute(stmt)
         rows = result.mappings().all()

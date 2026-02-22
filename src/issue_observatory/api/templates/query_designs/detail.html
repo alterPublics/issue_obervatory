@@ -259,12 +259,12 @@
     <div class="bg-white rounded-lg shadow p-6">
         <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4">
             <h2 class="text-sm font-semibold text-gray-900">Search Terms</h2>
-            <span class="text-xs text-gray-400">{{ terms | length }} term{% if terms | length != 1 %}s{% endif %}</span>
+            <span class="text-xs text-gray-400">{{ design.search_terms | default([]) | length }} term{% if design.search_terms | default([]) | length != 1 %}s{% endif %}</span>
         </div>
 
-        {% if terms %}
+        {% if design.search_terms | default([]) %}
         <ul class="flex flex-wrap gap-2">
-            {% for term in terms %}
+            {% for term in design.search_terms %}
             <li class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-gray-50 border border-gray-200 text-sm">
                 {% set ttype = term.term_type | default('keyword') %}
                 {% if ttype == 'hashtag' %}

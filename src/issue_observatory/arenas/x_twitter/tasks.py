@@ -125,6 +125,7 @@ def x_twitter_collect_terms(
     date_to: str | None = None,
     max_results: int | None = None,
     language_filter: list[str] | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Collect tweets matching a list of search terms.
 

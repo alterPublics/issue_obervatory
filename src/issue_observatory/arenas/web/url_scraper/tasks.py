@@ -124,6 +124,7 @@ def url_scraper_collect_terms(
     custom_urls: list[str] | None = None,
     term_groups: list[list[str]] | None = None,
     language_filter: list[str] | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Fetch URLs and collect content matching the search terms.
 
