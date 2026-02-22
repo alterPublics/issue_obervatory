@@ -19,10 +19,10 @@ Ownership and access control:
 
 Routes:
     GET    /codebooks                      — list codebooks (filterable by query_design_id)
-    GET    /codebooks/{codebook_id}        — get single codebook entry
+    GET    /codebooks/{codebook_id:uuid}        — get single codebook entry
     POST   /codebooks                      — create new codebook entry
-    PATCH  /codebooks/{codebook_id}        — update codebook entry
-    DELETE /codebooks/{codebook_id}        — delete codebook entry
+    PATCH  /codebooks/{codebook_id:uuid}        — update codebook entry
+    DELETE /codebooks/{codebook_id:uuid}        — delete codebook entry
     GET    /query-designs/{design_id}/codebook — convenience: get all entries for a design
 
 Deletion policy:
@@ -180,11 +180,11 @@ async def list_codebooks(
 
 
 # ---------------------------------------------------------------------------
-# GET /codebooks/{codebook_id}
+# GET /codebooks/{codebook_id:uuid}
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{codebook_id}", response_model=CodebookEntryRead)
+@router.get("/{codebook_id:uuid}", response_model=CodebookEntryRead)
 async def get_codebook_entry(
     codebook_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -320,11 +320,11 @@ async def create_codebook_entry(
 
 
 # ---------------------------------------------------------------------------
-# PATCH /codebooks/{codebook_id}
+# PATCH /codebooks/{codebook_id:uuid}
 # ---------------------------------------------------------------------------
 
 
-@router.patch("/{codebook_id}", response_model=CodebookEntryRead)
+@router.patch("/{codebook_id:uuid}", response_model=CodebookEntryRead)
 async def update_codebook_entry(
     codebook_id: uuid.UUID,
     body: CodebookEntryUpdate,
@@ -422,11 +422,11 @@ async def update_codebook_entry(
 
 
 # ---------------------------------------------------------------------------
-# DELETE /codebooks/{codebook_id}
+# DELETE /codebooks/{codebook_id:uuid}
 # ---------------------------------------------------------------------------
 
 
-@router.delete("/{codebook_id}", status_code=status.HTTP_200_OK)
+@router.delete("/{codebook_id:uuid}", status_code=status.HTTP_200_OK)
 async def delete_codebook_entry(
     codebook_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],

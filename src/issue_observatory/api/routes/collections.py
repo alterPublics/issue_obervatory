@@ -42,6 +42,8 @@ from issue_observatory.core.email_service import EmailService, get_email_service
 from issue_observatory.core.models.collection import CollectionRun, CollectionTask
 from issue_observatory.core.models.query_design import QueryDesign
 from issue_observatory.core.models.users import User
+from issue_observatory.core.credit_service import CreditService
+from issue_observatory.core.exceptions import InsufficientCreditError
 from issue_observatory.core.schemas.collection import (
     CollectionRunCreate,
     CollectionRunRead,
@@ -400,6 +402,47 @@ async def create_collection_run(  # type: ignore[misc]
                 "They will return recent/current content only."
             )
 
+    # -----------------------------------------------------------------------
+    # Credit estimation and reservation
+    #
+    # Estimate the cost of this run, then reserve credits so that concurrent
+    # runs cannot double-spend the same budget.  FREE-tier-only runs skip
+    # reservation (0 credits).
+    # -----------------------------------------------------------------------
+    credit_svc = CreditService(session=db)
+    estimate = await credit_svc.estimate(
+        query_design_id=payload.query_design_id,
+        tier=payload.tier,
+        arenas_config=merged_arenas_config,
+        date_from=payload.date_from,
+        date_to=payload.date_to,
+    )
+    estimated_credits: int = estimate["total_credits"]
+
+    if estimated_credits > 0:
+        try:
+            available = await credit_svc.get_available_credits(current_user.id)
+            if available < estimated_credits:
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail=(
+                        f"Insufficient credits: this collection requires approximately "
+                        f"{estimated_credits} credits but you have {available} available. "
+                        f"Contact your administrator for additional credits."
+                    ),
+                )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "credit_check_failed",
+                user_id=str(current_user.id),
+                error=str(exc),
+            )
+            # Allow the run to proceed if the credit check itself fails
+            # (e.g. no allocations exist yet).  The settlement task will
+            # reconcile later.
+
     run = CollectionRun(
         query_design_id=payload.query_design_id,
         initiated_by=current_user.id,
@@ -413,7 +456,7 @@ async def create_collection_run(  # type: ignore[misc]
         # Per-arena tier overrides in this dict always take precedence over the
         # global ``tier`` field above (enforced by arena orchestration workers).
         arenas_config=merged_arenas_config,
-        estimated_credits=0,
+        estimated_credits=estimated_credits,
         credits_spent=0,
         records_collected=0,
     )
@@ -421,14 +464,70 @@ async def create_collection_run(  # type: ignore[misc]
     await db.commit()
     await db.refresh(run)
 
+    # Reserve credits for each paid arena in the run.
+    if estimated_credits > 0:
+        per_arena = estimate.get("per_arena", {})
+        for platform_name, arena_credits in per_arena.items():
+            if arena_credits <= 0:
+                continue
+            arena_tier = merged_arenas_config.get(platform_name, payload.tier)
+            try:
+                await credit_svc.reserve(
+                    user_id=current_user.id,
+                    collection_run_id=run.id,
+                    arena=platform_name,
+                    platform=platform_name,
+                    tier=arena_tier if isinstance(arena_tier, str) else payload.tier,
+                    credits_amount=arena_credits,
+                )
+            except InsufficientCreditError:
+                # Race condition: credits consumed between check and reserve.
+                # Cancel the run and roll back.
+                run.status = "failed"
+                run.error_log = "Insufficient credits at reservation time."
+                await db.commit()
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail="Insufficient credits. Another collection may have consumed your remaining balance.",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "credit_reservation_failed",
+                    run_id=str(run.id),
+                    platform=platform_name,
+                    error=str(exc),
+                )
+                # Non-fatal: settlement task will reconcile.
+
     logger.info(
         "collection_run_created",
         run_id=str(run.id),
         mode=run.mode,
         query_design_id=str(payload.query_design_id),
         user_id=str(current_user.id),
+        estimated_credits=estimated_credits,
         warnings_count=len(date_range_warnings),
     )
+
+    # --- Dispatch batch collection orchestration task ---
+    if payload.mode == "batch":
+        try:
+            from issue_observatory.workers.tasks import dispatch_batch_collection
+
+            dispatch_batch_collection.delay(str(run.id))
+            logger.info(
+                "batch_dispatch_queued",
+                run_id=str(run.id),
+            )
+        except Exception as dispatch_exc:
+            logger.error(
+                "batch_dispatch_failed",
+                run_id=str(run.id),
+                error=str(dispatch_exc),
+                exc_info=True,
+            )
+            # Non-fatal: the run is created; the stale_run_cleanup task
+            # will eventually mark it as failed if dispatch never succeeds.
 
     # Build response with warnings
     response = CollectionRunRead.model_validate(run)
@@ -485,8 +584,6 @@ async def estimate_collection_credits(
         HTTPException 404: If the query design does not exist.
         HTTPException 403: If the caller does not own the query design.
     """
-    from issue_observatory.core.credit_service import CreditService
-
     try:
         # Load query design and verify ownership
         qd_result = await db.execute(
@@ -680,7 +777,7 @@ async def get_volume_spikes(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}", response_model=CollectionRunRead)
+@router.get("/{run_id:uuid}", response_model=CollectionRunRead)
 async def get_collection_run(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -710,7 +807,7 @@ async def get_collection_run(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{run_id}/cancel", response_model=CollectionRunRead)
+@router.post("/{run_id:uuid}/cancel", response_model=CollectionRunRead)
 async def cancel_collection_run(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -758,6 +855,47 @@ async def cancel_collection_run(
     await db.commit()
     await db.refresh(run)
 
+    # Refund any reserved credits for this cancelled run.
+    try:
+        credit_svc = CreditService(session=db)
+        from sqlalchemy import select as _sel  # noqa: PLC0415
+
+        from issue_observatory.core.models.collection import CreditTransaction  # noqa: PLC0415
+
+        reservations = (await db.execute(
+            _sel(CreditTransaction).where(
+                CreditTransaction.collection_run_id == run_id,
+                CreditTransaction.transaction_type == "reservation",
+            )
+        )).scalars().all()
+
+        for res in reservations:
+            # Check if already settled/refunded for this arena+platform
+            existing = (await db.execute(
+                _sel(CreditTransaction).where(
+                    CreditTransaction.collection_run_id == run_id,
+                    CreditTransaction.arena == res.arena,
+                    CreditTransaction.platform == res.platform,
+                    CreditTransaction.transaction_type.in_(["settlement", "refund"]),
+                )
+            )).scalars().first()
+            if existing is None:
+                await credit_svc.refund(
+                    user_id=res.user_id,
+                    collection_run_id=run_id,
+                    arena=res.arena,
+                    platform=res.platform,
+                    tier=res.tier,
+                    credits_amount=res.credits_consumed,
+                    description="Refund: collection cancelled by user",
+                )
+    except Exception as exc:
+        logger.warning(
+            "cancel_refund_failed",
+            run_id=str(run_id),
+            error=str(exc),
+        )
+
     logger.info(
         "collection_run_cancelled",
         run_id=str(run_id),
@@ -795,7 +933,7 @@ async def cancel_collection_run(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{run_id}/suspend", response_model=CollectionRunRead)
+@router.post("/{run_id:uuid}/suspend", response_model=CollectionRunRead)
 async def suspend_collection_run(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -847,7 +985,7 @@ async def suspend_collection_run(
     return run
 
 
-@router.post("/{run_id}/resume", response_model=CollectionRunRead)
+@router.post("/{run_id:uuid}/resume", response_model=CollectionRunRead)
 async def resume_collection_run(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -907,7 +1045,7 @@ _DAILY_COLLECTION_NEXT_RUN = "00:00 Copenhagen time"
 _DAILY_COLLECTION_TIMEZONE = "Europe/Copenhagen"
 
 
-@router.get("/{run_id}/schedule")
+@router.get("/{run_id:uuid}/schedule")
 async def get_collection_schedule(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -961,7 +1099,7 @@ async def get_collection_schedule(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{run_id}/refresh-engagement", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/{run_id:uuid}/refresh-engagement", status_code=status.HTTP_202_ACCEPTED)
 # @limiter.limit("5/minute")  # Disabled: slowapi corrupts FastAPI param parsing
 async def refresh_engagement_metrics_endpoint(
     request: Request,
@@ -1035,7 +1173,7 @@ async def refresh_engagement_metrics_endpoint(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{run_id}/enrich")
+@router.post("/{run_id:uuid}/enrich")
 async def trigger_enrichment(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1205,7 +1343,7 @@ async def get_recent_volume_spikes_all_designs(
 _TERMINAL_STATUSES: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
 
 
-@router.get("/{run_id}/stream")
+@router.get("/{run_id:uuid}/stream")
 async def stream_collection_run(
     run_id: uuid.UUID,
     request: Request,

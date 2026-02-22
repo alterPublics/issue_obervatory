@@ -505,20 +505,40 @@ async def collections_list(
 async def collections_new(
     request: Request,
     current_user: Annotated[User, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> HTMLResponse:
     """Render the collection run launcher page.
+
+    Loads the current user's query designs so the launcher dropdown
+    is populated.
 
     Args:
         request: The current HTTP request.
         current_user: The authenticated, active user.
+        db: Injected async database session.
 
     Returns:
         Rendered ``collections/launcher.html`` template.
     """
+    from issue_observatory.core.models.query_design import QueryDesign as QD  # noqa: PLC0415
+
+    stmt = (
+        select(QD)
+        .where(QD.owner_id == current_user.id)
+        .where(QD.is_active.is_(True))
+        .order_by(QD.name)
+    )
+    result = await db.execute(stmt)
+    designs = result.scalars().all()
+
     tpl = _templates(request)
     return tpl.TemplateResponse(
         "collections/launcher.html",
-        {"request": request, "user": current_user},
+        {
+            "request": request,
+            "user": current_user,
+            "query_designs": designs,
+        },
     )
 
 

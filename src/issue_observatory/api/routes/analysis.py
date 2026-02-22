@@ -182,7 +182,7 @@ async def analysis_landing(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}", include_in_schema=False)
+@router.get("/{run_id:uuid}", include_in_schema=False)
 async def analysis_dashboard(
     run_id: uuid.UUID,
     request: Request,
@@ -238,7 +238,7 @@ async def analysis_dashboard(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/summary")
+@router.get("/{run_id:uuid}/summary")
 async def run_summary(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -328,7 +328,7 @@ async def compare_collection_runs(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/volume")
+@router.get("/{run_id:uuid}/volume")
 async def volume_over_time(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -382,7 +382,7 @@ async def volume_over_time(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/actors")
+@router.get("/{run_id:uuid}/actors")
 async def top_actors(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -426,7 +426,7 @@ async def top_actors(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/terms")
+@router.get("/{run_id:uuid}/terms")
 async def top_terms(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -467,7 +467,7 @@ async def top_terms(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/engagement")
+@router.get("/{run_id:uuid}/engagement")
 async def engagement_distribution(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -512,7 +512,7 @@ async def engagement_distribution(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/temporal-comparison")
+@router.get("/{run_id:uuid}/temporal-comparison")
 async def temporal_comparison(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -575,7 +575,7 @@ async def temporal_comparison(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/arena-comparison")
+@router.get("/{run_id:uuid}/arena-comparison")
 async def arena_comparison(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -624,7 +624,7 @@ async def arena_comparison(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/network/actors")
+@router.get("/{run_id:uuid}/network/actors")
 async def network_actors(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -677,7 +677,7 @@ async def network_actors(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/network/terms")
+@router.get("/{run_id:uuid}/network/terms")
 async def network_terms(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -721,7 +721,7 @@ async def network_terms(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/network/cross-platform")
+@router.get("/{run_id:uuid}/network/cross-platform")
 async def network_cross_platform(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -760,7 +760,7 @@ async def network_cross_platform(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/network/bipartite")
+@router.get("/{run_id:uuid}/network/bipartite")
 async def network_bipartite(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -806,7 +806,7 @@ async def network_bipartite(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/emergent-terms")
+@router.get("/{run_id:uuid}/emergent-terms")
 async def emergent_terms(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -863,7 +863,7 @@ async def emergent_terms(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/actors-unified")
+@router.get("/{run_id:uuid}/actors-unified")
 async def top_actors_unified(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -915,7 +915,7 @@ async def top_actors_unified(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/network/temporal")
+@router.get("/{run_id:uuid}/network/temporal")
 async def network_temporal(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -983,7 +983,7 @@ async def network_temporal(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/network/enhanced-bipartite")
+@router.get("/{run_id:uuid}/network/enhanced-bipartite")
 async def network_enhanced_bipartite(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1055,7 +1055,7 @@ async def network_enhanced_bipartite(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/network/{network_type}/temporal")
+@router.get("/{run_id:uuid}/network/{network_type}/temporal")
 async def network_temporal_by_type(
     run_id: uuid.UUID,
     network_type: str,
@@ -1104,7 +1104,7 @@ async def network_temporal_by_type(
     ]
 
 
-@router.get("/{run_id}/network/{network_type}/temporal/{period}")
+@router.get("/{run_id:uuid}/network/{network_type}/temporal/{period}")
 async def network_temporal_period(
     run_id: uuid.UUID,
     network_type: str,
@@ -1167,7 +1167,7 @@ async def network_temporal_period(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/network/temporal/export-gexf")
+@router.get("/{run_id:uuid}/network/temporal/export-gexf")
 async def export_temporal_network_gexf(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1239,7 +1239,7 @@ async def export_temporal_network_gexf(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/filter-options")
+@router.get("/{run_id:uuid}/filter-options")
 async def get_filter_options(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1362,7 +1362,7 @@ def _record_to_dict(r: UniversalContentRecord) -> dict[str, Any]:
     }
 
 
-@router.get("/{run_id}/filtered-export")
+@router.get("/{run_id:uuid}/filtered-export")
 async def filtered_export(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1525,7 +1525,7 @@ async def filtered_export(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/suggested-terms")
+@router.get("/{run_id:uuid}/suggested-terms")
 async def suggested_terms(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1644,7 +1644,7 @@ async def _get_design_or_raise(
     return design
 
 
-@router.get("/design/{design_id}", include_in_schema=False)
+@router.get("/design/{design_id:uuid}", include_in_schema=False)
 async def analysis_dashboard_design(
     design_id: uuid.UUID,
     request: Request,
@@ -1714,7 +1714,7 @@ async def analysis_dashboard_design(
     )
 
 
-@router.get("/design/{design_id}/summary")
+@router.get("/design/{design_id:uuid}/summary")
 async def design_summary(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1777,7 +1777,7 @@ async def design_summary(
     }
 
 
-@router.get("/design/{design_id}/volume")
+@router.get("/design/{design_id:uuid}/volume")
 async def design_volume_over_time(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1827,7 +1827,7 @@ async def design_volume_over_time(
         ) from exc
 
 
-@router.get("/design/{design_id}/actors")
+@router.get("/design/{design_id:uuid}/actors")
 async def design_top_actors(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1867,7 +1867,7 @@ async def design_top_actors(
     )
 
 
-@router.get("/design/{design_id}/terms")
+@router.get("/design/{design_id:uuid}/terms")
 async def design_top_terms(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1904,7 +1904,7 @@ async def design_top_terms(
     )
 
 
-@router.get("/design/{design_id}/network/actors")
+@router.get("/design/{design_id:uuid}/network/actors")
 async def design_network_actors(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1947,7 +1947,7 @@ async def design_network_actors(
     )
 
 
-@router.get("/design/{design_id}/network/terms")
+@router.get("/design/{design_id:uuid}/network/terms")
 async def design_network_terms(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1981,7 +1981,7 @@ async def design_network_terms(
     )
 
 
-@router.get("/design/{design_id}/network/bipartite")
+@router.get("/design/{design_id:uuid}/network/bipartite")
 async def design_network_bipartite(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -2020,7 +2020,7 @@ async def design_network_bipartite(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/enrichments/languages")
+@router.get("/{run_id:uuid}/enrichments/languages")
 async def enrichment_languages(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -2055,7 +2055,7 @@ async def enrichment_languages(
     return await get_language_distribution(db, run_id=run_id)
 
 
-@router.get("/{run_id}/enrichments/entities")
+@router.get("/{run_id:uuid}/enrichments/entities")
 async def enrichment_entities(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -2092,7 +2092,7 @@ async def enrichment_entities(
     return await get_top_named_entities(db, run_id=run_id, limit=limit)
 
 
-@router.get("/{run_id}/enrichments/propagation")
+@router.get("/{run_id:uuid}/enrichments/propagation")
 async def enrichment_propagation(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -2138,7 +2138,7 @@ async def enrichment_propagation(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/propagation/flows")
+@router.get("/{run_id:uuid}/propagation/flows")
 async def propagation_flows(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -2202,7 +2202,7 @@ async def propagation_flows(
     )
 
 
-@router.get("/{run_id}/enrichments/coordination")
+@router.get("/{run_id:uuid}/enrichments/coordination")
 async def enrichment_coordination(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -2245,7 +2245,7 @@ async def enrichment_coordination(
     return await get_coordination_signals(db, run_id=run_id)
 
 
-@router.get("/{run_id}/enrichments/sentiment")
+@router.get("/{run_id:uuid}/enrichments/sentiment")
 async def enrichment_sentiment(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -2287,7 +2287,7 @@ async def enrichment_sentiment(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/coordination/events")
+@router.get("/{run_id:uuid}/coordination/events")
 async def coordination_events(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],

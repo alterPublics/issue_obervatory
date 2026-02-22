@@ -49,6 +49,57 @@ Usage in middleware::
 # ---------------------------------------------------------------------------
 
 
+_SECRET_SUBSTRINGS: frozenset[str] = frozenset({
+    "api_key",
+    "password",
+    "secret",
+    "token",
+    "credential",
+    "bearer",
+    "authorization",
+    "x-api-key",
+    "app_password",
+    "encryption_key",
+    "fernet",
+    "salt",
+})
+"""Lower-cased substrings that identify log event-dict keys whose values
+must be redacted before the record reaches any renderer."""
+
+
+def _redact_secrets(
+    logger: WrappedLogger,  # noqa: ARG001
+    method_name: str,  # noqa: ARG001
+    event_dict: EventDict,
+) -> EventDict:
+    """Replace values of secret-bearing keys with a redaction marker.
+
+    Scans both top-level keys and any nested ``dict`` values one level deep.
+    Keys are matched case-insensitively against :data:`_SECRET_SUBSTRINGS`.
+
+    Args:
+        logger: The wrapped logger instance (unused).
+        method_name: The log method name (unused).
+        event_dict: Mutable event dictionary being assembled.
+
+    Returns:
+        The event dict with sensitive values replaced by ``"[REDACTED]"``.
+    """
+    redacted = "[REDACTED]"
+    for key in list(event_dict.keys()):
+        key_lower = key.lower()
+        if any(secret in key_lower for secret in _SECRET_SUBSTRINGS):
+            event_dict[key] = redacted
+            continue
+        # Scan one level of nested dicts (e.g. headers={...}).
+        val = event_dict[key]
+        if isinstance(val, dict):
+            for nested_key in list(val.keys()):
+                if any(secret in nested_key.lower() for secret in _SECRET_SUBSTRINGS):
+                    val[nested_key] = redacted
+    return event_dict
+
+
 def _inject_request_id(
     logger: WrappedLogger,  # noqa: ARG001
     method_name: str,  # noqa: ARG001
@@ -114,6 +165,7 @@ def configure_logging(log_level: str = "INFO") -> None:
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
         _inject_request_id,
+        _redact_secrets,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso"),

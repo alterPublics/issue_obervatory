@@ -233,7 +233,7 @@ async def create_credential(
     return HTMLResponse(_credential_row_html(cred))
 
 
-@router.post("/{credential_id}/activate", response_class=HTMLResponse)
+@router.post("/{credential_id:uuid}/activate", response_class=HTMLResponse)
 async def activate_credential(
     credential_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -249,7 +249,7 @@ async def activate_credential(
     return HTMLResponse(_credential_row_html(cred))
 
 
-@router.post("/{credential_id}/deactivate", response_class=HTMLResponse)
+@router.post("/{credential_id:uuid}/deactivate", response_class=HTMLResponse)
 async def deactivate_credential(
     credential_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -265,7 +265,7 @@ async def deactivate_credential(
     return HTMLResponse(_credential_row_html(cred))
 
 
-@router.post("/{credential_id}/reset-errors", response_class=HTMLResponse)
+@router.post("/{credential_id:uuid}/reset-errors", response_class=HTMLResponse)
 async def reset_errors(
     credential_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -282,7 +282,7 @@ async def reset_errors(
     return HTMLResponse(_credential_row_html(cred))
 
 
-@router.delete("/{credential_id}", response_class=HTMLResponse)
+@router.delete("/{credential_id:uuid}", response_class=HTMLResponse)
 async def delete_credential(
     credential_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),

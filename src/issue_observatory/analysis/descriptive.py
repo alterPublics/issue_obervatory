@@ -1641,24 +1641,22 @@ async def get_run_summary(
     content_result = await db.execute(content_sql, {"run_id": str(run_id)})
     content_row = content_result.fetchone()
 
-    # Per-arena breakdown: sum records_collected from collection_tasks.
+    # Per-arena breakdown: count records directly from content_records,
+    # with optional join to collection_tasks for task-level stats.
+    # Uses LEFT JOIN so the breakdown works even when no CollectionTask
+    # rows exist (e.g. for runs created before batch dispatch was implemented).
     arena_sql = text(
         """
         SELECT
-            cr.arena,
-            COUNT(c.id)                         AS record_count,
-            COALESCE(SUM(ct.records_collected), 0) AS tasks_records_collected
+            c.arena,
+            COUNT(*)                                AS record_count,
+            COALESCE(MAX(ct.records_collected), 0)  AS tasks_records_collected
         FROM content_records c
-        JOIN collection_tasks ct
+        LEFT JOIN collection_tasks ct
             ON ct.collection_run_id = c.collection_run_id
             AND ct.arena = c.arena
-        RIGHT JOIN (
-            SELECT DISTINCT arena
-            FROM collection_tasks
-            WHERE collection_run_id = :run_id
-        ) cr ON cr.arena = c.arena
-            AND c.collection_run_id = :run_id
-        GROUP BY cr.arena
+        WHERE c.collection_run_id = :run_id
+        GROUP BY c.arena
         ORDER BY record_count DESC
         """
     )

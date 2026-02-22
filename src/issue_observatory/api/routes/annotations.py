@@ -10,12 +10,12 @@ Annotation ownership:
     - Admins can read all annotations for a given record.
 
 Routes:
-    GET    /annotations/{record_id}  — get the current user's annotation for
+    GET    /annotations/{record_id:uuid}  — get the current user's annotation for
                                        a content record (200 with data, or 200
                                        with null body if not yet annotated).
-    POST   /annotations/{record_id}  — create or upsert the current user's
+    POST   /annotations/{record_id:uuid}  — create or upsert the current user's
                                        annotation for a content record.
-    DELETE /annotations/{record_id}  — delete the current user's annotation
+    DELETE /annotations/{record_id:uuid}  — delete the current user's annotation
                                        for a content record.
 
 All routes require authentication (``get_current_active_user``).
@@ -63,7 +63,7 @@ _VALID_STANCES = frozenset(
 
 
 class AnnotationUpsertBody(BaseModel):
-    """Request body for POST /annotations/{record_id}.
+    """Request body for POST /annotations/{record_id:uuid}.
 
     All coding fields are optional so that a researcher can save a partial
     annotation and return later to complete it.
@@ -144,11 +144,11 @@ def _annotation_to_dict(annotation: ContentAnnotation) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# GET /annotations/{record_id}
+# GET /annotations/{record_id:uuid}
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{record_id}")
+@router.get("/{record_id:uuid}")
 async def get_annotation(
     record_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -209,11 +209,11 @@ async def get_annotation(
 
 
 # ---------------------------------------------------------------------------
-# POST /annotations/{record_id}
+# POST /annotations/{record_id:uuid}
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{record_id}", status_code=status.HTTP_200_OK)
+@router.post("/{record_id:uuid}", status_code=status.HTTP_200_OK)
 async def upsert_annotation(
     record_id: uuid.UUID,
     body: AnnotationUpsertBody,
@@ -359,11 +359,11 @@ async def upsert_annotation(
 
 
 # ---------------------------------------------------------------------------
-# DELETE /annotations/{record_id}
+# DELETE /annotations/{record_id:uuid}
 # ---------------------------------------------------------------------------
 
 
-@router.delete("/{record_id}", status_code=status.HTTP_200_OK)
+@router.delete("/{record_id:uuid}", status_code=status.HTTP_200_OK)
 async def delete_annotation(
     record_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],

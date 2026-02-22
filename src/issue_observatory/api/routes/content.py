@@ -1567,7 +1567,7 @@ async def get_duplicates(
 # and /{record_id} would shadow them otherwise.
 
 
-@router.get("/{record_id}")
+@router.get("/{record_id:uuid}")
 async def get_content_record_html(
     record_id: uuid.UUID,
     request: Request,

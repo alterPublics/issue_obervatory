@@ -33,6 +33,7 @@ from typing import Any
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
+from issue_observatory.arenas.query_builder import match_groups_in_text
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.web.url_scraper._helpers import (
     build_searchable_text,
@@ -219,10 +220,8 @@ class UrlScraperCollector(ArenaCollector):
                 continue
 
             searchable = build_searchable_text(raw_record)
-            matched_terms: list[str] = []
-            for grp in lower_groups:
-                if all(t in searchable for t in grp):
-                    matched_terms.extend(grp)
+            # Word-boundary matching to avoid stopword false positives.
+            matched_terms = match_groups_in_text(lower_groups, searchable)
             if not matched_terms:
                 continue
 

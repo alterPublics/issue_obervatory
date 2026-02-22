@@ -31,8 +31,10 @@ compatibility fallback for callers that have not been updated yet).
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections import OrderedDict
+from functools import lru_cache
 from typing import Any
 
 import structlog
@@ -292,6 +294,88 @@ def has_boolean_groups(term_specs: list[TermSpec]) -> bool:
         ``True`` when at least one term belongs to a named group.
     """
     return any(spec.get("group_id") is not None for spec in term_specs)
+
+
+# ---------------------------------------------------------------------------
+# Client-side term matching (M-5 fix)
+# ---------------------------------------------------------------------------
+
+
+@lru_cache(maxsize=512)
+def _term_pattern(term: str) -> re.Pattern[str]:
+    """Compile a word-boundary regex for a single lowercased term.
+
+    Multi-word terms (e.g. "CO2 afgift") match when all words appear
+    consecutively separated by whitespace.  Single-word terms use ``\\b``
+    anchors so that "i" does not match inside "politik".
+
+    The pattern is cached for the lifetime of the process.
+    """
+    escaped = re.escape(term)
+    # Replace escaped whitespace with flexible whitespace matcher
+    escaped = re.sub(r"\\ ", r"\\s+", escaped)
+    return re.compile(rf"\b{escaped}\b", re.IGNORECASE)
+
+
+def term_in_text(term: str, text: str) -> bool:
+    """Check whether *term* appears in *text* as a whole word/phrase.
+
+    Uses word-boundary matching (``\\b``) so that short terms like ``"i"``
+    or ``"er"`` do not spuriously match inside longer words.
+
+    Args:
+        term: The search term (case-insensitive).
+        text: The text to search in.
+
+    Returns:
+        ``True`` if the term is found as a whole word in the text.
+    """
+    return bool(_term_pattern(term.lower()).search(text))
+
+
+def match_groups_in_text(
+    lower_groups: list[list[str]],
+    text: str,
+) -> list[str]:
+    """Return matched terms from boolean AND/OR groups using word-boundary matching.
+
+    An AND-group matches when **all** of its terms appear as whole words in
+    ``text``.  Groups are ORed: terms from every matching group are returned.
+
+    Args:
+        lower_groups: Boolean groups where each inner list is an AND-group
+            of lowercased terms (output of ``build_boolean_query_groups``
+            after lowering).
+        text: The text to search in (should already be lowercased).
+
+    Returns:
+        A flat list of all matched terms (from all matching groups).
+        Empty list if no group matched.
+    """
+    matched: list[str] = []
+    for grp in lower_groups:
+        if all(term_in_text(t, text) for t in grp):
+            matched.extend(grp)
+    return matched
+
+
+def any_group_matches_text(
+    lower_groups: list[list[str]],
+    text: str,
+) -> bool:
+    """Return True if at least one AND-group has all terms matching in text.
+
+    Convenience wrapper around :func:`match_groups_in_text` for collectors
+    that only need a boolean check without tracking which terms matched.
+
+    Args:
+        lower_groups: Boolean groups of lowercased terms.
+        text: The text to search in.
+
+    Returns:
+        ``True`` if any group fully matches.
+    """
+    return any(all(term_in_text(t, text) for t in grp) for grp in lower_groups)
 
 
 # ---------------------------------------------------------------------------

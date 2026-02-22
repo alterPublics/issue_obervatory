@@ -103,7 +103,7 @@
                 {{ (user.display_name or user.email or '?')[0] | upper }}
             </div>
             <div class="min-w-0 flex-1">
-                <p class="font-medium text-gray-900 truncate">{{ user.display_name | default(user.email | default('')) }}</p>
+                <p class="font-medium text-gray-900 truncate">{{ user.display_name or user.email or '' }}</p>
                 <p class="text-xs text-gray-500 truncate">{{ user.email | default('') }}</p>
             </div>
         </div>

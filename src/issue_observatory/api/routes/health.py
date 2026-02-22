@@ -82,6 +82,45 @@ async def _check_redis() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Helper — Celery worker check
+# ---------------------------------------------------------------------------
+
+
+async def _check_celery_workers() -> str:
+    """Check if any Celery workers are responding.
+
+    Uses ``celery_app.control.inspect().ping()`` to query active workers.
+    This is a soft check: no workers responding returns ``"no_workers"``
+    instead of ``"error"`` since the web app can function without workers
+    (just no background collection tasks).
+
+    Returns:
+        ``"ok"`` if at least one worker responds, ``"no_workers"`` if none
+        respond, or ``"error"`` if the Celery/Redis connection fails.
+    """
+    try:
+        # Import Celery app here to avoid circular imports at module load.
+        from issue_observatory.workers.celery_app import (  # noqa: PLC0415
+            celery_app,
+        )
+
+        # Run the synchronous inspect().ping() in a thread pool to avoid
+        # blocking the async event loop.
+        loop = asyncio.get_running_loop()
+        inspect = celery_app.control.inspect(timeout=2.0)
+        ping_result = await loop.run_in_executor(None, inspect.ping)
+
+        # ping_result is a dict like {"celery@hostname": {"ok": "pong"}}
+        # or None if no workers responded.
+        if ping_result and len(ping_result) > 0:
+            return "ok"
+        return "no_workers"
+    except Exception:
+        logger.exception("Health check: Celery inspect failed")
+        return "error"
+
+
+# ---------------------------------------------------------------------------
 # GET /api/health
 # ---------------------------------------------------------------------------
 
@@ -94,26 +133,37 @@ async def system_health() -> JSONResponse:
 
     - ``SELECT 1`` against PostgreSQL.
     - ``PING`` against Redis.
+    - ``celery_app.control.inspect().ping()`` to check for active workers.
 
-    Always returns HTTP 200.  The ``status`` field is ``"ok"`` when both
-    dependencies are reachable, ``"degraded"`` when one or more fail.
+    Always returns HTTP 200.  The ``status`` field is ``"ok"`` when all
+    dependencies are reachable, ``"degraded"`` when one or more fail or
+    when no Celery workers are responding (the web app still functions,
+    but background tasks will not run).
 
     Returns:
         JSON with keys: ``status``, ``version``, ``database``, ``redis``,
-        ``timestamp``.
+        ``celery``, ``timestamp``.
     """
-    db_status, redis_status = await asyncio.gather(
+    db_status, redis_status, celery_status = await asyncio.gather(
         _check_database(),
         _check_redis(),
+        _check_celery_workers(),
     )
 
-    overall = "ok" if db_status == "ok" and redis_status == "ok" else "degraded"
+    # Overall status is "ok" only if all three checks pass.
+    # Celery "no_workers" is treated as degraded, not error, since the
+    # web app still serves requests without background workers.
+    if db_status == "ok" and redis_status == "ok" and celery_status == "ok":
+        overall = "ok"
+    else:
+        overall = "degraded"
 
     payload = {
         "status": overall,
         "version": "0.1.0",
         "database": db_status,
         "redis": redis_status,
+        "celery": celery_status,
         "timestamp": datetime.now(UTC).isoformat(),
     }
     logger.info("system_health_check", extra={"health": payload})

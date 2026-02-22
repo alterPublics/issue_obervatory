@@ -401,7 +401,9 @@ def create_app() -> FastAPI:
         HTML page route handlers can resolve it via ``request.app.state.templates``
         without importing the module-level singleton directly.
 
-        Future: run Alembic migration check, warm Redis connection pool.
+        Runs cleanup of stale collection runs on startup so that stuck runs
+        from a previous instance are marked as failed before the new instance
+        begins processing.
         """
         application.state.templates = templates
         logger.info(
@@ -418,6 +420,41 @@ def create_app() -> FastAPI:
                 detail="SMTP is not configured. Email notifications are disabled. "
                        "Set SMTP_HOST to enable collection alerts and credit warnings.",
             )
+
+        # P3-17: Clean up stale collection runs on startup.
+        # Run in a background task so startup doesn't block.
+        async def _cleanup_stale_runs_on_startup() -> None:
+            """Call the stale run cleanup logic asynchronously."""
+            try:
+                # Import here to avoid circular import issues at module load.
+                from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+                    fetch_stale_runs,
+                    mark_runs_failed,
+                )
+
+                stale_runs = await fetch_stale_runs()
+                if stale_runs:
+                    run_ids = [row["id"] for row in stale_runs]
+                    failed_count = await mark_runs_failed(run_ids)
+                    logger.info(
+                        "startup_cleanup_stale_runs",
+                        runs_cleaned=failed_count,
+                        detail=f"Marked {failed_count} stale run(s) as failed on startup",
+                    )
+                else:
+                    logger.info(
+                        "startup_cleanup_stale_runs",
+                        runs_cleaned=0,
+                        detail="No stale runs found on startup",
+                    )
+            except Exception:
+                # Don't crash the app if cleanup fails — log and continue.
+                logger.exception("startup_cleanup_stale_runs_failed")
+
+        # Schedule the cleanup task to run in the background.
+        import asyncio  # noqa: PLC0415
+
+        asyncio.create_task(_cleanup_stale_runs_on_startup())
 
     @application.on_event("shutdown")
     async def on_shutdown() -> None:

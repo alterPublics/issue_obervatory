@@ -9,7 +9,7 @@
         <div>
             <h1 class="text-xl font-bold text-gray-900">Dashboard</h1>
             <p class="text-sm text-gray-500 mt-0.5">
-                Welcome, {{ user.display_name | default(user.email | default('')) }}
+                Welcome, {{ user.display_name or user.email or '' }}
             </p>
         </div>
         <div class="flex gap-3">

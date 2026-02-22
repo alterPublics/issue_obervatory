@@ -545,6 +545,152 @@ async def get_discovery_summary(run_id: str) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# Batch collection dispatch helpers
+# ---------------------------------------------------------------------------
+
+
+async def fetch_batch_run_details(run_id: Any) -> dict[str, Any] | None:
+    """Load a CollectionRun and its QueryDesign for batch dispatch.
+
+    Args:
+        run_id: UUID of the CollectionRun.
+
+    Returns:
+        Dict with run and design fields, or None if not found.
+    """
+    async with AsyncSessionLocal() as db:
+        stmt = (
+            select(
+                CollectionRun.id.label("run_id"),
+                CollectionRun.query_design_id,
+                CollectionRun.arenas_config,
+                CollectionRun.tier.label("default_tier"),
+                CollectionRun.date_from,
+                CollectionRun.date_to,
+                CollectionRun.initiated_by.label("owner_id"),
+                QueryDesign.language,
+            )
+            .join(QueryDesign, QueryDesign.id == CollectionRun.query_design_id)
+            .where(CollectionRun.id == run_id)
+        )
+        result = await db.execute(stmt)
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+
+async def set_run_status(
+    run_id: Any,
+    status: str,
+    *,
+    started_at: bool = False,
+    completed_at: bool = False,
+    error_log: str | None = None,
+) -> None:
+    """Update a CollectionRun's status and optional timestamps.
+
+    Args:
+        run_id: UUID of the CollectionRun.
+        status: New status value.
+        started_at: If True, set started_at to NOW().
+        completed_at: If True, set completed_at to NOW().
+        error_log: Optional error log message.
+    """
+    values: dict[str, Any] = {"status": status}
+    if started_at:
+        values["started_at"] = datetime.now(tz=timezone.utc)
+    if completed_at:
+        values["completed_at"] = datetime.now(tz=timezone.utc)
+    if error_log is not None:
+        values["error_log"] = error_log
+
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            update(CollectionRun)
+            .where(CollectionRun.id == run_id)
+            .values(**values)
+        )
+        await db.commit()
+
+
+async def create_collection_tasks(
+    run_id: Any,
+    arena_platforms: list[dict[str, str]],
+) -> None:
+    """Bulk-create CollectionTask rows for a batch run.
+
+    Args:
+        run_id: UUID of the parent CollectionRun.
+        arena_platforms: List of dicts with 'arena_name' and 'platform_name'.
+    """
+    async with AsyncSessionLocal() as db:
+        for ap in arena_platforms:
+            task = CollectionTask(
+                collection_run_id=run_id,
+                arena=ap["platform_name"],
+                platform=ap["platform_name"],
+                status="pending",
+            )
+            db.add(task)
+        await db.commit()
+
+
+async def check_all_tasks_terminal(run_id: Any) -> dict[str, Any] | None:
+    """Check whether all CollectionTasks for a run have reached terminal state.
+
+    Args:
+        run_id: UUID of the CollectionRun.
+
+    Returns:
+        Dict with 'all_done', 'total', 'completed', 'failed', 'total_records',
+        'credits_spent' if tasks exist, or None if no tasks found.
+    """
+    from sqlalchemy import case, func  # noqa: PLC0415
+
+    async with AsyncSessionLocal() as db:
+        stmt = select(
+            func.count(CollectionTask.id).label("total"),
+            func.sum(
+                case(
+                    (CollectionTask.status == "completed", 1),
+                    else_=0,
+                )
+            ).label("completed"),
+            func.sum(
+                case(
+                    (CollectionTask.status == "failed", 1),
+                    else_=0,
+                )
+            ).label("failed"),
+            func.sum(CollectionTask.records_collected).label("total_records"),
+        ).where(CollectionTask.collection_run_id == run_id)
+
+        result = await db.execute(stmt)
+        row = result.mappings().first()
+        if not row or row["total"] == 0:
+            return None
+
+        total = row["total"]
+        completed = row["completed"] or 0
+        failed = row["failed"] or 0
+        total_records = row["total_records"] or 0
+
+        # Also fetch the run's credits_spent
+        run_result = await db.execute(
+            select(CollectionRun.credits_spent).where(CollectionRun.id == run_id)
+        )
+        credits_spent = run_result.scalar_one_or_none() or 0
+
+        return {
+            "all_done": (completed + failed) >= total,
+            "total": total,
+            "completed": completed,
+            "failed": failed,
+            "total_records": total_records,
+            "credits_spent": credits_spent,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Record persistence for arena collection tasks
 # ---------------------------------------------------------------------------
 

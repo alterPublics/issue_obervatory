@@ -1,7 +1,8 @@
 """Arena metadata API routes.
 
 Exposes a single endpoint that returns the live list of all registered arena
-collectors, enriched with credential status from the ``api_credentials`` table.
+collectors, enriched with credential status from the ``api_credentials`` table
+and environment variables.
 
 Routes:
     GET /api/arenas/  — list all registered arenas with credential status
@@ -9,6 +10,7 @@ Routes:
 
 from __future__ import annotations
 
+import os
 from typing import Annotated
 
 import structlog
@@ -127,10 +129,35 @@ async def list_available_arenas(
     )
     platforms_with_credentials: set[str] = {row[0] for row in result.fetchall()}
 
+    # M-1 fix: also check environment variables for credentials.
+    # Maps platform_name -> list of env var names that indicate credentials
+    # are available.  A platform counts as credentialed if ANY of its env
+    # vars are set to a non-empty value.
+    _ENV_CREDENTIAL_MAP: dict[str, list[str]] = {
+        "google_search": ["SERPER_API_KEY", "SERPAPI_API_KEY"],
+        "google_autocomplete": ["SERPER_API_KEY", "SERPAPI_API_KEY"],
+        "bluesky": ["BLUESKY_HANDLE"],
+        "reddit": ["REDDIT_CLIENT_ID"],
+        "youtube": ["YOUTUBE_API_KEY"],
+        "tiktok": ["TIKTOK_CLIENT_KEY"],
+        "event_registry": ["EVENT_REGISTRY_API_KEY"],
+        "x_twitter": ["TWITTERAPIIO_API_KEY", "X_API_KEY"],
+        "openrouter": ["OPENROUTER_API_KEY"],
+        "majestic": ["MAJESTIC_API_KEY"],
+        "telegram": ["TELEGRAM_API_ID"],
+        "discord": ["DISCORD_BOT_TOKEN"],
+        "twitch": ["TWITCH_CLIENT_ID"],
+    }
+    for platform, env_keys in _ENV_CREDENTIAL_MAP.items():
+        if platform in platforms_with_credentials:
+            continue  # already detected via DB
+        if any(os.environ.get(key) for key in env_keys):
+            platforms_with_credentials.add(platform)
+
     logger.debug(
         "arenas_list_request",
         arena_count=len(arenas),
-        credentialed_platforms=list(platforms_with_credentials),
+        credentialed_platforms=sorted(platforms_with_credentials),
     )
 
     return [

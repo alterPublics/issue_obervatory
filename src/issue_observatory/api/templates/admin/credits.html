@@ -30,7 +30,7 @@
                         {% for u in users | default([]) %}
                         <option value="{{ u.id }}"
                                 {% if request.query_params.get('user_id') == u.id %}selected{% endif %}>
-                            {{ u.display_name | default('') }} ({{ u.email | default('') }})
+                            {{ u.display_name or '' }} ({{ u.email or '' }})
                         </option>
                         {% endfor %}
                     </select>

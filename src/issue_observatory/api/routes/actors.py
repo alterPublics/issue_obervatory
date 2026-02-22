@@ -1405,7 +1405,7 @@ async def create_actor(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{actor_id}", response_model=ActorResponse)
+@router.get("/{actor_id:uuid}", response_model=ActorResponse)
 async def get_actor(
     actor_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1436,7 +1436,7 @@ async def get_actor(
 # ---------------------------------------------------------------------------
 
 
-@router.patch("/{actor_id}", response_model=ActorResponse)
+@router.patch("/{actor_id:uuid}", response_model=ActorResponse)
 async def update_actor(
     actor_id: uuid.UUID,
     payload: ActorUpdate,
@@ -1482,7 +1482,7 @@ async def update_actor(
 # ---------------------------------------------------------------------------
 
 
-@router.delete("/{actor_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+@router.delete("/{actor_id:uuid}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 async def delete_actor(
     actor_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1514,7 +1514,7 @@ async def delete_actor(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{actor_id}/content", response_model=None)
+@router.get("/{actor_id:uuid}/content", response_model=None)
 async def get_actor_content(
     actor_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1620,7 +1620,7 @@ async def get_actor_content(
 
 
 @router.post(
-    "/{actor_id}/presences",
+    "/{actor_id:uuid}/presences",
     response_model=PresenceResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -1682,7 +1682,7 @@ async def add_presence(
 
 
 @router.delete(
-    "/{actor_id}/presences/{presence_id}",
+    "/{actor_id:uuid}/presences/{presence_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_model=None,
 )
@@ -1734,7 +1734,7 @@ async def remove_presence(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{actor_id}/candidates", response_model=None)
+@router.get("/{actor_id:uuid}/candidates", response_model=None)
 async def find_merge_candidates(
     actor_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1815,7 +1815,7 @@ async def find_merge_candidates(
     return candidates
 
 
-@router.post("/{actor_id}/merge")
+@router.post("/{actor_id:uuid}/merge")
 async def merge_actor(
     actor_id: uuid.UUID,
     payload: dict,
@@ -1881,7 +1881,7 @@ async def merge_actor(
     return result
 
 
-@router.post("/{actor_id}/split")
+@router.post("/{actor_id:uuid}/split")
 async def split_actor(
     actor_id: uuid.UUID,
     payload: dict,
@@ -1964,7 +1964,7 @@ async def split_actor(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{actor_id}/merge/{other_actor_id}")
+@router.post("/{actor_id:uuid}/merge/{other_actor_id:uuid}")
 async def merge_actors(
     actor_id: uuid.UUID,
     other_actor_id: uuid.UUID,
@@ -2146,7 +2146,7 @@ async def merge_actors(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{actor_id}/similar/platform", response_model=None)
+@router.post("/{actor_id:uuid}/similar/platform", response_model=None)
 async def similar_by_platform(
     actor_id: uuid.UUID,
     payload: SimilarPlatformRequest,
@@ -2232,7 +2232,7 @@ async def similar_by_platform(
     return results
 
 
-@router.post("/{actor_id}/similar/content", response_model=None)
+@router.post("/{actor_id:uuid}/similar/content", response_model=None)
 async def similar_by_content(
     actor_id: uuid.UUID,
     payload: SimilarContentRequest,
@@ -2329,7 +2329,7 @@ async def similar_by_content(
     return results
 
 
-@router.post("/{actor_id}/similar/cross-platform", response_model=None)
+@router.post("/{actor_id:uuid}/similar/cross-platform", response_model=None)
 async def similar_cross_platform(
     actor_id: uuid.UUID,
     payload: SimilarCrossPlatformRequest,

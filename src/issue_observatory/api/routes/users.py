@@ -128,7 +128,7 @@ async def list_users(
 
 
 @router.patch(
-    "/{user_id}/activation",
+    "/{user_id:uuid}/activation",
     response_model=UserAdminRead,
     summary="Activate or deactivate a user account (admin)",
 )
@@ -170,7 +170,7 @@ async def set_user_activation(
 
 
 @router.patch(
-    "/{user_id}/role",
+    "/{user_id:uuid}/role",
     response_model=UserAdminRead,
     summary="Change a user's role (admin)",
 )
@@ -438,7 +438,7 @@ def _user_row_html(u: User) -> str:
     )
 
 
-@router.post("/{user_id}/activate", response_class=HTMLResponse)
+@router.post("/{user_id:uuid}/activate", response_class=HTMLResponse)
 async def activate_user(
     user_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -463,7 +463,7 @@ async def activate_user(
     return HTMLResponse(_user_row_html(user))
 
 
-@router.post("/{user_id}/deactivate", response_class=HTMLResponse)
+@router.post("/{user_id:uuid}/deactivate", response_class=HTMLResponse)
 async def deactivate_user(
     user_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),

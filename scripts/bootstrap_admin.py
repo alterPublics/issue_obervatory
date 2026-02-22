@@ -95,6 +95,9 @@ async def _bootstrap() -> None:
                 if not existing.is_active:
                     existing.is_active = True
                     changed.append("is_active -> True")
+                if not existing.display_name:
+                    existing.display_name = "Administrator"
+                    changed.append("display_name -> Administrator")
                 if changed:
                     print(
                         f"[bootstrap_admin] Existing user '{admin_email}' updated: "
@@ -111,6 +114,7 @@ async def _bootstrap() -> None:
                     hashed_password=hashed,
                     role="admin",
                     is_active=True,
+                    display_name="Administrator",
                 )
                 session.add(new_user)
                 print(

@@ -225,7 +225,7 @@ async def create_query_design(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{design_id}", response_model=QueryDesignRead)
+@router.get("/{design_id:uuid}", response_model=QueryDesignRead)
 async def get_query_design(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -255,7 +255,7 @@ async def get_query_design(
 # ---------------------------------------------------------------------------
 
 
-@router.put("/{design_id}", response_model=QueryDesignRead)
+@router.put("/{design_id:uuid}", response_model=QueryDesignRead)
 async def update_query_design(
     design_id: uuid.UUID,
     payload: QueryDesignUpdate,
@@ -297,7 +297,7 @@ async def update_query_design(
 # ---------------------------------------------------------------------------
 
 
-@router.delete("/{design_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+@router.delete("/{design_id:uuid}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 async def delete_query_design(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -330,7 +330,7 @@ async def delete_query_design(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{design_id}/clone", status_code=status.HTTP_303_SEE_OTHER)
+@router.post("/{design_id:uuid}/clone", status_code=status.HTTP_303_SEE_OTHER)
 async def clone_query_design(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -571,7 +571,7 @@ def _html_escape(text: str) -> str:
 
 
 @router.post(
-    "/{design_id}/terms",
+    "/{design_id:uuid}/terms",
     status_code=status.HTTP_201_CREATED,
     response_class=HTMLResponse,
 )
@@ -699,7 +699,7 @@ async def add_search_term(
 
 
 @router.post(
-    "/{design_id}/terms/bulk",
+    "/{design_id:uuid}/terms/bulk",
     status_code=status.HTTP_201_CREATED,
     response_model=list[SearchTermRead],
 )
@@ -810,7 +810,7 @@ async def add_search_terms_bulk(
 
 
 @router.delete(
-    "/{design_id}/terms/{term_id}",
+    "/{design_id:uuid}/terms/{term_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_model=None,
 )
@@ -931,7 +931,7 @@ def _raw_config_to_response(raw: Optional[dict]) -> ArenaConfigResponse:
     return ArenaConfigResponse(arenas=entries)
 
 
-@router.get("/{design_id}/arena-config", response_model=ArenaConfigResponse)
+@router.get("/{design_id:uuid}/arena-config", response_model=ArenaConfigResponse)
 async def get_arena_config(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -972,7 +972,7 @@ class ArenaCustomConfigResponse(BaseModel):
 
 
 @router.patch(
-    "/{design_id}/arena-config/{arena_name}",
+    "/{design_id:uuid}/arena-config/{arena_name}",
     response_model=ArenaCustomConfigResponse,
 )
 async def patch_arena_custom_config(
@@ -1059,7 +1059,7 @@ async def patch_arena_custom_config(
     )
 
 
-@router.post("/{design_id}/arena-config", response_model=ArenaConfigResponse)
+@router.post("/{design_id:uuid}/arena-config", response_model=ArenaConfigResponse)
 async def set_arena_config(
     design_id: uuid.UUID,
     payload: ArenaConfigPayload,
@@ -1359,7 +1359,7 @@ class ActorBulkAddResponse(BaseModel):
 
 
 @router.post(
-    "/{design_id}/actors",
+    "/{design_id:uuid}/actors",
     status_code=status.HTTP_201_CREATED,
     response_class=HTMLResponse,
 )
@@ -1473,7 +1473,7 @@ async def add_actor_to_design(
 
 
 @router.post(
-    "/{design_id}/actors/bulk",
+    "/{design_id:uuid}/actors/bulk",
     status_code=status.HTTP_201_CREATED,
     response_model=ActorBulkAddResponse,
 )
@@ -1604,7 +1604,7 @@ async def add_actors_to_design_bulk(
 
 
 @router.delete(
-    "/{design_id}/actors/{actor_id}",
+    "/{design_id:uuid}/actors/{actor_id}",
     status_code=status.HTTP_200_OK,
     response_class=HTMLResponse,
 )
@@ -1688,7 +1688,7 @@ async def remove_actor_from_design(
 
 
 @router.get(
-    "/{design_id}/actor-lists",
+    "/{design_id:uuid}/actor-lists",
     summary="List actor lists for a query design",
 )
 async def list_actor_lists_for_design(
@@ -1742,7 +1742,7 @@ async def list_actor_lists_for_design(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{design_id}/alerts")
+@router.get("/{design_id:uuid}/alerts")
 async def get_volume_spike_alerts(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -1829,7 +1829,7 @@ async def get_volume_spike_alerts(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{design_id}/discover-feeds")
+@router.post("/{design_id:uuid}/discover-feeds")
 async def discover_rss_feeds(
     design_id: uuid.UUID,
     url: Annotated[str, Body(embed=True)],
@@ -1918,7 +1918,7 @@ async def discover_rss_feeds(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{design_id}/suggest-subreddits")
+@router.get("/{design_id:uuid}/suggest-subreddits")
 async def suggest_subreddits(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],

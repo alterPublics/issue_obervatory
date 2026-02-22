@@ -36,7 +36,7 @@ import feedparser
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
-from issue_observatory.arenas.query_builder import build_boolean_query_groups
+from issue_observatory.arenas.query_builder import build_boolean_query_groups, match_groups_in_text
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.rss_feeds.config import (
     FETCH_CONCURRENCY,
@@ -209,11 +209,9 @@ class RSSFeedsCollector(ArenaCollector):
 
             searchable = _build_searchable_text(entry)
 
-            # An entry matches if any AND-group has all its terms present.
-            matched_terms: list[str] = []
-            for grp in lower_groups:
-                if all(t in searchable for t in grp):
-                    matched_terms.extend(grp)
+            # An entry matches if any AND-group has all its terms present
+            # (word-boundary matching to avoid stopword false positives).
+            matched_terms = match_groups_in_text(lower_groups, searchable)
             if not matched_terms:
                 continue
 

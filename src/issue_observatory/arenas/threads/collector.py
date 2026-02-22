@@ -38,7 +38,7 @@ from typing import Any
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
-from issue_observatory.arenas.query_builder import build_boolean_query_groups
+from issue_observatory.arenas.query_builder import any_group_matches_text, build_boolean_query_groups
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.threads.config import (
     DEFAULT_DANISH_THREADS_ACCOUNTS,
@@ -303,8 +303,9 @@ class ThreadsCollector(ArenaCollector):
         matched: list[dict[str, Any]] = []
         for record in all_posts:
             text = (record.get("text_content") or "").lower()
-            # Match if at least one AND-group has all its terms present.
-            if any(all(t in text for t in grp) for grp in lower_groups):
+            # Match if at least one AND-group has all its terms present
+            # (word-boundary matching to avoid stopword false positives).
+            if any_group_matches_text(lower_groups, text):
                 matched.append(record)
             if len(matched) >= effective_max:
                 break
