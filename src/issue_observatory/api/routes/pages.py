@@ -184,10 +184,15 @@ async def arenas_page(
     Returns:
         Rendered ``arenas/index.html`` template.
     """
+    from issue_observatory.arenas.registry import autodiscover, list_arenas  # noqa: PLC0415
+
+    autodiscover()
+    arenas = list_arenas()
+
     tpl = _templates(request)
     return tpl.TemplateResponse(
         "arenas/index.html",
-        {"request": request, "user": current_user},
+        {"request": request, "user": current_user, "arenas": arenas},
     )
 
 
@@ -199,21 +204,51 @@ async def arenas_page(
 @router.get("/query-designs", response_class=HTMLResponse)
 async def query_designs_list(
     request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
 ) -> HTMLResponse:
     """Render the query design list page.
 
     Args:
         request: The current HTTP request.
+        db: Injected async database session.
         current_user: The authenticated, active user.
 
     Returns:
         Rendered ``query_designs/list.html`` template.
     """
+    stmt = (
+        select(QueryDesign)
+        .where(QueryDesign.owner_id == current_user.id)
+        .order_by(QueryDesign.created_at.desc())
+    )
+    result = await db.execute(stmt)
+    designs_rows = result.scalars().all()
+
+    designs = []
+    for d in designs_rows:
+        # Count search terms for display
+        term_stmt = select(func.count()).select_from(SearchTerm).where(
+            SearchTerm.query_design_id == d.id
+        )
+        term_result = await db.execute(term_stmt)
+        term_count = term_result.scalar() or 0
+
+        designs.append({
+            "id": str(d.id),
+            "name": d.name,
+            "description": d.description,
+            "visibility": d.visibility,
+            "default_tier": d.default_tier,
+            "search_term_count": term_count,
+            "created_at": d.created_at.isoformat() if d.created_at else "",
+            "is_active": d.is_active,
+        })
+
     tpl = _templates(request)
     return tpl.TemplateResponse(
         "query_designs/list.html",
-        {"request": request, "user": current_user},
+        {"request": request, "user": current_user, "designs": designs},
     )
 
 
@@ -332,21 +367,46 @@ async def query_design_codebook_manager(
 @router.get("/collections", response_class=HTMLResponse)
 async def collections_list(
     request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
 ) -> HTMLResponse:
     """Render the collection run history list page.
 
     Args:
         request: The current HTTP request.
+        db: Injected async database session.
         current_user: The authenticated, active user.
 
     Returns:
         Rendered ``collections/list.html`` template.
     """
+    stmt = (
+        select(CollectionRun)
+        .options(selectinload(CollectionRun.query_design))
+        .where(CollectionRun.initiated_by == current_user.id)
+        .order_by(CollectionRun.started_at.desc().nulls_last())
+        .limit(50)
+    )
+    result = await db.execute(stmt)
+    runs_rows = result.scalars().all()
+
+    runs = []
+    for r in runs_rows:
+        runs.append({
+            "id": str(r.id),
+            "query_design_name": r.query_design.name if r.query_design else "(unknown design)",
+            "mode": r.mode,
+            "tier": r.tier,
+            "status": r.status,
+            "records_collected": r.records_collected,
+            "credits_spent": r.credits_spent,
+            "started_at": r.started_at.isoformat() if r.started_at else "",
+        })
+
     tpl = _templates(request)
     return tpl.TemplateResponse(
         "collections/list.html",
-        {"request": request, "user": current_user},
+        {"request": request, "user": current_user, "runs": runs},
     )
 
 

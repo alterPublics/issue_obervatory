@@ -85,11 +85,11 @@ def _templates(request: Request) -> Jinja2Templates:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/active-count")
+@router.get("/active-count", response_class=HTMLResponse)
 async def get_active_collection_count(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-) -> str:
+) -> HTMLResponse:
     """Return an HTML fragment with the count of active collection runs.
 
     Polls pending and running runs initiated by the current user.  Returns
@@ -120,14 +120,14 @@ async def get_active_collection_count(
 
     # Return the same HTML structure as the dashboard's initial placeholder
     # so the swap is smooth.
-    return f"""<div id="dashboard-active-runs"
+    return HTMLResponse(f"""<div id="dashboard-active-runs"
          hx-get="/collections/active-count"
          hx-trigger="every 15s"
          hx-target="#dashboard-active-runs"
          hx-swap="outerHTML">
     <p class="text-2xl font-bold text-gray-900">{count}</p>
     <p class="text-xs text-gray-500 mt-1">Active collection{"s" if count != 1 else ""}</p>
-</div>"""
+</div>""")
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ async def list_collection_runs(
     status_filter: Optional[str] = None,
     query_design_id: Optional[uuid.UUID] = None,
     format: Optional[str] = None,
-) -> list[CollectionRun] | str:
+) -> list[CollectionRun] | HTMLResponse:
     """List collection runs initiated by the current user.
 
     Results are ordered by run start time descending (newest first) and
@@ -232,9 +232,9 @@ async def list_collection_runs(
     # If format=fragment, render an HTML table for dashboard HTMX consumption
     if format == "fragment":
         if not runs:
-            return """<div class="px-6 py-8 text-center text-sm text-gray-500">
+            return HTMLResponse("""<div class="px-6 py-8 text-center text-sm text-gray-500">
     No collection runs yet. <a href="/collections/new" class="text-blue-600 hover:underline">Start your first collection</a>.
-</div>"""
+</div>""")
 
         # Build a simple HTML table with run summaries
         rows_html = ""
@@ -265,7 +265,7 @@ async def list_collection_runs(
 </tr>
 """
 
-        return f"""<table class="min-w-full divide-y divide-gray-200">
+        return HTMLResponse(f"""<table class="min-w-full divide-y divide-gray-200">
     <thead class="bg-gray-50">
         <tr>
             <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Collection</th>
@@ -279,7 +279,7 @@ async def list_collection_runs(
 </table>
 <div class="px-6 py-3 border-t border-gray-200 text-center">
     <a href="/collections" class="text-sm text-blue-600 hover:underline">View all collections →</a>
-</div>"""
+</div>""")
 
     # Default: return JSON list of CollectionRunRead
     return runs
@@ -1024,7 +1024,7 @@ async def get_recent_volume_spikes_all_designs(
     days: int = Query(default=7, ge=1, le=30, description="Number of past days to include."),
     limit: int = Query(default=5, ge=1, le=20, description="Maximum number of spikes to return."),
     hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
-) -> list[dict[str, Any]] | str:
+) -> list[dict[str, Any]] | HTMLResponse:
     """Return recent volume spike alerts across all query designs owned by the user.
 
     This endpoint is designed for the dashboard alert widget. It queries all completed
@@ -1103,13 +1103,14 @@ async def get_recent_volume_spikes_all_designs(
     # When called via HTMX, render the alert fragment
     if hx_request:
         templates = _templates(request)
-        return templates.TemplateResponse(
+        response = templates.TemplateResponse(
             "_fragments/volume_spike_alerts.html",
             {
                 "request": request,
                 "spikes": spikes,
             },
-        ).body.decode("utf-8")
+        )
+        return HTMLResponse(response.body.decode("utf-8"))
 
     return spikes
 

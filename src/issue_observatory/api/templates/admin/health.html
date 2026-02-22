@@ -33,26 +33,50 @@
         </div>
     </div>
 
-    {# Core infrastructure status — HTMX-polled #}
+    {# Core infrastructure status — Alpine.js polled #}
     <div id="infrastructure-status"
-         hx-get="/api/health"
-         hx-trigger="load, every 15s"
-         hx-target="#infrastructure-status"
-         hx-swap="innerHTML"
-         hx-indicator="#health-spinner">
-
-        {# Skeleton / initial render #}
+         x-data="{ health: null, loading: true, init() { this.poll(); setInterval(() => this.poll(), 15000); }, async poll() { try { const r = await fetch('/api/health'); this.health = await r.json(); } catch(e) { this.health = { status: 'error', database: 'error', redis: 'error' }; } this.loading = false; } }">
         <div class="grid grid-cols-3 gap-4">
-            {% for service in ['PostgreSQL', 'Redis', 'Task Workers'] %}
-            <div class="bg-white rounded-lg shadow p-5">
-                <div class="flex items-center justify-between mb-2">
-                    <h3 class="text-sm font-medium text-gray-700">{{ service }}</h3>
-                    <div class="w-2 h-2 rounded-full bg-gray-200 animate-pulse"></div>
+            <template x-if="loading">
+                <template x-for="s in ['PostgreSQL', 'Redis', 'Task Workers']">
+                    <div class="bg-white rounded-lg shadow p-5">
+                        <div class="flex items-center justify-between mb-2">
+                            <h3 class="text-sm font-medium text-gray-700" x-text="s"></h3>
+                            <div class="w-2 h-2 rounded-full bg-gray-200 animate-pulse"></div>
+                        </div>
+                        <p class="text-2xl font-bold text-gray-300">&mdash;</p>
+                        <p class="text-xs text-gray-400 mt-1">Loading...</p>
+                    </div>
+                </template>
+            </template>
+            <template x-if="!loading && health">
+                <div class="contents">
+                    <div class="bg-white rounded-lg shadow p-5">
+                        <div class="flex items-center justify-between mb-2">
+                            <h3 class="text-sm font-medium text-gray-700">PostgreSQL</h3>
+                            <div class="w-2 h-2 rounded-full" :class="health.database === 'ok' ? 'bg-green-500' : 'bg-red-500'"></div>
+                        </div>
+                        <p class="text-2xl font-bold" :class="health.database === 'ok' ? 'text-green-600' : 'text-red-600'" x-text="health.database === 'ok' ? 'OK' : 'Error'"></p>
+                        <p class="text-xs text-gray-500 mt-1">Database connectivity</p>
+                    </div>
+                    <div class="bg-white rounded-lg shadow p-5">
+                        <div class="flex items-center justify-between mb-2">
+                            <h3 class="text-sm font-medium text-gray-700">Redis</h3>
+                            <div class="w-2 h-2 rounded-full" :class="health.redis === 'ok' ? 'bg-green-500' : 'bg-red-500'"></div>
+                        </div>
+                        <p class="text-2xl font-bold" :class="health.redis === 'ok' ? 'text-green-600' : 'text-red-600'" x-text="health.redis === 'ok' ? 'OK' : 'Error'"></p>
+                        <p class="text-xs text-gray-500 mt-1">Cache and task broker</p>
+                    </div>
+                    <div class="bg-white rounded-lg shadow p-5">
+                        <div class="flex items-center justify-between mb-2">
+                            <h3 class="text-sm font-medium text-gray-700">Overall</h3>
+                            <div class="w-2 h-2 rounded-full" :class="health.status === 'ok' ? 'bg-green-500' : 'bg-amber-500'"></div>
+                        </div>
+                        <p class="text-2xl font-bold" :class="health.status === 'ok' ? 'text-green-600' : 'text-amber-600'" x-text="health.status === 'ok' ? 'Healthy' : 'Degraded'"></p>
+                        <p class="text-xs text-gray-500 mt-1" x-text="'v' + (health.version || '?')"></p>
+                    </div>
                 </div>
-                <p class="text-2xl font-bold text-gray-300">—</p>
-                <p class="text-xs text-gray-400 mt-1">Loading...</p>
-            </div>
-            {% endfor %}
+            </template>
         </div>
     </div>
 
@@ -102,13 +126,36 @@
         </div>
 
         <div id="arena-health"
-             hx-get="/api/arenas/health"
-             hx-trigger="load, every 60s"
-             hx-target="#arena-health"
-             hx-swap="innerHTML">
-            <div class="px-6 py-8 text-center">
-                {% include '_partials/loading_spinner.html' %}
-            </div>
+             x-data="{ arenas: {}, overall: null, loading: true, init() { this.poll(); setInterval(() => this.poll(), 60000); }, async poll() { try { const r = await fetch('/api/arenas/health'); const d = await r.json(); this.arenas = d.arenas || {}; this.overall = d.overall; } catch(e) { this.overall = 'error'; } this.loading = false; } }">
+            <template x-if="loading">
+                <div class="px-6 py-8 text-center">
+                    <svg class="animate-spin w-6 h-6 text-blue-600 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                    <p class="text-sm text-gray-400 mt-2">Checking arenas...</p>
+                </div>
+            </template>
+            <template x-if="!loading">
+                <div>
+                    <div class="px-6 py-3 border-b border-gray-100 flex items-center gap-2">
+                        <div class="w-2 h-2 rounded-full" :class="overall === 'ok' ? 'bg-green-500' : overall === 'degraded' ? 'bg-amber-500' : 'bg-red-500'"></div>
+                        <span class="text-xs font-medium" :class="overall === 'ok' ? 'text-green-700' : overall === 'degraded' ? 'text-amber-700' : 'text-red-700'" x-text="'Overall: ' + (overall || 'unknown')"></span>
+                        <span class="text-xs text-gray-400 ml-auto" x-text="Object.keys(arenas).length + ' arenas checked'"></span>
+                    </div>
+                    <div class="divide-y divide-gray-100">
+                        <template x-for="[name, info] in Object.entries(arenas)" :key="name">
+                            <div class="px-6 py-3 flex items-center justify-between">
+                                <div class="flex items-center gap-2">
+                                    <div class="w-2 h-2 rounded-full" :class="info.status === 'ok' ? 'bg-green-500' : info.status === 'degraded' || info.status === 'not_implemented' ? 'bg-amber-400' : 'bg-red-500'"></div>
+                                    <span class="text-sm font-medium text-gray-900" x-text="name"></span>
+                                </div>
+                                <span class="text-xs px-2 py-0.5 rounded-full" :class="info.status === 'ok' ? 'bg-green-100 text-green-700' : info.status === 'not_implemented' ? 'bg-gray-100 text-gray-500' : info.status === 'degraded' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'" x-text="info.status || 'unknown'"></span>
+                            </div>
+                        </template>
+                    </div>
+                    <template x-if="Object.keys(arenas).length === 0">
+                        <div class="px-6 py-6 text-center text-sm text-gray-400">No arenas registered</div>
+                    </template>
+                </div>
+            </template>
         </div>
     </div>
 

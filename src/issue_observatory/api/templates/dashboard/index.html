@@ -76,7 +76,8 @@
         </div>
 
         {# Total records card #}
-        <div class="bg-white rounded-lg shadow p-5">
+        <div class="bg-white rounded-lg shadow p-5"
+             x-data="{ count: null, init() { this.poll(); setInterval(() => this.poll(), 60000); }, async poll() { try { const r = await fetch('/content/count'); const d = await r.json(); this.count = d.total ?? null; } catch(e) {} } }">
             <div class="flex items-center justify-between mb-3">
                 <h2 class="text-sm font-medium text-gray-600">Records Collected</h2>
                 <svg class="w-5 h-5 text-gray-300" xmlns="http://www.w3.org/2000/svg" fill="none"
@@ -85,7 +86,7 @@
                           d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
                 </svg>
             </div>
-            <p class="text-2xl font-bold text-gray-900">—</p>
+            <p class="text-2xl font-bold text-gray-900" x-text="count !== null ? count.toLocaleString() : '—'"></p>
             <p class="text-xs text-gray-500 mt-1">
                 <a href="/content" class="text-blue-600 hover:underline">View all content</a>
             </p>
@@ -99,8 +100,7 @@
          hx-target="#volume-spike-alerts"
          hx-swap="innerHTML"
          class="hidden"
-         x-data="{ spikes: [] }"
-         x-init="$watch('spikes', value => { if (value && value.length > 0) { $el.classList.remove('hidden'); } })">
+         hx-on::after-swap="if(this.innerHTML.trim()) this.classList.remove('hidden'); else this.classList.add('hidden');">
     </div>
 
     {# Recent collection runs #}
@@ -115,7 +115,7 @@
             The server returns a table body fragment or the empty state.
         #}
         <div id="recent-runs"
-             hx-get="/collections?limit=5&format=fragment"
+             hx-get="/collections/?limit=5&format=fragment"
              hx-trigger="load"
              hx-target="#recent-runs"
              hx-swap="innerHTML">

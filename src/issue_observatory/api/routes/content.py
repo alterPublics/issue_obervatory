@@ -30,7 +30,7 @@ from typing import Annotated, Any, Optional
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from issue_observatory.analysis.export import ContentExporter
@@ -550,6 +550,31 @@ def _orm_to_detail_dict(record: UniversalContentRecord) -> dict[str, Any]:
         "run_id": str(record.collection_run_id or ""),
         "metadata": record.raw_metadata or {},
     }
+
+
+# ---------------------------------------------------------------------------
+# Record count (dashboard widget)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/count")
+async def content_record_count(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> dict[str, int]:
+    """Return total content record count for the current user's collection runs.
+
+    Used by the dashboard Records Collected card.
+    """
+    stmt = (
+        select(func.count())
+        .select_from(UniversalContentRecord)
+        .join(CollectionRun, UniversalContentRecord.collection_run_id == CollectionRun.id)
+        .where(CollectionRun.initiated_by == current_user.id)
+    )
+    result = await db.execute(stmt)
+    total = result.scalar() or 0
+    return {"total": total}
 
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 {% block title %}Scraping Jobs{% endblock %}
 
 {% block content %}
-<div class="max-w-6xl mx-auto space-y-6">
+<div class="max-w-6xl mx-auto space-y-6" x-data>
 
     {# Page header #}
     <div class="flex items-center justify-between">
@@ -37,8 +37,6 @@
             </div>
         </div>
     </div>
-
-</div>
 
 {# Create job dialog #}
 <dialog x-ref="createDialog"
@@ -164,5 +162,7 @@
 
     </form>
 </dialog>
+
+</div>
 
 {% endblock %}
