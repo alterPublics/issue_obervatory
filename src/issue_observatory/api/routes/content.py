@@ -701,6 +701,7 @@ async def content_browser_page(
         "content/browser.html",
         {
             "request": request,
+            "user": current_user,
             "records": [_orm_row_to_template_dict(r) for r in records],
             "total_count": total_count,
             "recent_runs": recent_runs,
@@ -811,13 +812,25 @@ async def content_records_fragment(
         stmt = stmt.where(UniversalContentRecord.arena.in_(arenas_list))
 
     result = await db.execute(stmt)
-    records = list(result.mappings().all())
+    raw_rows = list(result.mappings().all())
+
+    # Unpack the ORM instance + mode from the JOIN mapping (same as initial load).
+    records: list = []
+    for rrow in raw_rows:
+        ucr_obj = rrow.get("UniversalContentRecord")
+        if ucr_obj is None:
+            continue
+        ucr_obj._browse_mode = rrow.get("mode", "")  # type: ignore[attr-defined]
+        records.append(ucr_obj)
 
     new_offset = offset + len(records)
     next_cursor: Optional[str] = None
     if len(records) == remaining and new_offset < _BROWSE_CAP:
-        last = records[-1]
-        next_cursor = _encode_cursor(last["published_at"], last["id"])
+        last_rec = records[-1]
+        pub_at = getattr(last_rec, "published_at", None)
+        rec_id = getattr(last_rec, "id", None)
+        if pub_at and rec_id:
+            next_cursor = _encode_cursor(pub_at, rec_id)
 
     template_records = [_orm_row_to_template_dict(r) for r in records]
 
@@ -1604,6 +1617,7 @@ async def get_content_record_html(
         "content/record_detail.html",
         {
             "request": request,
+            "user": current_user,
             "record": record_ctx,
             "standalone": not is_panel,
         },

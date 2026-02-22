@@ -594,6 +594,88 @@ async def estimate_collection_credits(
 
 
 # ---------------------------------------------------------------------------
+# Volume spike alerts -- must be registered before /{run_id} wildcard
+# ---------------------------------------------------------------------------
+
+
+@router.get("/volume-spikes")
+async def get_volume_spikes(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    query_design_id: uuid.UUID = Query(..., description="UUID of the query design to query."),
+    days: int = Query(default=30, ge=1, le=365, description="Number of past days to include."),
+) -> list[dict[str, Any]]:
+    """Return volume spike alerts for a query design from the last N days.
+
+    Volume spikes are detected when collection volume for an arena exceeds 2x
+    the rolling 7-day average. Spike events are stored in
+    ``collection_runs.arenas_config["_volume_spikes"]`` when detected.
+
+    Args:
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        query_design_id: UUID of the query design to query spikes for.
+        days: Number of past days to include (1-365, default 30).
+
+    Returns:
+        List of dicts, each containing run metadata and spike details::
+
+            [
+              {
+                "run_id": "...",
+                "completed_at": "2026-02-15T10:00:00+00:00",
+                "volume_spikes": [
+                  {
+                    "arena_name": "social_media",
+                    "platform": "bluesky",
+                    "current_count": 523,
+                    "rolling_7d_average": 145.2,
+                    "ratio": 3.6,
+                    "top_terms": ["term1", "term2", "term3"]
+                  },
+                  ...
+                ]
+              },
+              ...
+            ]
+
+        Returns an empty list when no spikes exist in the window.
+
+    Raises:
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the caller does not own the query design.
+    """
+    # Verify the query design exists and is owned by this user
+    qd_result = await db.execute(
+        select(QueryDesign).where(QueryDesign.id == query_design_id)
+    )
+    query_design = qd_result.scalar_one_or_none()
+    if query_design is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Query design '{query_design_id}' not found.",
+        )
+    ownership_guard(query_design.owner_id, current_user)
+
+    # Fetch recent volume spikes from the alerting module
+    spikes = await fetch_recent_volume_spikes(
+        session=db,
+        query_design_id=query_design_id,
+        days=days,
+    )
+
+    logger.info(
+        "volume_spikes_fetched",
+        query_design_id=str(query_design_id),
+        user_id=str(current_user.id),
+        spike_count=len(spikes),
+        days=days,
+    )
+
+    return spikes
+
+
+# ---------------------------------------------------------------------------
 # Detail
 # ---------------------------------------------------------------------------
 
@@ -1111,83 +1193,6 @@ async def get_recent_volume_spikes_all_designs(
             },
         )
         return HTMLResponse(response.body.decode("utf-8"))
-
-    return spikes
-
-
-@router.get("/volume-spikes")
-async def get_volume_spikes(
-    db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(get_current_active_user)],
-    query_design_id: uuid.UUID = Query(..., description="UUID of the query design to query."),
-    days: int = Query(default=30, ge=1, le=365, description="Number of past days to include."),
-) -> list[dict[str, Any]]:
-    """Return volume spike alerts for a query design from the last N days.
-
-    Volume spikes are detected when collection volume for an arena exceeds 2x
-    the rolling 7-day average. Spike events are stored in
-    ``collection_runs.arenas_config["_volume_spikes"]`` when detected.
-
-    Args:
-        db: Injected async database session.
-        current_user: The authenticated, active user making the request.
-        query_design_id: UUID of the query design to query spikes for.
-        days: Number of past days to include (1-365, default 30).
-
-    Returns:
-        List of dicts, each containing run metadata and spike details::
-
-            [
-              {
-                "run_id": "...",
-                "completed_at": "2026-02-15T10:00:00+00:00",
-                "volume_spikes": [
-                  {
-                    "arena_name": "social_media",
-                    "platform": "bluesky",
-                    "current_count": 523,
-                    "rolling_7d_average": 145.2,
-                    "ratio": 3.6,
-                    "top_terms": ["term1", "term2", "term3"]
-                  },
-                  ...
-                ]
-              },
-              ...
-            ]
-
-        Returns an empty list when no spikes exist in the window.
-
-    Raises:
-        HTTPException 404: If the query design does not exist.
-        HTTPException 403: If the caller does not own the query design.
-    """
-    # Verify the query design exists and is owned by this user
-    qd_result = await db.execute(
-        select(QueryDesign).where(QueryDesign.id == query_design_id)
-    )
-    query_design = qd_result.scalar_one_or_none()
-    if query_design is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Query design '{query_design_id}' not found.",
-        )
-    ownership_guard(query_design.owner_id, current_user)
-
-    # Fetch recent volume spikes from the alerting module
-    spikes = await fetch_recent_volume_spikes(
-        session=db,
-        query_design_id=query_design_id,
-        days=days,
-    )
-
-    logger.info(
-        "volume_spikes_fetched",
-        query_design_id=str(query_design_id),
-        user_id=str(current_user.id),
-        spike_count=len(spikes),
-        days=days,
-    )
 
     return spikes
 

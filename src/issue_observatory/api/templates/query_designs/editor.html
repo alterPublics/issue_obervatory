@@ -1048,7 +1048,7 @@
     {# GR-05 — Multi-language selector                                    #}
     {# ------------------------------------------------------------------ #}
     <div class="bg-white rounded-lg shadow p-6"
-         x-data="languageSelector('{{ design_id }}', {{ (design.arenas_config.global.languages | default(['da'])) | tojson }})">
+         x-data="languageSelector('{{ design_id }}', {{ ((design.arenas_config or {}).get('global', {}).get('languages', ['da'])) | tojson }})">
 
         <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
              @click="open = !open">
@@ -1128,7 +1128,7 @@
              '{{ design_id }}',
              'rss',
              'custom_feeds',
-             {{ (design.arenas_config.rss.custom_feeds | default([])) | tojson }}
+             {{ ((design.arenas_config or {}).get('rss', {}).get('custom_feeds', [])) | tojson }}
          )">
 
         <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
@@ -1298,7 +1298,7 @@
              '{{ design_id }}',
              'telegram',
              'custom_channels',
-             {{ (design.arenas_config.telegram.custom_channels | default([])) | tojson }}
+             {{ ((design.arenas_config or {}).get('telegram', {}).get('custom_channels', [])) | tojson }}
          )">
 
         <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
@@ -1407,7 +1407,7 @@
              '{{ design_id }}',
              'reddit',
              'custom_subreddits',
-             {{ (design.arenas_config.reddit.custom_subreddits | default([])) | tojson }}
+             {{ ((design.arenas_config or {}).get('reddit', {}).get('custom_subreddits', [])) | tojson }}
          )">
 
         <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
@@ -1520,7 +1520,7 @@
              '{{ design_id }}',
              'discord',
              'custom_channel_ids',
-             {{ (design.arenas_config.discord.custom_channel_ids | default([])) | tojson }}
+             {{ ((design.arenas_config or {}).get('discord', {}).get('custom_channel_ids', [])) | tojson }}
          )">
 
         <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
@@ -1630,7 +1630,7 @@
              '{{ design_id }}',
              'wikipedia',
              'seed_articles',
-             {{ (design.arenas_config.wikipedia.seed_articles | default([])) | tojson }}
+             {{ ((design.arenas_config or {}).get('wikipedia', {}).get('seed_articles', [])) | tojson }}
          )">
 
         <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"

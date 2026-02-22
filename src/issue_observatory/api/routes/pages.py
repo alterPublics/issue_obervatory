@@ -38,8 +38,8 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,6 +63,21 @@ router = APIRouter(include_in_schema=False)
 # Routes that must be evaluated BEFORE API routers so that literal path
 # segments like ``/new`` are matched before ``/{id}`` catch-all patterns.
 priority_router = APIRouter(include_in_schema=False)
+
+
+def _prefers_json(request: Request) -> bool:
+    """Return True when the client explicitly prefers JSON over HTML.
+
+    HTMX requests and normal browser navigation always get HTML.  Only
+    programmatic API callers sending ``Accept: application/json`` without
+    ``text/html`` are routed to the JSON path.
+    """
+    if request.headers.get("hx-request"):
+        return False
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept:
+        return False
+    return "application/json" in accept
 
 
 def _templates(request: Request) -> Jinja2Templates:
@@ -273,34 +288,90 @@ async def query_designs_new(
     )
 
 
-@router.get("/query-designs/{design_id}", response_class=HTMLResponse)
+@priority_router.get("/query-designs/{design_id:uuid}")
 async def query_designs_detail(
     request: Request,
     design_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
-) -> HTMLResponse:
-    """Render the query design detail page.
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Response:
+    """Render the query design detail page, or return JSON for API clients.
 
     Args:
         request: The current HTTP request.
         design_id: UUID of the query design to display.
         current_user: The authenticated, active user.
+        db: Injected async database session.
 
     Returns:
-        Rendered ``query_designs/detail.html`` template.
+        Rendered ``query_designs/detail.html`` template for browsers,
+        or a JSON response for ``Accept: application/json`` callers.
     """
+    # Load the full query design with search terms.
+    stmt = (
+        select(QueryDesign)
+        .where(QueryDesign.id == design_id)
+        .options(selectinload(QueryDesign.search_terms))
+    )
+    result = await db.execute(stmt)
+    design = result.scalar_one_or_none()
+
+    if design is None:
+        raise HTTPException(status_code=404, detail="Query design not found")
+
+    # JSON API path — delegate to the API handler's response model.
+    if _prefers_json(request):
+        from issue_observatory.api.routes.query_designs import get_query_design
+
+        return await get_query_design(design_id, db, current_user)
+
+    # HTML path — build template context and render.
     tpl = _templates(request)
+    term_count = len(design.search_terms) if design.search_terms else 0
+
+    design_context = {
+        "id": str(design.id),
+        "name": design.name,
+        "description": design.description,
+        "visibility": design.visibility,
+        "default_tier": design.default_tier,
+        "language": design.language,
+        "locale_country": design.locale_country,
+        "arenas_config": design.arenas_config or {},
+        "is_active": design.is_active,
+        "search_term_count": term_count,
+        "search_terms": [
+            {
+                "id": str(t.id),
+                "term": t.term,
+                "term_type": t.term_type,
+                "group_id": str(t.group_id) if t.group_id else None,
+                "group_label": t.group_label,
+                "target_arenas": t.target_arenas,
+                "is_active": t.is_active,
+            }
+            for t in (design.search_terms or [])
+        ],
+        "created_at": design.created_at.isoformat() if design.created_at else "",
+    }
+
     return tpl.TemplateResponse(
         "query_designs/detail.html",
-        {"request": request, "user": current_user, "design_id": str(design_id)},
+        {
+            "request": request,
+            "user": current_user,
+            "design_id": str(design_id),
+            "design": design_context,
+        },
     )
 
 
-@router.get("/query-designs/{design_id}/edit", response_class=HTMLResponse)
+@priority_router.get("/query-designs/{design_id:uuid}/edit", response_class=HTMLResponse)
 async def query_designs_edit(
     request: Request,
     design_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> HTMLResponse:
     """Render the query design editor for an existing design.
 
@@ -308,18 +379,38 @@ async def query_designs_edit(
         request: The current HTTP request.
         design_id: UUID of the query design to edit.
         current_user: The authenticated, active user.
+        db: Injected async database session.
 
     Returns:
         Rendered ``query_designs/editor.html`` template.
     """
     tpl = _templates(request)
+
+    # Load the full query design object so the editor template can access
+    # arenas_config and other attributes without a client-side fetch.
+    stmt = (
+        select(QueryDesign)
+        .where(QueryDesign.id == design_id)
+        .options(selectinload(QueryDesign.search_terms))
+    )
+    result = await db.execute(stmt)
+    design = result.scalar_one_or_none()
+
+    if design is None:
+        raise HTTPException(status_code=404, detail="Query design not found")
+
     return tpl.TemplateResponse(
         "query_designs/editor.html",
-        {"request": request, "user": current_user, "design_id": str(design_id)},
+        {
+            "request": request,
+            "user": current_user,
+            "design_id": str(design_id),
+            "design": design,
+        },
     )
 
 
-@router.get("/query-designs/{design_id}/codebook", response_class=HTMLResponse)
+@priority_router.get("/query-designs/{design_id:uuid}/codebook", response_class=HTMLResponse)
 async def query_design_codebook_manager(
     request: Request,
     design_id: uuid.UUID,
@@ -431,14 +522,14 @@ async def collections_new(
     )
 
 
-@router.get("/collections/{run_id}", response_class=HTMLResponse)
+@priority_router.get("/collections/{run_id:uuid}")
 async def collections_detail(
     request: Request,
     run_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> HTMLResponse:
-    """Render the collection run live status / detail page.
+) -> Response:
+    """Render the collection run detail page, or return JSON for API clients.
 
     Queries the ``CollectionRun`` record and its associated ``QueryDesign``
     and ``SearchTerm`` rows so the template can display the query design name
@@ -451,10 +542,15 @@ async def collections_detail(
         db: Injected async database session.
 
     Returns:
-        Rendered ``collections/detail.html`` template with an enriched
-        ``run`` context dict containing ``query_design_name`` and
-        ``search_terms``.
+        Rendered ``collections/detail.html`` template for browsers,
+        or a JSON response for ``Accept: application/json`` callers.
     """
+    # JSON API path — delegate to the API handler.
+    if _prefers_json(request):
+        from issue_observatory.api.routes.collections import get_collection_run
+
+        return await get_collection_run(run_id, db, current_user)
+
     tpl = _templates(request)
 
     # Load the collection run, eagerly joining its query design.
@@ -487,7 +583,7 @@ async def collections_detail(
                     SearchTerm.query_design_id == query_design.id,
                     SearchTerm.is_active.is_(True),
                 )
-                .order_by(SearchTerm.created_at)
+                .order_by(SearchTerm.added_at)
             )
             run_context["search_terms"] = [
                 {"term": t.term, "term_type": t.term_type}
@@ -644,14 +740,14 @@ async def actors_list(
     )
 
 
-@router.get("/actors/{actor_id}", response_class=HTMLResponse)
+@priority_router.get("/actors/{actor_id:uuid}")
 async def actors_detail(
     request: Request,
     actor_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> HTMLResponse:
-    """Render the actor detail page.
+) -> Response:
+    """Render the actor detail page, or return JSON for API clients.
 
     Args:
         request: The current HTTP request.
@@ -660,9 +756,15 @@ async def actors_detail(
         db: Injected async database session.
 
     Returns:
-        Rendered ``actors/detail.html`` template with actor detail, presences,
-        and recent content.
+        Rendered ``actors/detail.html`` template for browsers,
+        or a JSON response for ``Accept: application/json`` callers.
     """
+    # JSON API path — delegate to the API handler.
+    if _prefers_json(request):
+        from issue_observatory.api.routes.actors import get_actor
+
+        return await get_actor(actor_id, db, current_user)
+
     from issue_observatory.core.models.actors import Actor, ActorPlatformPresence
 
     tpl = _templates(request)

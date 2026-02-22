@@ -131,13 +131,50 @@ async def _get_run_or_raise(
 
 
 @router.get("/", include_in_schema=False)
-async def analysis_index_redirect() -> RedirectResponse:
-    """Redirect to the collections list with a prompt to select a run.
+async def analysis_landing(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> Response:
+    """Render the analysis landing page with recent completed runs.
 
-    Returns:
-        HTTP 302 redirect to ``/collections``.
+    Shows a prompt to select a collection run for analysis, along with
+    a list of the user's most recent completed runs for quick access.
     """
-    return RedirectResponse(url="/collections", status_code=status.HTTP_302_FOUND)
+    from sqlalchemy.orm import selectinload  # noqa: PLC0415
+
+    stmt = (
+        select(CollectionRun)
+        .options(selectinload(CollectionRun.query_design))
+        .where(
+            CollectionRun.initiated_by == current_user.id,
+            CollectionRun.status == "completed",
+        )
+        .order_by(CollectionRun.started_at.desc().nulls_last())
+        .limit(10)
+    )
+    result = await db.execute(stmt)
+    runs = result.scalars().all()
+
+    recent_runs = [
+        {
+            "id": str(r.id),
+            "design_name": r.query_design.name if r.query_design else "(unknown)",
+            "started_at": r.started_at.isoformat() if r.started_at else "",
+            "records": r.records_collected,
+        }
+        for r in runs
+    ]
+
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        "analysis/landing.html",
+        {
+            "request": request,
+            "user": current_user,
+            "recent_runs": recent_runs,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +217,7 @@ async def analysis_dashboard(
         "analysis/index.html",
         {
             "request": request,
+            "user": current_user,
             "run_id": str(run_id),
             "run": {
                 "id": str(run.id),
@@ -1656,6 +1694,7 @@ async def analysis_dashboard_design(
         "analysis/design.html",
         {
             "request": request,
+            "user": current_user,
             "design_id": str(design_id),
             "design": {
                 "id": str(design.id),

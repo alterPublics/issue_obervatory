@@ -2251,14 +2251,14 @@ function networkPreview(runId, networkType) {
             }
         },
 
-        /**
+        {% raw %}/**
          * Trim a graph to the top-N nodes by degree and the top-M edges
          * connecting those nodes. This keeps the browser preview lightweight
          * regardless of how large the full graph is.
          *
          * @param {{ nodes: Array, edges: Array }} graphData
          * @returns {{ nodes: Array, edges: Array }}
-         */
+         */{% endraw %}
         _trimGraph(graphData) {
             const nodes = graphData.nodes || [];
             const edges = graphData.edges || [];
