@@ -275,25 +275,32 @@ def discord_collect_terms(
         raise
 
     count = len(records)
+
+    # Persist collected records to the database.
+    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+
+    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
     logger.info(
-        "discord: collect_by_terms completed — run=%s records=%d",
+        "discord: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
         collection_run_id,
         count,
+        inserted,
+        skipped,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
         arena="social_media",
         platform="discord",
         status="completed",
-        records_collected=count,
+        records_collected=inserted,
         error_message=None,
         elapsed_seconds=elapsed_since(_task_start),
     )
 
     return {
-        "records_collected": count,
+        "records_collected": inserted,
         "status": "completed",
         "arena": _ARENA,
         "tier": tier,
@@ -421,25 +428,32 @@ def discord_collect_actors(
         raise
 
     count = len(records)
+
+    # Persist collected records to the database.
+    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+
+    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
     logger.info(
-        "discord: collect_by_actors completed — run=%s records=%d",
+        "discord: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
         collection_run_id,
         count,
+        inserted,
+        skipped,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
         arena="social_media",
         platform="discord",
         status="completed",
-        records_collected=count,
+        records_collected=inserted,
         error_message=None,
         elapsed_seconds=elapsed_since(_task_start),
     )
 
     return {
-        "records_collected": count,
+        "records_collected": inserted,
         "status": "completed",
         "arena": _ARENA,
         "tier": tier,

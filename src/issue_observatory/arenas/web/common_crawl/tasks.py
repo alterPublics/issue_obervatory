@@ -226,25 +226,32 @@ def common_crawl_collect_terms(
         raise
 
     count = len(records)
+
+    # Persist collected records to the database.
+    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+
+    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
     logger.info(
-        "common_crawl: collect_by_terms completed — run=%s records=%d",
+        "common_crawl: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
         collection_run_id,
         count,
+        inserted,
+        skipped,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
         arena="web",
         platform="common_crawl",
         status="completed",
-        records_collected=count,
+        records_collected=inserted,
         error_message=None,
         elapsed_seconds=elapsed_since(_task_start),
     )
 
     return {
-        "records_collected": count,
+        "records_collected": inserted,
         "status": "completed",
         "arena": _ARENA,
         "tier": tier,
@@ -292,6 +299,10 @@ def common_crawl_collect_actors(
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
     from issue_observatory.arenas.web.common_crawl.config import CC_DEFAULT_INDEX  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     logger.info(
         "common_crawl: collect_by_actors started — run=%s actors=%d tier=%s",
         collection_run_id,
@@ -299,6 +310,16 @@ def common_crawl_collect_actors(
         tier,
     )
     _update_task_status(collection_run_id, _ARENA, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="web",
+        platform="common_crawl",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     try:
         tier_enum = Tier(tier)
@@ -353,25 +374,32 @@ def common_crawl_collect_actors(
         raise
 
     count = len(records)
+
+    # Persist collected records to the database.
+    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+
+    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
     logger.info(
-        "common_crawl: collect_by_actors completed — run=%s records=%d",
+        "common_crawl: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
         collection_run_id,
         count,
+        inserted,
+        skipped,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
         arena="web",
         platform="common_crawl",
         status="completed",
-        records_collected=count,
+        records_collected=inserted,
         error_message=None,
         elapsed_seconds=elapsed_since(_task_start),
     )
 
     return {
-        "records_collected": count,
+        "records_collected": inserted,
         "status": "completed",
         "arena": _ARENA,
         "tier": tier,

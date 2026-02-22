@@ -235,26 +235,33 @@ def wayback_collect_terms(
         raise
 
     count = len(records)
+
+    # Persist collected records to the database.
+    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+
+    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
     logger.info(
-        "wayback: collect_by_terms completed — run=%s records=%d fetch_content=%s",
+        "wayback: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d fetch_content=%s",
         collection_run_id,
         count,
+        inserted,
+        skipped,
         fetch_content,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
         arena="web",
         platform="wayback",
         status="completed",
-        records_collected=count,
+        records_collected=inserted,
         error_message=None,
         elapsed_seconds=elapsed_since(_task_start),
     )
 
     return {
-        "records_collected": count,
+        "records_collected": inserted,
         "status": "completed",
         "arena": _ARENA,
         "tier": tier,
@@ -306,6 +313,10 @@ def wayback_collect_actors(
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
 
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
     fetch_content: bool = bool(
         (arenas_config or {}).get("wayback", {}).get("fetch_content", False)
     )
@@ -318,6 +329,16 @@ def wayback_collect_actors(
         fetch_content,
     )
     _update_task_status(collection_run_id, _ARENA, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="web",
+        platform="wayback",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
 
     try:
         tier_enum = Tier(tier)
@@ -373,26 +394,33 @@ def wayback_collect_actors(
         raise
 
     count = len(records)
+
+    # Persist collected records to the database.
+    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+
+    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
     logger.info(
-        "wayback: collect_by_actors completed — run=%s records=%d fetch_content=%s",
+        "wayback: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d fetch_content=%s",
         collection_run_id,
         count,
+        inserted,
+        skipped,
         fetch_content,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
         arena="web",
         platform="wayback",
         status="completed",
-        records_collected=count,
+        records_collected=inserted,
         error_message=None,
         elapsed_seconds=elapsed_since(_task_start),
     )
 
     return {
-        "records_collected": count,
+        "records_collected": inserted,
         "status": "completed",
         "arena": _ARENA,
         "tier": tier,

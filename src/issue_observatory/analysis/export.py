@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import io
 import json
+import uuid as uuid_mod
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -252,6 +253,8 @@ class ContentExporter:
                 elif isinstance(val, datetime):
                     # Keep as datetime so Excel formats it as a date cell.
                     row_values.append(val.replace(tzinfo=None))
+                elif isinstance(val, uuid_mod.UUID):
+                    row_values.append(str(val))
                 else:
                     row_values.append(val)
             ws.append(row_values)
