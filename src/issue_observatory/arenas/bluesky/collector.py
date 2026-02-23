@@ -10,8 +10,9 @@ Two collection modes are supported:
   ``app.bsky.feed.getAuthorFeed`` with cursor pagination.
 
 Authentication uses app passwords from the credential pool. The collector
-obtains a session token via ``com.atproto.server.createSession`` and includes
-it in all subsequent requests via the ``Authorization: Bearer {token}`` header.
+obtains a session token via ``com.atproto.server.createSession`` at
+``https://bsky.social/xrpc`` and includes it in all subsequent requests
+via the ``Authorization: Bearer {token}`` header.
 
 Rate limiting uses :meth:`RateLimiter.wait_for_slot` with key
 ``ratelimit:bluesky:public:{credential_id}``.

@@ -169,7 +169,7 @@ def wayback_collect_terms(
         tier,
         fetch_content,
     )
-    _update_task_status(collection_run_id, _ARENA, "running")
+    _update_task_status(collection_run_id, _PLATFORM, "running")
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -186,7 +186,7 @@ def wayback_collect_terms(
     except ValueError:
         msg = f"wayback: invalid tier '{tier}'. Only 'free' is supported."
         logger.error(msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -222,7 +222,7 @@ def wayback_collect_terms(
     except ArenaCollectionError as exc:
         msg = str(exc)
         logger.error("wayback: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -249,7 +249,7 @@ def wayback_collect_terms(
         skipped,
         fetch_content,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+    _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -329,7 +329,7 @@ def wayback_collect_actors(
         tier,
         fetch_content,
     )
-    _update_task_status(collection_run_id, _ARENA, "running")
+    _update_task_status(collection_run_id, _PLATFORM, "running")
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -346,7 +346,7 @@ def wayback_collect_actors(
     except ValueError:
         msg = f"wayback: invalid tier '{tier}'. Only 'free' is supported."
         logger.error(msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -381,7 +381,7 @@ def wayback_collect_actors(
     except ArenaCollectionError as exc:
         msg = str(exc)
         logger.error("wayback: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -408,7 +408,7 @@ def wayback_collect_actors(
         skipped,
         fetch_content,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+    _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,

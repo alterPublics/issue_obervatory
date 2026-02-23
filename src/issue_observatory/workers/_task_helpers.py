@@ -688,7 +688,8 @@ async def check_all_tasks_terminal(run_id: Any) -> dict[str, Any] | None:
     """Check whether all CollectionTasks for a run have reached terminal state.
 
     Also detects and marks as failed any tasks that have been stuck in 'pending'
-    status for more than 10 minutes (likely dispatch failures or worker crashes).
+    or 'running' status for more than 2 minutes (likely dispatch failures, import
+    errors, or worker crashes).
 
     Args:
         run_id: UUID of the CollectionRun.
@@ -700,10 +701,11 @@ async def check_all_tasks_terminal(run_id: Any) -> dict[str, Any] | None:
     from sqlalchemy import case, func  # noqa: PLC0415
 
     # First check for stuck tasks and mark them as failed
-    stuck_cutoff = datetime.now(tz=timezone.utc) - timedelta(minutes=10)
+    # Reduced from 10 minutes to 2 minutes to detect issues faster
+    stuck_cutoff = datetime.now(tz=timezone.utc) - timedelta(minutes=2)
     async with AsyncSessionLocal() as db:
-        # Mark tasks that have been pending for > 10 minutes without a celery_task_id
-        # as failed (likely dispatch failures)
+        # Mark tasks that have been pending for > 2 minutes as failed
+        # (likely dispatch failures or import errors preventing task execution)
         stuck_result = await db.execute(
             update(CollectionTask)
             .where(
@@ -713,13 +715,34 @@ async def check_all_tasks_terminal(run_id: Any) -> dict[str, Any] | None:
             )
             .values(
                 status="failed",
-                error_message="Task stuck in pending state for >10 minutes; likely dispatch failure or worker crash",
+                error_message="Task stuck in pending state for >2 minutes; likely dispatch failure, import error, or missing dependency",
                 completed_at=datetime.now(tz=timezone.utc),
             )
         )
         stuck_count = stuck_result.rowcount or 0
         if stuck_count > 0:
             await db.commit()
+
+        # Also check for tasks stuck in 'running' status for > 1 hour
+        # (infinite loops, hanging HTTP calls, etc.)
+        running_stuck_cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=1)
+        running_stuck_result = await db.execute(
+            update(CollectionTask)
+            .where(
+                CollectionTask.collection_run_id == run_id,
+                CollectionTask.status == "running",
+                CollectionTask.started_at < running_stuck_cutoff,
+            )
+            .values(
+                status="failed",
+                error_message="Task stuck in running state for >1 hour; likely infinite loop or hanging API call",
+                completed_at=datetime.now(tz=timezone.utc),
+            )
+        )
+        running_stuck_count = running_stuck_result.rowcount or 0
+        if running_stuck_count > 0:
+            await db.commit()
+            stuck_count += running_stuck_count
 
         # Now check terminal status
         stmt = select(

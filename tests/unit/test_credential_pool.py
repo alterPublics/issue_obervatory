@@ -266,6 +266,43 @@ class TestAcquireEnvFallback:
         assert result["api_key"] == "my-api-key-value"
         assert "id" in result
 
+    async def test_acquire_uses_mapped_env_var_over_generic_pattern(self) -> None:
+        """acquire() prefers _PLATFORM_ENV_MAP entries over the generic {PLATFORM}_{TIER}_API_KEY pattern."""
+        env = {"SERPER_API_KEY": "mapped-key-value"}
+        pool, _ = _make_pool_with_mock_redis(env=env)
+
+        with patch.object(pool, "_query_db_credentials", return_value=[]):
+            result = await pool.acquire(platform="serper", tier="medium")
+
+        assert result is not None
+        assert result["platform"] == "serper"
+        assert result["tier"] == "medium"
+        assert result["api_key"] == "mapped-key-value"
+        # The credential ID should be the mapped form, not the generic env var name
+        assert result["id"] == "env:serper:medium"
+
+    async def test_acquire_maps_multi_field_credentials_from_env(self) -> None:
+        """acquire() assembles multi-field credentials from the _PLATFORM_ENV_MAP mapping."""
+        env = {
+            "REDDIT_CLIENT_ID": "test-client-id",
+            "REDDIT_CLIENT_SECRET": "test-client-secret",
+            "REDDIT_USER_AGENT": "TestBot/1.0",
+        }
+        pool, _ = _make_pool_with_mock_redis(env=env)
+
+        with patch.object(pool, "_query_db_credentials", return_value=[]):
+            result = await pool.acquire(platform="reddit", tier="free")
+
+        assert result is not None
+        assert result["platform"] == "reddit"
+        assert result["tier"] == "free"
+        assert result["client_id"] == "test-client-id"
+        assert result["client_secret"] == "test-client-secret"
+        assert result["user_agent"] == "TestBot/1.0"
+        # Ensure api_key is present for backward compatibility (takes first value)
+        assert "api_key" in result
+        assert result["api_key"] == "test-client-id"
+
     async def test_acquire_returns_none_when_no_env_var_and_no_db(self) -> None:
         """acquire() returns None when no credential is available from any source."""
         pool, _ = _make_pool_with_mock_redis(env={})

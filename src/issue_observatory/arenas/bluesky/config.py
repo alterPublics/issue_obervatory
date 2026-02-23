@@ -7,7 +7,7 @@ Authentication is required via handle + app password. The collector
 obtains a session token via ``com.atproto.server.createSession`` and
 uses it for all subsequent requests.
 
-The public API base URL is ``https://public.api.bsky.app/xrpc``.
+The API base URL is ``https://bsky.social/xrpc``.
 
 Key endpoints:
 - ``app.bsky.feed.searchPosts`` — full-text post search with ``lang`` filter (requires auth).
@@ -27,8 +27,8 @@ from issue_observatory.config.tiers import Tier, TierConfig
 # API base URL and endpoints
 # ---------------------------------------------------------------------------
 
-BSKY_API_BASE: str = "https://public.api.bsky.app/xrpc"
-"""AT Protocol public API base URL (unauthenticated read access)."""
+BSKY_API_BASE: str = "https://bsky.social/xrpc"
+"""AT Protocol API base URL (requires authentication)."""
 
 BSKY_SEARCH_POSTS_ENDPOINT: str = f"{BSKY_API_BASE}/app.bsky.feed.searchPosts"
 """Full-text post search endpoint."""

@@ -73,7 +73,7 @@ the admin panel.
 
 After (auth failure):
 ```
-Bluesky authentication failed at https://public.api.bsky.app/xrpc/com.atproto.server.createSession:
+Bluesky authentication failed at https://bsky.social/xrpc/com.atproto.server.createSession:
 HTTP 401: {"error": "AuthenticationRequired", "message": "Invalid identifier or password"}
 ```
 
@@ -139,7 +139,7 @@ Example pattern:
 @respx.mock
 async def test_collect_by_terms_with_auth():
     # Mock authentication endpoint
-    respx.post("https://public.api.bsky.app/xrpc/com.atproto.server.createSession").mock(
+    respx.post("https://bsky.social/xrpc/com.atproto.server.createSession").mock(
         return_value=httpx.Response(200, json={"accessJwt": "test-token-123"})
     )
 

@@ -376,7 +376,12 @@ class GDELTCollector(ArenaCollector):
             }
         except httpx.RequestError as exc:
             # Include exception type and message
-            error_detail = f"{type(exc).__name__}: {str(exc)}" if str(exc) else type(exc).__name__
+            exc_msg = str(exc)
+            error_detail = (
+                f"{type(exc).__name__}: {exc_msg}"
+                if exc_msg
+                else f"{type(exc).__name__} (network error)"
+            )
             return {**base, "status": "down", "detail": f"Connection error: {error_detail}"}
         except Exception as exc:  # noqa: BLE001
             return {**base, "status": "down", "detail": f"Unexpected error: {exc}"}
@@ -473,7 +478,12 @@ class GDELTCollector(ArenaCollector):
             response = await client.get(GDELT_DOC_API_BASE, params=params)
         except httpx.RequestError as exc:
             # Build detailed error message with URL, exception type, and message
-            error_detail = f"{type(exc).__name__}: {str(exc)}" if str(exc) else type(exc).__name__
+            exc_msg = str(exc)
+            error_detail = (
+                f"{type(exc).__name__}: {exc_msg}"
+                if exc_msg
+                else f"{type(exc).__name__} (connection error)"
+            )
             raise ArenaCollectionError(
                 f"gdelt: request error for term='{term}' url='{GDELT_DOC_API_BASE}' — {error_detail}",
                 arena="news_media",
@@ -533,7 +543,12 @@ class GDELTCollector(ArenaCollector):
         except Exception as exc:  # noqa: BLE001
             # Include exception type and first 500 chars of response body
             body_snippet = response.text[:500] if response.text else "(empty body)"
-            error_detail = f"{type(exc).__name__}: {str(exc)}" if str(exc) else type(exc).__name__
+            exc_msg = str(exc)
+            error_detail = (
+                f"{type(exc).__name__}: {exc_msg}"
+                if exc_msg
+                else f"{type(exc).__name__} (JSON parsing failed)"
+            )
             logger.warning(
                 "gdelt: JSON parse error for term='%s' filter='%s' — %s — body: %s — skipping.",
                 term,

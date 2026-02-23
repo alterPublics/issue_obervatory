@@ -33,7 +33,7 @@
             {% elif p == 'tiktok' %}bg-slate-100 text-slate-800
             {% elif p == 'gab' %}bg-green-100 text-green-800
             {% else %}bg-gray-100 text-gray-700{% endif %}">
-            {{ record.platform | default('—') | capitalize }}
+            {{ record.platform | default('—') | humanize_platform }}
         </span>
         {% if record.content_type | default('') %}
         <span class="block text-xs text-gray-400 font-mono mt-0.5">{{ record.content_type }}</span>

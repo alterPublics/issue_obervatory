@@ -411,6 +411,10 @@ def create_app() -> FastAPI:
         Runs cleanup of stale collection runs on startup so that stuck runs
         from a previous instance are marked as failed before the new instance
         begins processing.
+
+        Auto-populates the credential pool from environment variables so that
+        API keys configured in .env are immediately available without requiring
+        manual entry via the admin UI.
         """
         application.state.templates = templates
         logger.info(
@@ -426,6 +430,30 @@ def create_app() -> FastAPI:
                 "email_notifications_disabled",
                 detail="SMTP is not configured. Email notifications are disabled. "
                        "Set SMTP_HOST to enable collection alerts and credit warnings.",
+            )
+
+        # M-1: Auto-populate credential pool from .env on startup.
+        # This eliminates the manual step of entering credentials via the admin UI.
+        # Safe to call multiple times — only inserts missing credentials.
+        try:
+            from issue_observatory.core.credential_bootstrap import (  # noqa: PLC0415
+                bootstrap_credentials_from_env,
+            )
+
+            imported_count = await bootstrap_credentials_from_env()
+            if imported_count > 0:
+                logger.info(
+                    "credential_bootstrap_success",
+                    imported_count=imported_count,
+                    detail=f"Auto-populated {imported_count} credential(s) from .env",
+                )
+        except Exception:
+            # Don't crash the app if credential bootstrap fails — log and continue.
+            # The app can still run using the env-var fallback in CredentialPool.
+            logger.exception(
+                "credential_bootstrap_failed",
+                detail="Failed to auto-populate credentials from .env. "
+                       "Credential pool will fall back to environment variable discovery.",
             )
 
         # P3-17: Clean up stale collection runs on startup.
@@ -530,6 +558,7 @@ if _TEMPLATES_DIR.exists():
 
     # Custom Jinja2 filters used by templates.
     templates.env.filters["format_number"] = lambda x: f"{int(x):,}"
+    templates.env.filters["humanize_platform"] = lambda x: x.replace("_", " ").title() if x else ""
 
     """Jinja2 template engine pointed at ``api/templates/``.
 

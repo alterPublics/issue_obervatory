@@ -531,6 +531,20 @@ async def get_emergent_terms(
         "kom", "kommer", "komme", "gør", "gjorde", "gjort", "tag", "tage",
         "tager", "tog", "taget", "før", "siden", "senere", "længe", "altid",
         "ofte", "aldrig", "nogle", "heller", "hverken", "enten", "både",
+        # Additional common Danish words from UX testing
+        "vi", "du", "siger", "sige", "sige", "sagde", "fortæller", "fortælle",
+        "fortalt", "fortæller", "laver", "lave", "lavet", "lavede", "får",
+        "giver", "give", "givet", "gav", "tager", "stor", "store", "lidt",
+        "helt", "godt", "god", "dårlig", "dårligt", "nye", "ny", "nyt",
+        "gammel", "gamle", "lang", "langt", "lange", "kort", "korte", "høj",
+        "høje", "lav", "lave", "rigtig", "rigtigt", "forkert", "gerne",
+        "vist", "nok", "vel", "lige", "blot", "bare", "især", "særligt",
+        "omkring", "cirka", "cirka", "altså", "nemlig", "dog", "imidlertid",
+        "derfor", "dermed", "derudover", "desuden", "dertil", "således",
+        "samtidig", "imens", "mens", "selvom", "skønt", "undtagen", "uden",
+        "indtil", "gennem", "blandt", "samt", "eller", "hverken", "enten",
+        "både", "end", "som", "ligesom", "eftersom", "fordi", "da", "når",
+        "hvis", "såfremt", "medmindre", "så", "derfor", "dermed", "altså",
     }
     stop_words_set.update(danish_stop_words)
 
@@ -1518,17 +1532,17 @@ async def get_sentiment_distribution(
     params: dict[str, Any] = {"run_id": str(run_id)}
 
     # Count records by sentiment polarity (positive, negative, neutral).
-    # The sentiment_analyzer enricher stores a 'sentiment' string field that
+    # The sentiment_analyzer enricher stores a 'label' string field that
     # can be 'positive', 'negative', or 'neutral', plus a 'score' float.
     sql = text(
         """
         SELECT
-            raw_metadata->'enrichments'->'sentiment_analyzer'->>'sentiment' AS sentiment,
+            raw_metadata->'enrichments'->'sentiment'->>'label' AS sentiment,
             COUNT(*) AS cnt,
-            AVG((raw_metadata->'enrichments'->'sentiment_analyzer'->>'score')::float) AS avg_score
+            AVG((raw_metadata->'enrichments'->'sentiment'->>'score')::float) AS avg_score
         FROM content_records
         WHERE collection_run_id = :run_id
-          AND raw_metadata->'enrichments'->'sentiment_analyzer' IS NOT NULL
+          AND raw_metadata->'enrichments'->'sentiment' IS NOT NULL
         GROUP BY 1
         """
     )

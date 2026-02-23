@@ -2,6 +2,7 @@
 
 ## Bug Fixes (Ongoing)
 
+- [x] M-5 Via Ritzau word-boundary fix (2026-02-23): Fixed stopword contamination in Via Ritzau search results. Previous implementation used naive substring matching (`term.lower() in searchable_text`), causing Danish stopwords like "i", "er", "et" to match inside other words (e.g., "i" matching inside "politik"). This resulted in 71% of collected records being irrelevant (96 of 135 records matched ONLY stopwords in DQ-1 test). Fix: replaced `_match_search_terms()` logic with `term_in_text()` from `arenas/query_builder.py`, which uses word-boundary regex (`\b` anchors). Terms >2 chars use left boundary only to support Danish compound words (e.g., "grønland" matches "Grønlandspolitik"). Short terms (≤2 chars) use strict boundaries to prevent false positives. Added comprehensive test case `test_collect_by_terms_stopword_filtering_with_word_boundaries()` to verify fix.
 - [x] F-07/F-08 credential pool env var fallback (2026-02-23): Fixed "No credential available" errors for arenas with .env-configured API keys when called from Celery workers. Root cause: `load_dotenv()` was only called in `api/main.py` (FastAPI), not in `workers/celery_app.py` (Celery). Pydantic Settings loads `.env` into its model but does NOT inject values into `os.environ`. `CredentialPool` reads from `os.environ` for env var fallback. Fix: added `from dotenv import load_dotenv` and `load_dotenv()` call to `workers/celery_app.py` before importing `Settings`, matching the pattern in `api/main.py`. Applies to all Celery workers and Beat scheduler. Decision record: `docs/decisions/F07_F08_credential_pool_env_var_fallback.md`.
 
 ## Socialt Bedrageri Recommendations (P2)
@@ -407,7 +408,7 @@ that will be refined in Task 0.4 to trigger all active query designs.
 | `src/issue_observatory/arenas/bluesky/router.py` | Done |
 
 ### Task 1.5 — Design notes
-- FREE tier only: AT Protocol public API (`public.api.bsky.app`), unauthenticated, 3,000 req/5 min per IP.
+- FREE tier only: AT Protocol API (`bsky.social`), requires authentication, 3,000 req/5 min per account.
 - `collect_by_terms()`: `searchPosts` with `lang=da` filter and cursor pagination.
 - `collect_by_actors()`: `getAuthorFeed` with cursor pagination; date filter applied client-side.
 - `platform="bluesky"`, `arena="bluesky"`, `platform_id` = AT URI, web URL from handle/rkey.

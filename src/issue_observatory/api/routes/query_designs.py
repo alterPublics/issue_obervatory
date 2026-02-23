@@ -203,12 +203,23 @@ async def create_query_design(
     await db.flush()  # populate design.id before inserting terms
 
     for term_data in payload.search_terms:
+        # Derive group_id from group_label if not explicitly provided
+        # (same logic as the form-based and bulk term endpoints).
+        resolved_group_id = term_data.group_id
+        resolved_group_label = term_data.group_label
+        if resolved_group_label and resolved_group_label.strip():
+            resolved_group_label = resolved_group_label.strip()
+            if resolved_group_id is None:
+                resolved_group_id = uuid.uuid5(design.id, resolved_group_label.lower())
+        else:
+            resolved_group_label = None
+
         term = SearchTerm(
             query_design_id=design.id,
             term=term_data.term,
             term_type=term_data.term_type,
-            group_id=term_data.group_id,
-            group_label=term_data.group_label,
+            group_id=resolved_group_id,
+            group_label=resolved_group_label,
             is_active=True,
         )
         db.add(term)

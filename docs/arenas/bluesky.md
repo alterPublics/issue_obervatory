@@ -14,7 +14,7 @@ Bluesky is a decentralized social network built on the AT Protocol. As of early 
 
 **Role in Danish discourse**: Bluesky's Danish user base is small but growing, particularly among journalists, researchers, and tech-oriented users who migrated from X/Twitter. With X/Twitter at only 13% penetration in Denmark, Bluesky captures part of the public debate community that has left X. The `lang:da` filter enables targeted collection of Danish-language content. While the total volume of Danish content is much lower than on Facebook or X/Twitter, Bluesky disproportionately captures media professionals and opinion leaders.
 
-**Access model**: Fully open. All public data available for free. As of early 2026, authentication is required for read access via the public API endpoint (`public.api.bsky.app`). Use handle + app password to obtain a session token.
+**Access model**: Fully open. All public data available for free. As of early 2026, authentication is required for read access via the main API endpoint (`bsky.social`). Use handle + app password to obtain a session token.
 
 ---
 
@@ -34,7 +34,7 @@ Bluesky is a free-only arena. The AT Protocol's openness means there is no need 
 
 ### Public API (Search and Lookup)
 
-**Base URL**: `https://public.api.bsky.app`
+**Base URL**: `https://bsky.social`
 
 **Key Endpoints**:
 
@@ -237,7 +237,7 @@ Mapping to the Universal Content Record schema:
 
 6. **Authentication flow**: On first API request, call `com.atproto.server.createSession` with `identifier` (handle) and `password` (app password) to obtain `accessJwt`. Cache this token for subsequent requests. Include it in all API calls via `Authorization: Bearer {accessJwt}` header.
 
-7. **Health check**: Authenticate, then `GET https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=test&limit=1` -- verify 200 response and valid JSON.
+7. **Health check**: Authenticate, then `GET https://bsky.social/xrpc/app.bsky.feed.searchPosts?q=test&limit=1` -- verify 200 response and valid JSON.
 
 8. **Credit cost**: 0 credits for all operations (free tier only). No credit deduction needed.
 

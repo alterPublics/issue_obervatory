@@ -44,7 +44,7 @@ from typing import Annotated, Any, Optional
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse, Response
-from sqlalchemy import distinct, select
+from sqlalchemy import distinct, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from issue_observatory.analysis.coordination import get_coordination_events

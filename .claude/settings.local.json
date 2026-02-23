@@ -84,7 +84,8 @@
       "Bash(kill:*)",
       "Bash(pkill:*)",
       "Bash(PGPASSWORD=observatory psql:*)",
-      "Bash(TOKEN=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwYzhlZmI3NS00ZGEwLTRkZWItOGZmOS03Yzk4OWQ5ZjQyYjAiLCJhdWQiOlsiZmFzdGFwaS11c2VyczphdXRoIl0sImV4cCI6MTc3MTgxMDk2NH0.lqPu4ch0rpb0QVZvuJDUy5FCTLCk3JeHTU9cJ75Xs90\")"
+      "Bash(TOKEN=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwYzhlZmI3NS00ZGEwLTRkZWItOGZmOS03Yzk4OWQ5ZjQyYjAiLCJhdWQiOlsiZmFzdGFwaS11c2VyczphdXRoIl0sImV4cCI6MTc3MTgxMDk2NH0.lqPu4ch0rpb0QVZvuJDUy5FCTLCk3JeHTU9cJ75Xs90\")",
+      "WebFetch(domain:via.ritzau.dk)"
     ]
   }
 }

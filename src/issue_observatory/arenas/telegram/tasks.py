@@ -220,7 +220,7 @@ def telegram_collect_terms(
         collection_run_id,
         len(terms),
     )
-    _update_task_status(collection_run_id, "social_media", "running")
+    _update_task_status(collection_run_id, "telegram", "running")
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -260,7 +260,7 @@ def telegram_collect_terms(
     except NoCredentialAvailableError as exc:
         msg = f"telegram: no credential available: {exc}"
         logger.error(msg)
-        _update_task_status(collection_run_id, "social_media", "failed", error_message=msg)
+        _update_task_status(collection_run_id, "telegram", "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -283,7 +283,7 @@ def telegram_collect_terms(
     except ArenaCollectionError as exc:
         msg = str(exc)
         logger.error("telegram: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, "social_media", "failed", error_message=msg)
+        _update_task_status(collection_run_id, "telegram", "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -310,7 +310,7 @@ def telegram_collect_terms(
         skipped,
     )
     _update_task_status(
-        collection_run_id, "social_media", "completed", records_collected=inserted
+        collection_run_id, "telegram", "completed", records_collected=inserted
     )
     publish_task_update(
         redis_url=_redis_url,
@@ -385,7 +385,7 @@ def telegram_collect_actors(
         collection_run_id,
         len(actor_ids),
     )
-    _update_task_status(collection_run_id, "social_media", "running")
+    _update_task_status(collection_run_id, "telegram", "running")
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -413,7 +413,7 @@ def telegram_collect_actors(
     except NoCredentialAvailableError as exc:
         msg = f"telegram: no credential available: {exc}"
         logger.error(msg)
-        _update_task_status(collection_run_id, "social_media", "failed", error_message=msg)
+        _update_task_status(collection_run_id, "telegram", "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -438,7 +438,7 @@ def telegram_collect_actors(
         logger.error(
             "telegram: actor collection error for run=%s: %s", collection_run_id, msg
         )
-        _update_task_status(collection_run_id, "social_media", "failed", error_message=msg)
+        _update_task_status(collection_run_id, "telegram", "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -465,7 +465,7 @@ def telegram_collect_actors(
         skipped,
     )
     _update_task_status(
-        collection_run_id, "social_media", "completed", records_collected=inserted
+        collection_run_id, "telegram", "completed", records_collected=inserted
     )
     publish_task_update(
         redis_url=_redis_url,

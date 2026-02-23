@@ -64,9 +64,11 @@ from issue_observatory.workers._task_helpers import (
     get_user_credit_balance,
     get_user_email,
     mark_runs_failed,
+    mark_task_failed,
     set_run_status,
     settle_single_reservation,
     suspend_run,
+    update_task_celery_id,
 )
 from issue_observatory.workers.celery_app import celery_app
 
@@ -1169,14 +1171,38 @@ async def _dispatch_batch_async(
         try:
             arena_terms = await fetch_search_terms_for_arena(design_id, platform_name)
             arena_terms_map[platform_name] = arena_terms
+
+            # If no terms found, mark the task as failed immediately (within async context)
+            if not arena_terms:
+                log.info(
+                    "dispatch_batch_collection: no search terms for arena; marking failed",
+                    arena=platform_name,
+                )
+                await mark_task_failed(
+                    run_uuid,
+                    platform_name,
+                    "No search terms scoped to this arena (YF-01)",
+                )
         except Exception as terms_exc:
             log.error(
                 "dispatch_batch_collection: failed to fetch search terms",
                 arena=platform_name,
                 error=str(terms_exc),
             )
-            # Mark as empty so it gets skipped in dispatch loop
+            # Mark task as failed and set empty terms list
             arena_terms_map[platform_name] = []
+            try:
+                await mark_task_failed(
+                    run_uuid,
+                    platform_name,
+                    f"Failed to fetch search terms: {terms_exc}",
+                )
+            except Exception as mark_exc:
+                log.warning(
+                    "dispatch_batch_collection: failed to mark task as failed",
+                    arena=platform_name,
+                    error=str(mark_exc),
+                )
 
     # --- Step 8: Handle no-arenas case ---
     no_arenas_dispatched = False
@@ -1282,24 +1308,11 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
         # Get terms from the map populated in the async function
         arena_terms = arena_terms_map.get(platform_name, [])
         if not arena_terms:
-            log.info(
-                "dispatch_batch_collection: no search terms for arena; skipping",
+            # Task already marked as failed in the async block above
+            log.debug(
+                "dispatch_batch_collection: skipping arena with no terms",
                 arena=platform_name,
             )
-            # Mark the CollectionTask as failed since there are no terms to collect
-            try:
-                from issue_observatory.workers._task_helpers import mark_task_failed  # noqa: PLC0415
-                asyncio.run(mark_task_failed(
-                    run_uuid,
-                    platform_name,
-                    "No search terms scoped to this arena (YF-01)",
-                ))
-            except Exception as mark_exc:
-                log.warning(
-                    "dispatch_batch_collection: failed to mark task as failed",
-                    arena=platform_name,
-                    error=str(mark_exc),
-                )
             continue
 
         # Derive the task module from the collector's actual module path so
@@ -1351,14 +1364,18 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
                 arena=platform_name,
                 error=str(dispatch_exc),
             )
-            # Mark the task as failed in the DB
+            # Mark the task as failed in the DB - use a separate async run
+            # because we're in sync context after the main async block
             try:
                 from issue_observatory.workers._task_helpers import mark_task_failed  # noqa: PLC0415
-                asyncio.run(mark_task_failed(
-                    run_uuid,
-                    platform_name,
-                    f"Celery dispatch failed: {dispatch_exc}",
-                ))
+                # Create a new async task to mark as failed
+                async def _mark_failed() -> None:
+                    await mark_task_failed(
+                        run_uuid,
+                        platform_name,
+                        f"Celery dispatch failed: {dispatch_exc}",
+                    )
+                asyncio.run(_mark_failed())
             except Exception as mark_exc:
                 log.warning(
                     "dispatch_batch_collection: failed to mark task as failed",
@@ -1371,8 +1388,11 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
     if task_id_updates:
         try:
             from issue_observatory.workers._task_helpers import update_task_celery_id  # noqa: PLC0415
-            for platform_name, celery_task_id in task_id_updates:
-                asyncio.run(update_task_celery_id(run_uuid, platform_name, celery_task_id))
+            # Batch all updates into a single async context
+            async def _update_all_ids() -> None:
+                for platform_name, celery_task_id in task_id_updates:
+                    await update_task_celery_id(run_uuid, platform_name, celery_task_id)
+            asyncio.run(_update_all_ids())
             log.info(
                 "dispatch_batch_collection: updated celery_task_ids",
                 count=len(task_id_updates),

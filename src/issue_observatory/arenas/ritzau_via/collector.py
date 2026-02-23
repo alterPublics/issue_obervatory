@@ -7,8 +7,9 @@ Two collection modes are supported:
 
 - :meth:`RitzauViaCollector.collect_by_terms` — full-text keyword search
   across release titles and bodies with ``language=da`` filter. Applies
-  client-side filtering to ensure only press releases matching the search
-  terms are returned, compensating for the API's loose query matching.
+  client-side word-boundary filtering (M-5 fix) to ensure only press releases
+  matching the search terms are returned. This prevents false positives from
+  Danish stopwords like "i", "er", "et" matching inside other words.
 - :meth:`RitzauViaCollector.collect_by_actors` — publisher-based collection
   using Via Ritzau publisher IDs.
 
@@ -27,7 +28,10 @@ from typing import Any
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
-from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
+from issue_observatory.arenas.query_builder import (
+    format_boolean_query_for_platform,
+    term_in_text,
+)
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.ritzau_via.config import (
     RITZAU_DEFAULT_LANGUAGE,
@@ -82,6 +86,7 @@ class RitzauViaCollector(ArenaCollector):
         super().__init__(credential_pool=None, rate_limiter=rate_limiter)
         self._http_client = http_client
         self._normalizer = Normalizer()
+        self._language_filter: set[str] = set()  # Set per-call in collect_by_*
 
     # ------------------------------------------------------------------
     # ArenaCollector abstract method implementations
@@ -141,6 +146,9 @@ class RitzauViaCollector(ArenaCollector):
         date_from_str = _to_date_str(date_from)
         date_to_str = _to_date_str(date_to)
         lang_code = (language_filter[0] if language_filter else None) or RITZAU_DEFAULT_LANGUAGE
+
+        # Set language filter for client-side enforcement in _paginate_releases.
+        self._language_filter = {lc.lower() for lc in language_filter} if language_filter else {lang_code.lower()}
 
         # Build effective terms list from groups or plain terms.
         if term_groups is not None:
@@ -237,6 +245,9 @@ class RitzauViaCollector(ArenaCollector):
         date_from_str = _to_date_str(date_from)
         date_to_str = _to_date_str(date_to)
 
+        # Default language filter for actor-based collection (Danish).
+        self._language_filter = {RITZAU_DEFAULT_LANGUAGE}
+
         all_records: list[dict[str, Any]] = []
 
         async with self._build_http_client() as client:
@@ -293,7 +304,8 @@ class RitzauViaCollector(ArenaCollector):
             Dict conforming to the ``content_records`` universal schema.
         """
         release_id = str(raw_item.get("id", ""))
-        headline = raw_item.get("headline", "") or ""
+        # Via Ritzau API v2 uses "title" for the headline.
+        title = raw_item.get("title") or raw_item.get("headline") or ""
         body_html = raw_item.get("body", "") or ""
         text_content = _strip_html(body_html)
 
@@ -301,9 +313,20 @@ class RitzauViaCollector(ArenaCollector):
         publisher_id = str(publisher.get("id", "")) if publisher else None
         publisher_name = publisher.get("name") or None
 
-        url = raw_item.get("url") or None
+        raw_url = raw_item.get("url") or None
+        # Resolve relative URLs to absolute using the Via Ritzau base domain.
+        if raw_url and raw_url.startswith("/"):
+            url = f"https://via.ritzau.dk{raw_url}"
+        else:
+            url = raw_url
         language = raw_item.get("language") or RITZAU_DEFAULT_LANGUAGE
-        published_at = raw_item.get("publishedAt") or raw_item.get("createdAt") or None
+        # API v2 uses "published" (not "publishedAt").
+        published_at = (
+            raw_item.get("published")
+            or raw_item.get("publishedAt")
+            or raw_item.get("createdAt")
+            or None
+        )
 
         # Extract image URLs from the images array.
         images = raw_item.get("images") or []
@@ -313,23 +336,21 @@ class RitzauViaCollector(ArenaCollector):
             "id": release_id,
             "platform_id": release_id,
             "content_type": "press_release",
-            "title": headline.strip() or None,
+            "title": title.strip() or None,
             "text_content": text_content or None,
             "url": url,
             "language": language,
             "published_at": published_at,
             "author_platform_id": publisher_id,
             "author_display_name": publisher_name,
-            # No engagement metrics for press releases.
-            # Preserve full raw item for raw_metadata (Normalizer stores raw_item).
             # Additional structured metadata fields:
-            "sub_headline": raw_item.get("subHeadline"),
-            "summary": raw_item.get("summary"),
+            "leadtext": raw_item.get("leadtext"),
+            "leadtext_html": raw_item.get("leadtextHTML"),
             "body_html": body_html,
             "channels": raw_item.get("channels"),
-            "attachments": raw_item.get("attachments"),
+            "documents": raw_item.get("documents"),
             "contacts": raw_item.get("contacts"),
-            "updated_at": raw_item.get("updatedAt"),
+            "release_type": raw_item.get("type"),
             "media_urls": media_urls,
         }
 
@@ -423,8 +444,10 @@ class RitzauViaCollector(ArenaCollector):
     ) -> list[str]:
         """Check which search terms match the given press release item.
 
-        Performs case-insensitive matching against the headline and body text.
-        Supports Danish characters (æ, ø, å).
+        Uses word-boundary matching to prevent false positives from stopwords
+        (e.g., "i" matching inside "politik"). Terms longer than 2 characters
+        support Danish compound word matching (e.g., "grønland" matches
+        "Grønlandspolitik").
 
         Args:
             item: Raw press release dict from the Via Ritzau API.
@@ -433,19 +456,18 @@ class RitzauViaCollector(ArenaCollector):
         Returns:
             List of search terms that matched (may be empty).
         """
-        # Extract searchable text fields.
-        headline = (item.get("headline") or "").lower()
-        body = (item.get("body") or "").lower()
-        sub_headline = (item.get("subHeadline") or "").lower()
-        summary = (item.get("summary") or "").lower()
+        # Extract searchable text fields using actual Via Ritzau API v2 field names.
+        title = item.get("title") or item.get("headline") or ""
+        body = item.get("body") or ""
+        leadtext = item.get("leadtext") or ""
 
         # Combine all searchable text.
-        searchable_text = f"{headline} {sub_headline} {summary} {body}"
+        searchable_text = f"{title} {leadtext} {body}"
 
         matched: list[str] = []
         for term in search_terms:
-            # Case-insensitive match.
-            if term.lower() in searchable_text:
+            # Use word-boundary matching from query_builder (M-5 fix).
+            if term_in_text(term, searchable_text):
                 matched.append(term)
 
         return matched
@@ -563,6 +585,13 @@ class RitzauViaCollector(ArenaCollector):
                         continue  # Skip items that don't match any search term.
                     # Store matched terms in the raw item for normalize() to use.
                     item["_matched_terms"] = matched_terms
+
+                # Apply client-side language filter.  The API's `language` parameter
+                # is a hint, not strict enforcement, so non-matching records can appear.
+                if self._language_filter:
+                    item_lang = (item.get("language") or "").lower()
+                    if item_lang and item_lang not in self._language_filter:
+                        continue  # Skip records in wrong language.
 
                 records.append(self.normalize(item))
 

@@ -173,7 +173,7 @@ def instagram_collect_terms(
         tier,
         len(terms),
     )
-    _update_task_status(collection_run_id, _ARENA, "running")
+    _update_task_status(collection_run_id, _PLATFORM, "running")
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -203,7 +203,7 @@ def instagram_collect_terms(
     except NoCredentialAvailableError as exc:
         msg = f"instagram: no credential available for tier={tier}: {exc}"
         logger.error(msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -224,7 +224,7 @@ def instagram_collect_terms(
     except ArenaCollectionError as exc:
         msg = str(exc)
         logger.error("instagram: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -250,7 +250,7 @@ def instagram_collect_terms(
         inserted,
         skipped,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+    _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -326,7 +326,7 @@ def instagram_collect_actors(
         tier,
         len(actor_ids),
     )
-    _update_task_status(collection_run_id, _ARENA, "running")
+    _update_task_status(collection_run_id, _PLATFORM, "running")
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -355,7 +355,7 @@ def instagram_collect_actors(
     except NoCredentialAvailableError as exc:
         msg = f"instagram: no credential available for tier={tier}: {exc}"
         logger.error(msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -378,7 +378,7 @@ def instagram_collect_actors(
         logger.error(
             "instagram: actor collection error for run=%s: %s", collection_run_id, msg
         )
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -404,7 +404,7 @@ def instagram_collect_actors(
         inserted,
         skipped,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+    _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,

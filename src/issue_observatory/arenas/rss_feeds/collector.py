@@ -209,8 +209,15 @@ class RSSFeedsCollector(ArenaCollector):
             len(effective_feeds),
         )
 
+        # If no entries fetched at all, log a warning
+        if not raw_entries:
+            logger.warning(
+                "rss_feeds: collect_by_terms — NO ENTRIES FETCHED from %d feeds. "
+                "All feeds may be empty or failed to fetch. Check feed URLs and network connectivity.",
+                len(effective_feeds),
+            )
         # Log sample titles for diagnostic purposes (first 5 entries)
-        if raw_entries and logger.isEnabledFor(logging.DEBUG):
+        elif logger.isEnabledFor(logging.DEBUG):
             logger.debug("rss_feeds: sample entry titles:")
             for i, (feed_key, _, entry) in enumerate(raw_entries[:5]):
                 title = getattr(entry, "title", "NO TITLE")
@@ -259,10 +266,15 @@ class RSSFeedsCollector(ArenaCollector):
             len(effective_feeds),
         )
 
-        # If no matches found, log sample titles for debugging
+        # If no matches found, log diagnostic information
         if not all_records and raw_entries:
             logger.warning(
-                "rss_feeds: NO MATCHES FOUND. Sample entry titles for debugging:"
+                "rss_feeds: NO MATCHES FOUND for search terms %s. "
+                "%d entries were fetched but none matched the search criteria. "
+                "This is expected for RSS feeds which only contain recent items. "
+                "Sample entry titles for debugging:",
+                lower_terms[:5],  # Log first 5 search terms
+                len(raw_entries),
             )
             for i, (feed_key, _, entry) in enumerate(raw_entries[:10]):
                 title = getattr(entry, "title", "NO TITLE")
@@ -582,10 +594,13 @@ class RSSFeedsCollector(ArenaCollector):
                 return []
 
             if response.status_code >= 400:
+                # Include response body snippet for diagnostic value
+                body_snippet = response.text[:200] if response.text else "(empty body)"
                 logger.warning(
-                    "rss_feeds: '%s' returned HTTP %d — skipping.",
+                    "rss_feeds: '%s' returned HTTP %d — %s — skipping.",
                     feed_key,
                     response.status_code,
+                    body_snippet,
                 )
                 return []
 
@@ -615,6 +630,13 @@ class RSSFeedsCollector(ArenaCollector):
                 getattr(feed, "bozo_exception", "unknown"),
             )
             return []
+
+        # Log if feed parsed successfully but has no entries
+        if not feed.entries:
+            logger.debug(
+                "rss_feeds: feed '%s' parsed successfully but contains 0 entries (feed may be empty)",
+                feed_key,
+            )
 
         return [(feed_key, outlet_slug, entry) for entry in feed.entries]
 

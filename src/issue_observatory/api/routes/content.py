@@ -561,10 +561,19 @@ def _orm_to_detail_dict(record: UniversalContentRecord) -> dict[str, Any]:
 async def content_record_count(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
+    run_id: Optional[uuid.UUID] = Query(default=None, description="Filter by specific collection run UUID."),
 ) -> dict[str, int]:
     """Return total content record count for the current user's collection runs.
 
     Used by the dashboard Records Collected card.
+
+    Args:
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        run_id: Optional collection run UUID filter.
+
+    Returns:
+        Dict with a single ``total`` key containing the record count.
     """
     stmt = (
         select(func.count())
@@ -572,6 +581,8 @@ async def content_record_count(
         .join(CollectionRun, UniversalContentRecord.collection_run_id == CollectionRun.id)
         .where(CollectionRun.initiated_by == current_user.id)
     )
+    if run_id is not None:
+        stmt = stmt.where(UniversalContentRecord.collection_run_id == run_id)
     result = await db.execute(stmt)
     total = result.scalar() or 0
     return {"total": total}

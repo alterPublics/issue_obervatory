@@ -187,7 +187,7 @@ def youtube_collect_terms(
         len(terms),
         tier,
     )
-    _update_task_status(collection_run_id, _ARENA, "running")
+    _update_task_status(collection_run_id, _PLATFORM, "running")
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -204,7 +204,7 @@ def youtube_collect_terms(
     except ValueError:
         msg = f"youtube: invalid tier '{tier}'. Valid values: free, medium, premium."
         logger.error(msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -234,7 +234,7 @@ def youtube_collect_terms(
     except NoCredentialAvailableError as exc:
         msg = f"youtube: all API keys exhausted — no credential available: {exc}"
         logger.critical(msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -258,7 +258,7 @@ def youtube_collect_terms(
     except ArenaCollectionError as exc:
         msg = str(exc)
         logger.error("youtube: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -284,7 +284,7 @@ def youtube_collect_terms(
         inserted,
         skipped,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+    _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -360,7 +360,7 @@ def youtube_collect_actors(
         len(actor_ids),
         tier,
     )
-    _update_task_status(collection_run_id, _ARENA, "running")
+    _update_task_status(collection_run_id, _PLATFORM, "running")
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -377,7 +377,7 @@ def youtube_collect_actors(
     except ValueError:
         msg = f"youtube: invalid tier '{tier}'. Valid values: free, medium, premium."
         logger.error(msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -406,7 +406,7 @@ def youtube_collect_actors(
     except NoCredentialAvailableError as exc:
         msg = f"youtube: all API keys exhausted — no credential available: {exc}"
         logger.critical(msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -427,7 +427,7 @@ def youtube_collect_actors(
     except ArenaCollectionError as exc:
         msg = str(exc)
         logger.error("youtube: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -453,7 +453,7 @@ def youtube_collect_actors(
         inserted,
         skipped,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+    _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,

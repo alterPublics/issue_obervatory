@@ -47,16 +47,22 @@ from issue_observatory.core.user_manager import (
 # Transports
 # ---------------------------------------------------------------------------
 
+# Determine if we should use secure cookies based on debug mode
+settings = get_settings()
+cookie_secure = not settings.debug  # Only set Secure flag in production
+
 cookie_transport = CookieTransport(
     cookie_name="access_token",
     cookie_max_age=1800,  # 30 minutes
     cookie_httponly=True,
     cookie_samesite="lax",
+    cookie_secure=cookie_secure,
 )
 """HttpOnly, SameSite=Lax cookie transport for browser-based sessions.
 
 The short 30-minute TTL limits the exposure window if a cookie is leaked.
 ``SameSite=Lax`` mitigates CSRF while allowing top-level navigations.
+The ``Secure`` flag is only set when ``debug=False`` to allow HTTP development.
 """
 
 bearer_transport = BearerTransport(tokenUrl="/auth/bearer/login")
