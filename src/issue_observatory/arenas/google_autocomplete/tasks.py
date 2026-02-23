@@ -292,7 +292,8 @@ def google_autocomplete_health_check() -> dict[str, Any]:
         Health status dict with keys ``status``, ``arena``, ``platform``,
         ``checked_at``, and optionally ``detail``.
     """
-    collector = GoogleAutocompleteCollector()
+    credential_pool = CredentialPool()
+    collector = GoogleAutocompleteCollector(credential_pool=credential_pool)
     result: dict[str, Any] = asyncio.run(collector.health_check())
     logger.info(
         "google_autocomplete: health_check status=%s", result.get("status", "unknown")

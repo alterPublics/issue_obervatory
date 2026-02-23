@@ -1,14 +1,13 @@
 [
   {
     "id": 88401,
-    "headline": "Ny aftale om grøn omstilling: Regeringen investerer 12 mia. kr. i vedvarende energi",
-    "subHeadline": "Aftalen skal sikre 70 pct. reduktion af CO2 inden 2030",
-    "summary": "Statsministeren præsenterede i dag en ny klimaaftale, der skal accelerere Danmarks grønne omstilling med massive investeringer i vind- og solenergi.",
+    "title": "Ny aftale om grøn omstilling: Regeringen investerer 12 mia. kr. i vedvarende energi",
+    "leadtext": "Aftalen skal sikre 70 pct. reduktion af CO2 inden 2030. Statsministeren præsenterede i dag en ny klimaaftale, der skal accelerere Danmarks grønne omstilling med massive investeringer i vind- og solenergi.",
+    "leadtextHTML": "<p>Aftalen skal sikre 70 pct. reduktion af CO2 inden 2030. Statsministeren præsenterede i dag en ny klimaaftale, der skal accelerere Danmarks grønne omstilling med massive investeringer i vind- og solenergi.</p>",
     "body": "<p>Statsministeren præsenterede i dag en ny klimaaftale, der skal accelerere Danmarks grønne omstilling.</p><p>Aftalen indebærer investeringer på 12 milliarder kroner i vedvarende energi frem mod 2030. Fokus er på vindmøller til havs, solceller og grøn brint.</p><p>\"Det er afgørende for Danmark at gå forrest i den globale klimakamp,\" sagde statsministeren ved pressemødet i Ålborg.</p><p>Oppositionen er delt: SF og Enhedslisten støtter aftalen, mens Dansk Folkeparti og Liberal Alliance er kritiske over for de høje udgifter.</p>",
-    "url": "https://via.ritzau.dk/pressemeddelelse/88401/ny-aftale-om-groen-omstilling",
+    "url": "/pressemeddelelse/88401/ny-aftale-om-groen-omstilling",
     "language": "da",
-    "publishedAt": "2026-02-15T09:00:00Z",
-    "updatedAt": "2026-02-15T09:45:00Z",
+    "published": "2026-02-15T09:00:00+01:00",
     "publisher": {
       "id": 501,
       "name": "Statsministeriet"
@@ -26,25 +25,29 @@
         "height": 1080
       }
     ],
-    "attachments": [],
-    "contacts": [
-      {
-        "name": "Pressechef Anders Møller",
-        "email": "presse@stm.dk",
-        "phone": "+45 33 92 33 00"
-      }
-    ]
+    "documents": [],
+    "contacts": {
+      "persons": [
+        {
+          "name": "Pressechef Anders Møller",
+          "email": "presse@stm.dk",
+          "phone": "+45 33 92 33 00"
+        }
+      ],
+      "text": null
+    },
+    "type": "Pressemeddelelse",
+    "regulatory": false
   },
   {
     "id": 88402,
-    "headline": "Novo Nordisk lancerer ny behandling mod fedme: Kliniske forsøg viser lovende resultater",
-    "subHeadline": "Fase 3-studiet inkluderede 4.500 patienter fra 12 lande",
-    "summary": "Novo Nordisk offentliggør positive resultater fra fase 3-studie for ny fedmebehandling.",
+    "title": "Novo Nordisk lancerer ny behandling mod fedme: Kliniske forsøg viser lovende resultater",
+    "leadtext": "Fase 3-studiet inkluderede 4.500 patienter fra 12 lande. Novo Nordisk offentliggør positive resultater fra fase 3-studie for ny fedmebehandling.",
+    "leadtextHTML": "<p>Fase 3-studiet inkluderede 4.500 patienter fra 12 lande. Novo Nordisk offentliggør positive resultater fra fase 3-studie for ny fedmebehandling.</p>",
     "body": "<p>Novo Nordisk offentliggorde i dag resultater fra et fase 3-klinisk studie for sin nye fedmebehandling.</p><p>Studiet viste en gennemsnitlig vægttab på 18,5 procent over 68 uger. Behandlingen er sikker og veltolereret.</p><p>Virksomheden forventer at ansøge om markedsføringstilladelse i EU og USA i løbet af 2026.</p>",
-    "url": "https://via.ritzau.dk/pressemeddelelse/88402/novo-nordisk-fedmebehandling",
+    "url": "/pressemeddelelse/88402/novo-nordisk-fedmebehandling",
     "language": "da",
-    "publishedAt": "2026-02-15T10:30:00Z",
-    "updatedAt": "2026-02-15T10:30:00Z",
+    "published": "2026-02-15T10:30:00+01:00",
     "publisher": {
       "id": 502,
       "name": "Novo Nordisk A/S"
@@ -54,7 +57,7 @@
       {"id": 30, "name": "Erhverv"}
     ],
     "images": [],
-    "attachments": [
+    "documents": [
       {
         "id": "att-88402-01",
         "url": "https://via.ritzau.dk/media/attachments/88402/presserelease.pdf",
@@ -62,24 +65,28 @@
         "size": 348291
       }
     ],
-    "contacts": [
-      {
-        "name": "Kommunikationschef Lise Christensen",
-        "email": "kommunikation@novonordisk.com",
-        "phone": "+45 44 44 88 88"
-      }
-    ]
+    "contacts": {
+      "persons": [
+        {
+          "name": "Kommunikationschef Lise Christensen",
+          "email": "kommunikation@novonordisk.com",
+          "phone": "+45 44 44 88 88"
+        }
+      ],
+      "text": null
+    },
+    "type": "Pressemeddelelse",
+    "regulatory": false
   },
   {
     "id": 88403,
-    "headline": "Ålborg Havn åbner Danmarks største terminal for offshorevindsektoren",
-    "subHeadline": "Investeringen på 800 mio. kr. skaber 600 nye arbejdspladser",
-    "summary": "Ålborg Havn åbner en ny stor terminal designet til montage og service af havvindmøller.",
+    "title": "Ålborg Havn åbner Danmarks største terminal for offshorevindsektoren",
+    "leadtext": "Investeringen på 800 mio. kr. skaber 600 nye arbejdspladser. Ålborg Havn åbner en ny stor terminal designet til montage og service af havvindmøller.",
+    "leadtextHTML": "<p>Investeringen på 800 mio. kr. skaber 600 nye arbejdspladser. Ålborg Havn åbner en ny stor terminal designet til montage og service af havvindmøller.</p>",
     "body": "<p>Ålborg Havn åbnede i dag en ny terminal, der er designet til montage og service af havvindmøller.</p><p>Investeringen på 800 millioner kroner finansieres med støtte fra EU's grønne fond og private investorer.</p><p>Terminalen skaber ifølge havnen 600 nye arbejdspladser i Ålborg-regionen inden 2028.</p><p>\"Dette er en ægte milepæl for dansk offshore-industri,\" sagde havnedirektøren ved åbningsceremonien.</p>",
-    "url": "https://via.ritzau.dk/pressemeddelelse/88403/aalborg-havn-offshore-terminal",
+    "url": "/pressemeddelelse/88403/aalborg-havn-offshore-terminal",
     "language": "da",
-    "publishedAt": "2026-02-14T13:00:00Z",
-    "updatedAt": "2026-02-14T14:30:00Z",
+    "published": "2026-02-14T13:00:00+01:00",
     "publisher": {
       "id": 503,
       "name": "Ålborg Havn"
@@ -97,13 +104,18 @@
         "height": 900
       }
     ],
-    "attachments": [],
-    "contacts": [
-      {
-        "name": "Pressechef Søren Holm",
-        "email": "presse@aalborghavn.dk",
-        "phone": "+45 99 30 12 34"
-      }
-    ]
+    "documents": [],
+    "contacts": {
+      "persons": [
+        {
+          "name": "Pressechef Søren Holm",
+          "email": "presse@aalborghavn.dk",
+          "phone": "+45 99 30 12 34"
+        }
+      ],
+      "text": null
+    },
+    "type": "Pressemeddelelse",
+    "regulatory": false
   }
 ]

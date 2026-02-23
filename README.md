@@ -41,6 +41,9 @@ cd issue_observatory
 cp .env.example .env
 # Edit .env — you MUST set SECRET_KEY, PSEUDONYMIZATION_SALT,
 # and CREDENTIAL_ENCRYPTION_KEY (see .env.example for generation commands)
+# Optional: Add API credentials for arenas you want to use (SERPER_API_KEY,
+# BLUESKY_HANDLE, YOUTUBE_API_KEY, etc.) — they will be automatically
+# loaded into the credential pool on startup
 
 # Create and activate virtual environment
 python -m venv .venv

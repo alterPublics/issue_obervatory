@@ -449,7 +449,11 @@ class YouTubeCollector(ArenaCollector):
         date_to: datetime | str | None = None,
         max_results: int | None = None,
     ) -> int:
-        """Estimate YouTube API quota units for a collection run.
+        """Estimate the monetary credit cost for a YouTube collection run.
+
+        YouTube Data API v3 is free (no monetary cost), so FREE tier
+        returns 0 credits.  The API has a daily quota (10,000 units per
+        GCP project key), but quota units are not monetary credits.
 
         Args:
             terms: Search terms (each contributes 100 units/page).
@@ -460,8 +464,12 @@ class YouTubeCollector(ArenaCollector):
             max_results: Upper bound on results.
 
         Returns:
-            Estimated quota units as a non-negative integer.
+            Estimated monetary credit cost (0 for FREE tier).
         """
+        # YouTube is a free API — no monetary cost for any tier.
+        # Quota units are managed internally but are not credits.
+        if tier == Tier.FREE:
+            return 0
         tier_config = self.get_tier_config(tier)
         effective_max = max_results if max_results is not None else tier_config.max_results_per_run
         total_units = 0

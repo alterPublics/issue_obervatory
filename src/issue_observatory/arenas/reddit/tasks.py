@@ -210,7 +210,7 @@ def reddit_collect_terms(
         tier,
         include_comments,
     )
-    _update_task_status(collection_run_id, "social_media", "running")
+    _update_task_status(collection_run_id, "reddit", "running")
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -236,7 +236,7 @@ def reddit_collect_terms(
     except ValueError:
         msg = f"reddit: invalid tier '{tier}'. Only 'free' is valid for Reddit."
         logger.error(msg)
-        _update_task_status(collection_run_id, "social_media", "failed", error_message=msg)
+        _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -268,7 +268,7 @@ def reddit_collect_terms(
     except NoCredentialAvailableError as exc:
         msg = f"reddit: no credential available for tier={tier}: {exc}"
         logger.error(msg)
-        _update_task_status(collection_run_id, "social_media", "failed", error_message=msg)
+        _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -289,7 +289,7 @@ def reddit_collect_terms(
     except ArenaCollectionError as exc:
         msg = str(exc)
         logger.error("reddit: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, "social_media", "failed", error_message=msg)
+        _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -316,7 +316,7 @@ def reddit_collect_terms(
         skipped,
     )
     _update_task_status(
-        collection_run_id, "social_media", "completed", records_collected=inserted
+        collection_run_id, "reddit", "completed", records_collected=inserted
     )
     publish_task_update(
         redis_url=_redis_url,
@@ -386,7 +386,7 @@ def reddit_collect_actors(
         len(actor_ids),
         tier,
     )
-    _update_task_status(collection_run_id, "social_media", "running")
+    _update_task_status(collection_run_id, "reddit", "running")
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -403,7 +403,7 @@ def reddit_collect_actors(
     except ValueError:
         msg = f"reddit: invalid tier '{tier}'. Only 'free' is valid for Reddit."
         logger.error(msg)
-        _update_task_status(collection_run_id, "social_media", "failed", error_message=msg)
+        _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -430,7 +430,7 @@ def reddit_collect_actors(
     except NoCredentialAvailableError as exc:
         msg = f"reddit: no credential available for tier={tier}: {exc}"
         logger.error(msg)
-        _update_task_status(collection_run_id, "social_media", "failed", error_message=msg)
+        _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -451,7 +451,7 @@ def reddit_collect_actors(
     except ArenaCollectionError as exc:
         msg = str(exc)
         logger.error("reddit: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, "social_media", "failed", error_message=msg)
+        _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -478,7 +478,7 @@ def reddit_collect_actors(
         skipped,
     )
     _update_task_status(
-        collection_run_id, "social_media", "completed", records_collected=inserted
+        collection_run_id, "reddit", "completed", records_collected=inserted
     )
     publish_task_update(
         redis_url=_redis_url,

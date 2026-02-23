@@ -161,7 +161,7 @@ def common_crawl_collect_terms(
         len(terms),
         tier,
     )
-    _update_task_status(collection_run_id, _ARENA, "running")
+    _update_task_status(collection_run_id, _PLATFORM, "running")
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -178,7 +178,7 @@ def common_crawl_collect_terms(
     except ValueError:
         msg = f"common_crawl: invalid tier '{tier}'. Only 'free' is supported."
         logger.error(msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -213,7 +213,7 @@ def common_crawl_collect_terms(
     except ArenaCollectionError as exc:
         msg = str(exc)
         logger.error("common_crawl: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -239,7 +239,7 @@ def common_crawl_collect_terms(
         inserted,
         skipped,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+    _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -310,7 +310,7 @@ def common_crawl_collect_actors(
         len(actor_ids),
         tier,
     )
-    _update_task_status(collection_run_id, _ARENA, "running")
+    _update_task_status(collection_run_id, _PLATFORM, "running")
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -327,7 +327,7 @@ def common_crawl_collect_actors(
     except ValueError:
         msg = f"common_crawl: invalid tier '{tier}'. Only 'free' is supported."
         logger.error(msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -361,7 +361,7 @@ def common_crawl_collect_actors(
     except ArenaCollectionError as exc:
         msg = str(exc)
         logger.error("common_crawl: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -387,7 +387,7 @@ def common_crawl_collect_actors(
         inserted,
         skipped,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+    _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,

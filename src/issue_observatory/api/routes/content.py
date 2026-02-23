@@ -29,7 +29,7 @@ from typing import Annotated, Any, Optional
 
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,6 +47,40 @@ router = APIRouter()
 
 _MAX_LIMIT = 200
 _EXPORT_SYNC_LIMIT = 10_000
+
+# ---------------------------------------------------------------------------
+# Content negotiation helper
+# ---------------------------------------------------------------------------
+
+
+def _prefers_json(request: Request, format_param: Optional[str]) -> bool:
+    """Return True when the client explicitly prefers JSON over HTML.
+
+    Checks both the ``format`` query parameter and the ``Accept`` header.
+    HTMX requests always get HTML.  Only programmatic API callers sending
+    ``Accept: application/json`` without ``text/html`` are routed to JSON.
+
+    Args:
+        request: The incoming HTTP request.
+        format_param: The ``format`` query parameter value, if provided.
+
+    Returns:
+        ``True`` if JSON response is preferred, ``False`` for HTML.
+    """
+    # Explicit format parameter takes precedence
+    if format_param == "json":
+        return True
+
+    # HTMX requests always get HTML
+    if request.headers.get("hx-request"):
+        return False
+
+    # Check Accept header
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept:
+        return False
+    return "application/json" in accept
+
 
 # ---------------------------------------------------------------------------
 # Content-Type headers per export format
@@ -561,10 +595,19 @@ def _orm_to_detail_dict(record: UniversalContentRecord) -> dict[str, Any]:
 async def content_record_count(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
+    run_id: Optional[uuid.UUID] = Query(default=None, description="Filter by specific collection run UUID."),
 ) -> dict[str, int]:
     """Return total content record count for the current user's collection runs.
 
     Used by the dashboard Records Collected card.
+
+    Args:
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        run_id: Optional collection run UUID filter.
+
+    Returns:
+        Dict with a single ``total`` key containing the record count.
     """
     stmt = (
         select(func.count())
@@ -572,6 +615,8 @@ async def content_record_count(
         .join(CollectionRun, UniversalContentRecord.collection_run_id == CollectionRun.id)
         .where(CollectionRun.initiated_by == current_user.id)
     )
+    if run_id is not None:
+        stmt = stmt.where(UniversalContentRecord.collection_run_id == run_id)
     result = await db.execute(stmt)
     total = result.scalar() or 0
     return {"total": total}
@@ -734,13 +779,25 @@ async def content_records_fragment(
     mode: Optional[str] = Query(default=None, description="Collection mode filter: 'batch' or 'live'."),
     offset: int = Query(default=0, ge=0, description="Running total of rows already sent."),
     limit: int = Query(default=_BROWSE_LIMIT, ge=1, le=_MAX_LIMIT),
-) -> HTMLResponse:
-    """Return an HTMX HTML fragment containing ``<tr>`` rows for the content table.
+    format: Optional[str] = Query(
+        default=None,
+        description="Response format: 'json' or omit for HTML. Also checks Accept header.",
+    ),
+) -> Response:
+    """Return content records as HTML fragment or JSON array.
 
-    Implements keyset pagination on ``(published_at DESC, id DESC)``.  Each
-    response appends rows into ``#records-tbody`` via ``hx-swap="beforeend"``.
-    Once the cumulative ``offset`` reaches 2000, an empty sentinel is returned
-    so that HTMX stops triggering further loads.
+    Implements keyset pagination on ``(published_at DESC, id DESC)``.
+
+    **HTML mode (default for HTMX):**
+    Each response appends ``<tr>`` rows into ``#records-tbody`` via
+    ``hx-swap="beforeend"``.  Once the cumulative ``offset`` reaches 2000,
+    an empty sentinel is returned so that HTMX stops triggering further loads.
+
+    **JSON mode (when ``format=json`` or ``Accept: application/json``):**
+    Returns a JSON object with keys:
+    - ``records`` (list[dict]): Array of content record objects.
+    - ``pagination`` (dict): Pagination metadata with ``offset``, ``limit``,
+      ``total_returned``, ``next_cursor``, ``has_more``.
 
     The ``arena`` filter accepts multiple values (checkbox group named
     ``arenas``).
@@ -760,19 +817,39 @@ async def content_records_fragment(
         run_id: Optional collection run UUID.
         offset: Number of rows already rendered (used to enforce 2000-row cap).
         limit: Page size (default 50, max 200).
+        format: Response format (``json`` or omit for HTML).
 
     Returns:
         ``HTMLResponse`` containing ``<tr>`` elements plus an optional
-        sentinel ``<tr hx-trigger="revealed">`` for further loading.
+        sentinel ``<tr hx-trigger="revealed">`` for further loading, or
+        ``JSONResponse`` with records array and pagination metadata.
     """
-    templates = request.app.state.templates
+    # Determine response format based on query param and Accept header.
+    wants_json = _prefers_json(request, format)
 
-    if templates is None:
-        raise HTTPException(status_code=500, detail="Template engine not initialised.")
+    # For HTML responses, validate templates are available.
+    if not wants_json:
+        templates = request.app.state.templates
+        if templates is None:
+            raise HTTPException(status_code=500, detail="Template engine not initialised.")
 
     # Enforce hard cap: if caller has already received 2000 rows, return nothing.
     if offset >= _BROWSE_CAP:
-        return HTMLResponse("", status_code=200)
+        if wants_json:
+            return JSONResponse(
+                {
+                    "records": [],
+                    "pagination": {
+                        "offset": offset,
+                        "limit": 0,
+                        "total_returned": 0,
+                        "next_cursor": None,
+                        "has_more": False,
+                    },
+                }
+            )
+        else:
+            return HTMLResponse("", status_code=200)
 
     remaining = min(limit, _BROWSE_CAP - offset)
 
@@ -834,16 +911,55 @@ async def content_records_fragment(
 
     template_records = [_orm_row_to_template_dict(r) for r in records]
 
-    html = templates.get_template("_fragments/content_table_body.html").render(
-        {
-            "request": request,
-            "records": template_records,
-            "next_cursor": next_cursor or "",
-            "new_offset": new_offset,
-            "browse_cap": _BROWSE_CAP,
-        }
-    )
-    return HTMLResponse(html, status_code=200)
+    # Return JSON if requested, otherwise HTML.
+    if wants_json:
+        # Convert template-ready dicts to JSON-serializable format.
+        json_records = [
+            {
+                "id": r["id"],
+                "platform": r["platform"],
+                "arena": r["arena"],
+                "content_type": r["content_type"],
+                "title": r["title"],
+                "text_content": r["text"],
+                "author_display_name": r["author"],
+                "author_platform_id": r["author_id"],
+                "url": r["url"],
+                "published_at": r["published_at"],
+                "collected_at": r["collected_at"],
+                "language": r["language"],
+                "engagement_score": r["engagement_score"],
+                "search_terms_matched": r["search_terms_matched"],
+                "collection_run_id": r["run_id"],
+                "mode": r.get("mode", ""),
+                "raw_metadata": r.get("metadata", {}),
+            }
+            for r in template_records
+        ]
+
+        return JSONResponse(
+            {
+                "records": json_records,
+                "pagination": {
+                    "offset": new_offset,
+                    "limit": limit,
+                    "total_returned": len(json_records),
+                    "next_cursor": next_cursor,
+                    "has_more": next_cursor is not None and new_offset < _BROWSE_CAP,
+                },
+            }
+        )
+    else:
+        html = templates.get_template("_fragments/content_table_body.html").render(
+            {
+                "request": request,
+                "records": template_records,
+                "next_cursor": next_cursor or "",
+                "new_offset": new_offset,
+                "browse_cap": _BROWSE_CAP,
+            }
+        )
+        return HTMLResponse(html, status_code=200)
 
 
 # ---------------------------------------------------------------------------

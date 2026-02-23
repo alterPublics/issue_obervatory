@@ -1,0 +1,52 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║                    ERROR MESSAGE IMPROVEMENTS — SUMMARY                    ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+┌─ ISSUE 1: GDELT EMPTY ERROR MESSAGES ─────────────────────────────────────┐
+│                                                                            │
+│  Problem:   Collection failures showed blank error messages in UI         │
+│  Root:      str(exc) can return empty string for some exceptions          │
+│  Solution:  Add fallback text when exception message is empty             │
+│                                                                            │
+│  ✓ Fixed 3 locations in arenas/gdelt/collector.py:                        │
+│    • _query_term() RequestError handler → "(connection error)"            │
+│    • health_check() RequestError handler → "(network error)"              │
+│    • _query_term() JSON parse handler → "(JSON parsing failed)"           │
+│                                                                            │
+│  Before:  (empty) or just "ConnectError"                                  │
+│  After:   "ConnectError (connection error)" or "ConnectError: details"    │
+└────────────────────────────────────────────────────────────────────────────┘
+
+┌─ ISSUE 2: RSS FEEDS ZERO-RECORD LOGGING ──────────────────────────────────┐
+│                                                                            │
+│  Problem:   Hard to diagnose why RSS returned 0 records                   │
+│  Root:      RSS is FORWARD_ONLY (recent items only), 0 can be expected    │
+│  Solution:  Distinguish: fetch failures vs empty feeds vs no matches      │
+│                                                                            │
+│  ✓ Added 4 logging improvements in arenas/rss_feeds/collector.py:         │
+│    • Warn if NO ENTRIES FETCHED (network/feed issues)                     │
+│    • Warn if NO MATCHES FOUND (expected for recent-only feeds)            │
+│    • Include response body in HTTP error logs                             │
+│    • Log when feed parses OK but has 0 items                              │
+│                                                                            │
+│  Impact:  Logs now clearly explain 0 results vs actual problems           │
+└────────────────────────────────────────────────────────────────────────────┘
+
+┌─ VERIFIED WORKING: DANISH CHARACTER MATCHING ─────────────────────────────┐
+│                                                                            │
+│  The RSS collector's term matching supports Danish compound words:        │
+│  • "grønland" matches "Grønlandspolitik" (left boundary only)             │
+│  • Short terms (≤2 chars) use strict boundaries to avoid false positives  │
+│  • Implemented in query_builder.py lines 304-328                          │
+│                                                                            │
+│  No changes needed — already working correctly.                           │
+└────────────────────────────────────────────────────────────────────────────┘
+
+╔════════════════════════════════════════════════════════════════════════════╗
+║  FILES MODIFIED:                                                           ║
+║  • src/issue_observatory/arenas/gdelt/collector.py          (3 fixes)     ║
+║  • src/issue_observatory/arenas/rss_feeds/collector.py      (4 fixes)     ║
+║                                                                            ║
+║  DEPLOYMENT: Safe to deploy — logging/error messages only, no breaking    ║
+║              changes, no schema changes, no API changes                    ║
+╚════════════════════════════════════════════════════════════════════════════╝

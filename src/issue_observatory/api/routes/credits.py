@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -99,7 +99,7 @@ async def allocate_credits(
         allocation = CreditAllocation(
             user_id=target_user_id,
             credits_amount=credits_amount,
-            valid_from=date.today(),
+            valid_from=datetime.now(tz=timezone.utc).date(),
             valid_until=valid_until_date,
             allocated_by=admin_user.id,
             memo=memo or "",

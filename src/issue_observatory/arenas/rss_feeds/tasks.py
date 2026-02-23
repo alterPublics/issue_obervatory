@@ -41,64 +41,6 @@ _ARENA = "rss_feeds"
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-def _update_task_status(
-    collection_run_id: str,
-    arena: str,
-    status: str,
-    records_collected: int = 0,
-    error_message: str | None = None,
-) -> None:
-    """Best-effort update of the ``collection_tasks`` row for this arena.
-
-    Args:
-        collection_run_id: UUID string of the parent collection run.
-        arena: Arena identifier.
-        status: New status value (``"running"`` | ``"completed"`` | ``"failed"``).
-        records_collected: Number of records collected.
-        error_message: Error description for failed updates.
-    """
-    try:
-        from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
-
-        with get_sync_session() as session:
-            from sqlalchemy import text  # noqa: PLC0415
-
-            session.execute(
-                text(
-                    """
-                    UPDATE collection_tasks
-                    SET status = :status,
-                        records_collected = :records_collected,
-                        error_message = :error_message,
-                        completed_at = CASE WHEN :status IN ('completed', 'failed')
-                                            THEN NOW() ELSE completed_at END,
-                        started_at   = CASE WHEN :status = 'running' AND started_at IS NULL
-                                            THEN NOW() ELSE started_at END
-                    WHERE collection_run_id = :run_id AND arena = :arena
-                    """
-                ),
-                {
-                    "status": status,
-                    "records_collected": records_collected,
-                    "error_message": error_message,
-                    "run_id": collection_run_id,
-                    "arena": arena,
-                },
-            )
-            session.commit()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "rss_feeds: failed to update collection_tasks status to '%s': %s",
-            status,
-            exc,
-        )
-
-
-# ---------------------------------------------------------------------------
 # Tasks
 # ---------------------------------------------------------------------------
 
@@ -197,7 +139,11 @@ def rss_feeds_collect_terms(
         len(terms),
         tier,
     )
-    _update_task_status(collection_run_id, _ARENA, "running")
+    from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+        update_collection_task_status,
+    )
+
+    update_collection_task_status(collection_run_id, _ARENA, "running")
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -223,7 +169,7 @@ def rss_feeds_collect_terms(
     except ValueError:
         msg = f"rss_feeds: invalid tier '{tier}'. Only 'free' is supported."
         logger.error(msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        update_collection_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
         raise ArenaCollectionError(msg, arena=_ARENA, platform="rss_feeds")
 
     collector = RSSFeedsCollector()
@@ -249,7 +195,7 @@ def rss_feeds_collect_terms(
     except ArenaCollectionError as exc:
         msg = str(exc)
         logger.error("rss_feeds: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        update_collection_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -275,7 +221,13 @@ def rss_feeds_collect_terms(
         inserted,
         skipped,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+    update_collection_task_status(
+        collection_run_id,
+        _ARENA,
+        "completed",
+        records_collected=inserted,
+        duplicates_skipped=skipped,
+    )
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -283,6 +235,7 @@ def rss_feeds_collect_terms(
         platform="rss_feeds",
         status="completed",
         records_collected=inserted,
+        duplicates_skipped=skipped,
         error_message=None,
         elapsed_seconds=elapsed_since(_task_start),
     )
@@ -350,7 +303,7 @@ def rss_feeds_collect_actors(
         len(actor_ids),
         tier,
     )
-    _update_task_status(collection_run_id, _ARENA, "running")
+    update_collection_task_status(collection_run_id, _ARENA, "running")
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -367,7 +320,7 @@ def rss_feeds_collect_actors(
     except ValueError:
         msg = f"rss_feeds: invalid tier '{tier}'. Only 'free' is supported."
         logger.error(msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        update_collection_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
         raise ArenaCollectionError(msg, arena=_ARENA, platform="rss_feeds")
 
     # GR-01: read researcher-configured extra feed URLs from arenas_config.
@@ -401,7 +354,7 @@ def rss_feeds_collect_actors(
     except ArenaCollectionError as exc:
         msg = str(exc)
         logger.error("rss_feeds: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        update_collection_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -427,7 +380,13 @@ def rss_feeds_collect_actors(
         inserted,
         skipped,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+    update_collection_task_status(
+        collection_run_id,
+        _ARENA,
+        "completed",
+        records_collected=inserted,
+        duplicates_skipped=skipped,
+    )
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -435,6 +394,7 @@ def rss_feeds_collect_actors(
         platform="rss_feeds",
         status="completed",
         records_collected=inserted,
+        duplicates_skipped=skipped,
         error_message=None,
         elapsed_seconds=elapsed_since(_task_start),
     )

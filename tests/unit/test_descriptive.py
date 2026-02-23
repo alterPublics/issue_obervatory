@@ -37,6 +37,7 @@ os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5
 from issue_observatory.analysis.descriptive import (  # noqa: E402
     _build_content_filters,
     _dt_iso,
+    get_emergent_terms,
     get_engagement_distribution,
     get_run_summary,
     get_top_actors,
@@ -724,3 +725,216 @@ class TestGetRunSummary:
         result = await get_run_summary(db, run_id=uuid.uuid4())
         assert result["status"] == "completed"
         assert result["mode"] == "batch"
+
+
+# ---------------------------------------------------------------------------
+# get_emergent_terms (TF-IDF term extraction with stop word filtering)
+# ---------------------------------------------------------------------------
+
+
+class TestGetEmergentTerms:
+    """Tests for get_emergent_terms() TF-IDF term extraction.
+
+    F-05 fix: Comprehensive stop word filtering to prevent common
+    Danish and English function words from appearing in suggested terms.
+    """
+
+    @pytest.mark.asyncio
+    async def test_emergent_terms_requires_scikit_learn(self) -> None:
+        """get_emergent_terms() returns empty list when scikit-learn is not installed.
+
+        This test verifies graceful degradation when the optional ML dependency
+        is not available.
+        """
+        import sys
+        from unittest.mock import patch
+
+        # Mock ImportError for sklearn
+        with patch.dict(sys.modules, {"sklearn.feature_extraction.text": None}):
+            db = _mock_db_returning([])
+            # Re-import to trigger the ImportError path
+            # (This is a bit fragile but acceptable for unit tests)
+            result = await get_emergent_terms(db)
+            # The function logs a warning and returns empty list
+            assert result == []
+
+    @pytest.mark.asyncio
+    async def test_emergent_terms_requires_minimum_texts(self) -> None:
+        """get_emergent_terms() returns empty list when fewer than 5 text records exist."""
+        # Mock DB returning only 3 text records (below the threshold)
+        row1 = MagicMock()
+        row1.text_content = "Dette er en test"
+        row2 = MagicMock()
+        row2.text_content = "Endnu en test"
+        row3 = MagicMock()
+        row3.text_content = "Sidste test"
+
+        db = _mock_db_returning([row1, row2, row3])
+        result = await get_emergent_terms(db)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_emergent_terms_filters_danish_stop_words(self) -> None:
+        """F-05: Danish stop words like 'og', 'at', 'er', 'det' are excluded from results."""
+        # Create mock texts with Danish stop words mixed with meaningful terms
+        texts = [
+            "klimaforandringer og grøn omstilling er vigtigt for Danmark",
+            "klimaforandringer påvirker økonomien og miljøet",
+            "grøn omstilling er nødvendig for fremtiden",
+            "økonomien er påvirket af klimaforandringer",
+            "Danmark satser på grøn omstilling",
+            "miljøet skal beskyttes mod klimaforandringer",
+        ]
+
+        rows = [MagicMock(text_content=t) for t in texts]
+        db = _mock_db_returning(rows)
+
+        result = await get_emergent_terms(db, top_n=20)
+
+        # Extract returned term strings
+        returned_terms = [item["term"] for item in result]
+
+        # Danish stop words should NOT appear
+        danish_stop_words = ["og", "at", "er", "det", "for", "af", "på", "skal"]
+        for stop_word in danish_stop_words:
+            assert stop_word not in returned_terms, f"Danish stop word '{stop_word}' should be filtered out"
+
+        # Meaningful terms SHOULD appear
+        assert any("klimaforandringer" in term for term in returned_terms), (
+            "Meaningful term 'klimaforandringer' should be present"
+        )
+
+    @pytest.mark.asyncio
+    async def test_emergent_terms_filters_english_stop_words(self) -> None:
+        """F-05: English stop words like 'the', 'and', 'is', 'for' are excluded from results."""
+        # Create mock texts with English stop words mixed with meaningful terms
+        texts = [
+            "climate change and green transition are important for the world",
+            "climate change affects the economy and the environment",
+            "green transition is necessary for the future",
+            "the economy is affected by climate change",
+            "countries invest in green transition",
+            "environment must be protected from climate change",
+        ]
+
+        rows = [MagicMock(text_content=t) for t in texts]
+        db = _mock_db_returning(rows)
+
+        result = await get_emergent_terms(db, top_n=20)
+
+        # Extract returned term strings
+        returned_terms = [item["term"] for item in result]
+
+        # English stop words should NOT appear
+        english_stop_words = ["the", "and", "is", "are", "for", "by", "from", "must"]
+        for stop_word in english_stop_words:
+            assert stop_word not in returned_terms, f"English stop word '{stop_word}' should be filtered out"
+
+        # Meaningful terms SHOULD appear
+        assert any("climate" in term for term in returned_terms), (
+            "Meaningful term 'climate' should be present"
+        )
+
+    @pytest.mark.asyncio
+    async def test_emergent_terms_filters_single_character_tokens(self) -> None:
+        """F-05: Single-character tokens are filtered out."""
+        texts = [
+            "a b c meaningful content here",
+            "x y z important information",
+            "meaningful important content information",
+        ]
+
+        rows = [MagicMock(text_content=t) for t in texts]
+        db = _mock_db_returning(rows)
+
+        result = await get_emergent_terms(db, top_n=20)
+        returned_terms = [item["term"] for item in result]
+
+        # Single-character tokens should be excluded
+        for term in returned_terms:
+            assert len(term) >= 2, f"Single-character token '{term}' should be filtered out"
+
+    @pytest.mark.asyncio
+    async def test_emergent_terms_filters_numeric_tokens(self) -> None:
+        """F-05: Purely numeric tokens are filtered out."""
+        texts = [
+            "meaningful content from 2026 study",
+            "123 456 789 research findings",
+            "important 2025 results meaningful data",
+        ]
+
+        rows = [MagicMock(text_content=t) for t in texts]
+        db = _mock_db_returning(rows)
+
+        result = await get_emergent_terms(db, top_n=20)
+        returned_terms = [item["term"] for item in result]
+
+        # Purely numeric tokens should be excluded
+        for term in returned_terms:
+            assert not term.isdigit(), f"Numeric token '{term}' should be filtered out"
+
+    @pytest.mark.asyncio
+    async def test_emergent_terms_excludes_existing_search_terms(self) -> None:
+        """When exclude_search_terms=True, existing query design terms are filtered out."""
+        # Mock texts
+        texts = [
+            "klimaforandringer og grøn omstilling",
+            "klimaforandringer påvirker økonomien",
+            "grøn omstilling er vigtigt",
+        ]
+
+        # Mock DB to return texts AND existing search terms
+        call_count = 0
+
+        async def multi_execute(sql: Any, params: Any) -> MagicMock:
+            nonlocal call_count
+            call_count += 1
+            mock = MagicMock()
+
+            if call_count == 1:
+                # First call: return text_content rows
+                rows = [MagicMock(text_content=t) for t in texts]
+                mock.fetchall.return_value = rows
+            else:
+                # Second call: return existing search terms
+                term_row = MagicMock()
+                term_row.term = "klimaforandringer"
+                mock.fetchall.return_value = [term_row]
+
+            return mock
+
+        db = MagicMock()
+        db.execute = AsyncMock(side_effect=multi_execute)
+
+        qd_id = uuid.uuid4()
+        result = await get_emergent_terms(db, query_design_id=qd_id, exclude_search_terms=True)
+
+        returned_terms = [item["term"] for item in result]
+
+        # "klimaforandringer" should be excluded (it's an existing search term)
+        assert "klimaforandringer" not in returned_terms, (
+            "Existing search term 'klimaforandringer' should be filtered out"
+        )
+
+    @pytest.mark.asyncio
+    async def test_emergent_terms_result_structure(self) -> None:
+        """Result dicts contain 'term', 'score', and 'document_frequency' keys."""
+        texts = [
+            "meaningful important content research study",
+            "meaningful research findings important",
+            "important study content meaningful",
+        ]
+
+        rows = [MagicMock(text_content=t) for t in texts]
+        db = _mock_db_returning(rows)
+
+        result = await get_emergent_terms(db, top_n=5)
+
+        assert len(result) > 0, "Should return at least one term"
+        for item in result:
+            assert "term" in item, "Result item must have 'term' key"
+            assert "score" in item, "Result item must have 'score' key"
+            assert "document_frequency" in item, "Result item must have 'document_frequency' key"
+            assert isinstance(item["term"], str)
+            assert isinstance(item["score"], float)
+            assert isinstance(item["document_frequency"], int)

@@ -87,13 +87,13 @@ class TestNormalize:
 
         assert result["platform_id"] == str(release["id"])
 
-    def test_normalize_title_from_headline_field(self) -> None:
-        """normalize() maps 'headline' to 'title' output field."""
+    def test_normalize_title_from_title_field(self) -> None:
+        """normalize() maps 'title' to 'title' output field."""
         collector = self._collector()
         release = _first_release()
         result = collector.normalize(release)
 
-        assert result["title"] == release["headline"].strip()
+        assert result["title"] == release["title"].strip()
 
     def test_normalize_text_content_strips_html_from_body(self) -> None:
         """normalize() strips HTML tags from the body field for text_content."""
@@ -117,13 +117,15 @@ class TestNormalize:
         assert len(result["text_content"]) > 0
         assert "statsminister" in result["text_content"].lower() or "aftale" in result["text_content"].lower()
 
-    def test_normalize_url_preserved(self) -> None:
-        """normalize() maps 'url' field directly."""
+    def test_normalize_url_resolved_to_absolute(self) -> None:
+        """normalize() resolves relative 'url' to absolute using via.ritzau.dk base."""
         collector = self._collector()
         release = _first_release()
         result = collector.normalize(release)
 
-        assert result["url"] == release["url"]
+        # Fixture has relative URL starting with /
+        assert result["url"].startswith("https://via.ritzau.dk/")
+        assert "/pressemeddelelse/" in result["url"]
 
     def test_normalize_language_defaults_to_da(self) -> None:
         """normalize() defaults language to 'da' when field is absent."""
@@ -208,8 +210,8 @@ class TestNormalize:
 
         assert result["collection_tier"] == "free"
 
-    def test_normalize_published_at_from_publishedAt_field(self) -> None:
-        """normalize() maps publishedAt to published_at output field."""
+    def test_normalize_published_at_from_published_field(self) -> None:
+        """normalize() maps 'published' to published_at output field."""
         collector = self._collector()
         release = _first_release()
         result = collector.normalize(release)
@@ -218,12 +220,12 @@ class TestNormalize:
         assert "2026-02-15" in result["published_at"]
 
     @pytest.mark.parametrize("char", ["æ", "ø", "å", "Æ", "Ø", "Å"])
-    def test_normalize_preserves_danish_character_in_headline(self, char: str) -> None:
-        """Each Danish character in the headline survives normalize() without corruption."""
+    def test_normalize_preserves_danish_character_in_title(self, char: str) -> None:
+        """Each Danish character in the title survives normalize() without corruption."""
         collector = self._collector()
         release = {
             **_first_release(),
-            "headline": f"Pressemeddelelse med {char} tegn i overskriften",
+            "title": f"Pressemeddelelse med {char} tegn i overskriften",
             "body": "",
         }
         result = collector.normalize(release)
@@ -436,12 +438,187 @@ class TestCollectByTerms:
             )
             collector = RitzauViaCollector()
             records = await collector.collect_by_terms(
-                terms=["test"],
+                terms=["grøn"],
                 tier=Tier.FREE,
                 max_results=2,
             )
 
         assert len(records) <= 2
+
+    @pytest.mark.asyncio
+    async def test_collect_by_terms_filters_by_search_terms(self) -> None:
+        """collect_by_terms() filters out press releases that don't match any search term."""
+        # Create a fixture with one matching and one non-matching release.
+        matching_release = _first_release()  # Contains "grøn omstilling"
+        non_matching_release = {
+            "id": 99999,
+            "title": "Completely unrelated topic about pharmaceutical pricing",
+            "leadtext": "Nothing relevant here",
+            "body": "<p>This press release has nothing to do with the search terms.</p>",
+            "url": "/pressemeddelelse/99999/unrelated",
+            "language": "da",
+            "published": "2026-02-15T12:00:00+01:00",
+            "publisher": {"id": 999, "name": "Test Publisher"},
+            "channels": [],
+            "images": [],
+            "documents": [],
+            "contacts": {"persons": [], "text": None},
+            "type": "Pressemeddelelse",
+        }
+        mixed_fixture = [matching_release, non_matching_release]
+
+        with respx.mock:
+            respx.get(RITZAU_RELEASES_ENDPOINT).mock(
+                return_value=httpx.Response(200, json=mixed_fixture)
+            )
+            collector = RitzauViaCollector()
+            records = await collector.collect_by_terms(
+                terms=["grøn"],
+                tier=Tier.FREE,
+                max_results=10,
+            )
+
+        # Should return only 1 record (the matching one).
+        assert len(records) == 1
+        assert "grøn" in records[0]["title"].lower() or "grøn" in (records[0]["text_content"] or "").lower()
+
+    @pytest.mark.asyncio
+    async def test_collect_by_terms_populates_search_terms_matched(self) -> None:
+        """collect_by_terms() populates search_terms_matched field with matched terms."""
+        fixture = _load_releases_fixture()
+
+        with respx.mock:
+            respx.get(RITZAU_RELEASES_ENDPOINT).mock(
+                return_value=httpx.Response(200, json=fixture)
+            )
+            collector = RitzauViaCollector()
+            records = await collector.collect_by_terms(
+                terms=["grøn", "omstilling"],
+                tier=Tier.FREE,
+                max_results=10,
+            )
+
+        # First release should match both terms.
+        first_record = records[0]
+        assert "search_terms_matched" in first_record
+        assert isinstance(first_record["search_terms_matched"], list)
+        assert len(first_record["search_terms_matched"]) >= 1
+
+    @pytest.mark.asyncio
+    async def test_collect_by_terms_case_insensitive_matching(self) -> None:
+        """collect_by_terms() performs case-insensitive search term matching."""
+        fixture = [_first_release()]
+
+        with respx.mock:
+            respx.get(RITZAU_RELEASES_ENDPOINT).mock(
+                return_value=httpx.Response(200, json=fixture)
+            )
+            collector = RitzauViaCollector()
+            # Use uppercase search term but the content has lowercase.
+            records = await collector.collect_by_terms(
+                terms=["GRØN", "OMSTILLING"],
+                tier=Tier.FREE,
+                max_results=10,
+            )
+
+        # Should match despite case difference.
+        assert len(records) == 1
+        assert "GRØN" in records[0]["search_terms_matched"]
+
+    @pytest.mark.asyncio
+    async def test_collect_by_terms_danish_characters_in_matching(self) -> None:
+        """collect_by_terms() correctly matches Danish characters (æ, ø, å)."""
+        fixture = _load_releases_fixture()
+
+        with respx.mock:
+            respx.get(RITZAU_RELEASES_ENDPOINT).mock(
+                return_value=httpx.Response(200, json=fixture)
+            )
+            collector = RitzauViaCollector()
+            records = await collector.collect_by_terms(
+                terms=["Ålborg"],
+                tier=Tier.FREE,
+                max_results=10,
+            )
+
+        # Third fixture release has "Ålborg" in the headline.
+        assert len(records) == 1
+        assert "Ålborg" in records[0]["search_terms_matched"]
+        assert "Ålborg" in records[0]["title"]
+
+    @pytest.mark.asyncio
+    async def test_collect_by_terms_all_unmatched_returns_empty(self) -> None:
+        """collect_by_terms() returns empty list when no releases match search terms."""
+        fixture = _load_releases_fixture()
+
+        with respx.mock:
+            respx.get(RITZAU_RELEASES_ENDPOINT).mock(
+                return_value=httpx.Response(200, json=fixture)
+            )
+            collector = RitzauViaCollector()
+            records = await collector.collect_by_terms(
+                terms=["nonexistent_term_xyz"],
+                tier=Tier.FREE,
+                max_results=10,
+            )
+
+        assert records == []
+
+    @pytest.mark.asyncio
+    async def test_collect_by_terms_stopword_filtering_with_word_boundaries(self) -> None:
+        """collect_by_terms() uses word-boundary matching to avoid stopword false positives.
+
+        This is the M-5 fix: stopwords like "i", "er", "et" should only match
+        when they appear as standalone words, not inside other words.
+        """
+        release_with_politik = {
+            "id": 11111,
+            "title": "Ny politik om klima",
+            "leadtext": "",
+            "body": "<p>Regeringen lancerer ny klimapolitik.</p>",
+            "url": "/pressemeddelelse/11111/politik",
+            "language": "da",
+            "published": "2026-02-20T10:00:00+01:00",
+            "publisher": {"id": 123, "name": "Test Publisher"},
+            "channels": [],
+            "images": [],
+            "documents": [],
+            "contacts": {"persons": [], "text": None},
+            "type": "Pressemeddelelse",
+        }
+        release_with_standalone_i = {
+            "id": 22222,
+            "title": "Minister i interview",
+            "leadtext": "",
+            "body": "<p>Ministeren udtaler sig i et interview.</p>",
+            "url": "/pressemeddelelse/22222/interview",
+            "language": "da",
+            "published": "2026-02-20T11:00:00+01:00",
+            "publisher": {"id": 124, "name": "Another Publisher"},
+            "channels": [],
+            "images": [],
+            "documents": [],
+            "contacts": {"persons": [], "text": None},
+            "type": "Pressemeddelelse",
+        }
+        fixture = [release_with_politik, release_with_standalone_i]
+
+        with respx.mock:
+            respx.get(RITZAU_RELEASES_ENDPOINT).mock(
+                return_value=httpx.Response(200, json=fixture)
+            )
+            collector = RitzauViaCollector()
+            # Search for stopword "i" -- should only match the second release
+            records = await collector.collect_by_terms(
+                terms=["i"],
+                tier=Tier.FREE,
+                max_results=10,
+            )
+
+        # Should match only the release with standalone "i", not "politik"
+        assert len(records) == 1
+        assert records[0]["platform_id"] == "22222"
+        assert "i" in records[0]["search_terms_matched"]
 
 
 # ---------------------------------------------------------------------------

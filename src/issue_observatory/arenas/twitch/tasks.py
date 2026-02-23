@@ -32,6 +32,7 @@ import time
 from typing import Any
 
 from issue_observatory.arenas.twitch.collector import TwitchCollector
+from issue_observatory.core.credential_pool import CredentialPool
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
@@ -189,7 +190,8 @@ def twitch_collect_terms(
         )
         raise ArenaCollectionError(msg, arena=_ARENA, platform="twitch")
 
-    collector = TwitchCollector()
+    credential_pool = CredentialPool()
+    collector = TwitchCollector(credential_pool=credential_pool)
 
     try:
         records = asyncio.run(
@@ -330,7 +332,8 @@ def twitch_collect_actors(
         )
         raise ArenaCollectionError(msg, arena=_ARENA, platform="twitch")
 
-    collector = TwitchCollector()
+    credential_pool = CredentialPool()
+    collector = TwitchCollector(credential_pool=credential_pool)
 
     try:
         records = asyncio.run(
@@ -407,7 +410,8 @@ def twitch_health_check() -> dict[str, Any]:
         Health status dict with keys ``status``, ``arena``, ``platform``,
         ``checked_at``, and optionally ``detail``.
     """
-    collector = TwitchCollector()
+    credential_pool = CredentialPool()
+    collector = TwitchCollector(credential_pool=credential_pool)
     result: dict[str, Any] = asyncio.run(collector.health_check())
     logger.info(
         "twitch: health_check status=%s", result.get("status", "unknown")

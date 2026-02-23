@@ -29,6 +29,7 @@ import time
 from typing import Any
 
 from issue_observatory.arenas.majestic.collector import MajesticCollector
+from issue_observatory.core.credential_pool import CredentialPool
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
@@ -165,7 +166,7 @@ def majestic_collect_terms(
         len(terms),
         tier,
     )
-    _update_task_status(collection_run_id, _ARENA, "running")
+    _update_task_status(collection_run_id, _PLATFORM, "running")
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -182,7 +183,7 @@ def majestic_collect_terms(
     except ValueError:
         msg = f"majestic: invalid tier '{tier}'. Only 'premium' is supported."
         logger.error(msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -195,7 +196,8 @@ def majestic_collect_terms(
         )
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
-    collector = MajesticCollector()
+    credential_pool = CredentialPool()
+    collector = MajesticCollector(credential_pool=credential_pool)
 
     try:
         records = asyncio.run(
@@ -219,7 +221,7 @@ def majestic_collect_terms(
         logger.error(
             "majestic: collection error for run=%s: %s", collection_run_id, msg
         )
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -246,7 +248,7 @@ def majestic_collect_terms(
         skipped,
     )
     _update_task_status(
-        collection_run_id, _ARENA, "completed", records_collected=inserted
+        collection_run_id, _PLATFORM, "completed", records_collected=inserted
     )
 
     return {
@@ -314,7 +316,7 @@ def majestic_collect_actors(
         len(actor_ids),
         tier,
     )
-    _update_task_status(collection_run_id, _ARENA, "running")
+    _update_task_status(collection_run_id, _PLATFORM, "running")
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -331,7 +333,7 @@ def majestic_collect_actors(
     except ValueError:
         msg = f"majestic: invalid tier '{tier}'. Only 'premium' is supported."
         logger.error(msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -344,7 +346,8 @@ def majestic_collect_actors(
         )
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
-    collector = MajesticCollector()
+    credential_pool = CredentialPool()
+    collector = MajesticCollector(credential_pool=credential_pool)
 
     try:
         records = asyncio.run(
@@ -367,7 +370,7 @@ def majestic_collect_actors(
         logger.error(
             "majestic: collection error for run=%s: %s", collection_run_id, msg
         )
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
@@ -394,7 +397,7 @@ def majestic_collect_actors(
         skipped,
     )
     _update_task_status(
-        collection_run_id, _ARENA, "completed", records_collected=inserted
+        collection_run_id, _PLATFORM, "completed", records_collected=inserted
     )
 
     return {
@@ -420,7 +423,8 @@ def majestic_health_check() -> dict[str, Any]:
         ``checked_at``, and optionally ``trust_flow``, ``ref_domains``,
         and ``detail``.
     """
-    collector = MajesticCollector()
+    credential_pool = CredentialPool()
+    collector = MajesticCollector(credential_pool=credential_pool)
     result: dict[str, Any] = asyncio.run(collector.health_check())
     logger.info(
         "majestic: health_check status=%s trust_flow=%s",

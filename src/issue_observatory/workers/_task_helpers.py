@@ -626,8 +626,70 @@ async def create_collection_tasks(
         await db.commit()
 
 
+async def update_task_celery_id(
+    run_id: Any,
+    platform_name: str,
+    celery_task_id: str,
+) -> None:
+    """Update a CollectionTask row with its Celery task ID.
+
+    Called after successfully dispatching a Celery task to record the task ID
+    for status tracking and debugging.
+
+    Args:
+        run_id: UUID of the parent CollectionRun.
+        platform_name: Platform identifier for the arena task.
+        celery_task_id: Celery task ID returned by send_task().
+    """
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            update(CollectionTask)
+            .where(
+                CollectionTask.collection_run_id == run_id,
+                CollectionTask.platform == platform_name,
+            )
+            .values(celery_task_id=celery_task_id)
+        )
+        await db.commit()
+
+
+async def mark_task_failed(
+    run_id: Any,
+    platform_name: str,
+    error_message: str,
+) -> None:
+    """Mark a CollectionTask as failed with an error message.
+
+    Used when task dispatch fails or when a task needs to be skipped
+    (e.g., no search terms available for that arena).
+
+    Args:
+        run_id: UUID of the parent CollectionRun.
+        platform_name: Platform identifier for the arena task.
+        error_message: Error description explaining why the task failed.
+    """
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            update(CollectionTask)
+            .where(
+                CollectionTask.collection_run_id == run_id,
+                CollectionTask.platform == platform_name,
+            )
+            .values(
+                status="failed",
+                error_message=error_message,
+                completed_at=datetime.now(tz=timezone.utc),
+            )
+        )
+        await db.commit()
+
+
 async def check_all_tasks_terminal(run_id: Any) -> dict[str, Any] | None:
     """Check whether all CollectionTasks for a run have reached terminal state.
+
+    Also detects and marks as failed any tasks that have been stuck in 'pending'
+    or 'running' status for more than 2 minutes (likely dispatch failures, import
+    errors, or worker crashes).
 
     Args:
         run_id: UUID of the CollectionRun.
@@ -638,7 +700,51 @@ async def check_all_tasks_terminal(run_id: Any) -> dict[str, Any] | None:
     """
     from sqlalchemy import case, func  # noqa: PLC0415
 
+    # First check for stuck tasks and mark them as failed
+    # Reduced from 10 minutes to 2 minutes to detect issues faster
+    stuck_cutoff = datetime.now(tz=timezone.utc) - timedelta(minutes=2)
     async with AsyncSessionLocal() as db:
+        # Mark tasks that have been pending for > 2 minutes as failed
+        # (likely dispatch failures or import errors preventing task execution)
+        stuck_result = await db.execute(
+            update(CollectionTask)
+            .where(
+                CollectionTask.collection_run_id == run_id,
+                CollectionTask.status == "pending",
+                CollectionTask.created_at < stuck_cutoff,
+            )
+            .values(
+                status="failed",
+                error_message="Task stuck in pending state for >2 minutes; likely dispatch failure, import error, or missing dependency",
+                completed_at=datetime.now(tz=timezone.utc),
+            )
+        )
+        stuck_count = stuck_result.rowcount or 0
+        if stuck_count > 0:
+            await db.commit()
+
+        # Also check for tasks stuck in 'running' status for > 1 hour
+        # (infinite loops, hanging HTTP calls, etc.)
+        running_stuck_cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=1)
+        running_stuck_result = await db.execute(
+            update(CollectionTask)
+            .where(
+                CollectionTask.collection_run_id == run_id,
+                CollectionTask.status == "running",
+                CollectionTask.started_at < running_stuck_cutoff,
+            )
+            .values(
+                status="failed",
+                error_message="Task stuck in running state for >1 hour; likely infinite loop or hanging API call",
+                completed_at=datetime.now(tz=timezone.utc),
+            )
+        )
+        running_stuck_count = running_stuck_result.rowcount or 0
+        if running_stuck_count > 0:
+            await db.commit()
+            stuck_count += running_stuck_count
+
+        # Now check terminal status
         stmt = select(
             func.count(CollectionTask.id).label("total"),
             func.sum(
@@ -679,6 +785,7 @@ async def check_all_tasks_terminal(run_id: Any) -> dict[str, Any] | None:
             "failed": failed,
             "total_records": total_records,
             "credits_spent": credits_spent,
+            "stuck_marked_failed": stuck_count,
         }
 
 
@@ -829,3 +936,69 @@ def persist_collected_records(
         run_id=collection_run_id,
     )
     return inserted, skipped
+
+
+def update_collection_task_status(
+    collection_run_id: str,
+    arena: str,
+    status: str,
+    records_collected: int = 0,
+    duplicates_skipped: int = 0,
+    error_message: str | None = None,
+) -> None:
+    """Best-effort update of the ``collection_tasks`` row for a specific arena.
+
+    This is a shared helper for all arena tasks to report their progress
+    and final status.  DB failures are logged at WARNING and do not propagate
+    to the caller — this must never break a collection task.
+
+    Args:
+        collection_run_id: UUID string of the parent collection run.
+        arena: Arena identifier (platform_name from the registry).
+        status: New status value (``"running"`` | ``"completed"`` | ``"failed"``).
+        records_collected: Number of records successfully inserted into the DB.
+        duplicates_skipped: Number of records skipped because they were
+            already present (detected via ON CONFLICT on content_hash).
+        error_message: Error description for failed updates, or ``None``.
+    """
+    from sqlalchemy import text  # noqa: PLC0415
+
+    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+
+    try:
+        with get_sync_session() as session:
+            session.execute(
+                text(
+                    """
+                    UPDATE collection_tasks
+                    SET status = :status,
+                        records_collected = :records_collected,
+                        duplicates_skipped = :duplicates_skipped,
+                        error_message = :error_message,
+                        completed_at = CASE WHEN :status IN ('completed', 'failed')
+                                            THEN NOW() ELSE completed_at END,
+                        started_at   = CASE WHEN :status = 'running' AND started_at IS NULL
+                                            THEN NOW() ELSE started_at END
+                    WHERE collection_run_id = :run_id AND arena = :arena
+                    """
+                ),
+                {
+                    "status": status,
+                    "records_collected": records_collected,
+                    "duplicates_skipped": duplicates_skipped,
+                    "error_message": error_message,
+                    "run_id": collection_run_id,
+                    "arena": arena,
+                },
+            )
+            session.commit()
+    except Exception as exc:  # noqa: BLE001
+        import structlog
+
+        log = structlog.get_logger("issue_observatory.workers._task_helpers")
+        log.warning(
+            "update_collection_task_status: failed to update status",
+            arena=arena,
+            status=status,
+            error=str(exc),
+        )

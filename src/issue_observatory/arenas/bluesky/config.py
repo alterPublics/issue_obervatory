@@ -1,15 +1,19 @@
 """Bluesky arena configuration and tier definitions.
 
-Bluesky is a free-only arena — the AT Protocol public API provides all
+Bluesky is a free-only arena — the AT Protocol API provides all
 required functionality at no cost.  No medium or premium tiers exist.
 
-The public API base URL is ``https://public.api.bsky.app/xrpc``.  All
-endpoints are unauthenticated for read-only access.
+Authentication is required via handle + app password. The collector
+obtains a session token via ``com.atproto.server.createSession`` and
+uses it for all subsequent requests.
+
+The API base URL is ``https://bsky.social/xrpc``.
 
 Key endpoints:
-- ``app.bsky.feed.searchPosts`` — full-text post search with ``lang`` filter.
-- ``app.bsky.feed.getAuthorFeed`` — paginated author post history.
-- ``app.bsky.actor.searchActors`` — user search by handle/display name.
+- ``app.bsky.feed.searchPosts`` — full-text post search with ``lang`` filter (requires auth).
+- ``app.bsky.feed.getAuthorFeed`` — paginated author post history (requires auth).
+- ``app.bsky.actor.searchActors`` — user search by handle/display name (requires auth).
+- ``com.atproto.server.createSession`` — authentication endpoint.
 
 Danish content is collected via the ``lang=da`` query parameter.
 """
@@ -23,8 +27,8 @@ from issue_observatory.config.tiers import Tier, TierConfig
 # API base URL and endpoints
 # ---------------------------------------------------------------------------
 
-BSKY_API_BASE: str = "https://public.api.bsky.app/xrpc"
-"""AT Protocol public API base URL (unauthenticated read access)."""
+BSKY_API_BASE: str = "https://bsky.social/xrpc"
+"""AT Protocol API base URL (requires authentication)."""
 
 BSKY_SEARCH_POSTS_ENDPOINT: str = f"{BSKY_API_BASE}/app.bsky.feed.searchPosts"
 """Full-text post search endpoint."""
@@ -76,9 +80,9 @@ BLUESKY_TIERS: dict[Tier, TierConfig | None] = {
         tier=Tier.FREE,
         max_results_per_run=300_000,
         rate_limit_per_minute=600,
-        requires_credential=False,
+        requires_credential=True,
         estimated_credits_per_1k=0,
-        # 3,000 req / 5 min = 600 req/min unauthenticated.
+        # 3,000 req / 5 min = 600 req/min with authentication.
         # Each request retrieves up to 100 posts.
     ),
     Tier.MEDIUM: None,
@@ -87,4 +91,5 @@ BLUESKY_TIERS: dict[Tier, TierConfig | None] = {
 """Per-tier configuration for the Bluesky arena.
 
 Only ``Tier.FREE`` is available.  MEDIUM and PREMIUM map to ``None``.
+Authentication is required via handle + app password.
 """

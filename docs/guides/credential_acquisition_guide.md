@@ -147,21 +147,19 @@ The application will refuse to start without a valid salt value.
 
 | Field | Details |
 |-------|---------|
-| **Credentials needed** | None for read-only public API access. Optional: Bluesky account handle + app password for authenticated access. |
+| **Credentials needed** | Bluesky account handle + app password (required as of early 2026) |
 | **Signup URL** | https://bsky.app (account creation); https://bsky.app/settings/app-passwords (app passwords) |
 | **Tier(s)** | FREE only |
 | **Pricing** | Completely free |
-| **Rate limits** | 3,000 requests / 5 minutes (600 req/min) unauthenticated |
+| **Rate limits** | 3,000 requests / 5 minutes (600 req/min) authenticated |
 
-**What This Arena Collects:** Posts from the Bluesky social network via the AT Protocol public API, with `lang:da` filtering for Danish content. Also supports WebSocket Jetstream firehose for real-time collection.
+**What This Arena Collects:** Posts from the Bluesky social network via the AT Protocol API, with `lang:da` filtering for Danish content. Also supports WebSocket Jetstream firehose for real-time collection.
 
 **Steps:**
-1. No credentials are strictly required. The Bluesky AT Protocol public API at `https://public.api.bsky.app/xrpc` allows unauthenticated read access to public posts.
-2. (Optional) To use authenticated endpoints or increase rate limits:
-   a. Create a Bluesky account at https://bsky.app if you do not already have one.
-   b. Navigate to Settings > App Passwords (https://bsky.app/settings/app-passwords).
-   c. Click "Add App Password" and give it a descriptive name (e.g., "IssueObservatory").
-   d. Copy the generated password (format: `xxxx-xxxx-xxxx-xxxx`). This is shown only once.
+1. Create a Bluesky account at https://bsky.app if you do not already have one.
+2. Navigate to Settings > App Passwords (https://bsky.app/settings/app-passwords).
+3. Click "Add App Password" and give it a descriptive name (e.g., "IssueObservatory").
+4. Copy the generated password (format: `xxxx-xxxx-xxxx-xxxx`). This is shown only once.
 
 **Environment Variables:**
 ```
@@ -175,8 +173,7 @@ BLUESKY_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx
 - Payload: `{"handle": "your-handle.bsky.social", "app_password": "xxxx-xxxx-xxxx-xxxx"}`
 
 **Rate Limits:**
-- Unauthenticated: 3,000 requests per 5 minutes (enforced per IP)
-- Authenticated: Same limit but per-account rather than per-IP
+- Authenticated: 3,000 requests per 5 minutes per account
 - Jetstream WebSocket: No explicit rate limit on subscriptions
 
 ---

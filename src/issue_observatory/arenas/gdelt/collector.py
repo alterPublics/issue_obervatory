@@ -1,8 +1,7 @@
 """GDELT DOC 2.0 API arena collector implementation.
 
 Queries the GDELT DOC 2.0 API for news articles matching search terms,
-filtering for Danish-sourced content using ``sourcecountry:DA`` and
-``sourcelang:danish`` GDELT filter parameters.
+filtering for Danish-sourced content using the ``sourcecountry:DA`` filter.
 
 **Design notes**:
 
@@ -12,12 +11,15 @@ filtering for Danish-sourced content using ``sourcecountry:DA`` and
   :meth:`~issue_observatory.workers.rate_limiter.RateLimiter.wait_for_slot`.
   When no ``RateLimiter`` is injected, a 1-second ``asyncio.sleep`` is used
   as a fallback so the API is never hammered.
-- Two parallel queries are issued per term: one with ``sourcecountry:DA``
-  and one with ``sourcelang:danish``.  Results are deduplicated by URL.
+- Uses ``sourcecountry:DA`` filter to retrieve Danish-sourced content.
+  Previously used ``sourcelang:danish`` as well, but that filter returned
+  empty results as of February 2026.
 - GDELT's DOC API provides a rolling 3-month window; queries beyond that
   return empty results.
 - GDELT may return an HTML error page instead of JSON on server errors —
   the collector checks the ``Content-Type`` header and retries on 5xx.
+- GDELT API responses are VERY slow (20-120 seconds), so the HTTP client
+  timeout is set to 120 seconds.
 """
 
 from __future__ import annotations
@@ -107,13 +109,16 @@ class GDELTCollector(ArenaCollector):
     ) -> list[dict[str, Any]]:
         """Collect GDELT articles matching the supplied search terms.
 
-        Issues two queries per term (``sourcecountry:DA`` and
-        ``sourcelang:danish``) to capture both country-filtered and
-        language-filtered results.  Deduplicates by URL.
+        Filters for Danish content using ``sourcecountry:DA``.
 
         When ``term_groups`` is provided, GDELT's native ``AND``/``OR``
         boolean syntax is used: each AND-group becomes ``(term1 AND term2)``
-        and groups are ORed together.  One query pair is issued per group.
+        and groups are ORed together.  One query is issued per group.
+
+        Note: Previously this method issued two queries per term
+        (``sourcecountry:DA`` and ``sourcelang:danish``), but the
+        ``sourcelang:danish`` filter was found to return empty results
+        as of February 2026, so it has been removed.
 
         Args:
             terms: Search terms (used when ``term_groups`` is ``None``).
@@ -124,7 +129,7 @@ class GDELTCollector(ArenaCollector):
             term_groups: Optional boolean AND/OR groups.  GDELT supports
                 native ``AND``/``OR`` syntax.
             language_filter: Not used — Danish defaults applied via
-                ``sourcecountry``/``sourcelang`` filters.
+                ``sourcecountry`` filter.
 
         Returns:
             List of normalized content record dicts.
@@ -161,7 +166,7 @@ class GDELTCollector(ArenaCollector):
 
                 remaining = effective_max - len(all_records)
 
-                # Query 1: source country filter (sourcecountry:DA)
+                # Query with source country filter (sourcecountry:DA)
                 records_country = await self._query_term(
                     client=client,
                     term=term,
@@ -172,22 +177,6 @@ class GDELTCollector(ArenaCollector):
                     seen_urls=seen_urls,
                 )
                 all_records.extend(records_country)
-
-                # Query 2: source language filter (sourcelang:danish)
-                remaining2 = effective_max - len(all_records)
-                if remaining2 <= 0:
-                    break
-
-                records_lang = await self._query_term(
-                    client=client,
-                    term=term,
-                    extra_filter=f"sourcelang:{GDELT_DANISH_FILTERS['sourcelang']}",
-                    date_from=gdelt_from,
-                    date_to=gdelt_to,
-                    max_records=min(GDELT_MAX_RECORDS, remaining2),
-                    seen_urls=seen_urls,
-                )
-                all_records.extend(records_lang)
 
         logger.info(
             "gdelt: collect_by_terms — %d records for %d queries",
@@ -367,13 +356,22 @@ class GDELTCollector(ArenaCollector):
                 }
 
         except httpx.HTTPStatusError as exc:
+            # Include response body snippet for diagnostic value
+            body_snippet = exc.response.text[:500] if exc.response.text else "(empty body)"
             return {
                 **base,
                 "status": "down" if exc.response.status_code >= 500 else "degraded",
-                "detail": f"HTTP {exc.response.status_code} from GDELT API",
+                "detail": f"HTTP {exc.response.status_code} from GDELT API — {body_snippet}",
             }
         except httpx.RequestError as exc:
-            return {**base, "status": "down", "detail": f"Connection error: {exc}"}
+            # Include exception type and message
+            exc_msg = str(exc)
+            error_detail = (
+                f"{type(exc).__name__}: {exc_msg}"
+                if exc_msg
+                else f"{type(exc).__name__} (network error)"
+            )
+            return {**base, "status": "down", "detail": f"Connection error: {error_detail}"}
         except Exception as exc:  # noqa: BLE001
             return {**base, "status": "down", "detail": f"Unexpected error: {exc}"}
 
@@ -385,12 +383,16 @@ class GDELTCollector(ArenaCollector):
         """Return an async HTTP client for use as a context manager.
 
         Returns the injected client if present; otherwise creates a new one
-        with a 30-second timeout and a descriptive User-Agent.
+        with a 120-second timeout and a descriptive User-Agent.
+
+        Note: GDELT API queries can take 20-120 seconds to respond,
+        especially with country/language filters.  The extended timeout
+        prevents premature connection failures.
         """
         if self._http_client is not None:
             return self._http_client  # type: ignore[return-value]
         return httpx.AsyncClient(
-            timeout=30.0,
+            timeout=120.0,
             headers={
                 "User-Agent": "IssueObservatory/1.0 (gdelt-collector; research use)"
             },
@@ -468,52 +470,84 @@ class GDELTCollector(ArenaCollector):
         try:
             response = await client.get(GDELT_DOC_API_BASE, params=params)
         except httpx.RequestError as exc:
+            # Build detailed error message with URL, exception type, and message
+            exc_msg = str(exc)
+            error_detail = (
+                f"{type(exc).__name__}: {exc_msg}"
+                if exc_msg
+                else f"{type(exc).__name__} (connection error)"
+            )
             raise ArenaCollectionError(
-                f"gdelt: request error for term='{term}': {exc}",
+                f"gdelt: request error for term='{term}' url='{GDELT_DOC_API_BASE}' — {error_detail}",
                 arena="news_media",
                 platform=self.platform_name,
             ) from exc
 
         if response.status_code == 429:
             retry_after = float(response.headers.get("Retry-After", 60))
+            # Include response body snippet for diagnostic value
+            body_snippet = response.text[:500] if response.text else "(empty body)"
             raise ArenaRateLimitError(
-                f"gdelt: HTTP 429 for term='{term}'",
+                f"gdelt: HTTP 429 for term='{term}' — {body_snippet}",
                 retry_after=retry_after,
                 arena="news_media",
                 platform=self.platform_name,
             )
 
         if response.status_code >= 500:
+            # Capture first 500 chars of response body for server errors
+            body_snippet = response.text[:500] if response.text else "(empty body)"
             raise ArenaCollectionError(
-                f"gdelt: server error HTTP {response.status_code} for term='{term}'",
+                f"gdelt: server error HTTP {response.status_code} for term='{term}' "
+                f"url='{GDELT_DOC_API_BASE}' — {body_snippet}",
                 arena="news_media",
                 platform=self.platform_name,
             )
 
         if response.status_code >= 400:
+            # Log detailed error for 4xx (but don't raise — these are skipped)
+            body_snippet = response.text[:500] if response.text else "(empty body)"
             logger.warning(
-                "gdelt: HTTP %d for term='%s' filter='%s' — skipping.",
+                "gdelt: HTTP %d for term='%s' filter='%s' url='%s' — %s — skipping.",
                 response.status_code,
                 term,
                 extra_filter,
+                GDELT_DOC_API_BASE,
+                body_snippet,
             )
             return []
 
         # GDELT sometimes returns HTML on errors — check content-type
         content_type = response.headers.get("content-type", "")
         if "json" not in content_type:
+            # Include first 500 chars of response for debugging
+            body_snippet = response.text[:500] if response.text else "(empty body)"
             logger.warning(
-                "gdelt: non-JSON response for term='%s' (content-type=%s) — skipping.",
+                "gdelt: non-JSON response for term='%s' filter='%s' (content-type=%s) — %s — skipping.",
                 term,
+                extra_filter,
                 content_type,
+                body_snippet,
             )
             return []
 
         try:
             data = response.json()
         except Exception as exc:  # noqa: BLE001
+            # Include exception type and first 500 chars of response body
+            body_snippet = response.text[:500] if response.text else "(empty body)"
+            exc_msg = str(exc)
+            error_detail = (
+                f"{type(exc).__name__}: {exc_msg}"
+                if exc_msg
+                else f"{type(exc).__name__} (JSON parsing failed)"
+            )
             logger.warning(
-                "gdelt: JSON parse error for term='%s': %s — skipping.", term, exc
+                "gdelt: JSON parse error for term='%s' filter='%s' — %s — body: %s — skipping.",
+                term,
+                extra_filter,
+                error_detail,
+                body_snippet,
             )
             return []
 

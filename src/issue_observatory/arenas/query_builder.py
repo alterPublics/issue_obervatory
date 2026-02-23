@@ -309,26 +309,41 @@ def _term_pattern(term: str) -> re.Pattern[str]:
     consecutively separated by whitespace.  Single-word terms use ``\\b``
     anchors so that "i" does not match inside "politik".
 
+    For Danish compound word support (e.g., "grønland" matching "Grønlandspolitik"),
+    terms longer than 2 characters use a left word boundary only (``\\b{term}``),
+    allowing the term to appear at the start of compound words. Very short terms
+    (≤2 characters) use strict boundaries on both sides to avoid false positives.
+
     The pattern is cached for the lifetime of the process.
     """
     escaped = re.escape(term)
     # Replace escaped whitespace with flexible whitespace matcher
     escaped = re.sub(r"\\ ", r"\\s+", escaped)
-    return re.compile(rf"\b{escaped}\b", re.IGNORECASE)
+
+    # For terms longer than 2 chars, use left boundary only (Danish compound support)
+    # For very short terms, use strict boundaries to avoid false positives
+    if len(term) > 2:
+        return re.compile(rf"\b{escaped}", re.IGNORECASE)
+    else:
+        return re.compile(rf"\b{escaped}\b", re.IGNORECASE)
 
 
 def term_in_text(term: str, text: str) -> bool:
     """Check whether *term* appears in *text* as a whole word/phrase.
 
-    Uses word-boundary matching (``\\b``) so that short terms like ``"i"``
-    or ``"er"`` do not spuriously match inside longer words.
+    Uses word-boundary matching with Danish compound word support:
+    - Terms longer than 2 chars use left boundary only, allowing matches in
+      compound words (e.g., "grønland" matches "Grønlandspolitik")
+    - Short terms (≤2 chars) use strict boundaries on both sides to prevent
+      false positives (e.g., "i" won't match inside "politik")
 
     Args:
         term: The search term (case-insensitive).
         text: The text to search in.
 
     Returns:
-        ``True`` if the term is found as a whole word in the text.
+        ``True`` if the term is found as a whole word or at the start of a
+        compound word in the text.
     """
     return bool(_term_pattern(term.lower()).search(text))
 

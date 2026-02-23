@@ -173,7 +173,7 @@ All six arenas have tests covering:
 | Arena | HTTP mocking | Other mocking |
 |-------|-------------|---------------|
 | google_autocomplete | `respx` on `suggestqueries.google.com` | None |
-| bluesky | `respx` on `public.api.bsky.app` | None |
+| bluesky | `respx` on `bsky.social` | None |
 | reddit | N/A (asyncpraw, no direct HTTP) | `unittest.mock.patch` on `_build_reddit_client` + `asyncpraw.models` MagicMock |
 | youtube | N/A (`_client.py` helpers injected) | `unittest.mock.patch` on `search_videos_page`, `fetch_videos_batch`, `make_api_request` |
 | rss_feeds | `respx` on feed URLs | None (feedparser parses real XML from response body) |

@@ -28,8 +28,16 @@ import logging
 
 from celery import Celery
 from celery.signals import task_postrun, worker_process_init
+from dotenv import load_dotenv
 
 _logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# F-07/F-08 fix: Load .env values into os.environ so CredentialPool can
+# access arena API keys via env var fallback
+# ---------------------------------------------------------------------------
+
+load_dotenv()
 
 from issue_observatory.config.settings import get_settings
 

@@ -423,8 +423,9 @@ class TikTokCollector(ArenaCollector):
         Returns:
             Estimated credit cost as a non-negative integer.
         """
-        if tier != Tier.FREE:
-            return 0
+        # TikTok Research API is free (no monetary cost).  API request
+        # quotas are managed internally but are not monetary credits.
+        return 0
 
         all_terms = list(terms or [])
         if not all_terms:
@@ -473,7 +474,10 @@ class TikTokCollector(ArenaCollector):
         try:
             cred = await self._get_credential()
             token = await self._get_access_token(cred)
-            today = datetime.now(tz=timezone.utc).strftime(TIKTOK_DATE_FORMAT)
+            # Use a date 7 days ago to avoid TikTok's data freshness lag
+            health_check_date = (datetime.now(tz=timezone.utc) - timedelta(days=7)).strftime(
+                TIKTOK_DATE_FORMAT
+            )
             async with self._build_http_client() as client:
                 body = {
                     "query": {
@@ -490,15 +494,19 @@ class TikTokCollector(ArenaCollector):
                             },
                         ]
                     },
-                    "start_date": today,
-                    "end_date": today,
+                    "start_date": health_check_date,
+                    "end_date": health_check_date,
                     "max_count": 1,
-                    "fields": "id,video_description",
                 }
+                # Fields must be in URL query string, not JSON body
+                url_with_fields = f"{TIKTOK_VIDEO_QUERY_URL}?fields=id,video_description"
                 response = await client.post(
-                    TIKTOK_VIDEO_QUERY_URL,
+                    url_with_fields,
                     json=body,
-                    headers={"Authorization": f"Bearer {token}"},
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -683,15 +691,17 @@ class TikTokCollector(ArenaCollector):
         body: dict[str, Any],
         token: str,
         cred_id: str,
+        fields: str | None = None,
     ) -> dict[str, Any]:
         """Make a rate-limited POST request to the TikTok Research API.
 
         Args:
             client: Shared HTTP client.
-            url: Endpoint URL.
+            url: Endpoint URL (base URL without query params).
             body: JSON request body.
             token: Bearer access token.
             cred_id: Credential ID for rate-limit key.
+            fields: Optional comma-separated field list to append as query param.
 
         Returns:
             Parsed JSON response dict.
@@ -702,11 +712,22 @@ class TikTokCollector(ArenaCollector):
             ArenaCollectionError: On other non-2xx responses.
         """
         await self._wait_for_rate_limit(cred_id)
+
+        # TikTok Research API requires 'fields' parameter in URL query string,
+        # not in the JSON body. Append it to the URL if provided.
+        request_url = url
+        if fields:
+            separator = "&" if "?" in url else "?"
+            request_url = f"{url}{separator}fields={fields}"
+
         try:
             response = await client.post(
-                url,
+                request_url,
                 json=body,
-                headers={"Authorization": f"Bearer {token}"},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
             )
             response.raise_for_status()
             return response.json()
@@ -776,14 +797,15 @@ class TikTokCollector(ArenaCollector):
                 "start_date": start_date,
                 "end_date": end_date,
                 "max_count": page_size,
-                "fields": TIKTOK_VIDEO_FIELDS,
             }
             if cursor:
                 body["cursor"] = cursor
             if search_id:
                 body["search_id"] = search_id
 
-            data = await self._make_request(client, TIKTOK_VIDEO_QUERY_URL, body, token, cred_id)
+            data = await self._make_request(
+                client, TIKTOK_VIDEO_QUERY_URL, body, token, cred_id, fields=TIKTOK_VIDEO_FIELDS
+            )
 
             # Check for API-level errors inside the response body.
             api_error = data.get("error")
@@ -830,12 +852,10 @@ class TikTokCollector(ArenaCollector):
         """
         async with self._build_http_client() as client:
             try:
-                body = {
-                    "username": username,
-                    "fields": "display_name,bio_description,avatar_url,is_verified,follower_count,following_count,likes_count,video_count",
-                }
+                body = {"username": username}
+                fields = "display_name,bio_description,avatar_url,is_verified,follower_count,following_count,likes_count,video_count"
                 data = await self._make_request(
-                    client, TIKTOK_USER_INFO_URL, body, token, cred_id
+                    client, TIKTOK_USER_INFO_URL, body, token, cred_id, fields=fields
                 )
                 return data.get("data")
             except ArenaCollectionError:

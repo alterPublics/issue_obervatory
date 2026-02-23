@@ -14,7 +14,7 @@ Bluesky is a decentralized social network built on the AT Protocol. As of early 
 
 **Role in Danish discourse**: Bluesky's Danish user base is small but growing, particularly among journalists, researchers, and tech-oriented users who migrated from X/Twitter. With X/Twitter at only 13% penetration in Denmark, Bluesky captures part of the public debate community that has left X. The `lang:da` filter enables targeted collection of Danish-language content. While the total volume of Danish content is much lower than on Facebook or X/Twitter, Bluesky disproportionately captures media professionals and opinion leaders.
 
-**Access model**: Fully open. All public data available for free. No API keys required for read access via the public API endpoint (`public.api.bsky.app`). Authenticated access available for higher rate limits and write operations.
+**Access model**: Fully open. All public data available for free. As of early 2026, authentication is required for read access via the main API endpoint (`bsky.social`). Use handle + app password to obtain a session token.
 
 ---
 
@@ -34,17 +34,17 @@ Bluesky is a free-only arena. The AT Protocol's openness means there is no need 
 
 ### Public API (Search and Lookup)
 
-**Base URL**: `https://public.api.bsky.app`
+**Base URL**: `https://bsky.social`
 
 **Key Endpoints**:
 
 | Endpoint | Method | Description | Auth Required |
 |----------|--------|-------------|---------------|
-| `app.bsky.feed.searchPosts` | GET | Full-text post search with filters | No |
-| `app.bsky.actor.searchActors` | GET | Search for users by name/handle | No |
-| `app.bsky.feed.getAuthorFeed` | GET | Get posts by a specific user | No |
-| `app.bsky.feed.getPostThread` | GET | Get a post and its reply thread | No |
-| `app.bsky.actor.getProfile` | GET | Get user profile details | No |
+| `app.bsky.feed.searchPosts` | GET | Full-text post search with filters | Yes (as of 2026) |
+| `app.bsky.actor.searchActors` | GET | Search for users by name/handle | Yes (as of 2026) |
+| `app.bsky.feed.getAuthorFeed` | GET | Get posts by a specific user | Yes (as of 2026) |
+| `app.bsky.feed.getPostThread` | GET | Get a post and its reply thread | Yes (as of 2026) |
+| `app.bsky.actor.getProfile` | GET | Get user profile details | Yes (as of 2026) |
 | `app.bsky.feed.getTimeline` | GET | Authenticated user's timeline | Yes |
 
 **Search endpoint details** (`app.bsky.feed.searchPosts`):
@@ -62,14 +62,14 @@ Bluesky is a free-only arena. The AT Protocol's openness means there is no need 
 
 **Search query syntax**: Supports Lucene operators including `AND`, `OR`, `NOT`, quoted phrases, and parentheses for grouping.
 
-**Authentication** (optional, for higher rate limits):
-- Create an app password at bsky.app settings
-- Use `com.atproto.server.createSession` to obtain an access token
-- Pass token in `Authorization: Bearer <token>` header
+**Authentication** (required as of early 2026):
+- Create an app password at bsky.app settings (Settings > App Passwords)
+- Use `com.atproto.server.createSession` to obtain an access token (JWT)
+- Pass token in `Authorization: Bearer <token>` header on all subsequent requests
+- Session tokens are valid for a limited time; refresh as needed
 
 **Rate limits**:
-- Unauthenticated: 3,000 requests per 5 minutes (per IP)
-- Authenticated: Higher limits (exact numbers not published, but substantially more generous)
+- Authenticated: 3,000 requests per 5 minutes (per account)
 - Rate limit headers returned: `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`
 
 ### Jetstream Firehose (Real-Time)
@@ -156,10 +156,9 @@ Mapping to the Universal Content Record schema:
 
 | Tier | Credential Fields | CredentialPool `platform` value |
 |------|------------------|-------------------------------|
-| Free (unauthenticated) | None | N/A |
-| Free (authenticated, optional) | `{"identifier": "handle.bsky.social", "password": "app-password"}` | `"bluesky"` |
+| Free | `{"handle": "handle.bsky.social", "app_password": "xxxx-xxxx-xxxx-xxxx"}` | `"bluesky"` |
 
-**Recommendation**: Start unauthenticated. Only add authenticated credentials to the CredentialPool if rate limits become a constraint. App passwords (not main account passwords) should be used for authentication.
+**Recommendation**: Use app passwords (not main account passwords) for authentication. Create app passwords at bsky.app Settings > App Passwords. Store as `BLUESKY_HANDLE` and `BLUESKY_APP_PASSWORD` in the `.env` file or add via the admin credentials panel.
 
 ---
 
@@ -167,12 +166,11 @@ Mapping to the Universal Content Record schema:
 
 | Access Type | Rate Limit | Reset Window | Notes |
 |-------------|-----------|--------------|-------|
-| Unauthenticated | 3,000 req / 5 min | Rolling 5-minute window | Per IP address |
-| Authenticated | Higher (exact limit unpublished) | Rolling window | Per account |
+| Authenticated | 3,000 req / 5 min | Rolling 5-minute window | Per account (required as of 2026) |
 | Jetstream | No rate limit | N/A | Bandwidth-limited only |
 
 **Multi-account considerations**:
-- Unauthenticated access is generous enough for most Danish collection needs. At 3,000 req/5 min, with 100 results per search request, a single IP can retrieve 300,000 posts per 5-minute window.
+- Authenticated access at 3,000 req/5 min is generous enough for most Danish collection needs. With 100 results per search request, a single account can retrieve 300,000 posts per 5-minute window.
 - Multiple accounts are unnecessary unless the project scales to very high-volume collection across many query designs simultaneously.
 - If multi-account is needed: create separate Bluesky accounts with app passwords. No phone verification required. No known ban risk for read-only API access.
 
@@ -237,8 +235,10 @@ Mapping to the Universal Content Record schema:
    - `app.bsky.embed.record` -- quoted post reference
    - `app.bsky.embed.recordWithMedia` -- quoted post with images
 
-6. **Health check**: `GET https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=test&limit=1` -- verify 200 response and valid JSON.
+6. **Authentication flow**: On first API request, call `com.atproto.server.createSession` with `identifier` (handle) and `password` (app password) to obtain `accessJwt`. Cache this token for subsequent requests. Include it in all API calls via `Authorization: Bearer {accessJwt}` header.
 
-7. **Credit cost**: 0 credits for all operations (free tier only). No credit deduction needed.
+7. **Health check**: Authenticate, then `GET https://bsky.social/xrpc/app.bsky.feed.searchPosts?q=test&limit=1` -- verify 200 response and valid JSON.
 
-8. **Python SDK**: Use the `atproto` package for typed API access. It handles session management, XRPC calls, and firehose subscription. Avoid raw HTTP calls.
+8. **Credit cost**: 0 credits for all operations (free tier only). No credit deduction needed.
+
+9. **Python SDK**: The collector uses `httpx.AsyncClient` for direct API calls rather than the `atproto` package, to maintain consistency with other arena collectors. Session management is implemented manually via the `_authenticate()` method.

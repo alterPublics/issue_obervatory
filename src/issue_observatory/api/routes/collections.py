@@ -61,6 +61,56 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
+# Helper: normalize arenas_config to flat {platform_name: tier} dict
+# ---------------------------------------------------------------------------
+
+
+def _normalize_arenas_config(raw: dict, default_tier: str = "free") -> dict[str, str]:
+    """Normalize an arenas_config JSONB to a flat {platform_name: tier} dict.
+
+    Handles both the nested format from the UI grid::
+
+        {"arenas": [{"id": "bluesky", "enabled": true, "tier": "free"}, ...]}
+
+    and the flat legacy format::
+
+        {"bluesky": "free", "youtube": "medium"}
+
+    Custom config keys (e.g. "reddit": {"custom_subreddits": [...]}) and
+    internal keys (prefixed with ``_``) are skipped.
+
+    Args:
+        raw: The raw arenas_config dict from the database.
+        default_tier: Fallback tier for entries without an explicit tier.
+
+    Returns:
+        Dict mapping platform_name to tier string for each enabled arena.
+    """
+    if not raw:
+        return {}
+
+    result: dict[str, str] = {}
+
+    if "arenas" in raw and isinstance(raw["arenas"], list):
+        for entry in raw["arenas"]:
+            if isinstance(entry, dict) and entry.get("enabled", True):
+                platform_id = entry.get("id") or entry.get("platform_name")
+                tier = entry.get("tier", default_tier)
+                if platform_id:
+                    result[platform_id] = tier
+    else:
+        for key, value in raw.items():
+            if key.startswith("_") or key == "languages":
+                continue
+            if isinstance(value, str):
+                result[key] = value
+            elif isinstance(value, dict) and "tier" in value:
+                result[key] = value["tier"]
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Helper: template resolver
 # ---------------------------------------------------------------------------
 
@@ -363,12 +413,21 @@ async def create_collection_run(  # type: ignore[misc]
     # Merge: query design config takes precedence; launcher config fills gaps.
     merged_arenas_config: dict = {**launcher_arena_config, **design_arena_config}
 
+    # Normalize to flat {platform_name: tier} for date checks and credit
+    # estimation.  The raw merged config (which may contain custom source
+    # lists and the nested "arenas" format) is persisted on the run row so
+    # the dispatch task can read custom configs.
+    flat_arenas: dict[str, str] = _normalize_arenas_config(
+        merged_arenas_config, default_tier=payload.tier,
+    )
+
     logger.debug(
         "tier_precedence_resolved",
         run_global_tier=payload.tier,
         design_arenas_count=len(design_arena_config),
         launcher_arenas_count=len(launcher_arena_config),
         merged_arenas_count=len(merged_arenas_config),
+        flat_arenas_count=len(flat_arenas),
     )
 
     # -----------------------------------------------------------------------
@@ -387,7 +446,7 @@ async def create_collection_run(  # type: ignore[misc]
         limited_arenas: list[str] = []
 
         # Check all arenas that are enabled in the merged config
-        for platform_name in merged_arenas_config.keys():
+        for platform_name in flat_arenas:
             try:
                 collector_cls = get_arena(platform_name)
                 temporal_mode = getattr(collector_cls, "temporal_mode", None)
@@ -414,7 +473,7 @@ async def create_collection_run(  # type: ignore[misc]
     estimate = await credit_svc.estimate(
         query_design_id=payload.query_design_id,
         tier=payload.tier,
-        arenas_config=merged_arenas_config,
+        arenas_config=flat_arenas,
         date_from=payload.date_from,
         date_to=payload.date_to,
     )
@@ -471,7 +530,7 @@ async def create_collection_run(  # type: ignore[misc]
         for platform_name, arena_credits in per_arena.items():
             if arena_credits <= 0:
                 continue
-            arena_tier = merged_arenas_config.get(platform_name, payload.tier)
+            arena_tier = flat_arenas.get(platform_name, payload.tier)
             try:
                 await credit_svc.reserve(
                     user_id=current_user.id,
@@ -701,13 +760,16 @@ async def estimate_collection_credits(
 
         # Merge arena config: query design base + launcher override
         merged_arenas_config = {**query_design.arenas_config, **payload.arenas_config}
+        flat_arenas_est = _normalize_arenas_config(
+            merged_arenas_config, default_tier=payload.tier,
+        )
 
         # Use CreditService to compute the estimate
         credit_service = CreditService(db)
         estimate = await credit_service.estimate(
             query_design_id=payload.query_design_id,
             tier=payload.tier,
-            arenas_config=merged_arenas_config,
+            arenas_config=flat_arenas_est,
             date_from=payload.date_from,
             date_to=payload.date_to,
         )

@@ -221,7 +221,7 @@ class TestCollectByTerms:
         """collect_by_terms() returns non-empty list when API returns articles."""
         fixture = _load_artlist_fixture()
 
-        # GDELT issues two queries per term (sourcecountry + sourcelang)
+        # GDELT issues one query per term (sourcecountry:DA filter)
         respx.get(GDELT_DOC_API_BASE).mock(
             return_value=httpx.Response(
                 200,
@@ -245,7 +245,7 @@ class TestCollectByTerms:
     @pytest.mark.asyncio
     @respx.mock
     async def test_collect_by_terms_deduplicates_by_url(self) -> None:
-        """collect_by_terms() deduplicates records with the same URL across queries."""
+        """collect_by_terms() deduplicates records with the same URL."""
         fixture = _load_artlist_fixture()  # both articles have unique URLs
 
         respx.get(GDELT_DOC_API_BASE).mock(
@@ -262,9 +262,9 @@ class TestCollectByTerms:
                 terms=["test"], tier=Tier.FREE, max_results=100
             )
 
-        # The second GDELT query (sourcelang) returns the same articles → they should be deduped
+        # Each URL should appear only once
         urls = [r["url"] for r in records]
-        assert len(urls) == len(set(urls)), "Expected deduplicated URLs across both queries"
+        assert len(urls) == len(set(urls)), "Expected deduplicated URLs"
 
     @pytest.mark.asyncio
     @respx.mock

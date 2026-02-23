@@ -19,6 +19,7 @@ completion)::
         "platform": "bluesky",
         "status": "running",        # pending | running | completed | failed
         "records_collected": 47,
+        "duplicates_skipped": 3,
         "error_message": null,
         "elapsed_seconds": 12.4
     }
@@ -43,6 +44,7 @@ Usage in arena tasks::
         platform="bluesky",
         status="running",
         records_collected=0,
+        duplicates_skipped=0,
         error_message=None,
         elapsed_seconds=0.0,
     )
@@ -71,6 +73,7 @@ def publish_task_update(
     platform: str,
     status: str,
     records_collected: int = 0,
+    duplicates_skipped: int = 0,
     error_message: Optional[str] = None,
     elapsed_seconds: float = 0.0,
 ) -> None:
@@ -93,6 +96,7 @@ def publish_task_update(
         status: Task status string: ``"pending"``, ``"running"``,
             ``"completed"``, or ``"failed"``.
         records_collected: Number of records collected so far in this task.
+        duplicates_skipped: Number of duplicate records skipped (already in DB).
         error_message: Human-readable error description, or ``None``.
         elapsed_seconds: Wall-clock seconds since this task started, or 0.0
             if not tracked by the caller.
@@ -106,6 +110,7 @@ def publish_task_update(
             "platform": platform,
             "status": status,
             "records_collected": records_collected,
+            "duplicates_skipped": duplicates_skipped,
             "error_message": error_message,
             "elapsed_seconds": round(elapsed_seconds, 1),
         }
