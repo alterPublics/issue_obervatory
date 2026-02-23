@@ -6,7 +6,9 @@ Via Ritzau is operated by Ritzaus Bureau A/S, Denmark's national news agency.
 Two collection modes are supported:
 
 - :meth:`RitzauViaCollector.collect_by_terms` — full-text keyword search
-  across release titles and bodies with ``language=da`` filter.
+  across release titles and bodies with ``language=da`` filter. Applies
+  client-side filtering to ensure only press releases matching the search
+  terms are returned, compensating for the API's loose query matching.
 - :meth:`RitzauViaCollector.collect_by_actors` — publisher-based collection
   using Via Ritzau publisher IDs.
 
@@ -152,6 +154,16 @@ class RitzauViaCollector(ArenaCollector):
 
         all_records: list[dict[str, Any]] = []
 
+        # Build a flat list of all individual search terms for client-side filtering.
+        # This ensures we match ANY term from the query design, not just the API's
+        # loose interpretation of the query parameter.
+        all_search_terms: list[str] = []
+        if term_groups is not None:
+            for group in term_groups:
+                all_search_terms.extend(group)
+        else:
+            all_search_terms = list(terms)
+
         async with self._build_http_client() as client:
             for term in effective_terms:
                 if len(all_records) >= effective_max:
@@ -171,6 +183,7 @@ class RitzauViaCollector(ArenaCollector):
                     client=client,
                     params=params,
                     max_results=remaining,
+                    search_terms=all_search_terms,
                 )
                 all_records.extend(records)
 
@@ -245,6 +258,7 @@ class RitzauViaCollector(ArenaCollector):
                     client=client,
                     params=params,
                     max_results=remaining,
+                    search_terms=None,  # No filtering for actor-based collection.
                 )
                 all_records.extend(records)
 
@@ -328,6 +342,11 @@ class RitzauViaCollector(ArenaCollector):
         normalized["platform_id"] = release_id
         if media_urls:
             normalized["media_urls"] = media_urls
+
+        # Populate search_terms_matched if present (from client-side filtering).
+        if "_matched_terms" in raw_item:
+            normalized["search_terms_matched"] = raw_item["_matched_terms"]
+
         return normalized
 
     async def health_check(self) -> dict[str, Any]:
@@ -399,6 +418,38 @@ class RitzauViaCollector(ArenaCollector):
             return self._http_client  # type: ignore[return-value]
         return httpx.AsyncClient(timeout=30.0)
 
+    def _match_search_terms(
+        self, item: dict[str, Any], search_terms: list[str]
+    ) -> list[str]:
+        """Check which search terms match the given press release item.
+
+        Performs case-insensitive matching against the headline and body text.
+        Supports Danish characters (æ, ø, å).
+
+        Args:
+            item: Raw press release dict from the Via Ritzau API.
+            search_terms: List of search terms to match against.
+
+        Returns:
+            List of search terms that matched (may be empty).
+        """
+        # Extract searchable text fields.
+        headline = (item.get("headline") or "").lower()
+        body = (item.get("body") or "").lower()
+        sub_headline = (item.get("subHeadline") or "").lower()
+        summary = (item.get("summary") or "").lower()
+
+        # Combine all searchable text.
+        searchable_text = f"{headline} {sub_headline} {summary} {body}"
+
+        matched: list[str] = []
+        for term in search_terms:
+            # Case-insensitive match.
+            if term.lower() in searchable_text:
+                matched.append(term)
+
+        return matched
+
     async def _wait_for_rate_limit(self, suffix: str = "default") -> None:
         """Wait for a rate-limit slot before making an API call.
 
@@ -463,6 +514,7 @@ class RitzauViaCollector(ArenaCollector):
         client: httpx.AsyncClient,
         params: dict[str, Any],
         max_results: int,
+        search_terms: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Paginate through releases using offset-based pagination.
 
@@ -470,9 +522,11 @@ class RitzauViaCollector(ArenaCollector):
             client: Shared HTTP client.
             params: Base query parameters (query, publisherId, language, etc.).
             max_results: Maximum records to retrieve.
+            search_terms: Optional list of search terms for client-side filtering.
+                If provided, only records matching at least one term are returned.
 
         Returns:
-            List of normalized records.
+            List of normalized records that match the search terms (if provided).
         """
         records: list[dict[str, Any]] = []
         offset = 0
@@ -501,6 +555,15 @@ class RitzauViaCollector(ArenaCollector):
             for item in items:
                 if len(records) >= max_results:
                     break
+
+                # Apply client-side filtering if search terms are provided.
+                if search_terms:
+                    matched_terms = self._match_search_terms(item, search_terms)
+                    if not matched_terms:
+                        continue  # Skip items that don't match any search term.
+                    # Store matched terms in the raw item for normalize() to use.
+                    item["_matched_terms"] = matched_terms
+
                 records.append(self.normalize(item))
 
             if len(items) < page_size:

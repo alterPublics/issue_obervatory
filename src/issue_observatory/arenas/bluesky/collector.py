@@ -1,6 +1,6 @@
 """Bluesky arena collector implementation.
 
-Collects posts from Bluesky via the AT Protocol public API (free, unauthenticated).
+Collects posts from Bluesky via the AT Protocol API with authentication.
 
 Two collection modes are supported:
 
@@ -8,6 +8,10 @@ Two collection modes are supported:
   ``app.bsky.feed.searchPosts`` with ``lang=da`` filter and cursor pagination.
 - :meth:`BlueskyCollector.collect_by_actors` — author feed retrieval via
   ``app.bsky.feed.getAuthorFeed`` with cursor pagination.
+
+Authentication uses app passwords from the credential pool. The collector
+obtains a session token via ``com.atproto.server.createSession`` and includes
+it in all subsequent requests via the ``Authorization: Bearer {token}`` header.
 
 Rate limiting uses :meth:`RateLimiter.wait_for_slot` with key
 ``ratelimit:bluesky:public:{credential_id}``.
@@ -31,6 +35,7 @@ from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.bluesky.config import (
     BLUESKY_TIERS,
+    BSKY_API_BASE,
     BSKY_AUTHOR_FEED_ENDPOINT,
     BSKY_SEARCH_POSTS_ENDPOINT,
     BSKY_WEB_BASE,
@@ -55,10 +60,14 @@ _RATE_LIMIT_WINDOW_SECONDS: int = 1
 
 @register
 class BlueskyCollector(ArenaCollector):
-    """Collects Bluesky posts via the AT Protocol public API.
+    """Collects Bluesky posts via the AT Protocol API with authentication.
 
     Only ``Tier.FREE`` is supported — Bluesky does not have paid API tiers.
-    No credentials are required for read-only public API access.
+    Credentials (handle + app password) are required for API access.
+
+    The collector obtains a session token via ``com.atproto.server.createSession``
+    and uses it for all subsequent requests. The session token is cached for the
+    lifetime of the collector instance.
 
     Class Attributes:
         arena_name: ``"bluesky"``
@@ -66,8 +75,7 @@ class BlueskyCollector(ArenaCollector):
         supported_tiers: ``[Tier.FREE]``
 
     Args:
-        credential_pool: Optional; accepted for interface consistency but
-            not required (Bluesky public API is unauthenticated).
+        credential_pool: Credential pool for accessing Bluesky credentials.
         rate_limiter: Optional Redis-backed rate limiter.
         http_client: Optional injected :class:`httpx.AsyncClient` for testing.
     """
@@ -86,6 +94,8 @@ class BlueskyCollector(ArenaCollector):
         super().__init__(credential_pool=credential_pool, rate_limiter=rate_limiter)
         self._http_client = http_client
         self._normalizer = Normalizer()
+        self._session_token: str | None = None
+        self._current_credential: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------
     # ArenaCollector abstract method implementations
@@ -165,32 +175,35 @@ class BlueskyCollector(ArenaCollector):
         all_records: list[dict[str, Any]] = []
         seen_hashes: set[str] = set()
 
-        async with self._build_http_client() as client:
-            for query in query_strings:
-                if len(all_records) >= effective_max:
-                    break
-                remaining = effective_max - len(all_records)
-                records = await self._search_term(
-                    client=client,
-                    term=query,
-                    max_results=remaining,
-                    since=since_str,
-                    until=until_str,
-                )
-                for rec in records:
-                    h = rec.get("content_hash", "")
-                    if h and h in seen_hashes:
-                        continue
-                    if h:
-                        seen_hashes.add(h)
-                    all_records.append(rec)
+        try:
+            async with self._build_http_client() as client:
+                for query in query_strings:
+                    if len(all_records) >= effective_max:
+                        break
+                    remaining = effective_max - len(all_records)
+                    records = await self._search_term(
+                        client=client,
+                        term=query,
+                        max_results=remaining,
+                        since=since_str,
+                        until=until_str,
+                    )
+                    for rec in records:
+                        h = rec.get("content_hash", "")
+                        if h and h in seen_hashes:
+                            continue
+                        if h:
+                            seen_hashes.add(h)
+                        all_records.append(rec)
 
-        logger.info(
-            "bluesky: collected %d posts for %d queries",
-            len(all_records),
-            len(query_strings),
-        )
-        return all_records
+            logger.info(
+                "bluesky: collected %d posts for %d queries",
+                len(all_records),
+                len(query_strings),
+            )
+            return all_records
+        finally:
+            await self._release_credential()
 
     async def collect_by_actors(
         self,
@@ -239,26 +252,29 @@ class BlueskyCollector(ArenaCollector):
 
         all_records: list[dict[str, Any]] = []
 
-        async with self._build_http_client() as client:
-            for actor_id in actor_ids:
-                if len(all_records) >= effective_max:
-                    break
-                remaining = effective_max - len(all_records)
-                records = await self._fetch_author_feed(
-                    client=client,
-                    actor=actor_id,
-                    max_results=remaining,
-                    date_from=date_from_dt,
-                    date_to=date_to_dt,
-                )
-                all_records.extend(records)
+        try:
+            async with self._build_http_client() as client:
+                for actor_id in actor_ids:
+                    if len(all_records) >= effective_max:
+                        break
+                    remaining = effective_max - len(all_records)
+                    records = await self._fetch_author_feed(
+                        client=client,
+                        actor=actor_id,
+                        max_results=remaining,
+                        date_from=date_from_dt,
+                        date_to=date_to_dt,
+                    )
+                    all_records.extend(records)
 
-        logger.info(
-            "bluesky: collected %d posts for %d actors",
-            len(all_records),
-            len(actor_ids),
-        )
-        return all_records
+            logger.info(
+                "bluesky: collected %d posts for %d actors",
+                len(all_records),
+                len(actor_ids),
+            )
+            return all_records
+        finally:
+            await self._release_credential()
 
     def get_tier_config(self, tier: Tier) -> TierConfig | None:
         """Return the tier configuration for this arena.
@@ -343,10 +359,10 @@ class BlueskyCollector(ArenaCollector):
         return normalized
 
     async def health_check(self) -> dict[str, Any]:
-        """Verify that the Bluesky public API is reachable.
+        """Verify that the Bluesky API is reachable and credentials work.
 
-        Sends a minimal ``searchPosts`` request with ``q=test&limit=1`` and
-        verifies a valid JSON response is returned.
+        Attempts to authenticate and make a minimal ``searchPosts`` request
+        with ``q=test&limit=1`` to verify API access.
 
         Returns:
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
@@ -360,9 +376,21 @@ class BlueskyCollector(ArenaCollector):
         }
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
+                # Authenticate first
+                try:
+                    token = await self._authenticate(client)
+                except ArenaCollectionError as auth_error:
+                    return {
+                        **base,
+                        "status": "degraded",
+                        "detail": f"Authentication failed: {auth_error}",
+                    }
+
+                # Test search endpoint
                 response = await client.get(
                     BSKY_SEARCH_POSTS_ENDPOINT,
                     params={"q": "test", "limit": 1},
+                    headers={"Authorization": f"Bearer {token}"},
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -374,10 +402,16 @@ class BlueskyCollector(ArenaCollector):
                     }
                 return {**base, "status": "ok"}
         except httpx.HTTPStatusError as exc:
+            error_detail = f"HTTP {exc.response.status_code}"
+            try:
+                error_data = exc.response.json()
+                error_detail = f"{error_detail}: {error_data.get('message', error_data)}"
+            except Exception:
+                error_detail = f"{error_detail}: {exc.response.text[:100]}"
             return {
                 **base,
                 "status": "degraded",
-                "detail": f"HTTP {exc.response.status_code} from Bluesky public API",
+                "detail": f"{error_detail} from {BSKY_SEARCH_POSTS_ENDPOINT}",
             }
         except httpx.RequestError as exc:
             return {**base, "status": "down", "detail": f"Connection error: {exc}"}
@@ -391,6 +425,97 @@ class BlueskyCollector(ArenaCollector):
         if self._http_client is not None:
             return self._http_client  # type: ignore[return-value]
         return httpx.AsyncClient(timeout=30.0)
+
+    async def _authenticate(self, client: httpx.AsyncClient) -> str:
+        """Authenticate with Bluesky and obtain a session token.
+
+        Uses the credential pool to get handle + app password, then calls
+        ``com.atproto.server.createSession`` to obtain an access token.
+
+        Args:
+            client: Shared HTTP client.
+
+        Returns:
+            Bearer access token string.
+
+        Raises:
+            ArenaCollectionError: If credentials are unavailable or authentication fails.
+        """
+        if self._session_token is not None:
+            return self._session_token
+
+        if self.credential_pool is None:
+            raise ArenaCollectionError(
+                "Bluesky search requires authentication. "
+                "Set BLUESKY_HANDLE and BLUESKY_APP_PASSWORD in your .env file, "
+                "or add credentials via the admin panel.",
+                arena=self.arena_name,
+                platform=self.platform_name,
+            )
+
+        # Acquire credentials from pool
+        cred = await self.credential_pool.acquire(
+            platform="bluesky",
+            tier="free",
+        )
+        if cred is None:
+            raise ArenaCollectionError(
+                "Bluesky search requires authentication. "
+                "Set BLUESKY_HANDLE and BLUESKY_APP_PASSWORD in your .env file, "
+                "or add credentials via the admin panel.",
+                arena=self.arena_name,
+                platform=self.platform_name,
+            )
+
+        self._current_credential = cred
+        handle = cred.get("handle")
+        app_password = cred.get("app_password")
+
+        if not handle or not app_password:
+            raise ArenaCollectionError(
+                "Bluesky credentials are incomplete. "
+                "Both BLUESKY_HANDLE and BLUESKY_APP_PASSWORD are required.",
+                arena=self.arena_name,
+                platform=self.platform_name,
+            )
+
+        # Call createSession endpoint
+        auth_endpoint = f"{BSKY_API_BASE}/com.atproto.server.createSession"
+        try:
+            response = await client.post(
+                auth_endpoint,
+                json={"identifier": handle, "password": app_password},
+            )
+            response.raise_for_status()
+            data = response.json()
+            access_token = data.get("accessJwt")
+            if not access_token:
+                raise ArenaCollectionError(
+                    f"Bluesky authentication response missing accessJwt: {data}",
+                    arena=self.arena_name,
+                    platform=self.platform_name,
+                )
+            self._session_token = access_token
+            logger.info("bluesky: authenticated as %s", handle)
+            return access_token
+        except httpx.HTTPStatusError as exc:
+            error_detail = f"HTTP {exc.response.status_code}"
+            try:
+                error_data = exc.response.json()
+                error_detail = f"{error_detail}: {error_data.get('message', error_data)}"
+            except Exception:
+                error_detail = f"{error_detail}: {exc.response.text[:200]}"
+            raise ArenaCollectionError(
+                f"Bluesky authentication failed at {auth_endpoint}: {error_detail}",
+                arena=self.arena_name,
+                platform=self.platform_name,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise ArenaCollectionError(
+                f"Bluesky authentication connection error: {exc}",
+                arena=self.arena_name,
+                platform=self.platform_name,
+            ) from exc
 
     async def _wait_for_rate_limit(self, credential_id: str = "default") -> None:
         """Wait for a rate-limit slot before making an API call.
@@ -407,13 +532,35 @@ class BlueskyCollector(ArenaCollector):
             window_seconds=_RATE_LIMIT_WINDOW_SECONDS,
         )
 
+    async def _release_credential(self) -> None:
+        """Release the currently held credential back to the pool.
+
+        Called automatically at the end of collection to ensure credentials
+        are properly released for reuse by other tasks.
+        """
+        if self.credential_pool is None or self._current_credential is None:
+            return
+
+        cred_id = self._current_credential.get("id")
+        if cred_id:
+            try:
+                await self.credential_pool.release(credential_id=cred_id)
+                logger.debug("bluesky: released credential %s", cred_id)
+            except Exception as exc:
+                logger.warning("bluesky: failed to release credential %s: %s", cred_id, exc)
+        self._current_credential = None
+        self._session_token = None
+
     async def _make_request(
         self,
         client: httpx.AsyncClient,
         url: str,
         params: dict[str, Any],
     ) -> dict[str, Any]:
-        """Make a rate-limited GET request to the Bluesky public API.
+        """Make an authenticated, rate-limited GET request to the Bluesky API.
+
+        Obtains a session token on first call and includes it in the
+        Authorization header for all subsequent requests.
 
         Args:
             client: Shared HTTP client.
@@ -428,27 +575,42 @@ class BlueskyCollector(ArenaCollector):
             ArenaCollectionError: On other non-2xx responses or connection errors.
         """
         await self._wait_for_rate_limit()
+
+        # Authenticate if not already done
+        token = await self._authenticate(client)
+
         try:
-            response = await client.get(url, params=params)
+            response = await client.get(
+                url,
+                params=params,
+                headers={"Authorization": f"Bearer {token}"},
+            )
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429:
                 retry_after = float(exc.response.headers.get("Retry-After", 60))
                 raise ArenaRateLimitError(
-                    f"bluesky: 429 rate limit",
+                    f"bluesky: 429 rate limit from {url}",
                     retry_after=retry_after,
                     arena=self.arena_name,
                     platform=self.platform_name,
                 ) from exc
+            # Provide detailed error message
+            error_detail = f"HTTP {exc.response.status_code}"
+            try:
+                error_data = exc.response.json()
+                error_detail = f"{error_detail}: {error_data.get('message', error_data)}"
+            except Exception:
+                error_detail = f"{error_detail}: {exc.response.text[:200]}"
             raise ArenaCollectionError(
-                f"bluesky: HTTP {exc.response.status_code} from public API",
+                f"bluesky: {error_detail} from {url}",
                 arena=self.arena_name,
                 platform=self.platform_name,
             ) from exc
         except httpx.RequestError as exc:
             raise ArenaCollectionError(
-                f"bluesky: connection error: {exc}",
+                f"bluesky: connection error to {url}: {exc}",
                 arena=self.arena_name,
                 platform=self.platform_name,
             ) from exc

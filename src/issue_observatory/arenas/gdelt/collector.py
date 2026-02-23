@@ -367,13 +367,17 @@ class GDELTCollector(ArenaCollector):
                 }
 
         except httpx.HTTPStatusError as exc:
+            # Include response body snippet for diagnostic value
+            body_snippet = exc.response.text[:500] if exc.response.text else "(empty body)"
             return {
                 **base,
                 "status": "down" if exc.response.status_code >= 500 else "degraded",
-                "detail": f"HTTP {exc.response.status_code} from GDELT API",
+                "detail": f"HTTP {exc.response.status_code} from GDELT API — {body_snippet}",
             }
         except httpx.RequestError as exc:
-            return {**base, "status": "down", "detail": f"Connection error: {exc}"}
+            # Include exception type and message
+            error_detail = f"{type(exc).__name__}: {str(exc)}" if str(exc) else type(exc).__name__
+            return {**base, "status": "down", "detail": f"Connection error: {error_detail}"}
         except Exception as exc:  # noqa: BLE001
             return {**base, "status": "down", "detail": f"Unexpected error: {exc}"}
 
@@ -468,52 +472,74 @@ class GDELTCollector(ArenaCollector):
         try:
             response = await client.get(GDELT_DOC_API_BASE, params=params)
         except httpx.RequestError as exc:
+            # Build detailed error message with URL, exception type, and message
+            error_detail = f"{type(exc).__name__}: {str(exc)}" if str(exc) else type(exc).__name__
             raise ArenaCollectionError(
-                f"gdelt: request error for term='{term}': {exc}",
+                f"gdelt: request error for term='{term}' url='{GDELT_DOC_API_BASE}' — {error_detail}",
                 arena="news_media",
                 platform=self.platform_name,
             ) from exc
 
         if response.status_code == 429:
             retry_after = float(response.headers.get("Retry-After", 60))
+            # Include response body snippet for diagnostic value
+            body_snippet = response.text[:500] if response.text else "(empty body)"
             raise ArenaRateLimitError(
-                f"gdelt: HTTP 429 for term='{term}'",
+                f"gdelt: HTTP 429 for term='{term}' — {body_snippet}",
                 retry_after=retry_after,
                 arena="news_media",
                 platform=self.platform_name,
             )
 
         if response.status_code >= 500:
+            # Capture first 500 chars of response body for server errors
+            body_snippet = response.text[:500] if response.text else "(empty body)"
             raise ArenaCollectionError(
-                f"gdelt: server error HTTP {response.status_code} for term='{term}'",
+                f"gdelt: server error HTTP {response.status_code} for term='{term}' "
+                f"url='{GDELT_DOC_API_BASE}' — {body_snippet}",
                 arena="news_media",
                 platform=self.platform_name,
             )
 
         if response.status_code >= 400:
+            # Log detailed error for 4xx (but don't raise — these are skipped)
+            body_snippet = response.text[:500] if response.text else "(empty body)"
             logger.warning(
-                "gdelt: HTTP %d for term='%s' filter='%s' — skipping.",
+                "gdelt: HTTP %d for term='%s' filter='%s' url='%s' — %s — skipping.",
                 response.status_code,
                 term,
                 extra_filter,
+                GDELT_DOC_API_BASE,
+                body_snippet,
             )
             return []
 
         # GDELT sometimes returns HTML on errors — check content-type
         content_type = response.headers.get("content-type", "")
         if "json" not in content_type:
+            # Include first 500 chars of response for debugging
+            body_snippet = response.text[:500] if response.text else "(empty body)"
             logger.warning(
-                "gdelt: non-JSON response for term='%s' (content-type=%s) — skipping.",
+                "gdelt: non-JSON response for term='%s' filter='%s' (content-type=%s) — %s — skipping.",
                 term,
+                extra_filter,
                 content_type,
+                body_snippet,
             )
             return []
 
         try:
             data = response.json()
         except Exception as exc:  # noqa: BLE001
+            # Include exception type and first 500 chars of response body
+            body_snippet = response.text[:500] if response.text else "(empty body)"
+            error_detail = f"{type(exc).__name__}: {str(exc)}" if str(exc) else type(exc).__name__
             logger.warning(
-                "gdelt: JSON parse error for term='%s': %s — skipping.", term, exc
+                "gdelt: JSON parse error for term='%s' filter='%s' — %s — body: %s — skipping.",
+                term,
+                extra_filter,
+                error_detail,
+                body_snippet,
             )
             return []
 

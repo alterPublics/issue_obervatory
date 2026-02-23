@@ -82,7 +82,9 @@
       "WebFetch(domain:localhost)",
       "Bash(# Check .env file ls -la /Users/jakobbk/Documents/postdoc/codespace/issue_observatory/.env && echo \"\"exists\"\" || echo \"\"no .env\"\" # Check how the server gets the DB URL grep -r \"\"DATABASE_URL\"\" /Users/jakobbk/Documents/postdoc/codespace/issue_observatory/src/issue_observatory/config/)",
       "Bash(kill:*)",
-      "Bash(pkill:*)"
+      "Bash(pkill:*)",
+      "Bash(PGPASSWORD=observatory psql:*)",
+      "Bash(TOKEN=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwYzhlZmI3NS00ZGEwLTRkZWItOGZmOS03Yzk4OWQ5ZjQyYjAiLCJhdWQiOlsiZmFzdGFwaS11c2VyczphdXRoIl0sImV4cCI6MTc3MTgxMDk2NH0.lqPu4ch0rpb0QVZvuJDUy5FCTLCk3JeHTU9cJ75Xs90\")"
     ]
   }
 }

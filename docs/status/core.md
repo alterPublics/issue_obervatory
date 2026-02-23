@@ -1,5 +1,9 @@
 # Core Application Engineer — Status
 
+## Bug Fixes (Ongoing)
+
+- [x] F-07/F-08 credential pool env var fallback (2026-02-23): Fixed "No credential available" errors for arenas with .env-configured API keys when called from Celery workers. Root cause: `load_dotenv()` was only called in `api/main.py` (FastAPI), not in `workers/celery_app.py` (Celery). Pydantic Settings loads `.env` into its model but does NOT inject values into `os.environ`. `CredentialPool` reads from `os.environ` for env var fallback. Fix: added `from dotenv import load_dotenv` and `load_dotenv()` call to `workers/celery_app.py` before importing `Settings`, matching the pattern in `api/main.py`. Applies to all Celery workers and Beat scheduler. Decision record: `docs/decisions/F07_F08_credential_pool_env_var_fallback.md`.
+
 ## Socialt Bedrageri Recommendations (P2)
 
 - [x] SB-09 backend complete (2026-02-20): RSS feed autodiscovery. New `arenas/rss_feeds/feed_discovery.py` module with `discover_feeds(url)` function. Discovery algorithm: (1) fetch HTML, (2) parse `<link rel="alternate">` tags with RSS/Atom content types, (3) probe common feed paths (`/rss`, `/feed`, `/atom.xml`, etc.) if no tags found, (4) verify with HEAD requests. New endpoint `POST /query-designs/{design_id}/discover-feeds` accepts website URL, returns list of discovered feed URLs with titles and types for one-click addition to `arenas_config["rss"]["custom_feeds"]`. Added `beautifulsoup4>=4.12,<5.0` dependency to `pyproject.toml`. Documentation: `ADR-012-source-discovery-assistance.md`, `SB-09-SB-10-source-discovery.md`.

@@ -1244,8 +1244,12 @@ async def set_arena_config(
             ),
         )
 
-    raw_config = {"arenas": [entry.model_dump() for entry in payload.arenas]}
-    design.arenas_config = raw_config
+    # Preserve existing per-arena custom configs (GR-01 through GR-05) that were
+    # set via the PATCH endpoint (e.g. custom_subreddits, seed_articles, custom_feeds).
+    # Only overwrite the "arenas" key (tier/enable grid data).
+    existing_config: dict = dict(design.arenas_config) if design.arenas_config else {}
+    existing_config["arenas"] = [entry.model_dump() for entry in payload.arenas]
+    design.arenas_config = existing_config
 
     await db.commit()
     logger.info(
@@ -1253,7 +1257,7 @@ async def set_arena_config(
         design_id=str(design_id),
         arena_count=len(payload.arenas),
     )
-    return _raw_config_to_response(raw_config)
+    return _raw_config_to_response(existing_config)
 
 
 # ---------------------------------------------------------------------------

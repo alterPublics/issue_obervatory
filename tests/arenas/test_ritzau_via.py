@@ -436,12 +436,129 @@ class TestCollectByTerms:
             )
             collector = RitzauViaCollector()
             records = await collector.collect_by_terms(
-                terms=["test"],
+                terms=["grøn"],
                 tier=Tier.FREE,
                 max_results=2,
             )
 
         assert len(records) <= 2
+
+    @pytest.mark.asyncio
+    async def test_collect_by_terms_filters_by_search_terms(self) -> None:
+        """collect_by_terms() filters out press releases that don't match any search term."""
+        # Create a fixture with one matching and one non-matching release.
+        matching_release = _first_release()  # Contains "grøn omstilling"
+        non_matching_release = {
+            "id": 99999,
+            "headline": "Completely unrelated topic about pharmaceutical pricing",
+            "body": "<p>This press release has nothing to do with the search terms.</p>",
+            "url": "https://via.ritzau.dk/pressemeddelelse/99999/unrelated",
+            "language": "da",
+            "publishedAt": "2026-02-15T12:00:00Z",
+            "publisher": {"id": 999, "name": "Test Publisher"},
+            "channels": [],
+            "images": [],
+            "attachments": [],
+            "contacts": [],
+        }
+        mixed_fixture = [matching_release, non_matching_release]
+
+        with respx.mock:
+            respx.get(RITZAU_RELEASES_ENDPOINT).mock(
+                return_value=httpx.Response(200, json=mixed_fixture)
+            )
+            collector = RitzauViaCollector()
+            records = await collector.collect_by_terms(
+                terms=["grøn"],
+                tier=Tier.FREE,
+                max_results=10,
+            )
+
+        # Should return only 1 record (the matching one).
+        assert len(records) == 1
+        assert "grøn" in records[0]["title"].lower() or "grøn" in (records[0]["text_content"] or "").lower()
+
+    @pytest.mark.asyncio
+    async def test_collect_by_terms_populates_search_terms_matched(self) -> None:
+        """collect_by_terms() populates search_terms_matched field with matched terms."""
+        fixture = _load_releases_fixture()
+
+        with respx.mock:
+            respx.get(RITZAU_RELEASES_ENDPOINT).mock(
+                return_value=httpx.Response(200, json=fixture)
+            )
+            collector = RitzauViaCollector()
+            records = await collector.collect_by_terms(
+                terms=["grøn", "omstilling"],
+                tier=Tier.FREE,
+                max_results=10,
+            )
+
+        # First release should match both terms.
+        first_record = records[0]
+        assert "search_terms_matched" in first_record
+        assert isinstance(first_record["search_terms_matched"], list)
+        assert len(first_record["search_terms_matched"]) >= 1
+
+    @pytest.mark.asyncio
+    async def test_collect_by_terms_case_insensitive_matching(self) -> None:
+        """collect_by_terms() performs case-insensitive search term matching."""
+        fixture = [_first_release()]
+
+        with respx.mock:
+            respx.get(RITZAU_RELEASES_ENDPOINT).mock(
+                return_value=httpx.Response(200, json=fixture)
+            )
+            collector = RitzauViaCollector()
+            # Use uppercase search term but the content has lowercase.
+            records = await collector.collect_by_terms(
+                terms=["GRØN", "OMSTILLING"],
+                tier=Tier.FREE,
+                max_results=10,
+            )
+
+        # Should match despite case difference.
+        assert len(records) == 1
+        assert "GRØN" in records[0]["search_terms_matched"]
+
+    @pytest.mark.asyncio
+    async def test_collect_by_terms_danish_characters_in_matching(self) -> None:
+        """collect_by_terms() correctly matches Danish characters (æ, ø, å)."""
+        fixture = _load_releases_fixture()
+
+        with respx.mock:
+            respx.get(RITZAU_RELEASES_ENDPOINT).mock(
+                return_value=httpx.Response(200, json=fixture)
+            )
+            collector = RitzauViaCollector()
+            records = await collector.collect_by_terms(
+                terms=["Ålborg"],
+                tier=Tier.FREE,
+                max_results=10,
+            )
+
+        # Third fixture release has "Ålborg" in the headline.
+        assert len(records) == 1
+        assert "Ålborg" in records[0]["search_terms_matched"]
+        assert "Ålborg" in records[0]["title"]
+
+    @pytest.mark.asyncio
+    async def test_collect_by_terms_all_unmatched_returns_empty(self) -> None:
+        """collect_by_terms() returns empty list when no releases match search terms."""
+        fixture = _load_releases_fixture()
+
+        with respx.mock:
+            respx.get(RITZAU_RELEASES_ENDPOINT).mock(
+                return_value=httpx.Response(200, json=fixture)
+            )
+            collector = RitzauViaCollector()
+            records = await collector.collect_by_terms(
+                terms=["nonexistent_term_xyz"],
+                tier=Tier.FREE,
+                max_results=10,
+            )
+
+        assert records == []
 
 
 # ---------------------------------------------------------------------------

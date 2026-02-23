@@ -1272,6 +1272,8 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
 
     # --- Dispatch per-arena tasks (sync Celery calls) ---
     dispatched_arenas: list[str] = []
+    # Track tasks that need their celery_task_id updated in the DB
+    task_id_updates: list[tuple[str, str]] = []  # (platform_name, celery_task_id)
 
     for entry in arena_entries:
         platform_name = entry["platform_name"]
@@ -1284,6 +1286,20 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
                 "dispatch_batch_collection: no search terms for arena; skipping",
                 arena=platform_name,
             )
+            # Mark the CollectionTask as failed since there are no terms to collect
+            try:
+                from issue_observatory.workers._task_helpers import mark_task_failed  # noqa: PLC0415
+                asyncio.run(mark_task_failed(
+                    run_uuid,
+                    platform_name,
+                    "No search terms scoped to this arena (YF-01)",
+                ))
+            except Exception as mark_exc:
+                log.warning(
+                    "dispatch_batch_collection: failed to mark task as failed",
+                    arena=platform_name,
+                    error=str(mark_exc),
+                )
             continue
 
         # Derive the task module from the collector's actual module path so
@@ -1314,17 +1330,20 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
             )
 
         try:
-            celery_app.send_task(
+            # Capture the AsyncResult to get the celery_task_id
+            async_task = celery_app.send_task(
                 task_name,
                 kwargs=task_kwargs,
                 queue="celery",
             )
             dispatched_arenas.append(platform_name)
+            task_id_updates.append((platform_name, async_task.id))
             log.info(
                 "dispatch_batch_collection: dispatched arena task",
                 arena=platform_name,
                 tier=tier,
                 terms_count=len(arena_terms),
+                celery_task_id=async_task.id,
             )
         except Exception as dispatch_exc:
             log.error(
@@ -1332,7 +1351,37 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
                 arena=platform_name,
                 error=str(dispatch_exc),
             )
+            # Mark the task as failed in the DB
+            try:
+                from issue_observatory.workers._task_helpers import mark_task_failed  # noqa: PLC0415
+                asyncio.run(mark_task_failed(
+                    run_uuid,
+                    platform_name,
+                    f"Celery dispatch failed: {dispatch_exc}",
+                ))
+            except Exception as mark_exc:
+                log.warning(
+                    "dispatch_batch_collection: failed to mark task as failed",
+                    arena=platform_name,
+                    error=str(mark_exc),
+                )
             skipped += 1
+
+    # --- Update CollectionTask rows with celery_task_ids ---
+    if task_id_updates:
+        try:
+            from issue_observatory.workers._task_helpers import update_task_celery_id  # noqa: PLC0415
+            for platform_name, celery_task_id in task_id_updates:
+                asyncio.run(update_task_celery_id(run_uuid, platform_name, celery_task_id))
+            log.info(
+                "dispatch_batch_collection: updated celery_task_ids",
+                count=len(task_id_updates),
+            )
+        except Exception as update_exc:
+            log.warning(
+                "dispatch_batch_collection: failed to update celery_task_ids",
+                error=str(update_exc),
+            )
 
     # --- Schedule completion checker or emit completion event ---
     if dispatched_arenas:
@@ -1446,6 +1495,15 @@ def check_batch_completion(run_id: str) -> dict[str, Any]:
         log.warning("check_batch_completion: no tasks found for run")
         return {"status": "no_tasks"}
 
+    # Log if stuck tasks were detected and marked as failed
+    stuck_count = result.get("stuck_marked_failed", 0)
+    if stuck_count > 0:
+        log.warning(
+            "check_batch_completion: marked stuck tasks as failed",
+            stuck_count=stuck_count,
+            run_id=run_id,
+        )
+
     if not result["all_done"]:
         # Re-schedule to check again
         remaining = result["total"] - result["completed"] - result["failed"]
@@ -1453,6 +1511,8 @@ def check_batch_completion(run_id: str) -> dict[str, Any]:
             "check_batch_completion: not all done; re-scheduling",
             remaining=remaining,
             total=result["total"],
+            completed=result["completed"],
+            failed=result["failed"],
         )
         check_batch_completion.apply_async(
             kwargs={"run_id": run_id},

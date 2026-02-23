@@ -451,7 +451,8 @@ async def get_emergent_terms(
     """Extract frequently-occurring terms from collected text content using TF-IDF.
 
     Uses scikit-learn TfidfVectorizer on ``text_content`` from matching
-    content_records.  Applies Danish tokenization regex ``[a-z0-9æøå]{2,}``.
+    content_records.  Applies Danish tokenization regex ``[a-z0-9æøå]{2,}``
+    and filters out Danish and English stop words to surface meaningful terms.
 
     Args:
         db: Active async database session.
@@ -507,8 +508,61 @@ async def get_emergent_terms(
         )
         return []
 
+    # Build comprehensive stop word list: Danish + English + query-specific terms.
+    stop_words_set: set[str] = set()
+
+    # Danish stop words (comprehensive list including common function words)
+    danish_stop_words = {
+        "og", "i", "at", "er", "en", "et", "den", "det", "de", "til", "for",
+        "af", "med", "der", "har", "var", "som", "han", "hun", "på", "kan",
+        "vil", "skal", "fra", "over", "under", "efter", "inden", "mellem",
+        "mod", "om", "sig", "sin", "sit", "sine", "ud", "op", "ned", "ind",
+        "hen", "ad", "meg", "dig", "ham", "hende", "dem", "os", "jer", "mig",
+        "mit", "min", "mine", "dit", "din", "dine", "hans", "hennes", "dens",
+        "dets", "vores", "jeres", "deres", "denne", "dette", "disse", "her",
+        "der", "hvor", "når", "da", "hvis", "fordi", "men", "eller", "så",
+        "end", "også", "kun", "jo", "nu", "ved", "se", "gå", "gøre", "gør",
+        "have", "hav", "gik", "blev", "fået", "fik", "aldrig", "ingen", "alle",
+        "mange", "få", "noget", "intet", "nogen", "hver", "meget", "mere",
+        "mest", "andet", "andre", "hvad", "hvilken", "hvilket", "hvilke",
+        "hvem", "hvordan", "hvorfor", "hvorhen", "hvornår", "ja", "nej", "ikke",
+        "være", "været", "bliver", "bliver", "bliver", "blive", "havde", "havde",
+        "skulle", "kunne", "ville", "måtte", "blevet", "været", "gjort", "sagt",
+        "kom", "kommer", "komme", "gør", "gjorde", "gjort", "tag", "tage",
+        "tager", "tog", "taget", "før", "siden", "senere", "længe", "altid",
+        "ofte", "aldrig", "nogle", "heller", "hverken", "enten", "både",
+    }
+    stop_words_set.update(danish_stop_words)
+
+    # English stop words (comprehensive list for mixed-language content)
+    english_stop_words = {
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "having", "do", "does", "did", "doing", "will",
+        "would", "shall", "should", "can", "could", "may", "might", "must",
+        "to", "of", "in", "for", "on", "with", "at", "by", "from", "as",
+        "into", "through", "during", "before", "after", "above", "below",
+        "between", "out", "off", "over", "under", "again", "further", "then",
+        "once", "here", "there", "when", "where", "why", "how", "all", "both",
+        "each", "few", "more", "most", "other", "some", "such", "no", "nor",
+        "not", "only", "own", "same", "so", "than", "too", "very", "just",
+        "about", "and", "but", "or", "if", "while", "although", "because",
+        "until", "it", "its", "this", "that", "these", "those", "i", "me",
+        "my", "mine", "we", "us", "our", "ours", "you", "your", "yours",
+        "he", "him", "his", "she", "her", "hers", "they", "them", "their",
+        "theirs", "what", "which", "who", "whom", "whose", "am", "been",
+        "being", "become", "becomes", "became", "get", "gets", "got", "gotten",
+        "make", "makes", "made", "go", "goes", "went", "gone", "take", "takes",
+        "took", "taken", "come", "comes", "came", "know", "knows", "knew",
+        "known", "think", "thinks", "thought", "see", "sees", "saw", "seen",
+        "say", "says", "said", "give", "gives", "gave", "given", "find",
+        "finds", "found", "tell", "tells", "told", "ask", "asks", "asked",
+        "work", "works", "worked", "seem", "seems", "seemed", "feel", "feels",
+        "felt", "try", "tries", "tried", "leave", "leaves", "left", "call",
+        "calls", "called",
+    }
+    stop_words_set.update(english_stop_words)
+
     # Optionally exclude existing search terms for this query design.
-    stop_words: list[str] | None = None
     if exclude_search_terms and query_design_id is not None:
         term_sql = text(
             """
@@ -520,14 +574,17 @@ async def get_emergent_terms(
         term_result = await db.execute(term_sql, {"query_design_id": str(query_design_id)})
         existing_terms = [row.term.lower() for row in term_result.fetchall() if row.term]
         if existing_terms:
-            stop_words = existing_terms
+            stop_words_set.update(existing_terms)
+
+    # Convert set to list for TfidfVectorizer
+    stop_words_list = list(stop_words_set)
 
     vectorizer = TfidfVectorizer(
         analyzer="word",
         token_pattern=r"[a-z0-9æøå]{2,}",
         max_features=5000,
         min_df=min_doc_frequency,
-        stop_words=stop_words,
+        stop_words=stop_words_list,
     )
 
     try:
@@ -548,14 +605,32 @@ async def get_emergent_terms(
     # Sort by mean score descending, take top_n.
     top_indices = np.argsort(mean_scores)[::-1][:top_n]
 
-    results = [
-        {
-            "term": feature_names[idx],
+    # Post-filter results to remove any remaining problematic tokens:
+    # - Single-character tokens (even though token_pattern should catch this)
+    # - Purely numeric tokens
+    # - Tokens that are somehow still stop words (belt-and-suspenders)
+    results = []
+    for idx in top_indices:
+        term = feature_names[idx]
+        # Skip single-char tokens
+        if len(term) < 2:
+            continue
+        # Skip purely numeric tokens
+        if term.isdigit():
+            continue
+        # Skip if somehow still a stop word (case-insensitive check)
+        if term.lower() in stop_words_set:
+            continue
+
+        results.append({
+            "term": term,
             "score": round(float(mean_scores[idx]), 6),
             "document_frequency": int(doc_freq[idx]),
-        }
-        for idx in top_indices
-    ]
+        })
+
+        # Stop when we have enough valid results
+        if len(results) >= top_n:
+            break
 
     logger.info(
         "get_emergent_terms: extracted terms",
@@ -1255,7 +1330,7 @@ async def get_language_distribution(
         FROM content_records
         {where}
         AND raw_metadata->'enrichments'->'language_detection'->>'language' IS NOT NULL
-        GROUP BY language
+        GROUP BY 1
         ORDER BY cnt DESC
         """
     )
@@ -1324,7 +1399,7 @@ async def get_top_named_entities(
              ) AS entity
         {where}
         AND raw_metadata->'enrichments'->'actor_roles'->'entities' IS NOT NULL
-        GROUP BY entity_text
+        GROUP BY 1
         ORDER BY cnt DESC
         LIMIT :limit
         """
@@ -1391,7 +1466,7 @@ async def get_propagation_patterns(
         {where}
         AND raw_metadata->'enrichments'->'propagation'->>'cluster_id' IS NOT NULL
         AND raw_metadata->'enrichments'->'propagation'->>'is_origin' = 'false'
-        GROUP BY cluster_id
+        GROUP BY 1
         HAVING COUNT(DISTINCT arena) >= 2
         ORDER BY record_count DESC
         """
@@ -1454,7 +1529,7 @@ async def get_sentiment_distribution(
         FROM content_records
         WHERE collection_run_id = :run_id
           AND raw_metadata->'enrichments'->'sentiment_analyzer' IS NOT NULL
-        GROUP BY sentiment
+        GROUP BY 1
         """
     )
 
@@ -1545,7 +1620,7 @@ async def get_coordination_signals(
         AND raw_metadata->'enrichments'->'coordination'->>'flagged' = 'true'
         AND content_hash IS NOT NULL
         AND pseudonymized_author_id IS NOT NULL
-        GROUP BY coordination_type, content_hash
+        GROUP BY 1, 2
         HAVING COUNT(DISTINCT pseudonymized_author_id) >= 3
         ORDER BY record_count DESC
         LIMIT 50

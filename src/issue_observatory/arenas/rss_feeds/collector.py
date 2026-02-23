@@ -194,18 +194,44 @@ class RSSFeedsCollector(ArenaCollector):
         # Merge extra researcher-supplied feed URLs into the active feed dict.
         effective_feeds = _merge_extra_feeds(self._feeds, extra_feed_urls)
 
+        logger.info(
+            "rss_feeds: collect_by_terms — fetching %d feeds for search terms: %s",
+            len(effective_feeds),
+            lower_terms[:5],  # Log first 5 terms to avoid clutter
+        )
+
         async with self._build_http_client() as client:
             raw_entries = await self._fetch_feeds(client, effective_feeds)
+
+        logger.info(
+            "rss_feeds: collect_by_terms — fetched %d total entries from %d feeds",
+            len(raw_entries),
+            len(effective_feeds),
+        )
+
+        # Log sample titles for diagnostic purposes (first 5 entries)
+        if raw_entries and logger.isEnabledFor(logging.DEBUG):
+            logger.debug("rss_feeds: sample entry titles:")
+            for i, (feed_key, _, entry) in enumerate(raw_entries[:5]):
+                title = getattr(entry, "title", "NO TITLE")
+                logger.debug("  [%d] %s: %s", i + 1, feed_key, title)
+
+        entries_checked = 0
+        entries_after_date_filter = 0
 
         for feed_key, outlet_slug, entry in raw_entries:
             if len(all_records) >= effective_max:
                 break
+
+            entries_checked += 1
 
             pub_dt = _entry_datetime(entry)
             if date_from_dt and pub_dt and pub_dt < date_from_dt:
                 continue
             if date_to_dt and pub_dt and pub_dt > date_to_dt:
                 continue
+
+            entries_after_date_filter += 1
 
             searchable = _build_searchable_text(entry)
 
@@ -224,9 +250,31 @@ class RSSFeedsCollector(ArenaCollector):
             all_records.append(record)
 
         logger.info(
-            "rss_feeds: collect_by_terms — %d entries matched across all feeds",
+            "rss_feeds: collect_by_terms — %d entries matched (checked %d entries, "
+            "%d passed date filters) from %d total entries across %d feeds",
             len(all_records),
+            entries_checked,
+            entries_after_date_filter,
+            len(raw_entries),
+            len(effective_feeds),
         )
+
+        # If no matches found, log sample titles for debugging
+        if not all_records and raw_entries:
+            logger.warning(
+                "rss_feeds: NO MATCHES FOUND. Sample entry titles for debugging:"
+            )
+            for i, (feed_key, _, entry) in enumerate(raw_entries[:10]):
+                title = getattr(entry, "title", "NO TITLE")
+                summary = getattr(entry, "summary", "") or getattr(entry, "description", "")
+                summary_preview = _strip_html(summary)[:100] if summary else "NO SUMMARY"
+                logger.warning(
+                    "  [%d] %s\n      Title: %s\n      Summary: %s...",
+                    i + 1,
+                    feed_key,
+                    title,
+                    summary_preview,
+                )
         return all_records
 
     async def collect_by_actors(
@@ -457,13 +505,32 @@ class RSSFeedsCollector(ArenaCollector):
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_entries: list[tuple[str, str, Any]] = []
+        successful_feeds = 0
+        failed_feeds = 0
+        empty_feeds = 0
+
         for feed_key, result in zip(feeds.keys(), results):
             if isinstance(result, Exception):
+                failed_feeds += 1
                 logger.warning(
                     "rss_feeds: failed to fetch feed '%s': %s", feed_key, result
                 )
                 continue
+
+            if not result:
+                empty_feeds += 1
+            else:
+                successful_feeds += 1
+
             all_entries.extend(result)
+
+        logger.info(
+            "rss_feeds: fetch summary — %d successful, %d empty, %d failed (total %d feeds)",
+            successful_feeds,
+            empty_feeds,
+            failed_feeds,
+            len(feeds),
+        )
 
         return all_entries
 

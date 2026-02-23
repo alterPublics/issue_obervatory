@@ -626,8 +626,69 @@ async def create_collection_tasks(
         await db.commit()
 
 
+async def update_task_celery_id(
+    run_id: Any,
+    platform_name: str,
+    celery_task_id: str,
+) -> None:
+    """Update a CollectionTask row with its Celery task ID.
+
+    Called after successfully dispatching a Celery task to record the task ID
+    for status tracking and debugging.
+
+    Args:
+        run_id: UUID of the parent CollectionRun.
+        platform_name: Platform identifier for the arena task.
+        celery_task_id: Celery task ID returned by send_task().
+    """
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            update(CollectionTask)
+            .where(
+                CollectionTask.collection_run_id == run_id,
+                CollectionTask.platform == platform_name,
+            )
+            .values(celery_task_id=celery_task_id)
+        )
+        await db.commit()
+
+
+async def mark_task_failed(
+    run_id: Any,
+    platform_name: str,
+    error_message: str,
+) -> None:
+    """Mark a CollectionTask as failed with an error message.
+
+    Used when task dispatch fails or when a task needs to be skipped
+    (e.g., no search terms available for that arena).
+
+    Args:
+        run_id: UUID of the parent CollectionRun.
+        platform_name: Platform identifier for the arena task.
+        error_message: Error description explaining why the task failed.
+    """
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            update(CollectionTask)
+            .where(
+                CollectionTask.collection_run_id == run_id,
+                CollectionTask.platform == platform_name,
+            )
+            .values(
+                status="failed",
+                error_message=error_message,
+                completed_at=datetime.now(tz=timezone.utc),
+            )
+        )
+        await db.commit()
+
+
 async def check_all_tasks_terminal(run_id: Any) -> dict[str, Any] | None:
     """Check whether all CollectionTasks for a run have reached terminal state.
+
+    Also detects and marks as failed any tasks that have been stuck in 'pending'
+    status for more than 10 minutes (likely dispatch failures or worker crashes).
 
     Args:
         run_id: UUID of the CollectionRun.
@@ -638,7 +699,29 @@ async def check_all_tasks_terminal(run_id: Any) -> dict[str, Any] | None:
     """
     from sqlalchemy import case, func  # noqa: PLC0415
 
+    # First check for stuck tasks and mark them as failed
+    stuck_cutoff = datetime.now(tz=timezone.utc) - timedelta(minutes=10)
     async with AsyncSessionLocal() as db:
+        # Mark tasks that have been pending for > 10 minutes without a celery_task_id
+        # as failed (likely dispatch failures)
+        stuck_result = await db.execute(
+            update(CollectionTask)
+            .where(
+                CollectionTask.collection_run_id == run_id,
+                CollectionTask.status == "pending",
+                CollectionTask.created_at < stuck_cutoff,
+            )
+            .values(
+                status="failed",
+                error_message="Task stuck in pending state for >10 minutes; likely dispatch failure or worker crash",
+                completed_at=datetime.now(tz=timezone.utc),
+            )
+        )
+        stuck_count = stuck_result.rowcount or 0
+        if stuck_count > 0:
+            await db.commit()
+
+        # Now check terminal status
         stmt = select(
             func.count(CollectionTask.id).label("total"),
             func.sum(
@@ -679,6 +762,7 @@ async def check_all_tasks_terminal(run_id: Any) -> dict[str, Any] | None:
             "failed": failed,
             "total_records": total_records,
             "credits_spent": credits_spent,
+            "stuck_marked_failed": stuck_count,
         }
 
 
