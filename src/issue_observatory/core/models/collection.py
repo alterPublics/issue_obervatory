@@ -217,6 +217,11 @@ class CollectionTask(Base):
         nullable=False,
         server_default=sa.text("0"),
     )
+    duplicates_skipped: Mapped[int] = mapped_column(
+        sa.Integer,
+        nullable=False,
+        server_default=sa.text("0"),
+    )
     error_message: Mapped[Optional[str]] = mapped_column(
         sa.Text,
         nullable=True,

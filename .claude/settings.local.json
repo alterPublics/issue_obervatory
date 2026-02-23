@@ -85,7 +85,32 @@
       "Bash(pkill:*)",
       "Bash(PGPASSWORD=observatory psql:*)",
       "Bash(TOKEN=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwYzhlZmI3NS00ZGEwLTRkZWItOGZmOS03Yzk4OWQ5ZjQyYjAiLCJhdWQiOlsiZmFzdGFwaS11c2VyczphdXRoIl0sImV4cCI6MTc3MTgxMDk2NH0.lqPu4ch0rpb0QVZvuJDUy5FCTLCk3JeHTU9cJ75Xs90\")",
-      "WebFetch(domain:via.ritzau.dk)"
+      "WebFetch(domain:via.ritzau.dk)",
+      "Bash(export TOKEN:*)",
+      "Bash(TOKEN=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwYzhlZmI3NS00ZGEwLTRkZWItOGZmOS03Yzk4OWQ5ZjQyYjAiLCJhdWQiOlsiZmFzdGFwaS11c2VyczphdXRoIl0sImV4cCI6MTc3MTgyMjkzNH0.Q0QHxSB4qdeBv6YV-IeSQka-_RsZ8tmZG7wHolGn-i4\")",
+      "Bash(DESIGN_ID=\"7fca2f6d-8863-4e58-8469-ab24ed1396df\")",
+      "Bash(AUTH=\"Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwYzhlZmI3NS00ZGEwLTRkZWItOGZmOS03Yzk4OWQ5ZjQyYjAiLCJhdWQiOlsiZmFzdGFwaS11c2VyczphdXRoIl0sImV4cCI6MTc3MTgyMjkzNH0.Q0QHxSB4qdeBv6YV-IeSQka-_RsZ8tmZG7wHolGn-i4\")",
+      "Bash(__NEW_LINE_6cab755b68c7c6d8__ curl -s -X POST \"http://localhost:8000/query-designs/$DESIGN_ID/arena-config\" -H \"$AUTH\" -H 'Content-Type: application/json' -d '{\n    \"\"arenas\"\": [\n      {\"\"platform_name\"\": \"\"rss_feeds\"\", \"\"enabled\"\": true, \"\"tier\"\": \"\"free\"\"},\n      {\"\"platform_name\"\": \"\"bluesky\"\", \"\"enabled\"\": true, \"\"tier\"\": \"\"free\"\"},\n      {\"\"platform_name\"\": \"\"reddit\"\", \"\"enabled\"\": true, \"\"tier\"\": \"\"free\"\"},\n      {\"\"platform_name\"\": \"\"youtube\"\", \"\"enabled\"\": true, \"\"tier\"\": \"\"free\"\"},\n      {\"\"platform_name\"\": \"\"gdelt\"\", \"\"enabled\"\": true, \"\"tier\"\": \"\"free\"\"},\n      {\"\"platform_name\"\": \"\"ritzau_via\"\", \"\"enabled\"\": true, \"\"tier\"\": \"\"free\"\"},\n      {\"\"platform_name\"\": \"\"google_search\"\", \"\"enabled\"\": true, \"\"tier\"\": \"\"medium\"\"},\n      {\"\"platform_name\"\": \"\"google_autocomplete\"\", \"\"enabled\"\": true, \"\"tier\"\": \"\"free\"\"},\n      {\"\"platform_name\"\": \"\"wikipedia\"\", \"\"enabled\"\": true, \"\"tier\"\": \"\"free\"\"},\n      {\"\"platform_name\"\": \"\"common_crawl\"\", \"\"enabled\"\": true, \"\"tier\"\": \"\"free\"\"},\n      {\"\"platform_name\"\": \"\"wayback\"\", \"\"enabled\"\": true, \"\"tier\"\": \"\"free\"\"},\n      {\"\"platform_name\"\": \"\"gab\"\", \"\"enabled\"\": true, \"\"tier\"\": \"\"free\"\"},\n      {\"\"platform_name\"\": \"\"tiktok\"\", \"\"enabled\"\": true, \"\"tier\"\": \"\"free\"\"}\n    ],\n    \"\"rss\"\": {\n      \"\"custom_feeds\"\": [\n        \"\"https://sermitsiaq.ag/rss\"\",\n        \"\"https://knr.gl/da/rss\"\"\n      ]\n    },\n    \"\"reddit\"\": {\n      \"\"custom_subreddits\"\": [\"\"greenland\"\"]\n    },\n    \"\"wikipedia\"\": {\n      \"\"seed_articles\"\": [\"\"Gr\\\\u00f8nland\"\", \"\"Gr\\\\u00f8nlands_selvstyre\"\", \"\"Naalakkersuisut\"\"]\n    }\n  }')",
+      "Bash(__NEW_LINE_c38c97269d8e43e4__ curl -s -v -X POST \"http://localhost:8000/query-designs/$DESIGN_ID/arena-config\" -H \"$AUTH\" -H 'Content-Type: application/json' -d '{\"\"arenas\"\": [{\"\"platform_name\"\": \"\"rss_feeds\"\", \"\"enabled\"\": true, \"\"tier\"\": \"\"free\"\"}], \"\"rss\"\": {\"\"custom_feeds\"\": [\"\"https://sermitsiaq.ag/rss\"\"]}}')",
+      "Bash(RUN_ID=\"177152d7-5af4-4d0b-91f7-4be16aeb6b14\")",
+      "Bash(__NEW_LINE_5d06a417d48ca01f__ echo \"=== TOP ACTORS ===\")",
+      "Bash(__NEW_LINE_db0c6ed0f06d15ed__ echo \"\")",
+      "Bash(__NEW_LINE_d91f00045b445db2__ echo \"\")",
+      "Bash(__NEW_LINE_97db12f2b964bfae__ echo \"=== ACTOR CO-OCCURRENCE NETWORK ===\")",
+      "Bash(__NEW_LINE_890696625aafb4b3__ echo \"\")",
+      "Bash(__NEW_LINE_5d637819a629a7f4__ echo \"=== TEMPORAL COMPARISON ===\")",
+      "Bash(__NEW_LINE_5196cb5af45cce20__ echo \"\")",
+      "Bash(__NEW_LINE_bfd18620ceead04b__ echo \"\")",
+      "Bash(__NEW_LINE_a0f1de0a32c6738a__ echo \"\")",
+      "Bash(__NEW_LINE_04c568cfaf163b2d__ echo \"=== RIS EXPORT ===\")",
+      "Bash(__NEW_LINE_04c568cfaf163b2d__ echo \"\")",
+      "Bash(__NEW_LINE_a0cc3c52e0ec7096__ echo \"\")",
+      "WebFetch(domain:api.gdeltproject.org)",
+      "WebFetch(domain:blog.gdeltproject.org)",
+      "Bash(dig:*)",
+      "Bash(nc:*)",
+      "Bash(echo:*)",
+      "Bash(python:*)"
     ]
   }
 }

@@ -104,7 +104,7 @@ class RitzauViaCollector(ArenaCollector):
     ) -> list[dict[str, Any]]:
         """Collect Via Ritzau press releases matching one or more search terms.
 
-        Uses ``GET /json/v2/releases?query={term}&language=da`` with
+        Uses ``GET /json/v2/releases?search={term}&language=da`` with
         offset-based pagination. Applies ``language=da`` by default.
 
         Via Ritzau does not support boolean syntax.  When ``term_groups``
@@ -178,7 +178,7 @@ class RitzauViaCollector(ArenaCollector):
                     break
                 remaining = effective_max - len(all_records)
                 params: dict[str, Any] = {
-                    "query": term,
+                    "search": term,
                     "language": lang_code,
                     "limit": RITZAU_PAGE_SIZE,
                 }

@@ -936,3 +936,69 @@ def persist_collected_records(
         run_id=collection_run_id,
     )
     return inserted, skipped
+
+
+def update_collection_task_status(
+    collection_run_id: str,
+    arena: str,
+    status: str,
+    records_collected: int = 0,
+    duplicates_skipped: int = 0,
+    error_message: str | None = None,
+) -> None:
+    """Best-effort update of the ``collection_tasks`` row for a specific arena.
+
+    This is a shared helper for all arena tasks to report their progress
+    and final status.  DB failures are logged at WARNING and do not propagate
+    to the caller — this must never break a collection task.
+
+    Args:
+        collection_run_id: UUID string of the parent collection run.
+        arena: Arena identifier (platform_name from the registry).
+        status: New status value (``"running"`` | ``"completed"`` | ``"failed"``).
+        records_collected: Number of records successfully inserted into the DB.
+        duplicates_skipped: Number of records skipped because they were
+            already present (detected via ON CONFLICT on content_hash).
+        error_message: Error description for failed updates, or ``None``.
+    """
+    from sqlalchemy import text  # noqa: PLC0415
+
+    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+
+    try:
+        with get_sync_session() as session:
+            session.execute(
+                text(
+                    """
+                    UPDATE collection_tasks
+                    SET status = :status,
+                        records_collected = :records_collected,
+                        duplicates_skipped = :duplicates_skipped,
+                        error_message = :error_message,
+                        completed_at = CASE WHEN :status IN ('completed', 'failed')
+                                            THEN NOW() ELSE completed_at END,
+                        started_at   = CASE WHEN :status = 'running' AND started_at IS NULL
+                                            THEN NOW() ELSE started_at END
+                    WHERE collection_run_id = :run_id AND arena = :arena
+                    """
+                ),
+                {
+                    "status": status,
+                    "records_collected": records_collected,
+                    "duplicates_skipped": duplicates_skipped,
+                    "error_message": error_message,
+                    "run_id": collection_run_id,
+                    "arena": arena,
+                },
+            )
+            session.commit()
+    except Exception as exc:  # noqa: BLE001
+        import structlog
+
+        log = structlog.get_logger("issue_observatory.workers._task_helpers")
+        log.warning(
+            "update_collection_task_status: failed to update status",
+            arena=arena,
+            status=status,
+            error=str(exc),
+        )

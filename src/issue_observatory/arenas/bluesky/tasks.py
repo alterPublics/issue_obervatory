@@ -29,6 +29,7 @@ from typing import Any
 
 from issue_observatory.arenas.bluesky.collector import BlueskyCollector
 from issue_observatory.config.settings import get_settings
+from issue_observatory.core.credential_pool import CredentialPool
 from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
@@ -175,7 +176,8 @@ def bluesky_collect_terms(
         elapsed_seconds=elapsed_since(_task_start),
     )
 
-    collector = BlueskyCollector()
+    credential_pool = CredentialPool()
+    collector = BlueskyCollector(credential_pool=credential_pool)
 
     try:
         records = asyncio.run(
@@ -321,7 +323,8 @@ def bluesky_collect_actors(
         elapsed_seconds=elapsed_since(_task_start),
     )
 
-    collector = BlueskyCollector()
+    credential_pool = CredentialPool()
+    collector = BlueskyCollector(credential_pool=credential_pool)
 
     try:
         records = asyncio.run(
@@ -401,7 +404,8 @@ def bluesky_health_check() -> dict[str, Any]:
         Health status dict with keys ``status``, ``arena``, ``platform``,
         ``checked_at``, and optionally ``detail``.
     """
-    collector = BlueskyCollector()
+    credential_pool = CredentialPool()
+    collector = BlueskyCollector(credential_pool=credential_pool)
     result: dict[str, Any] = asyncio.run(collector.health_check())
     logger.info("bluesky: health_check status=%s", result.get("status", "unknown"))
     return result

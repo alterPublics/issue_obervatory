@@ -13,7 +13,7 @@ from issue_observatory.config.tiers import Tier, TierConfig
 # API constants
 # ---------------------------------------------------------------------------
 
-GDELT_DOC_API_BASE: str = "https://api.gdeltproject.org/api/v2/doc/doc"
+GDELT_DOC_API_BASE: str = "http://api.gdeltproject.org/api/v2/doc/doc"
 """Base URL for the GDELT DOC 2.0 API."""
 
 GDELT_MAX_RECORDS: int = 250

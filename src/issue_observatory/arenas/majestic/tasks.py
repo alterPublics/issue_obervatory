@@ -29,6 +29,7 @@ import time
 from typing import Any
 
 from issue_observatory.arenas.majestic.collector import MajesticCollector
+from issue_observatory.core.credential_pool import CredentialPool
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
@@ -195,7 +196,8 @@ def majestic_collect_terms(
         )
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
-    collector = MajesticCollector()
+    credential_pool = CredentialPool()
+    collector = MajesticCollector(credential_pool=credential_pool)
 
     try:
         records = asyncio.run(
@@ -344,7 +346,8 @@ def majestic_collect_actors(
         )
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
-    collector = MajesticCollector()
+    credential_pool = CredentialPool()
+    collector = MajesticCollector(credential_pool=credential_pool)
 
     try:
         records = asyncio.run(
@@ -420,7 +423,8 @@ def majestic_health_check() -> dict[str, Any]:
         ``checked_at``, and optionally ``trust_flow``, ``ref_domains``,
         and ``detail``.
     """
-    collector = MajesticCollector()
+    credential_pool = CredentialPool()
+    collector = MajesticCollector(credential_pool=credential_pool)
     result: dict[str, Any] = asyncio.run(collector.health_check())
     logger.info(
         "majestic: health_check status=%s trust_flow=%s",

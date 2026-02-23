@@ -32,6 +32,7 @@ import time
 from typing import Any
 
 from issue_observatory.arenas.ai_chat_search.collector import AiChatSearchCollector
+from issue_observatory.core.credential_pool import CredentialPool
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
@@ -216,7 +217,8 @@ def ai_chat_search_collect_terms(
         )
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
-    collector = AiChatSearchCollector()
+    credential_pool = CredentialPool()
+    collector = AiChatSearchCollector(credential_pool=credential_pool)
 
     try:
         records = asyncio.run(
@@ -305,7 +307,8 @@ def ai_chat_search_health_check() -> dict[str, Any]:
         Health status dict with keys ``status``, ``arena``, ``platform``,
         ``checked_at``, and optionally ``detail``.
     """
-    collector = AiChatSearchCollector()
+    credential_pool = CredentialPool()
+    collector = AiChatSearchCollector(credential_pool=credential_pool)
     result: dict[str, Any] = asyncio.run(collector.health_check())
     logger.info(
         "ai_chat_search: health_check status=%s",

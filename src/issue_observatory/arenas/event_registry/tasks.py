@@ -33,6 +33,7 @@ from typing import Any
 
 from issue_observatory.arenas.event_registry.collector import EventRegistryCollector
 from issue_observatory.config.settings import get_settings
+from issue_observatory.core.credential_pool import CredentialPool
 from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
@@ -186,7 +187,8 @@ def event_registry_collect_terms(
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
-    collector = EventRegistryCollector()
+    credential_pool = CredentialPool()
+    collector = EventRegistryCollector(credential_pool=credential_pool)
 
     try:
         records = asyncio.run(
@@ -332,7 +334,8 @@ def event_registry_collect_actors(
         _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
         raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
-    collector = EventRegistryCollector()
+    credential_pool = CredentialPool()
+    collector = EventRegistryCollector(credential_pool=credential_pool)
 
     try:
         records = asyncio.run(
@@ -419,7 +422,8 @@ def event_registry_health_check() -> dict[str, Any]:
         ``checked_at``, ``remaining_tokens`` (if available), and optionally
         ``detail``.
     """
-    collector = EventRegistryCollector()
+    credential_pool = CredentialPool()
+    collector = EventRegistryCollector(credential_pool=credential_pool)
     result: dict[str, Any] = asyncio.run(collector.health_check())
     logger.info(
         "event_registry: health_check status=%s remaining_tokens=%s",
