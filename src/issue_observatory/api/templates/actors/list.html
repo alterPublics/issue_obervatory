@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Actor Directory — Issue Observatory{% endblock %}
+{% block title %}Actor Directory{% endblock %}
 
 {% block content %}
 {#
@@ -66,8 +66,8 @@
             </div>
 
             <form method="POST"
-                  action="/actors/"
-                  hx-post="/actors/"
+                  action="/actors/form"
+                  hx-post="/actors/form"
                   hx-target="#actors-tbody"
                   hx-swap="afterbegin"
                   hx-on::after-request="if(event.detail.successful){ open = false; this.reset(); publicFigure = false; }"
@@ -563,6 +563,9 @@
 
             {# Run button #}
             <div class="pt-2 flex items-center gap-3">
+                <p x-show="seedActorIds.length > 0" class="text-xs text-gray-600 mb-2">
+                    <span class="font-medium" x-text="seedActorIds.length"></span> seed actor<span x-show="seedActorIds.length !== 1">s</span> selected
+                </p>
                 <button type="button"
                         @click="runSnowball()"
                         :disabled="loading || seedActorIds.length === 0 || platforms.length === 0"
@@ -594,6 +597,33 @@
 
             {# Results section #}
             <div x-show="results" x-cloak class="border-t border-gray-200 pt-5 space-y-4">
+
+                {# R-14: Filter bar #}
+                <div x-show="results && results.discovered_actors && results.discovered_actors.length > 0"
+                     class="flex flex-wrap items-center gap-3 bg-gray-50 rounded-md px-4 py-2.5">
+                    <div class="flex items-center gap-2">
+                        <label class="text-xs font-medium text-gray-500">Platform:</label>
+                        <select x-model="filterPlatform"
+                                class="border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                            <option value="all">All platforms</option>
+                            <template x-for="p in resultPlatforms" :key="p">
+                                <option :value="p" x-text="p"></option>
+                            </template>
+                        </select>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <label class="text-xs font-medium text-gray-500">Method:</label>
+                        <select x-model="filterMethod"
+                                class="border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                            <option value="all">All methods</option>
+                            <template x-for="m in discoveryMethods" :key="m">
+                                <option :value="m" x-text="formatMethod(m)"></option>
+                            </template>
+                        </select>
+                    </div>
+                    <span class="text-xs text-gray-400 ml-auto"
+                          x-text="`Showing ${filteredResults.length} of ${results.discovered_actors.length} actors`"></span>
+                </div>
 
                 {# Summary cards #}
                 <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -640,7 +670,7 @@
                                 </tr>
                             </thead>
                             <tbody class="bg-white divide-y divide-gray-100">
-                                <template x-for="actor in results.discovered_actors" :key="actor.id">
+                                <template x-for="actor in filteredResults" :key="actor.id">
                                     <tr class="hover:bg-gray-50">
                                         <td class="px-3 py-2">
                                             <input type="checkbox"
@@ -659,8 +689,11 @@
                                                 </template>
                                             </div>
                                         </td>
-                                        <td class="px-4 py-2 text-xs text-gray-600"
-                                            x-text="formatMethod(actor.discovery_method)"></td>
+                                        <td class="px-4 py-2 text-xs text-gray-600">
+                                            <span x-text="formatMethod(actor.discovery_method)"
+                                                  :title="getMethodDescription(actor.discovery_method)"
+                                                  :class="getMethodDescription(actor.discovery_method) ? 'cursor-help border-b border-dotted border-gray-400' : ''"></span>
+                                        </td>
                                         <td class="px-4 py-2 text-right text-gray-600"
                                             x-text="actor.discovery_depth"></td>
                                     </tr>
@@ -854,7 +887,7 @@ function snowballSampler() {
         seedActorIds: [],
         platforms: [],
         maxDepth: 2,
-        maxActorsPerStep: 20,
+        maxActorsPerStep: 50,
         minComentionRecords: 2,
         addToList: true,
         results: null,
@@ -863,6 +896,8 @@ function snowballSampler() {
         error: null,
         bulkSuccess: null,
         bulkError: null,
+        filterPlatform: 'all',
+        filterMethod: 'all',
 
         async init() {
             // Fetch the list of platforms that support snowball sampling.
@@ -881,6 +916,33 @@ function snowballSampler() {
                 this.availablePlatforms = ['bluesky', 'reddit', 'youtube'];
                 this.platforms = [...this.availablePlatforms];
             }
+        },
+
+        get filteredResults() {
+            if (!this.results || !this.results.discovered_actors) return [];
+            return this.results.discovered_actors.filter(a => {
+                if (this.filterPlatform !== 'all' && !(a.platforms || []).includes(this.filterPlatform)) return false;
+                if (this.filterMethod !== 'all' && a.discovery_method !== this.filterMethod) return false;
+                return true;
+            });
+        },
+
+        get discoveryMethods() {
+            if (!this.results || !this.results.discovered_actors) return [];
+            const methods = new Set();
+            for (const a of this.results.discovered_actors) {
+                if (a.discovery_method) methods.add(a.discovery_method);
+            }
+            return [...methods].sort();
+        },
+
+        get resultPlatforms() {
+            if (!this.results || !this.results.discovered_actors) return [];
+            const platforms = new Set();
+            for (const a of this.results.discovered_actors) {
+                for (const p of (a.platforms || [])) platforms.add(p);
+            }
+            return [...platforms].sort();
         },
 
         toggleSeed(actorId) {
@@ -912,7 +974,7 @@ function snowballSampler() {
 
         selectAll() {
             if (!this.results || !this.results.discovered_actors) return;
-            this.selectedActors = this.results.discovered_actors.map(a => a.id);
+            this.selectedActors = this.filteredResults.map(a => a.id);
         },
 
         selectNone() {
@@ -928,6 +990,8 @@ function snowballSampler() {
             this.selectedActors = [];
             this.bulkSuccess = null;
             this.bulkError = null;
+            this.filterPlatform = 'all';
+            this.filterMethod = 'all';
 
             try {
                 const body = {
@@ -997,6 +1061,26 @@ function snowballSampler() {
                 url_comention: 'URL Co-mention',
             };
             return labels[method] || method || '—';
+        },
+
+        getMethodDescription(method) {
+            const descriptions = {
+                seed: 'Starting actors you selected manually',
+                bluesky_follows: 'Accounts this actor follows on Bluesky',
+                bluesky_followers: 'Accounts that follow this actor on Bluesky',
+                reddit_comment_mention: 'Users mentioned via u/username in comments',
+                youtube_featured_channels: 'Channels featured on this actor\'s YouTube page',
+                telegram_forwarding_chain: 'Channels discovered through message forwarding relationships',
+                tiktok_followers: 'Accounts that follow this actor on TikTok',
+                tiktok_following: 'Accounts this actor follows on TikTok',
+                gab_followers: 'Accounts that follow this actor on Gab',
+                gab_following: 'Accounts this actor follows on Gab',
+                x_twitter_followers: 'Accounts that follow this actor on X/Twitter',
+                x_twitter_following: 'Accounts this actor follows on X/Twitter',
+                comention_fallback: 'Actors frequently mentioned in the same content',
+                url_comention: 'Actors whose URLs appear in the same content',
+            };
+            return descriptions[method] || '';
         },
 
         async addSelected() {

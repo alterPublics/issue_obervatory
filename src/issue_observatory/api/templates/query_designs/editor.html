@@ -26,16 +26,16 @@
 
 <div class="max-w-4xl mx-auto space-y-6" x-data="queryEditor()">
 
+    {# Breadcrumb navigation — include project when associated #}
+    {% if project_name | default('') %}
+    {% set breadcrumbs = [('Projects', '/projects'), (project_name, '/projects/' + project_id), ('Edit' if is_edit else 'New Query Design', '')] %}
+    {% else %}
+    {% set breadcrumbs = [('Query Designs', '/query-designs'), ('Edit' if is_edit else 'New', '')] %}
+    {% endif %}
+    {% include '_partials/breadcrumbs.html' %}
+
     {# Page header #}
     <div class="flex items-center gap-3">
-        <a href="/query-designs"
-           class="text-gray-400 hover:text-gray-600 transition-colors"
-           aria-label="Back to list">
-            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                 stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
-            </svg>
-        </a>
         <div class="flex-1">
             <h1 class="text-xl font-bold text-gray-900">
                 {% if is_edit %}Edit Query Design{% else %}New Query Design{% endif %}
@@ -56,6 +56,17 @@
                 {% endif %}
             </p>
             {% endif %}
+            {% if project_name | default('') %}
+            <p class="text-xs text-gray-500 mt-1 flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                </svg>
+                Part of project:
+                <a href="/projects/{{ project_id }}"
+                   class="text-blue-600 hover:text-blue-800 hover:underline font-medium">{{ project_name }}</a>
+            </p>
+            {% endif %}
         </div>
         {# Clone action — only shown when editing an existing design (IP2-051) #}
         {% if is_edit %}
@@ -74,6 +85,34 @@
         {% endif %}
     </div>
 
+    {# Two-step creation guidance — shown only when creating a new design #}
+    {% if not is_edit %}
+    <div x-data="{ dismissed: false }"
+         x-show="!dismissed"
+         x-cloak
+         class="bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-start gap-3">
+        <svg class="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" fill="none"
+             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round"
+                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <div class="flex-1">
+            <p class="text-sm text-blue-800">
+                Start by giving your query design a name and description. After saving, you can add
+                search terms, actors, and configure arenas on the edit page.
+            </p>
+        </div>
+        <button type="button" @click="dismissed = true"
+                class="text-blue-400 hover:text-blue-600 flex-shrink-0"
+                aria-label="Dismiss">
+            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+        </button>
+    </div>
+    {% endif %}
+
     {# Metadata form #}
     <div class="bg-white rounded-lg shadow p-6 space-y-5">
         <h2 class="text-sm font-semibold text-gray-900 border-b border-gray-200 pb-3">Basic Information</h2>
@@ -85,6 +124,11 @@
               action="/query-designs/form"
               {% endif %}
               id="design-form">
+
+            {# Hidden project_id for auto-attaching to a project #}
+            {% if project_id | default('') %}
+            <input type="hidden" name="project_id" value="{{ project_id }}">
+            {% endif %}
 
             <div class="grid grid-cols-2 gap-5">
                 {# Name #}
@@ -169,7 +213,7 @@
             {# Save button for metadata #}
             {% if not is_edit %}
             <div class="pt-4 border-t border-gray-200 mt-5 flex items-center justify-between">
-                <a href="/query-designs"
+                <a href="{% if project_id | default('') %}/projects/{{ project_id }}{% else %}/query-designs{% endif %}"
                    class="text-sm text-gray-500 hover:text-gray-700">Cancel</a>
                 <button type="submit"
                         class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50">
@@ -292,7 +336,7 @@
                                        :value="arena.platform_name"
                                        x-model="selectedArenas"
                                        class="rounded border-gray-300 text-blue-600 focus:ring-blue-500 focus:ring-offset-0">
-                                <span x-text="arena.platform_name"></span>
+                                <span x-text="arena.displayLabel || arena.platform_name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())"></span>
                             </label>
                         </template>
                     </div>
@@ -1746,14 +1790,14 @@
  *   - has_credentials (boolean): whether API credentials are configured
  *
  * After fetching the arena list, the saved per-design config is loaded from
- * GET /api/query-designs/{id}/arena-config and merged in. If a saved tier
+ * GET /query-designs/{id}/arena-config and merged in. If a saved tier
  * is no longer in supported_tiers, it is auto-corrected to the first
  * supported tier.
  *
  * API contracts:
  *   GET  /api/arenas/                        → ArenaInfo[]
- *   GET  /api/query-designs/{id}/arena-config → { arenas: [{id, enabled, tier}] }
- *   POST /api/query-designs/{id}/arena-config → 200
+ *   GET  /query-designs/{id}/arena-config → { arenas: [{id, enabled, tier}] }
+ *   POST /query-designs/{id}/arena-config → 200
  */
 function arenaConfigGrid(defaultTier) {
     return {
@@ -1803,7 +1847,7 @@ function arenaConfigGrid(defaultTier) {
             const designId = document.querySelector('input[name="design_id"]')?.value;
             if (designId) {
                 try {
-                    const configResp = await fetch('/api/query-designs/' + designId + '/arena-config');
+                    const configResp = await fetch('/query-designs/' + designId + '/arena-config');
                     if (configResp.ok) {
                         const configData = await configResp.json();
                         if (configData && Array.isArray(configData.arenas)) {
@@ -2711,10 +2755,17 @@ function termArenaSelector() {
             if (count === 0) {
                 return 'Target arenas: all (default)';
             } else if (count === 1) {
-                return `Target arenas: ${this.selectedArenas[0]}`;
+                const label = this._humanizePlatform(this.selectedArenas[0]);
+                return `Target arenas: ${label}`;
             } else {
                 return `Target arenas: ${count} selected`;
             }
+        },
+
+        _humanizePlatform(name) {
+            const match = this.availableArenas.find(a => a.platform_name === name);
+            if (match && match.displayLabel) return match.displayLabel;
+            return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
         },
 
         // ---------------------------------------------------------------

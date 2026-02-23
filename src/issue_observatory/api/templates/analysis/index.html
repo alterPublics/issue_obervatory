@@ -590,9 +590,9 @@
 
             {# Network sub-tabs: Static | Temporal #}
             <div
-                x-data="networkPreview('{{ run_id }}', 'actor')"
+                x-data="networkPreview('{{ run_id }}', 'actors')"
                 x-init="init()"
-                @destroy.window="if ($event.detail && $event.detail.tab === 'actor') destroy()"
+                @destroy.window="if ($event.detail && $event.detail.tab === 'actors') destroy()"
             >
                 <div class="flex gap-1 mb-3">
                     <button
@@ -726,7 +726,7 @@
             </p>
 
             <div
-                x-data="networkPreview('{{ run_id }}', 'term')"
+                x-data="networkPreview('{{ run_id }}', 'terms')"
                 x-init="init()"
             >
                 <div class="flex gap-1 mb-3">

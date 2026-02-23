@@ -281,12 +281,20 @@ class GoogleSearchCollector(ArenaCollector):
         """
         enriched = dict(raw_item)
         enriched.setdefault("content_type", "search_result")
+        # Set language based on Danish locale settings (gl=dk, hl=da)
+        enriched.setdefault("language", "da")
+
+        # Extract search term matched if present
+        search_term = raw_item.get("_search_term")
+        search_terms_matched = [search_term] if search_term else []
+
         return self._normalizer.normalize(
             raw_item=enriched,
             platform=self.platform_name,
             arena=self.arena_name,
             collection_tier="medium",  # overwritten by Celery tasks with actual tier
             public_figure_ids=self._public_figure_ids or None,
+            search_terms_matched=search_terms_matched,
         )
 
     async def health_check(self) -> dict[str, Any]:
@@ -479,6 +487,8 @@ class GoogleSearchCollector(ArenaCollector):
                 break  # No more results — stop paginating.
 
             for raw_item in raw_results[:remaining]:
+                # Mark result with the search term
+                raw_item["_search_term"] = term
                 records.append(self.normalize(raw_item))
 
             if len(raw_results) < MAX_RESULTS_PER_PAGE:

@@ -2,57 +2,103 @@
 {% block title %}Analysis{% endblock %}
 
 {% block content %}
-<div class="max-w-4xl mx-auto space-y-6">
+<div class="max-w-5xl mx-auto space-y-6">
 
     <div>
         <h1 class="text-xl font-bold text-gray-900">Analysis</h1>
         <p class="text-sm text-gray-500 mt-0.5">Explore descriptive statistics, network visualisations, and export options for your collection data</p>
     </div>
 
-    <div class="bg-white rounded-lg shadow p-8 text-center">
-        <svg class="w-12 h-12 text-gray-300 mx-auto mb-4" xmlns="http://www.w3.org/2000/svg" fill="none"
-             viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-            <path stroke-linecap="round" stroke-linejoin="round"
-                  d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
-        </svg>
-        <h2 class="text-lg font-semibold text-gray-900 mb-2">Select a collection run to analyse</h2>
-        <p class="text-sm text-gray-500 mb-6 max-w-md mx-auto">
-            Analysis is performed on individual collection runs. Choose a completed run from your collection history
-            to view volume trends, top actors, network graphs, and more.
-        </p>
-        <a href="/collections"
-           class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
-            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                 stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round"
-                      d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
-            </svg>
-            View Collections
-        </a>
-    </div>
+    {% if design_entries | default([]) | length > 0 %}
 
-    {% if recent_runs | default([]) | length > 0 %}
-    <div class="bg-white rounded-lg shadow">
-        <div class="px-6 py-4 border-b border-gray-200">
-            <h2 class="text-sm font-semibold text-gray-900">Recent completed runs</h2>
+        {# Quick tip banner #}
+        <div class="rounded-md bg-blue-50 border border-blue-100 px-4 py-3 flex items-start gap-3">
+            <svg class="w-4 h-4 text-blue-500 mt-0.5 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none"
+                 viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <p class="text-xs text-blue-700">Click any run below to open its full analysis dashboard with volume charts, network graphs, and export tools.</p>
         </div>
-        <div class="divide-y divide-gray-100">
-            {% for run in recent_runs %}
-            <a href="/analysis/{{ run.id }}"
-               class="flex items-center justify-between px-6 py-3 hover:bg-gray-50 transition-colors">
+
+        {% for design in design_entries %}
+        <div class="bg-white rounded-lg shadow">
+            <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
                 <div>
-                    <span class="text-sm font-medium text-gray-900">{{ run.design_name | default('(unknown)') }}</span>
-                    <span class="text-xs text-gray-500 ml-2">{{ run.started_at | default('') | truncate(16, true, '') }}</span>
+                    <h2 class="text-sm font-semibold text-gray-900">{{ design.name }}</h2>
+                    <p class="text-xs text-gray-500 mt-0.5">{{ design.runs | length }} completed run{{ 's' if design.runs | length != 1 else '' }}</p>
                 </div>
-                <div class="flex items-center gap-3">
-                    <span class="text-xs text-gray-500">{{ run.records | default(0) }} records</span>
-                    <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                         stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
-                </div>
-            </a>
-            {% endfor %}
+                {% if design.id != 'none' %}
+                <a href="/analysis/design/{{ design.id }}"
+                   class="text-xs text-blue-600 hover:text-blue-800 font-medium">
+                    Cross-run analysis
+                </a>
+                {% endif %}
+            </div>
+            <div class="divide-y divide-gray-100">
+                {% for run in design.runs %}
+                <a href="/analysis/{{ run.id }}"
+                   class="block px-6 py-4 hover:bg-gray-50 transition-colors group">
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="flex items-center gap-3">
+                            <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium
+                                {% if run.mode == 'live' %}bg-green-100 text-green-800{% else %}bg-gray-100 text-gray-600{% endif %}">
+                                {{ run.mode | default('batch') | capitalize }}
+                            </span>
+                            <span class="text-sm font-medium text-gray-900">
+                                {% if run.formatted_date | default('') %}
+                                    {{ run.formatted_date }}
+                                {% else %}
+                                    {{ run.started_at | string | truncate(16, true, '') }}
+                                {% endif %}
+                            </span>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <span class="text-sm font-semibold text-gray-900">{{ '{:,}'.format(run.records | default(0)) }} records</span>
+                            <svg class="w-4 h-4 text-gray-300 group-hover:text-gray-500 transition-colors" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                 stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-4 text-xs text-gray-500">
+                        {# Top platforms #}
+                        {% if run.top_platforms | default([]) | length > 0 %}
+                        <div class="flex items-center gap-1.5">
+                            {% for p in run.top_platforms %}
+                            <span class="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 font-medium">
+                                {{ p.name | replace('_', ' ') | capitalize }}
+                                <span class="ml-1 text-gray-400 font-normal">{{ '{:,}'.format(p.count) }}</span>
+                            </span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                        {# Date range #}
+                        {% if run.date_range_start | default('') and run.date_range_end | default('') %}
+                        <span class="text-gray-400">
+                            {{ run.date_range_start }}{% if run.date_range_start != run.date_range_end %} &ndash; {{ run.date_range_end }}{% endif %}
+                        </span>
+                        {% endif %}
+                    </div>
+                </a>
+                {% endfor %}
+            </div>
         </div>
-    </div>
+        {% endfor %}
+    {% else %}
+        <div class="bg-white rounded-lg shadow p-8 text-center">
+            <svg class="w-12 h-12 text-gray-300 mx-auto mb-4" xmlns="http://www.w3.org/2000/svg" fill="none"
+                 viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+            </svg>
+            <h2 class="text-lg font-semibold text-gray-900 mb-2">No completed collection runs yet</h2>
+            <p class="text-sm text-gray-500 mb-6 max-w-md mx-auto">
+                Run a collection first, then return here to analyse the results.
+            </p>
+            <a href="/collections"
+               class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+                View Collections
+            </a>
+        </div>
     {% endif %}
 
 </div>

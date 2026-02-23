@@ -40,7 +40,7 @@ import uuid
 from typing import Annotated, Any, Optional
 
 import structlog
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy import and_, func, or_, select, update
@@ -1400,6 +1400,61 @@ async def create_actor(
     return await _get_actor_or_404(actor.id, db, load_presences=True)
 
 
+@router.post("/form", response_class=HTMLResponse, include_in_schema=False)
+async def create_actor_form(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    name: Annotated[str, Form()],
+    type: Annotated[str, Form()] = "person",
+    description: Annotated[Optional[str], Form()] = None,
+    public_figure: Annotated[str, Form()] = "false",
+) -> HTMLResponse:
+    """Create an actor from the HTMX form on the Actors page.
+
+    Accepts form-encoded data and returns an HTML table row fragment.
+    """
+    is_public = public_figure.lower() in ("true", "on", "1")
+
+    actor = Actor(
+        canonical_name=name,
+        actor_type=type,
+        description=description or None,
+        created_by=current_user.id,
+        public_figure=is_public,
+    )
+    db.add(actor)
+    await db.commit()
+    await db.refresh(actor)
+
+    logger.info(
+        "actor_created_via_form",
+        actor_id=str(actor.id),
+        canonical_name=actor.canonical_name,
+        created_by=str(current_user.id),
+    )
+
+    # Return an HTML table row matching the actors list template.
+    badge_class = "bg-blue-100 text-blue-700" if type == "person" else "bg-purple-100 text-purple-700"
+    public_badge = (
+        '<span class="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] '
+        'font-medium bg-amber-100 text-amber-700">Public</span>'
+        if is_public
+        else ""
+    )
+    return HTMLResponse(
+        f'<tr class="hover:bg-gray-50" id="actor-row-{actor.id}">'
+        f'<td class="px-6 py-3"><a href="/actors/{actor.id}" '
+        f'class="text-blue-600 hover:underline font-medium">{name}</a>{public_badge}</td>'
+        f'<td class="px-6 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs '
+        f'font-medium {badge_class}">{type}</span></td>'
+        f'<td class="px-6 py-3 text-gray-500 text-sm">{description or ""}</td>'
+        f'<td class="px-6 py-3 text-gray-400 text-xs">0 presences</td>'
+        f"</tr>",
+        status_code=201,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Detail
 # ---------------------------------------------------------------------------
@@ -2406,3 +2461,92 @@ async def similar_cross_platform(
         )
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# A4: Actor co-occurrence network
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{actor_id:uuid}/network")
+async def get_actor_network(
+    actor_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> dict:
+    """Return a co-occurrence network graph centred on a specific actor.
+
+    Finds the most recent collection run containing content by this actor,
+    then calls ``get_actor_co_occurrence`` to build the full network for that
+    run and filters it to edges connected to the target actor.
+
+    Args:
+        actor_id: UUID of the target actor.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        JSON ``{nodes: [...], edges: [...]}`` for the ego network, or an
+        empty graph if no content exists.
+
+    Raises:
+        HTTPException 404: If the actor does not exist.
+        HTTPException 403: If the actor is not accessible.
+    """
+    from issue_observatory.analysis.network import get_actor_co_occurrence  # noqa: PLC0415
+
+    actor = await _get_actor_or_404(actor_id, db)
+    _check_actor_readable(actor, current_user)
+
+    # Find the most recent collection_run_id for content by this actor.
+    run_stmt = (
+        select(UniversalContentRecord.collection_run_id)
+        .where(UniversalContentRecord.author_id == actor_id)
+        .order_by(UniversalContentRecord.collected_at.desc().nullslast())
+        .limit(1)
+    )
+    run_result = await db.execute(run_stmt)
+    run_id = run_result.scalar_one_or_none()
+
+    if run_id is None:
+        return {"nodes": [], "edges": []}
+
+    # Build the full co-occurrence network for that run.
+    graph = await get_actor_co_occurrence(
+        db,
+        run_id=run_id,
+        min_co_occurrences=2,
+        limit=50,
+    )
+
+    # Find the actor's pseudonymized_author_id for filtering.
+    pid_stmt = (
+        select(UniversalContentRecord.pseudonymized_author_id)
+        .where(
+            UniversalContentRecord.author_id == actor_id,
+            UniversalContentRecord.pseudonymized_author_id.isnot(None),
+        )
+        .limit(1)
+    )
+    pid_result = await db.execute(pid_stmt)
+    pseudo_id = pid_result.scalar_one_or_none()
+
+    if not pseudo_id:
+        return {"nodes": [], "edges": []}
+
+    # Filter to ego network: edges where actor is source or target.
+    ego_edges = [
+        e for e in graph.get("edges", [])
+        if e.get("source") == pseudo_id or e.get("target") == pseudo_id
+    ]
+    connected_ids = {pseudo_id}
+    for e in ego_edges:
+        connected_ids.add(e["source"])
+        connected_ids.add(e["target"])
+
+    ego_nodes = [
+        n for n in graph.get("nodes", [])
+        if n.get("id") in connected_ids
+    ]
+
+    return {"nodes": ego_nodes, "edges": ego_edges}

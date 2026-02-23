@@ -103,7 +103,7 @@
                         {{ run.credits_spent | default(0) }}
                     </td>
                     <td class="px-6 py-4 text-gray-500 text-xs">
-                        {{ run.started_at | default('') | truncate(16, true, '') }}
+                        {{ run.started_at | default('') | string | truncate(16, true, '') }} <span class="text-gray-400">UTC</span>
                     </td>
                     <td class="px-6 py-4 text-right">
                         <div class="flex items-center justify-end gap-3">

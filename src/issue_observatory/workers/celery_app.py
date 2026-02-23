@@ -145,8 +145,6 @@ celery_app.conf.update(
         },
         "issue_observatory.scraper.tasks.scrape_urls_task": {
             "queue": "scraping",
-            "soft_time_limit": 7_200,   # 2 hours
-            "time_limit": 10_800,        # 3 hours
         },
         "issue_observatory.scraper.tasks.cancel_scraping_job_task": {
             "queue": "scraping",
@@ -154,13 +152,9 @@ celery_app.conf.update(
         # Phase 3+ streaming arenas — 24-hour time limits for persistent connections
         "issue_observatory.arenas.discord.tasks.stream*": {
             "queue": "streaming",
-            "soft_time_limit": 86_400,   # 24 hours
-            "time_limit": 90_000,        # 25 hours (safety net before restart)
         },
         "issue_observatory.arenas.twitch.tasks.stream*": {
             "queue": "streaming",
-            "soft_time_limit": 86_400,
-            "time_limit": 90_000,
         },
     },
     # Beat schedule is imported from the dedicated module.

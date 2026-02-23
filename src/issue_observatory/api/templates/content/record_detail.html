@@ -31,17 +31,9 @@
 {% block content %}
 {% if standalone %}
 <div class="max-w-3xl mx-auto space-y-6">
-    <div class="flex items-center gap-3">
-        <a href="/content"
-           class="text-gray-400 hover:text-gray-600 transition-colors"
-           aria-label="Back to content browser">
-            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                 stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
-            </svg>
-        </a>
-        <h1 class="text-xl font-bold text-gray-900">Content Record</h1>
-    </div>
+    {% set breadcrumbs = [('Content', '/content'), ('Record Detail', '')] %}
+    {% include '_partials/breadcrumbs.html' %}
+    <h1 class="text-xl font-bold text-gray-900">Content Record</h1>
 {% endif %}
 
 <div class="space-y-4" x-data="{ showRaw: false }">

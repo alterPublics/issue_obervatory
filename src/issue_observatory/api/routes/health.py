@@ -24,9 +24,10 @@ from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
 import sqlalchemy as sa
-from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends
+from fastapi.responses import HTMLResponse, JSONResponse
 
+from issue_observatory.api.dependencies import require_admin
 from issue_observatory.arenas.registry import autodiscover, list_arenas
 from issue_observatory.config.settings import get_settings
 from issue_observatory.core.database import AsyncSessionLocal
@@ -246,3 +247,59 @@ async def arenas_health() -> JSONResponse:
     }
     logger.info("arenas_health_check", extra={"overall": overall, "count": len(arena_map)})
     return JSONResponse(payload)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/health/cleanup-stale-runs — Manual stale run cleanup (R-05)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/health/cleanup-stale-runs", include_in_schema=True)
+async def cleanup_stale_runs(
+    _admin: bool = Depends(require_admin),
+) -> HTMLResponse:
+    """Manually trigger cleanup of stale collection runs (admin only).
+
+    Identifies collection runs that are stuck in 'running' or 'pending'
+    status with no activity for >30 minutes or >24 hours absolute timeout,
+    and marks them as failed.
+
+    This endpoint is idempotent and safe to call multiple times.
+
+    Returns:
+        HTML fragment with the count of cleaned runs (for HTMX swap).
+
+    Requires:
+        Admin role via ``require_admin`` dependency.
+    """
+    from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+        fetch_stale_runs,
+        mark_runs_failed,
+    )
+
+    stale_runs = await fetch_stale_runs()
+    run_ids = [r["id"] for r in stale_runs]
+
+    count_cleaned = 0
+    if run_ids:
+        count_cleaned = await mark_runs_failed(run_ids)
+
+    logger.info(
+        "manual_stale_run_cleanup: cleaned=%d run_ids=%s",
+        count_cleaned,
+        [str(r) for r in run_ids],
+    )
+
+    # Return an HTML fragment showing the result
+    if count_cleaned == 0:
+        return HTMLResponse(
+            '<div class="px-4 py-3 bg-green-50 text-green-800 rounded-lg text-sm">'
+            'No stale runs found. All collection runs are in valid states.'
+            '</div>'
+        )
+
+    return HTMLResponse(
+        f'<div class="px-4 py-3 bg-blue-50 text-blue-800 rounded-lg text-sm">'
+        f'<strong>Cleanup complete:</strong> Marked {count_cleaned} stale collection run{"s" if count_cleaned != 1 else ""} as failed.'
+        f'</div>'
+    )

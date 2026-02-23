@@ -172,6 +172,8 @@ class YouTubeCollector(ArenaCollector):
             query_strings = list(terms)
 
         all_video_ids: list[str] = []
+        # Track which term retrieved each video ID for search_terms_matched
+        video_id_to_term: dict[str, str] = {}
 
         try:
             async with self._build_http_client() as client:
@@ -194,6 +196,8 @@ class YouTubeCollector(ArenaCollector):
                             published_before=published_before,
                             danish_params=DANISH_PARAMS,
                         )
+                        for video_id in ids:
+                            video_id_to_term[video_id] = term
                         all_video_ids.extend(ids)
                         if not page_token or not ids:
                             break
@@ -203,6 +207,7 @@ class YouTubeCollector(ArenaCollector):
                     api_key=cred["api_key"],
                     cred_id=cred["id"],
                     video_ids=all_video_ids[:effective_max],
+                    video_id_to_term=video_id_to_term,
                 )
         finally:
             if self.credential_pool is not None:
@@ -358,6 +363,18 @@ class YouTubeCollector(ArenaCollector):
         )
         collected_at = datetime.now(timezone.utc).isoformat() + "Z"
 
+        # Extract search term matched if present
+        search_term = raw_item.get("_search_term")
+        search_terms_matched = [search_term] if search_term else []
+
+        # Compute engagement score using platform-specific weights
+        engagement_score = self._normalizer.compute_normalized_engagement(
+            platform=self.platform_name,
+            views=views_count,
+            likes=likes_count,
+            comments=comments_count,
+        )
+
         return {
             "platform": self.platform_name,
             "arena": self.arena_name,
@@ -377,10 +394,10 @@ class YouTubeCollector(ArenaCollector):
             "likes_count": likes_count,
             "shares_count": None,  # YouTube API does not expose share count
             "comments_count": comments_count,
-            "engagement_score": None,
+            "engagement_score": engagement_score,
             "collection_run_id": None,
             "query_design_id": None,
-            "search_terms_matched": [],
+            "search_terms_matched": search_terms_matched,
             "collection_tier": "free",
             "raw_metadata": raw_metadata,
             "media_urls": media_urls,
@@ -493,6 +510,7 @@ class YouTubeCollector(ArenaCollector):
         api_key: str,
         cred_id: str,
         video_ids: list[str],
+        video_id_to_term: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         """Batch-enrich video IDs with full metadata via ``videos.list``.
 
@@ -501,6 +519,7 @@ class YouTubeCollector(ArenaCollector):
             api_key: YouTube Data API v3 key.
             cred_id: Credential identifier for rate-limit throttling.
             video_ids: Video IDs to enrich (batched into groups of 50).
+            video_id_to_term: Optional mapping from video ID to search term.
 
         Returns:
             List of normalized content record dicts.
@@ -520,6 +539,9 @@ class YouTubeCollector(ArenaCollector):
             )
             for item in items:
                 try:
+                    # Mark item with search term if available
+                    if video_id_to_term and item.get("id") in video_id_to_term:
+                        item["_search_term"] = video_id_to_term[item["id"]]
                     records.append(self.normalize(item))
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(

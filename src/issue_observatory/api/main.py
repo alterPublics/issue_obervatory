@@ -115,10 +115,13 @@ def create_app() -> FastAPI:
     async def _auth_redirect_handler(
         request: Request, exc: HTTPException
     ) -> Response:
-        if exc.status_code == 401:
-            accept = request.headers.get("accept", "")
-            if "text/html" in accept:
-                return RedirectResponse(url="/auth/login", status_code=302)
+        accept = request.headers.get("accept", "")
+        if exc.status_code == 401 and "text/html" in accept:
+            return RedirectResponse(url="/auth/login", status_code=302)
+        if exc.status_code == 403 and "text/html" in accept:
+            return RedirectResponse(
+                url="/dashboard?error=access_denied", status_code=302
+            )
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": exc.detail},
@@ -344,7 +347,7 @@ def create_app() -> FastAPI:
     from issue_observatory.scraper.router import router as scraper_router  # noqa: PLC0415
 
     application.include_router(
-        scraper_router, prefix="/scraping-jobs", tags=["scraping"]
+        scraper_router, prefix="/api/scraping-jobs", tags=["scraping"]
     )
 
     # ---- Application routers ----------------------------------------------
@@ -364,6 +367,7 @@ def create_app() -> FastAPI:
         health as health_routes,
         imports,
         pages,
+        projects,
         query_designs,
         users,
     )
@@ -380,6 +384,7 @@ def create_app() -> FastAPI:
     # otherwise capture literal path segments like "new" and fail UUID validation.
     application.include_router(pages.priority_router)
 
+    application.include_router(projects.router, prefix="/projects", tags=["projects"])
     application.include_router(query_designs.router, prefix="/query-designs", tags=["query-designs"])
     application.include_router(collections.router, prefix="/collections", tags=["collections"])
     application.include_router(content.router, prefix="/content", tags=["content"])

@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from issue_observatory.core.credit_service import CreditService
 from issue_observatory.core.database import AsyncSessionLocal
@@ -220,26 +220,54 @@ async def settle_single_reservation(row: dict[str, Any]) -> None:
 
 
 async def fetch_stale_runs() -> list[dict[str, Any]]:
-    """Return CollectionRun rows stuck in non-terminal states for > 24 hours.
+    """Return CollectionRun rows stuck in non-terminal states.
 
-    Targets:
-    - Runs with ``status='running'`` where ``started_at < now() - 24h``
-    - Runs with ``status='pending'`` where ``started_at < now() - 24h``
-      or ``started_at IS NULL``
+    A run is considered stale if:
+    - It has been in 'running' or 'pending' status AND either:
+      a) started_at > 30 min ago AND no records exist for the run, OR
+      b) The most recent collected_at for the run's records is > 30 min ago, OR
+      c) started_at > 24 h ago (absolute timeout fallback)
+
+    Pending runs with started_at=NULL are newly created and NOT stale.
 
     Returns:
         List of dicts with ``id``, ``status``, and ``started_at``.
     """
-    cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=24)
+    from sqlalchemy import or_  # noqa: PLC0415
+
+    absolute_cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=24)
+    idle_cutoff = datetime.now(tz=timezone.utc) - timedelta(minutes=30)
+
     async with AsyncSessionLocal() as db:
-        # Only mark runs as stale when started_at is set AND older than 24h.
-        # Pending runs with started_at=NULL are newly created and waiting for
-        # the Celery worker to pick them up — they are NOT stale.
+        # Subquery: most recent collected_at per run
+        last_record_subq = (
+            select(
+                UniversalContentRecord.collection_run_id,
+                func.max(UniversalContentRecord.collected_at).label("last_collected"),
+            )
+            .group_by(UniversalContentRecord.collection_run_id)
+            .subquery()
+        )
+
         stmt = (
             select(CollectionRun.id, CollectionRun.status, CollectionRun.started_at)
+            .outerjoin(
+                last_record_subq,
+                CollectionRun.id == last_record_subq.c.collection_run_id,
+            )
             .where(CollectionRun.status.in_(["pending", "running"]))
             .where(CollectionRun.started_at.is_not(None))
-            .where(CollectionRun.started_at < cutoff)
+            .where(
+                or_(
+                    # Absolute timeout: started > 24h ago
+                    CollectionRun.started_at < absolute_cutoff,
+                    # Idle timeout: started > 30 min ago AND no records at all
+                    (CollectionRun.started_at < idle_cutoff)
+                    & (last_record_subq.c.last_collected.is_(None)),
+                    # Idle timeout: last record > 30 min ago
+                    last_record_subq.c.last_collected < idle_cutoff,
+                )
+            )
         )
         result = await db.execute(stmt)
         rows = result.mappings().all()
@@ -265,7 +293,7 @@ async def mark_runs_failed(run_ids: list[Any]) -> int:
         return 0
 
     stale_msg = (
-        "Marked as failed by stale_run_cleanup: exceeded 24h without completion"
+        "Marked as failed by stale_run_cleanup: no activity for >30 minutes or exceeded 24h absolute timeout"
     )
     async with AsyncSessionLocal() as db:
         # Fetch run details before updating so we can publish accurate counts

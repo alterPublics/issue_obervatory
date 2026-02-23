@@ -257,7 +257,7 @@
                         {{ run.id | truncate(8, true, '') }}
                     </td>
                     <td class="px-6 py-3 text-xs text-gray-500">
-                        {{ run.started_at | default('') | truncate(16, true, '') }}
+                        {{ run.started_at | default('') | string | truncate(16, true, '') }}
                     </td>
                     <td class="px-6 py-3 text-right text-xs font-mono text-gray-700">
                         {{ run.records_collected | default(0) | int }}

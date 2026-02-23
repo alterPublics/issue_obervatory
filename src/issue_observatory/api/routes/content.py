@@ -34,8 +34,14 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from issue_observatory.analysis.export import ContentExporter
+from issue_observatory.analysis.network import (
+    build_bipartite_network,
+    get_actor_co_occurrence,
+    get_term_co_occurrence,
+)
 from issue_observatory.api.dependencies import get_current_active_user
 from issue_observatory.core.database import get_db
+from issue_observatory.core.models.actors import Actor
 from issue_observatory.core.models.collection import CollectionRun
 from issue_observatory.core.models.content import UniversalContentRecord
 from issue_observatory.core.models.users import User
@@ -329,12 +335,15 @@ def _build_browse_stmt(
     """
     ucr = UniversalContentRecord
 
+    # A2: Resolved author name via LEFT JOIN to actors table
+    resolved_name_col = Actor.canonical_name.label("_resolved_name")
+
     # SB-13: Join with collection_runs to get mode for badge display
     if current_user.role == "admin":
-        stmt = select(ucr, CollectionRun.mode).join(
-            CollectionRun,
-            ucr.collection_run_id == CollectionRun.id,
-            isouter=True,
+        stmt = (
+            select(ucr, CollectionRun.mode, resolved_name_col)
+            .join(CollectionRun, ucr.collection_run_id == CollectionRun.id, isouter=True)
+            .join(Actor, ucr.author_id == Actor.id, isouter=True)
         )
     else:
         user_run_ids_subq = (
@@ -343,8 +352,9 @@ def _build_browse_stmt(
             .scalar_subquery()
         )
         stmt = (
-            select(ucr, CollectionRun.mode)
+            select(ucr, CollectionRun.mode, resolved_name_col)
             .join(CollectionRun, ucr.collection_run_id == CollectionRun.id, isouter=True)
+            .join(Actor, ucr.author_id == Actor.id, isouter=True)
             .where(ucr.collection_run_id.in_(user_run_ids_subq))
         )
 
@@ -424,25 +434,58 @@ async def _fetch_recent_runs(
 
     Returns:
         A list of dicts with keys ``id``, ``status``, ``query_design_name``,
-        ``created_at``.
+        ``created_at``, ``formatted_date``, ``records_collected``.
     """
+    from sqlalchemy.orm import selectinload  # noqa: PLC0415
+
     if current_user.role == "admin":
-        stmt = select(CollectionRun).order_by(CollectionRun.started_at.desc().nulls_last()).limit(limit)
+        stmt = (
+            select(CollectionRun)
+            .options(selectinload(CollectionRun.query_design))
+            .order_by(CollectionRun.started_at.desc().nulls_last())
+            .limit(limit)
+        )
     else:
         stmt = (
             select(CollectionRun)
+            .options(selectinload(CollectionRun.query_design))
             .where(CollectionRun.initiated_by == current_user.id)
             .order_by(CollectionRun.started_at.desc().nulls_last())
             .limit(limit)
         )
     result = await db.execute(stmt)
     rows = result.scalars().all()
+
+    # Fetch record counts for all runs in a single query
+    run_ids = [r.id for r in rows]
+    if run_ids:
+        count_stmt = (
+            select(
+                UniversalContentRecord.collection_run_id,
+                func.count(UniversalContentRecord.id).label("count")
+            )
+            .where(UniversalContentRecord.collection_run_id.in_(run_ids))
+            .group_by(UniversalContentRecord.collection_run_id)
+        )
+        count_result = await db.execute(count_stmt)
+        record_counts = {row[0]: row[1] for row in count_result.fetchall()}
+    else:
+        record_counts = {}
+
+    def format_date(dt: datetime | None) -> str:
+        """Format datetime as '15 Feb 2026' style."""
+        if not dt:
+            return ""
+        return dt.strftime("%d %b %Y")
+
     return [
         {
             "id": str(r.id),
             "status": r.status,
-            "query_design_name": getattr(r, "query_design_name", "") or "Run",
+            "query_design_name": r.query_design.name if r.query_design else "Untitled",
             "created_at": r.started_at.isoformat() if r.started_at else "",
+            "formatted_date": format_date(r.started_at),
+            "records_collected": record_counts.get(r.id, 0),
         }
         for r in rows
     ]
@@ -460,6 +503,7 @@ async def _count_matching(
     search_term: Optional[str],
     run_id: Optional[uuid.UUID],
     mode: Optional[str],
+    arenas_list: Optional[list[str]] = None,
 ) -> int:
     """Return the total number of records matching the current browser filters.
 
@@ -477,6 +521,7 @@ async def _count_matching(
         search_term: ``search_terms_matched`` array membership filter.
         run_id: Collection run UUID filter.
         mode: Collection mode filter ('batch' or 'live').
+        arenas_list: Multi-value platform filter (when multiple checkboxes selected).
 
     Returns:
         Integer row count (may be approximate on very large datasets).
@@ -498,6 +543,11 @@ async def _count_matching(
         cursor_id=None,
         limit=_BROWSE_CAP + 1,  # count up to cap+1 to detect overflow
     )
+
+    # Apply multi-arena IN filter if provided
+    if arenas_list and len(arenas_list) > 1:
+        stmt = stmt.where(UniversalContentRecord.platform.in_(arenas_list))
+
     count_stmt = select(func.count()).select_from(stmt.subquery())
     result = await db.execute(count_stmt)
     return result.scalar_one() or 0
@@ -532,6 +582,10 @@ def _orm_row_to_template_dict(row: Any) -> dict[str, Any]:  # noqa: ANN401
     # SB-13: Extract mode from the joined collection_runs table
     mode = _get("mode") or _get("_browse_mode") or ""
 
+    # A2: Use resolved actor name when available
+    resolved_name = _get("_resolved_name")
+    author = resolved_name or _get("author_display_name") or ""
+
     return {
         "id": str(_get("id") or ""),
         "platform": _get("platform") or "",
@@ -539,7 +593,8 @@ def _orm_row_to_template_dict(row: Any) -> dict[str, Any]:  # noqa: ANN401
         "content_type": _get("content_type") or "",
         "title": _get("title") or "",
         "text": _get("text_content") or "",
-        "author": _get("author_display_name") or "",
+        "author": author,
+        "author_resolved": bool(resolved_name),
         "author_id": str(_get("author_platform_id") or ""),
         "url": _get("url") or "",
         "published_at": pub.isoformat() if pub else "",
@@ -553,11 +608,15 @@ def _orm_row_to_template_dict(row: Any) -> dict[str, Any]:  # noqa: ANN401
     }
 
 
-def _orm_to_detail_dict(record: UniversalContentRecord) -> dict[str, Any]:
+def _orm_to_detail_dict(
+    record: UniversalContentRecord,
+    resolved_name: str | None = None,
+) -> dict[str, Any]:
     """Convert an ORM ``UniversalContentRecord`` to the detail template context dict.
 
     Args:
         record: An ORM instance loaded from the database.
+        resolved_name: Optional canonical actor name from a LEFT JOIN with actors.
 
     Returns:
         Dict with keys expected by ``content/record_detail.html``.
@@ -566,6 +625,9 @@ def _orm_to_detail_dict(record: UniversalContentRecord) -> dict[str, Any]:
     col = record.collected_at
     terms = record.search_terms_matched or []
 
+    # A2: Prefer resolved actor name over raw display name
+    author = resolved_name or record.author_display_name or ""
+
     return {
         "id": str(record.id),
         "platform": record.platform or "",
@@ -573,7 +635,8 @@ def _orm_to_detail_dict(record: UniversalContentRecord) -> dict[str, Any]:
         "content_type": record.content_type or "",
         "title": record.title or "",
         "text": record.text_content or "",
-        "author": record.author_display_name or "",
+        "author": author,
+        "author_resolved": bool(resolved_name),
         "author_id": str(record.author_platform_id or ""),
         "url": record.url or "",
         "published_at": pub.isoformat() if pub else "",
@@ -636,6 +699,7 @@ async def content_browser_page(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     q: Optional[str] = Query(default=None, description="Full-text search query."),
+    arenas: Optional[list[str]] = Query(default=None, description="Multi-value platform filter from checkboxes."),
     platform: Optional[str] = Query(default=None),
     arena: Optional[str] = Query(default=None),
     date_from: Optional[str] = Query(default=None),
@@ -676,10 +740,16 @@ async def content_browser_page(
     date_from_dt = _parse_date_param(date_from)
     date_to_dt = _parse_date_param(date_to)
 
+    # Handle arenas multi-value filter (same logic as /content/records)
+    arenas_list: list[str] = arenas or []
+    platform_filter: Optional[str] = platform
+    if len(arenas_list) == 1:
+        platform_filter = arenas_list[0]
+
     stmt = _build_browse_stmt(
         current_user=current_user,
         q=q,
-        platform=platform,
+        platform=platform_filter if len(arenas_list) <= 1 else None,
         arena=arena,
         date_from=date_from_dt,
         date_to=date_to_dt,
@@ -691,6 +761,12 @@ async def content_browser_page(
         cursor_id=None,
         limit=_BROWSE_LIMIT,
     )
+
+    # Apply multi-arena IN filter when multiple checkboxes selected
+    if len(arenas_list) > 1:
+        ucr = UniversalContentRecord
+        stmt = stmt.where(ucr.platform.in_(arenas_list))
+
     result = await db.execute(stmt)
     raw_rows = list(result.mappings().all())
 
@@ -716,11 +792,13 @@ async def content_browser_page(
     recent_runs = await _fetch_recent_runs(db, current_user)
 
     # Total count (approximate — count without cursor/limit for display).
+    # For multi-arena counts, _count_matching will build the IN filter internally.
+    count_platform = platform_filter if len(arenas_list) <= 1 else None
     total_count = await _count_matching(
         db=db,
         current_user=current_user,
         q=q,
-        platform=platform,
+        platform=count_platform,
         arena=arena,
         date_from=date_from_dt,
         date_to=date_to_dt,
@@ -728,12 +806,13 @@ async def content_browser_page(
         search_term=search_term,
         run_id=run_id,
         mode=mode,
+        arenas_list=arenas_list if len(arenas_list) > 1 else None,
     )
 
     filter_ctx = {
         "q": q or "",
         "platform": platform or "",
-        "arenas": [arena] if arena else [],
+        "arenas": arenas_list,  # multi-value checkbox state
         "date_from": date_from or "",
         "date_to": date_to or "",
         "language": language or "",
@@ -862,17 +941,20 @@ async def content_records_fragment(
     date_to_dt = _parse_date_param(date_to)
 
     # Merge arenas multi-value list with singular platform/arena params.
-    arena_filter: Optional[str] = None
+    # Note: 'arenas' checkbox group sends platform_name values, so we filter on platform column.
     arenas_list: list[str] = arenas or []
+    platform_filter: Optional[str] = platform  # explicit single platform param
+
+    # When a single arena checkbox is checked, use it as platform filter
     if len(arenas_list) == 1:
-        arena_filter = arenas_list[0]
+        platform_filter = arenas_list[0]
     # When multiple arenas checked we build an IN filter below.
 
     stmt = _build_browse_stmt(
         current_user=current_user,
         q=q,
-        platform=platform,
-        arena=arena_filter if len(arenas_list) <= 1 else None,
+        platform=platform_filter if len(arenas_list) <= 1 else None,
+        arena=None,  # arena grouping handled via arenas_list below
         date_from=date_from_dt,
         date_to=date_to_dt,
         language=language,
@@ -885,8 +967,9 @@ async def content_records_fragment(
     )
 
     # Multiple arena filter (IN clause) applied post-base when >1 selected.
+    # The 'arenas' parameter contains platform_name values from checkboxes.
     if len(arenas_list) > 1:
-        stmt = stmt.where(UniversalContentRecord.arena.in_(arenas_list))
+        stmt = stmt.where(UniversalContentRecord.platform.in_(arenas_list))
 
     result = await db.execute(stmt)
     raw_rows = list(result.mappings().all())
@@ -1290,7 +1373,33 @@ async def export_content_sync(  # type: ignore[misc]
         elif format == "bibtex":
             file_bytes = exporter.export_bibtex(records)
         else:  # gexf
-            file_bytes = await exporter.export_gexf(records, network_type=network_type)
+            # Build network graph using proper network analysis functions
+            # instead of passing raw records to export_gexf
+            if network_type == "actor":
+                graph = await get_actor_co_occurrence(
+                    db=db,
+                    run_id=run_id,
+                    query_design_id=query_design_id,
+                    arena=arena,
+                    platform=platform,
+                    date_from=date_from,
+                    date_to=date_to,
+                )
+            elif network_type == "term":
+                graph = await get_term_co_occurrence(
+                    db=db,
+                    run_id=run_id,
+                    query_design_id=query_design_id,
+                    arena=arena,
+                )
+            else:  # bipartite
+                graph = await build_bipartite_network(
+                    db=db,
+                    run_id=run_id,
+                    query_design_id=query_design_id,
+                    arena=arena,
+                )
+            file_bytes = await exporter.export_gexf(graph, network_type=network_type)
     except ImportError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1702,9 +1811,14 @@ async def get_content_record_html(
     if templates is None:
         raise HTTPException(status_code=500, detail="Template engine not initialised.")
 
+    # A2: Include resolved actor name via LEFT JOIN
+    resolved_name_col = Actor.canonical_name.label("_resolved_name")
+
     if current_user.role == "admin":
-        stmt = select(UniversalContentRecord).where(
-            UniversalContentRecord.id == record_id
+        stmt = (
+            select(UniversalContentRecord, resolved_name_col)
+            .join(Actor, UniversalContentRecord.author_id == Actor.id, isouter=True)
+            .where(UniversalContentRecord.id == record_id)
         )
     else:
         user_run_ids_subq = (
@@ -1712,21 +1826,27 @@ async def get_content_record_html(
             .where(CollectionRun.initiated_by == current_user.id)
             .scalar_subquery()
         )
-        stmt = select(UniversalContentRecord).where(
-            UniversalContentRecord.id == record_id,
-            UniversalContentRecord.collection_run_id.in_(user_run_ids_subq),
+        stmt = (
+            select(UniversalContentRecord, resolved_name_col)
+            .join(Actor, UniversalContentRecord.author_id == Actor.id, isouter=True)
+            .where(
+                UniversalContentRecord.id == record_id,
+                UniversalContentRecord.collection_run_id.in_(user_run_ids_subq),
+            )
         )
 
     db_result = await db.execute(stmt)
-    orm_record = db_result.scalar_one_or_none()
+    db_row = db_result.one_or_none()
 
-    if orm_record is None:
+    if db_row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Content record '{record_id}' not found.",
         )
 
-    record_ctx = _orm_to_detail_dict(orm_record)
+    orm_record = db_row[0]
+    resolved_name = db_row[1]
+    record_ctx = _orm_to_detail_dict(orm_record, resolved_name=resolved_name)
     is_panel = hx_request is not None
 
     return templates.TemplateResponse(

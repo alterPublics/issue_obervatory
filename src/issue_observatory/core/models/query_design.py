@@ -28,6 +28,7 @@ from issue_observatory.core.models.base import Base
 if TYPE_CHECKING:
     from issue_observatory.core.models.actors import ActorListMember
     from issue_observatory.core.models.collection import CollectionRun
+    from issue_observatory.core.models.project import Project
     from issue_observatory.core.models.users import User
     from issue_observatory.core.models.zeeschuimer_import import ZeeschuimerImport
 
@@ -117,11 +118,24 @@ class QueryDesign(Base):
         nullable=True,
         index=True,
     )
+    # Optional FK to Project for organizational grouping (R-06).
+    # ON DELETE SET NULL so that deleting a project detaches designs but doesn't delete them.
+    project_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("projects.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Relationships
     owner: Mapped[User] = relationship(
         "User",
         foreign_keys=[owner_id],
+        back_populates="query_designs",
+    )
+    project: Mapped[Optional[Project]] = relationship(
+        "Project",
+        foreign_keys=[project_id],
         back_populates="query_designs",
     )
     search_terms: Mapped[list[SearchTerm]] = relationship(

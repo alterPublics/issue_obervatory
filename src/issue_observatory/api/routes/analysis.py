@@ -136,13 +136,16 @@ async def analysis_landing(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
 ) -> Response:
-    """Render the analysis landing page with recent completed runs.
+    """Render the analysis landing page grouped by query design.
 
-    Shows a prompt to select a collection run for analysis, along with
-    a list of the user's most recent completed runs for quick access.
+    Lists all query designs owned by the current user, each with their
+    completed collection runs with enriched metadata (top platforms, date
+    range, formatted dates), so researchers can jump directly to analysis.
     """
+    from sqlalchemy import func  # noqa: PLC0415
     from sqlalchemy.orm import selectinload  # noqa: PLC0415
 
+    # Fetch completed runs with their query designs
     stmt = (
         select(CollectionRun)
         .options(selectinload(CollectionRun.query_design))
@@ -151,20 +154,88 @@ async def analysis_landing(
             CollectionRun.status == "completed",
         )
         .order_by(CollectionRun.started_at.desc().nulls_last())
-        .limit(10)
     )
     result = await db.execute(stmt)
     runs = result.scalars().all()
 
-    recent_runs = [
-        {
+    run_ids = [r.id for r in runs]
+
+    # R-13: Single aggregate query for per-platform counts across all runs.
+    platform_counts_by_run: dict[uuid.UUID, list[tuple[str, int]]] = {}
+    date_ranges_by_run: dict[uuid.UUID, tuple[str, str]] = {}
+
+    if run_ids:
+        # Per-platform counts
+        pc_result = await db.execute(
+            select(
+                UniversalContentRecord.collection_run_id,
+                UniversalContentRecord.platform,
+                func.count(UniversalContentRecord.id).label("cnt"),
+            )
+            .where(UniversalContentRecord.collection_run_id.in_(run_ids))
+            .group_by(
+                UniversalContentRecord.collection_run_id,
+                UniversalContentRecord.platform,
+            )
+            .order_by(func.count(UniversalContentRecord.id).desc())
+        )
+        for row in pc_result.all():
+            platform_counts_by_run.setdefault(row.collection_run_id, []).append(
+                (row.platform, row.cnt)
+            )
+
+        # Date ranges (min/max published_at)
+        dr_result = await db.execute(
+            select(
+                UniversalContentRecord.collection_run_id,
+                func.min(UniversalContentRecord.published_at).label("min_date"),
+                func.max(UniversalContentRecord.published_at).label("max_date"),
+            )
+            .where(UniversalContentRecord.collection_run_id.in_(run_ids))
+            .group_by(UniversalContentRecord.collection_run_id)
+        )
+        for row in dr_result.all():
+            min_d = row.min_date.strftime("%d %b %Y") if row.min_date else ""
+            max_d = row.max_date.strftime("%d %b %Y") if row.max_date else ""
+            date_ranges_by_run[row.collection_run_id] = (min_d, max_d)
+
+    # Group runs by query design
+    designs_map: dict[str, dict[str, Any]] = {}
+    for r in runs:
+        design_id = str(r.query_design_id) if r.query_design_id else "none"
+        if design_id not in designs_map:
+            designs_map[design_id] = {
+                "id": design_id,
+                "name": r.query_design.name if r.query_design else "(no query design)",
+                "runs": [],
+            }
+
+        # Format date
+        formatted_date = ""
+        if r.started_at:
+            formatted_date = r.started_at.strftime("%d %b %Y, %H:%M")
+
+        # Top 3 platforms for this run
+        top_platforms = [
+            {"name": p, "count": c}
+            for p, c in (platform_counts_by_run.get(r.id, []))[:3]
+        ]
+
+        # Date range
+        date_range = date_ranges_by_run.get(r.id, ("", ""))
+
+        designs_map[design_id]["runs"].append({
             "id": str(r.id),
-            "design_name": r.query_design.name if r.query_design else "(unknown)",
             "started_at": r.started_at.isoformat() if r.started_at else "",
-            "records": r.records_collected,
-        }
-        for r in runs
-    ]
+            "formatted_date": formatted_date,
+            "records": r.records_collected or 0,
+            "mode": r.mode or "batch",
+            "top_platforms": top_platforms,
+            "date_range_start": date_range[0],
+            "date_range_end": date_range[1],
+        })
+
+    design_entries = list(designs_map.values())
 
     templates = request.app.state.templates
     return templates.TemplateResponse(
@@ -172,7 +243,7 @@ async def analysis_landing(
         {
             "request": request,
             "user": current_user,
-            "recent_runs": recent_runs,
+            "design_entries": design_entries,
         },
     )
 
@@ -1213,9 +1284,34 @@ async def export_temporal_network_gexf(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
+    except Exception as exc:
+        # Catch all database errors and return a proper JSON error response
+        logger.error(
+            "analysis.export_temporal_gexf.db_error",
+            run_id=str(run_id),
+            error=str(exc),
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate temporal network snapshots: {str(exc)}",
+        ) from exc
 
-    exporter = ContentExporter()
-    gexf_bytes = await exporter.export_temporal_gexf(snapshots)
+    try:
+        exporter = ContentExporter()
+        gexf_bytes = await exporter.export_temporal_gexf(snapshots)
+    except Exception as exc:
+        # Catch GEXF serialization errors
+        logger.error(
+            "analysis.export_temporal_gexf.serialization_error",
+            run_id=str(run_id),
+            error=str(exc),
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to serialize temporal GEXF: {str(exc)}",
+        ) from exc
 
     filename = f"run_{run_id}_temporal_{network_type}_{interval}.gexf"
 

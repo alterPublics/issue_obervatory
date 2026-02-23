@@ -706,7 +706,8 @@ async def get_temporal_network_snapshots(
 
     params: dict[str, Any] = {}
     scope_clauses = _build_run_filter(
-        query_design_id, run_id, None, None, None, None, params
+        query_design_id, run_id, None, None, None, None, params,
+        table_alias="a.",
     )
     scope_filter = _and(scope_clauses)
 
@@ -716,10 +717,10 @@ async def get_temporal_network_snapshots(
     range_sql = text(
         f"""
         SELECT
-            MIN(published_at) AS min_date,
-            MAX(published_at) AS max_date
-        FROM content_records
-        WHERE published_at IS NOT NULL
+            MIN(a.published_at) AS min_date,
+            MAX(a.published_at) AS max_date
+        FROM content_records a
+        WHERE a.published_at IS NOT NULL
           {scope_filter}
         """
     )

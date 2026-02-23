@@ -1166,9 +1166,9 @@ async def get_arena_comparison(
     db: AsyncSession,
     run_id: uuid.UUID,
 ) -> dict:
-    """Side-by-side arena metrics for a collection run.
+    """Side-by-side platform metrics for a collection run.
 
-    Returns per-arena breakdown with record count, unique actors, unique terms,
+    Returns per-platform breakdown with record count, unique actors, unique terms,
     average engagement score, and date range. Includes a totals row.
 
     Args:
@@ -1176,12 +1176,12 @@ async def get_arena_comparison(
         run_id: UUID of the collection run.
 
     Returns:
-        Dict with per-arena metrics and totals::
+        Dict with per-platform metrics and totals::
 
             {
               "by_arena": [
                 {
-                  "arena": "news_media",
+                  "platform": "tiktok",
                   "record_count": 1234,
                   "unique_actors": 87,
                   "unique_terms": 23,
@@ -1205,13 +1205,13 @@ async def get_arena_comparison(
     """
     params: dict[str, Any] = {"run_id": str(run_id)}
 
-    # Per-arena breakdown
+    # Per-platform breakdown (changed from per-arena to show individual platforms)
     # Note: unique_terms requires a subquery because COUNT(DISTINCT unnest(...))
     # is not supported directly in PostgreSQL.
     arena_sql = text(
         """
         SELECT
-            c.arena,
+            c.platform,
             COUNT(*) AS record_count,
             COUNT(DISTINCT c.pseudonymized_author_id) AS unique_actors,
             (
@@ -1219,7 +1219,7 @@ async def get_arena_comparison(
                 FROM content_records cr,
                      unnest(cr.search_terms_matched) AS term
                 WHERE cr.collection_run_id = :run_id
-                  AND cr.arena = c.arena
+                  AND cr.platform = c.platform
                   AND (cr.raw_metadata->>'duplicate_of') IS NULL
             ) AS unique_terms,
             AVG(c.engagement_score) AS avg_engagement,
@@ -1228,7 +1228,7 @@ async def get_arena_comparison(
         FROM content_records c
         WHERE c.collection_run_id = :run_id
           AND (c.raw_metadata->>'duplicate_of') IS NULL
-        GROUP BY c.arena
+        GROUP BY c.platform
         ORDER BY record_count DESC
         """
     )
@@ -1237,7 +1237,7 @@ async def get_arena_comparison(
 
     by_arena = [
         {
-            "arena": row.arena,
+            "platform": row.platform,
             "record_count": row.record_count,
             "unique_actors": row.unique_actors or 0,
             "unique_terms": row.unique_terms or 0,

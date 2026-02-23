@@ -60,13 +60,15 @@
                                 name="query_design_id"
                                 required
                                 x-model="designId"
-                                @change="requestEstimate(); loadArenaConfig()"
+                                @change="requestEstimate(); loadArenaConfig(); _readDesignCounts()"
                                 class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
                             <option value="">Select a query design...</option>
                             {% for design in query_designs %}
                             <option value="{{ design.id }}"
                                     {% if design.id == preselected %}selected{% endif %}
-                                    data-tier="{{ design.default_tier | default('free') }}">
+                                    data-tier="{{ design.default_tier | default('free') }}"
+                                    data-term-count="{{ design.term_count | default(0) }}"
+                                    data-actor-count="{{ design.actor_count | default(0) }}">
                                 {{ design.name | default('(untitled)') }}
                             </option>
                             {% endfor %}
@@ -87,7 +89,7 @@
                            if (designIdField?.value) {
                              loading = true;
                              let qd_id = designIdField.value;
-                             fetch(`/api/query-designs/${qd_id}/arena-config`)
+                             fetch(`/query-designs/${qd_id}/arena-config`)
                                .then(r => r.json())
                                .then(data => { arenas = data.arenas || []; loading = false; })
                                .catch(() => { arenas = []; loading = false; });
@@ -101,7 +103,7 @@
                           <div class="flex flex-wrap gap-1.5">
                             <template x-for="a in arenas.filter(a => a.enabled)" :key="a.id">
                               <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800"
-                                    x-text="a.id + ' (' + a.tier + ')'"></span>
+                                    x-text="_humanizeArena(a.id) + ' (' + a.tier + ')'"></span>
                             </template>
                           </div>
                         </div>
@@ -264,6 +266,27 @@
                         </details>
                     </div>
 
+                    {# F1: Pre-launch collection summary #}
+                    <div x-show="designId && (termCount > 0 || actorCount > 0 || enabledArenaCount > 0)"
+                         x-cloak
+                         x-transition
+                         class="mb-4 rounded-md bg-blue-50 border border-blue-200 px-4 py-3">
+                        <p class="text-sm text-blue-900">
+                            Collection scope:
+                            <span x-show="enabledArenaCount > 0">
+                                <strong x-text="enabledArenaCount"></strong> arena<span x-show="enabledArenaCount !== 1">s</span>
+                            </span>
+                            <span x-show="enabledArenaCount > 0 && (termCount > 0 || actorCount > 0)">,</span>
+                            <span x-show="termCount > 0">
+                                <strong x-text="termCount"></strong> search term<span x-show="termCount !== 1">s</span>
+                            </span>
+                            <span x-show="termCount > 0 && actorCount > 0">,</span>
+                            <span x-show="actorCount > 0">
+                                <strong x-text="actorCount"></strong> actor<span x-show="actorCount !== 1">s</span>
+                            </span>
+                        </p>
+                    </div>
+
                     {# Launch button — disabled when credits are insufficient #}
                     <div class="pt-4 border-t border-gray-200 flex items-center justify-between">
                         <a href="/collections" class="text-sm text-gray-500 hover:text-gray-700">Cancel</a>
@@ -333,6 +356,25 @@
 
 <script>
 /**
+ * Convert a snake_case arena ID to a human-readable label.
+ */
+function _humanizeArena(name) {
+    const labels = {
+        'google_search': 'Google Search', 'google_autocomplete': 'Google Autocomplete',
+        'bluesky': 'Bluesky', 'reddit': 'Reddit', 'youtube': 'YouTube',
+        'rss_feeds': 'RSS Feeds', 'gdelt': 'GDELT', 'telegram': 'Telegram',
+        'tiktok': 'TikTok', 'ritzau_via': 'Via Ritzau', 'gab': 'Gab',
+        'event_registry': 'Event Registry', 'x_twitter': 'X / Twitter',
+        'facebook': 'Facebook', 'instagram': 'Instagram', 'threads': 'Threads',
+        'common_crawl': 'Common Crawl', 'wayback': 'Wayback Machine',
+        'url_scraper': 'URL Scraper', 'wikipedia': 'Wikipedia', 'discord': 'Discord',
+        'ai_chat_search': 'AI Chat Search', 'majestic': 'Majestic',
+        'twitch': 'Twitch', 'vkontakte': 'VKontakte',
+    };
+    return labels[name] || name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+/**
  * Alpine component for the collection launcher.
  *
  * Responsibilities:
@@ -350,6 +392,11 @@ function collectionLauncher(availableCredits) {
         tier: 'free',
         dateFrom: '',
         dateTo: '',
+
+        // F1: Pre-launch summary counts
+        termCount: 0,
+        actorCount: 0,
+        enabledArenaCount: 0,
 
         // Credit tracking
         availableCredits: availableCredits,
@@ -374,6 +421,7 @@ function collectionLauncher(availableCredits) {
                 this.$nextTick(() => {
                     this.requestEstimate();
                     this.loadArenaConfig();
+                    this._readDesignCounts();
                 });
             }
 
@@ -432,6 +480,9 @@ function collectionLauncher(availableCredits) {
                 const data = await response.json();
                 const arenas = data.arenas || [];
 
+                // F1: Track enabled arena count for the pre-launch summary.
+                this.enabledArenaCount = arenas.filter(a => a.enabled).length;
+
                 if (arenas.length === 0) {
                     container.innerHTML = '<p class="italic text-blue-400">No per-arena overrides configured.</p>';
                     return;
@@ -446,7 +497,7 @@ function collectionLauncher(availableCredits) {
                             : a.tier === 'medium'
                             ? '<span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-700">Medium</span>'
                             : '<span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700">Premium</span>';
-                        return `<tr><td class="py-1 pr-3 font-medium text-blue-800">${a.id}</td><td class="py-1">${tierBadge}</td></tr>`;
+                        return `<tr><td class="py-1 pr-3 font-medium text-blue-800">${_humanizeArena(a.id)}</td><td class="py-1">${tierBadge}</td></tr>`;
                     })
                     .join('');
 
@@ -459,6 +510,22 @@ function collectionLauncher(availableCredits) {
                 console.error('Failed to load arena config:', err);
                 container.innerHTML = '<p class="italic text-red-400">Failed to load arena config.</p>';
             }
+        },
+
+        /**
+         * F1: Read term and actor counts from the selected option's data attributes.
+         */
+        _readDesignCounts() {
+            const select = document.getElementById('query_design_id');
+            if (!select) return;
+            const option = select.options[select.selectedIndex];
+            if (!option || !option.value) {
+                this.termCount = 0;
+                this.actorCount = 0;
+                return;
+            }
+            this.termCount = parseInt(option.dataset.termCount || '0', 10);
+            this.actorCount = parseInt(option.dataset.actorCount || '0', 10);
         },
     };
 }

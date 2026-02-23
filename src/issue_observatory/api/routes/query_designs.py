@@ -241,6 +241,7 @@ async def create_query_design_form(
     language: Annotated[str, Form()] = "da",
     locale_country: Annotated[str, Form()] = "dk",
     visibility: Annotated[str, Form()] = "private",
+    project_id: Annotated[Optional[str], Form()] = None,
 ) -> RedirectResponse:
     """Create a new query design from a browser form submission.
 
@@ -257,6 +258,7 @@ async def create_query_design_form(
         language: ISO 639-1 language code (form field, default "da").
         locale_country: ISO 3166-1 country code (form field, default "dk").
         visibility: Visibility setting (form field, default "private").
+        project_id: Optional project UUID to attach the design to (form field).
 
     Returns:
         HTTP 303 See Other redirect to the query design editor page.
@@ -271,6 +273,14 @@ async def create_query_design_form(
             detail="Query design name must not be empty.",
         )
 
+    # Parse project_id if provided
+    parsed_project_id: uuid.UUID | None = None
+    if project_id and project_id.strip():
+        try:
+            parsed_project_id = uuid.UUID(project_id.strip())
+        except ValueError:
+            pass  # Ignore invalid UUIDs silently
+
     design = QueryDesign(
         owner_id=current_user.id,
         name=name,
@@ -280,6 +290,7 @@ async def create_query_design_form(
         language=language,
         locale_country=locale_country,
         is_active=True,
+        project_id=parsed_project_id,
     )
     db.add(design)
     await db.commit()
@@ -962,7 +973,7 @@ async def add_search_terms_bulk(
 
 @router.delete(
     "/{design_id:uuid}/terms/{term_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    status_code=status.HTTP_200_OK,
     response_model=None,
 )
 async def remove_search_term(
@@ -970,7 +981,7 @@ async def remove_search_term(
     term_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-) -> None:
+) -> HTMLResponse:
     """Remove a search term from a query design.
 
     This performs a hard delete of the ``SearchTerm`` row.  If historical
@@ -1006,6 +1017,7 @@ async def remove_search_term(
     await db.delete(term)
     await db.commit()
     logger.info("search_term_removed", design_id=str(design_id), term_id=str(term_id))
+    return HTMLResponse(content="", status_code=status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------
@@ -2149,7 +2161,9 @@ async def suggest_subreddits(
                 design_id,
             )
             return []
-        query = " ".join(active_terms[:3])  # Use first 3 terms to avoid overly complex queries
+        # Use individual terms and combine results for better coverage
+        # Reddit's subreddit search works better with single keywords than multi-word queries
+        query = active_terms[0] if active_terms else ""
 
     # Acquire a Reddit credential and build an asyncpraw client
     # Use the RedditCollector's credential acquisition logic
@@ -2170,6 +2184,24 @@ async def suggest_subreddits(
         reddit = await collector._build_reddit_client(cred)  # noqa: SLF001
         async with reddit:
             suggestions = await suggest_subreddits_impl(reddit, query, limit)
+
+            # If no results found, try English translation as fallback
+            # (Grønland -> Greenland, Danmark -> Denmark, etc.)
+            if not suggestions and query:
+                translations = {
+                    "grønland": "greenland",
+                    "danmark": "denmark",
+                    "København": "copenhagen",
+                    "Aarhus": "aarhus",
+                }
+                english_query = translations.get(query.lower())
+                if english_query:
+                    logger.info(
+                        "suggest_subreddits: no results for '%s', trying English '%s'",
+                        query,
+                        english_query,
+                    )
+                    suggestions = await suggest_subreddits_impl(reddit, english_query, limit)
     except Exception as exc:
         logger.error(
             "suggest_subreddits_failed",

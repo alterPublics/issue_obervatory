@@ -23,7 +23,7 @@ import uuid
 from typing import Annotated, AsyncGenerator, Optional
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -144,6 +144,129 @@ async def create_scraping_job(
         user_id=str(current_user.id),
     )
     return job
+
+
+@router.post("/form", response_class=HTMLResponse)
+async def create_scraping_job_form(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    source_type: Annotated[str, Form()],
+    source_collection_run_id: Annotated[Optional[str], Form()] = None,
+    source_urls: Annotated[Optional[str], Form()] = None,
+    query_design_id: Annotated[Optional[str], Form()] = None,
+    delay_min: Annotated[float, Form()] = 2.0,
+    delay_max: Annotated[float, Form()] = 5.0,
+    timeout_seconds: Annotated[int, Form()] = 30,
+    respect_robots_txt: Annotated[Optional[str], Form()] = None,
+    use_playwright_fallback: Annotated[Optional[str], Form()] = None,
+    max_retries: Annotated[Optional[int], Form()] = None,
+) -> HTMLResponse:
+    """Create a scraping job from a browser form submission.
+
+    Accepts application/x-www-form-urlencoded data from HTMX, parses it into
+    a ScrapingJobCreate payload, and delegates to the main create_scraping_job
+    function for validation and job creation.
+
+    After successful creation, returns an HTML fragment (the jobs table) by
+    querying all jobs and rendering the _jobs_table.html template.
+
+    Args:
+        request: The incoming HTTP request.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        source_type: "collection_run" or "manual_urls" (form field).
+        source_collection_run_id: Optional UUID string of the collection run (form field).
+        source_urls: Optional newline-separated URLs (form field, textarea).
+        query_design_id: Optional UUID string of the query design (form field).
+        delay_min: Minimum inter-request delay in seconds (form field, default 2.0).
+        delay_max: Maximum inter-request delay in seconds (form field, default 5.0).
+        timeout_seconds: HTTP request timeout in seconds (form field, default 30).
+        respect_robots_txt: Checkbox value "on" if checked (form field).
+        use_playwright_fallback: Checkbox value "on" if checked (form field).
+        max_retries: Per-URL retry count on transient errors (form field, default 2).
+
+    Returns:
+        HTML fragment containing the updated jobs table.
+
+    Raises:
+        HTTPException 422: If source parameters are inconsistent or invalid UUIDs.
+    """
+    # Parse UUIDs
+    parsed_collection_run_id: Optional[uuid.UUID] = None
+    if source_collection_run_id:
+        try:
+            parsed_collection_run_id = uuid.UUID(source_collection_run_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid source_collection_run_id format",
+            ) from exc
+
+    parsed_query_design_id: Optional[uuid.UUID] = None
+    if query_design_id:
+        try:
+            parsed_query_design_id = uuid.UUID(query_design_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid query_design_id format",
+            ) from exc
+
+    # Parse source URLs from textarea (newline-separated)
+    parsed_urls: Optional[list[str]] = None
+    if source_urls:
+        parsed_urls = [
+            line.strip()
+            for line in source_urls.strip().split("\n")
+            if line.strip()
+        ]
+
+    # Convert checkbox values to booleans (HTML forms send "on" for checked)
+    respect_robots = respect_robots_txt == "on"
+    use_playwright = use_playwright_fallback == "on"
+
+    # Build a ScrapingJobCreate payload
+    payload = ScrapingJobCreate(
+        source_type=source_type,
+        source_collection_run_id=parsed_collection_run_id,
+        source_urls=parsed_urls,
+        query_design_id=parsed_query_design_id,
+        delay_min=delay_min,
+        delay_max=delay_max,
+        timeout_seconds=timeout_seconds,
+        respect_robots_txt=respect_robots,
+        use_playwright_fallback=use_playwright,
+        max_retries=max_retries if max_retries is not None else 2,
+    )
+
+    # Delegate to the main create function (reuses all validation logic)
+    await create_scraping_job(payload, db, current_user)
+
+    logger.info(
+        "scraping_job_created_via_form",
+        user_id=str(current_user.id),
+    )
+
+    # Return updated jobs table by querying all jobs for the user
+    stmt = (
+        select(ScrapingJob)
+        .where(ScrapingJob.created_by == current_user.id)
+        .order_by(ScrapingJob.created_at.desc())
+        .limit(50)
+    )
+    result = await db.execute(stmt)
+    jobs = list(result.scalars().all())
+
+    # Render the jobs table template
+    if not hasattr(request.app.state, "templates"):
+        raise RuntimeError("Templates not initialized")
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        "scraping/_jobs_table.html",
+        {"request": request, "jobs": jobs, "user": current_user},
+        media_type="text/html",
+    )
 
 
 # ---------------------------------------------------------------------------

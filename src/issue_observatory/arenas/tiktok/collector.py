@@ -207,6 +207,7 @@ class TikTokCollector(ArenaCollector):
                         start_date=window_start.strftime(TIKTOK_DATE_FORMAT),
                         end_date=window_end.strftime(TIKTOK_DATE_FORMAT),
                         max_results=remaining,
+                        search_term=term,
                     )
                     all_records.extend(records)
                     remaining = effective_max - len(all_records)
@@ -347,6 +348,17 @@ class TikTokCollector(ArenaCollector):
         else:
             text_content = video_description.strip()
 
+        # Extract title from first line of description
+        title = None
+        if video_description:
+            first_line = video_description.split("\n")[0].strip()
+            # Use first line as title if it's not too long (max 100 chars)
+            if first_line and len(first_line) <= 100:
+                title = first_line
+            elif first_line:
+                # Truncate long first lines
+                title = first_line[:97] + "..."
+
         url = (
             f"{TIKTOK_WEB_BASE}/@{username}/video/{video_id}"
             if username and video_id
@@ -356,14 +368,18 @@ class TikTokCollector(ArenaCollector):
         # create_time is a Unix timestamp integer.
         create_time = raw_item.get("create_time")
 
+        # Set language based on region_code (DK = Danish)
+        region_code = raw_item.get("region_code", "")
+        language = "da" if region_code == "DK" else None
+
         flat: dict[str, Any] = {
             "id": video_id,
             "platform_id": video_id,
             "content_type": "video",
             "text_content": text_content or None,
-            "title": None,
+            "title": title,
             "url": url,
-            "language": None,  # No native language field; detect client-side if needed.
+            "language": language,
             "published_at": create_time,
             "author_platform_id": username or None,
             "author_display_name": username or None,
@@ -382,11 +398,16 @@ class TikTokCollector(ArenaCollector):
             "voice_to_text": voice_to_text or None,
         }
 
+        # Extract search term matched if present
+        search_term = raw_item.get("_search_term")
+        search_terms_matched = [search_term] if search_term else []
+
         normalized = self._normalizer.normalize(
             raw_item=flat,
             platform=self.platform_name,
             arena=self.arena_name,
             collection_tier="free",
+            search_terms_matched=search_terms_matched,
         )
         # Ensure platform_id is the video id, not overridden by url.
         normalized["platform_id"] = video_id
@@ -767,6 +788,7 @@ class TikTokCollector(ArenaCollector):
         start_date: str,
         end_date: str,
         max_results: int,
+        search_term: str | None = None,
     ) -> list[dict[str, Any]]:
         """Paginate through video query results for a single query+date window.
 
@@ -828,6 +850,9 @@ class TikTokCollector(ArenaCollector):
             for video in videos:
                 if len(records) >= max_results:
                     break
+                # Mark video with the search term if provided
+                if search_term:
+                    video["_search_term"] = search_term
                 records.append(self.normalize(video))
 
             has_more = response_data.get("has_more", False)

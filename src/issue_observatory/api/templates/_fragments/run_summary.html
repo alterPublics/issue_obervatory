@@ -112,7 +112,7 @@
         <div>
             <p class="text-xs text-gray-500">Started</p>
             <p class="text-sm font-medium text-gray-700 mt-0.5">
-                {{ run.started_at | default('—') | truncate(16, true, '') }}
+                {{ run.started_at | default('—') | string | truncate(16, true, '') }}
                 {% if run.started_at | default('') %}
                 <span class="text-xs text-gray-400">(UTC)</span>
                 {% endif %}

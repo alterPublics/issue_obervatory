@@ -27,16 +27,13 @@
 
 <div class="max-w-5xl mx-auto space-y-6">
 
-    {# Back navigation + page title #}
+    {# Breadcrumb navigation #}
+    {% set _run_label = run.query_design_name | default('Collection Run') %}
+    {% set breadcrumbs = [('Collections', '/collections'), (_run_label, '')] %}
+    {% include '_partials/breadcrumbs.html' %}
+
+    {# Page title #}
     <div class="flex items-center gap-3 flex-wrap">
-        <a href="/collections"
-           class="text-gray-400 hover:text-gray-600 transition-colors"
-           aria-label="Back to collections">
-            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                 stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
-            </svg>
-        </a>
         <div>
             <h1 class="text-xl font-bold text-gray-900">
                 {% if run.query_design_name | default('') %}
@@ -45,7 +42,14 @@
                     Collection Run
                 {% endif %}
             </h1>
-            <p class="text-xs text-gray-400 font-mono mt-0.5">Run ID: {{ run_id | truncate(8, true, '') }}</p>
+            <div class="flex items-center gap-3 mt-0.5">
+                <span class="text-xs text-gray-400 font-mono">Run ID: {{ run_id | truncate(8, true, '') }}</span>
+                {% if run.search_terms | default([]) | length > 0 or run.actor_count | default(0) > 0 %}
+                <span class="text-xs text-gray-400">
+                    {{ run.search_terms | default([]) | length }} term{{ 's' if run.search_terms | default([]) | length != 1 else '' }}{% if run.actor_count | default(0) > 0 %}, {{ run.actor_count }} actor{{ 's' if run.actor_count | default(0) != 1 else '' }}{% endif %}
+                </span>
+                {% endif %}
+            </div>
         </div>
     </div>
 
@@ -87,6 +91,31 @@
         {% with run = run %}
             {% include '_fragments/run_summary.html' %}
         {% endwith %}
+
+        {# ---- Records by Platform ------------------------------------------- #}
+        {% if run.platform_counts | default({}) | length > 0 %}
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+            <div class="px-6 py-4 border-b border-gray-200">
+                <h2 class="text-sm font-semibold text-gray-900">Records by Platform</h2>
+            </div>
+            <table class="min-w-full divide-y divide-gray-200 text-sm">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Platform</th>
+                        <th class="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Records</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                    {% for platform, count in run.platform_counts.items() | sort(attribute='1', reverse=true) %}
+                    <tr class="hover:bg-gray-50">
+                        <td class="px-6 py-3 text-gray-700 capitalize">{{ platform | replace('_', ' ') }}</td>
+                        <td class="px-6 py-3 text-right font-medium text-gray-900">{{ '{:,}'.format(count) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
 
         {# ---- Live Tracking Schedule panel --------------------------------- #}
         {#
@@ -359,8 +388,7 @@
                 <button type="button"
                         hx-post="/collections/{{ run_id }}/refresh-engagement"
                         hx-confirm="Refresh engagement metrics for this collection run? This will update like counts, view counts, and other engagement data."
-                        hx-target="#run-summary-card"
-                        hx-swap="outerHTML"
+                        hx-swap="none"
                         class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 transition-colors">
                     <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none"
                          viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -372,8 +400,7 @@
                 <button type="button"
                         hx-post="/collections/{{ run_id }}/enrich"
                         hx-confirm="Run enrichment pipeline on this collection? This will apply language detection, named entity extraction, sentiment analysis, and coordination detection to all collected content."
-                        hx-target="#run-summary-card"
-                        hx-swap="outerHTML"
+                        hx-swap="none"
                         class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 transition-colors">
                     <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none"
                          viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -385,8 +412,7 @@
                 <button type="button"
                         hx-post="/content/deduplicate?run_id={{ run_id }}"
                         hx-confirm="Run deduplication on this collection? This will identify and mark duplicate records using URL normalization and content hashing."
-                        hx-target="#run-summary-card"
-                        hx-swap="outerHTML"
+                        hx-swap="none"
                         class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 transition-colors">
                     <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none"
                          viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">

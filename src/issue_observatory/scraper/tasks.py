@@ -386,6 +386,8 @@ async def _run_scraping(job_id: str, celery_task_id: str) -> None:
     bind=True,
     acks_late=True,
     max_retries=0,
+    soft_time_limit=7_200,   # 2 hours
+    time_limit=10_800,       # 3 hours
 )
 def scrape_urls_task(self: Any, job_id: str) -> dict[str, Any]:
     """Fetch and store page text for all URLs in a ScrapingJob.

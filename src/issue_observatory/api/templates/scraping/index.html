@@ -24,7 +24,7 @@
     {# Jobs table #}
     <div class="bg-white rounded-lg shadow overflow-hidden">
         <div id="jobs-container"
-             hx-get="/scraping-jobs/"
+             hx-get="/api/scraping-jobs/"
              hx-trigger="load, jobCreated from:body, every 15s"
              hx-target="#jobs-container"
              hx-swap="innerHTML">
@@ -47,7 +47,7 @@
         <p class="text-sm text-gray-500 mt-1">Extract full-text content from URLs</p>
     </div>
 
-    <form hx-post="/scraping-jobs/"
+    <form hx-post="/api/scraping-jobs/form"
           hx-target="#jobs-container"
           hx-swap="innerHTML"
           @htmx:after-request="$refs.createDialog.close(); htmx.trigger(document.body, 'jobCreated')"

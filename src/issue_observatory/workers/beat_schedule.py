@@ -73,14 +73,14 @@ beat_schedule: dict[str, dict] = {  # type: ignore[type-arg]
         },
     },
     # ------------------------------------------------------------------
-    # Stale run cleanup — 03:00 Copenhagen time
+    # Stale run cleanup — every 10 minutes
     # ------------------------------------------------------------------
     "stale_run_cleanup": {
         "task": "issue_observatory.workers.tasks.cleanup_stale_runs",
-        "schedule": crontab(hour=3, minute=0),
+        "schedule": crontab(minute="*/10"),
         "options": {
             "queue": "celery",
-            "expires": 3_600,
+            "expires": 540,  # discard if not started within 9 minutes
         },
     },
     # ------------------------------------------------------------------

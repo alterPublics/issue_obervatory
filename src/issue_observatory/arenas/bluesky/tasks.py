@@ -179,6 +179,21 @@ def bluesky_collect_terms(
     credential_pool = CredentialPool()
     collector = BlueskyCollector(credential_pool=credential_pool)
 
+    # Define a progress callback that emits SSE updates during long-running collections
+    def _report_progress(count: int) -> None:
+        """Publish intermediate progress via event_bus during collection."""
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="bluesky",
+            platform="bluesky",
+            status="running",
+            records_collected=count,
+            error_message=None,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
+        logger.debug("bluesky: progress update — collected=%d", count)
+
     try:
         records = asyncio.run(
             collector.collect_by_terms(
@@ -188,6 +203,7 @@ def bluesky_collect_terms(
                 date_to=date_to,
                 max_results=max_results,
                 language_filter=language_filter,
+                progress_callback=_report_progress,
             )
         )
     except NoCredentialAvailableError as exc:

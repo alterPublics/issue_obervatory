@@ -106,7 +106,7 @@ async def _verify_design_ownership(
             detail=f"Query design '{design_id}' not found.",
         )
 
-    ownership_guard(design.created_by, current_user)
+    ownership_guard(design.owner_id, current_user)
 
 
 # ---------------------------------------------------------------------------

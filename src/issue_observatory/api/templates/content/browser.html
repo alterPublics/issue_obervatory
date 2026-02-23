@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Content Browser — Issue Observatory{% endblock %}
+{% block title %}Content Browser{% endblock %}
 
 {% block content %}
 {#
@@ -70,16 +70,23 @@
                     </svg>
                     Loading arenas...
                 </div>
-                <div x-show="!loading" class="space-y-1.5">
-                    <template x-for="arena in arenas" :key="arena.platform_name">
-                        <label class="flex items-center gap-2 cursor-pointer">
-                            <input type="checkbox"
-                                   name="arenas"
-                                   :value="arena.platform_name"
-                                   :checked="activeArenas.includes(arena.platform_name)"
-                                   class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-                            <span class="text-xs text-gray-700" x-text="arena.arena_name"></span>
-                        </label>
+                <div x-show="!loading" class="space-y-3">
+                    <template x-for="group in arenaGroups" :key="group.name">
+                        <div>
+                            <p class="text-xs font-medium text-gray-500 mb-1" x-text="group.label"></p>
+                            <div class="space-y-1.5">
+                                <template x-for="arena in group.arenas" :key="arena.platform_name">
+                                    <label class="flex items-center gap-2 cursor-pointer">
+                                        <input type="checkbox"
+                                               name="arenas"
+                                               :value="arena.platform_name"
+                                               x-model="activeArenas"
+                                               class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                                        <span class="text-xs text-gray-700" x-text="arena.displayLabel"></span>
+                                    </label>
+                                </template>
+                            </div>
+                        </div>
                     </template>
                 </div>
             </div>
@@ -117,6 +124,11 @@
                     <option value="da" {% if filter.language | default('') == 'da' %}selected{% endif %}>Danish (da)</option>
                     <option value="en" {% if filter.language | default('') == 'en' %}selected{% endif %}>English (en)</option>
                     <option value="de" {% if filter.language | default('') == 'de' %}selected{% endif %}>German (de)</option>
+                    <option value="kl" {% if filter.language | default('') == 'kl' %}selected{% endif %}>Greenlandic (kl)</option>
+                    <option value="sv" {% if filter.language | default('') == 'sv' %}selected{% endif %}>Swedish (sv)</option>
+                    <option value="no" {% if filter.language | default('') == 'no' %}selected{% endif %}>Norwegian (no)</option>
+                    <option value="ru" {% if filter.language | default('') == 'ru' %}selected{% endif %}>Russian (ru)</option>
+                    <option value="fr" {% if filter.language | default('') == 'fr' %}selected{% endif %}>French (fr)</option>
                 </select>
             </div>
 
@@ -147,12 +159,23 @@
                         hx-include="[name='search_term']"
                         class="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
                     <option value="">All runs</option>
+                    {% set runs_by_design = {} %}
                     {% for run in recent_runs %}
-                    <option value="{{ run.id }}"
-                            {% if filter.run_id | default('') == run.id %}selected{% endif %}>
-                        {{ run.query_design_name | default('Run') | truncate(24, true, '…') }}
-                        ({{ run.created_at | default('') | truncate(10, true, '') }})
-                    </option>
+                        {% set design_name = run.query_design_name | default('Untitled') %}
+                        {% if design_name not in runs_by_design %}
+                            {% set _ = runs_by_design.__setitem__(design_name, []) %}
+                        {% endif %}
+                        {% set _ = runs_by_design[design_name].append(run) %}
+                    {% endfor %}
+                    {% for design_name, design_runs in runs_by_design.items() %}
+                        <optgroup label="{{ design_name }}">
+                        {% for run in design_runs %}
+                            <option value="{{ run.id }}"
+                                    {% if filter.run_id | default('') == run.id %}selected{% endif %}>
+                                {{ run.formatted_date | default('') }}{% if run.records_collected %} ({{ '{:,}'.format(run.records_collected) }} records){% endif %}
+                            </option>
+                        {% endfor %}
+                        </optgroup>
                     {% endfor %}
                 </select>
             </div>
@@ -354,7 +377,7 @@
 
                             {# Published at #}
                             <td class="px-4 py-3 text-xs text-gray-500 whitespace-nowrap hidden md:table-cell">
-                                {{ record.published_at | default('') | truncate(16, true, '') }}
+                                {{ record.published_at | default('') | string | truncate(16, true, '') }} <span class="text-gray-400">UTC</span>
                             </td>
 
                             {# Arena #}
@@ -600,12 +623,13 @@
 /**
  * Alpine component for the arena filter sidebar section.
  * Fetches the live arena list from GET /api/arenas/ and populates checkboxes dynamically.
+ * Groups arenas by arena_name (grouping label like "social_media", "news_media") with section headers.
  * @param {string[]} initialActiveArenas - Pre-selected arena platform_names from the URL filter.
  */
 function arenaFilter(initialActiveArenas) {
     return {
         loading: true,
-        arenas: [],
+        arenaGroups: [],
         activeArenas: initialActiveArenas || [],
 
         async init() {
@@ -616,11 +640,39 @@ function arenaFilter(initialActiveArenas) {
                 });
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const data = await res.json();
-                // Sort alphabetically by arena_name for consistent display
-                this.arenas = data.sort((a, b) => a.arena_name.localeCompare(b.arena_name));
+
+                // Filter out deferred stubs (empty supported_tiers)
+                const validArenas = data.filter(a => a.supported_tiers && a.supported_tiers.length > 0);
+
+                // Group by arena_name
+                const grouped = {};
+                for (const arena of validArenas) {
+                    const groupName = arena.arena_name;
+                    if (!grouped[groupName]) {
+                        grouped[groupName] = [];
+                    }
+                    grouped[groupName].push({
+                        ...arena,
+                        displayLabel: arena.platform_name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+                    });
+                }
+
+                // Format group names as human-readable labels
+                const formatGroupName = (name) => {
+                    return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+                };
+
+                // Convert to array of {name, label, arenas} objects, sorted by group name
+                this.arenaGroups = Object.entries(grouped)
+                    .map(([name, arenas]) => ({
+                        name: name,
+                        label: formatGroupName(name),
+                        arenas: arenas.sort((a, b) => a.displayLabel.localeCompare(b.displayLabel)),
+                    }))
+                    .sort((a, b) => a.label.localeCompare(b.label));
             } catch (e) {
                 console.error('Failed to load arenas:', e);
-                this.arenas = [];
+                this.arenaGroups = [];
             } finally {
                 this.loading = false;
             }

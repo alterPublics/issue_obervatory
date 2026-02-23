@@ -18,9 +18,15 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
-from bs4 import BeautifulSoup, Tag
 
 from issue_observatory.core.exceptions import ArenaCollectionError
+
+try:
+    from bs4 import BeautifulSoup, Tag
+
+    _HAS_BS4 = True
+except ImportError:
+    _HAS_BS4 = False
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +95,14 @@ async def discover_feeds(url: str) -> list[dict[str, str]]:
         ArenaCollectionError: On request timeout, invalid URL, or connection
             failure.
     """
+    if not _HAS_BS4:
+        raise ArenaCollectionError(
+            "Feed discovery requires the 'beautifulsoup4' package. "
+            "Install it with: pip install 'beautifulsoup4>=4.12,<5.0'",
+            arena="rss_feeds",
+            platform="rss_feeds",
+        )
+
     # Normalize URL — add scheme if missing
     parsed = urlparse(url)
     if not parsed.scheme:

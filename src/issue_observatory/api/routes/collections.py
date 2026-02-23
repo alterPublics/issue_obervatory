@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, AsyncGenerator, Optional
 
 import redis.asyncio as aioredis
@@ -131,6 +131,33 @@ def _templates(request: Request) -> Jinja2Templates:
     if templates is None:
         raise RuntimeError("Templates not configured on app.state")
     return templates
+
+
+def _render_run_summary_fragment(
+    request: Request,
+    run: CollectionRun,
+) -> HTMLResponse:
+    """Render the run summary card HTML fragment for HTMX responses.
+
+    Converts the ORM run object to the context dict expected by the
+    ``_fragments/run_summary.html`` template.
+    """
+    run_dict = {
+        "id": str(run.id),
+        "status": run.status,
+        "query_design_name": getattr(run, "_query_design_name", None) or "",
+        "tier": run.tier or "free",
+        "mode": run.mode or "batch",
+        "records_collected": run.records_collected or 0,
+        "credits_spent": run.credits_spent or 0,
+        "started_at": str(run.started_at) if run.started_at else None,
+        "finished_at": str(run.finished_at) if run.finished_at else None,
+    }
+    templates = _templates(request)
+    return templates.TemplateResponse(
+        "_fragments/run_summary.html",
+        {"request": request, "run": run_dict},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -291,14 +318,35 @@ async def list_collection_runs(
 
         # Build a simple HTML table with run summaries
         rows_html = ""
+        now = datetime.now(timezone.utc)
+        idle_cutoff = now - timedelta(minutes=30)
+
         for run in runs:
-            status_badge_class = {
-                "pending": "bg-yellow-100 text-yellow-800",
-                "running": "bg-blue-100 text-blue-800",
-                "completed": "bg-green-100 text-green-800",
-                "failed": "bg-red-100 text-red-800",
-                "suspended": "bg-gray-100 text-gray-800",
-            }.get(run.status, "bg-gray-100 text-gray-800")
+            # R-05: Detect stuck runs
+            is_stuck = False
+            display_status = run.status
+
+            if run.status == "running":
+                # Check if stuck: started >30min ago AND no records, OR inactive >30min
+                if run.started_at and run.started_at < idle_cutoff:
+                    if run.records_collected == 0:
+                        # Started long ago but no records at all
+                        is_stuck = True
+                    # Note: We don't have access to last collected_at here in the list view,
+                    # so we only flag runs with zero records as stuck. The full stale run
+                    # detection logic in _task_helpers.py does a more thorough check.
+
+            if is_stuck:
+                display_status = "stuck"
+                status_badge_class = "bg-amber-100 text-amber-800"
+            else:
+                status_badge_class = {
+                    "pending": "bg-yellow-100 text-yellow-800",
+                    "running": "bg-blue-100 text-blue-800",
+                    "completed": "bg-green-100 text-green-800",
+                    "failed": "bg-red-100 text-red-800",
+                    "suspended": "bg-gray-100 text-gray-800",
+                }.get(run.status, "bg-gray-100 text-gray-800")
 
             started_at_str = run.started_at.strftime("%Y-%m-%d %H:%M") if run.started_at else "—"
 
@@ -310,7 +358,7 @@ async def list_collection_runs(
     </td>
     <td class="px-6 py-3 text-sm">
         <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {status_badge_class}">
-            {run.status.capitalize()}
+            {display_status.capitalize()}
         </span>
     </td>
     <td class="px-6 py-3 text-sm text-gray-900">{run.records_collected:,}</td>
@@ -960,13 +1008,14 @@ async def get_collection_run(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{run_id:uuid}/cancel", response_model=CollectionRunRead)
+@router.post("/{run_id:uuid}/cancel", response_model=None)
 async def cancel_collection_run(
+    request: Request,
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     email_svc: Annotated[EmailService, Depends(get_email_service)],
-) -> CollectionRun:
+):
     """Cancel a pending or running collection run.
 
     Sets the run status to ``'failed'`` if the run has not yet reached a
@@ -1078,7 +1127,9 @@ async def cancel_collection_run(
         credits_spent=run.credits_spent,
     )
 
-    return run
+    if request.headers.get("HX-Request"):
+        return _render_run_summary_fragment(request, run)
+    return CollectionRunRead.model_validate(run)
 
 
 # ---------------------------------------------------------------------------
@@ -1086,17 +1137,18 @@ async def cancel_collection_run(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{run_id:uuid}/suspend", response_model=CollectionRunRead)
+@router.post("/{run_id:uuid}/suspend", response_model=None)
 async def suspend_collection_run(
+    request: Request,
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-) -> CollectionRun:
-    """Suspend an active live-tracking collection run.
+):
+    """Suspend an active or pending live-tracking collection run.
 
     Sets ``CollectionRun.status`` to ``'suspended'`` and records
     ``suspended_at`` to the current UTC time.  Only valid on runs with
-    ``mode='live'`` and ``status='active'``.
+    ``mode='live'`` and ``status`` in ``('active', 'pending')``.
 
     Args:
         run_id: UUID of the collection run to suspend.
@@ -1116,12 +1168,12 @@ async def suspend_collection_run(
     run = await _get_run_or_404(run_id, db)
     ownership_guard(run.initiated_by, current_user)
 
-    if run.mode != "live" or run.status != "active":
+    if run.mode != "live" or run.status not in ("active", "pending"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 f"Cannot suspend run with mode='{run.mode}' status='{run.status}'. "
-                "Only live runs with status='active' can be suspended."
+                "Only live runs with status='active' or 'pending' can be suspended."
             ),
         )
 
@@ -1135,15 +1187,19 @@ async def suspend_collection_run(
         run_id=str(run_id),
         user_id=str(current_user.id),
     )
-    return run
+
+    if request.headers.get("HX-Request"):
+        return _render_run_summary_fragment(request, run)
+    return CollectionRunRead.model_validate(run)
 
 
-@router.post("/{run_id:uuid}/resume", response_model=CollectionRunRead)
+@router.post("/{run_id:uuid}/resume", response_model=None)
 async def resume_collection_run(
+    request: Request,
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-) -> CollectionRun:
+):
     """Resume a suspended live-tracking collection run.
 
     Sets ``CollectionRun.status`` back to ``'active'`` and clears
@@ -1185,7 +1241,10 @@ async def resume_collection_run(
         run_id=str(run_id),
         user_id=str(current_user.id),
     )
-    return run
+
+    if request.headers.get("HX-Request"):
+        return _render_run_summary_fragment(request, run)
+    return CollectionRunRead.model_validate(run)
 
 
 # ---------------------------------------------------------------------------
