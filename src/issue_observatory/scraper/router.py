@@ -23,7 +23,7 @@ import uuid
 from typing import Annotated, AsyncGenerator, Optional
 
 import structlog
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,6 +69,42 @@ async def _get_job_or_404(
             detail=f"Scraping job '{job_id}' not found.",
         )
     return job
+
+
+async def _render_jobs_table(
+    request: Request,
+    db: AsyncSession,
+    current_user: User,
+) -> Response:
+    """Render the jobs table HTML fragment.
+
+    Helper function used by multiple endpoints to return consistent HTMX responses.
+    Queries the 50 most recent jobs for the current user and renders the jobs table template.
+
+    Args:
+        request: The incoming HTTP request.
+        db: Async database session.
+        current_user: The authenticated user.
+
+    Returns:
+        HTML response containing the jobs table fragment.
+    """
+    stmt = (
+        select(ScrapingJob)
+        .where(ScrapingJob.created_by == current_user.id)
+        .order_by(ScrapingJob.created_at.desc())
+        .limit(50)
+    )
+    result = await db.execute(stmt)
+    jobs = list(result.scalars().all())
+
+    if not hasattr(request.app.state, "templates"):
+        raise RuntimeError("Templates not initialized")
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        "scraping/_jobs_table.html",
+        {"request": request, "jobs": jobs, "user": current_user},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -248,25 +284,8 @@ async def create_scraping_job_form(
         user_id=str(current_user.id),
     )
 
-    # Return updated jobs table by querying all jobs for the user
-    stmt = (
-        select(ScrapingJob)
-        .where(ScrapingJob.created_by == current_user.id)
-        .order_by(ScrapingJob.created_at.desc())
-        .limit(50)
-    )
-    result = await db.execute(stmt)
-    jobs = list(result.scalars().all())
-
-    # Render the jobs table template
-    if not hasattr(request.app.state, "templates"):
-        raise RuntimeError("Templates not initialized")
-    templates = request.app.state.templates
-    return templates.TemplateResponse(
-        "scraping/_jobs_table.html",
-        {"request": request, "jobs": jobs, "user": current_user},
-        media_type="text/html",
-    )
+    # Return updated jobs table HTML fragment
+    return await _render_jobs_table(request, db, current_user)
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +303,7 @@ async def list_scraping_jobs(
 ):
     """List scraping jobs created by the current user.
 
-    Returns HTML fragment when Accept header includes text/html, otherwise JSON.
+    Returns HTML fragment when HX-Request header is present, otherwise JSON.
 
     Args:
         request: The current HTTP request.
@@ -297,6 +316,11 @@ async def list_scraping_jobs(
         A list of :class:`~issue_observatory.core.schemas.scraping.ScrapingJobRead` dicts
         or an HTML fragment of the jobs table.
     """
+    # Return HTML fragment for HTMX requests
+    if request.headers.get("HX-Request"):
+        return await _render_jobs_table(request, db, current_user)
+
+    # Return JSON for API requests
     stmt = (
         select(ScrapingJob)
         .where(ScrapingJob.created_by == current_user.id)
@@ -320,19 +344,6 @@ async def list_scraping_jobs(
     result = await db.execute(stmt)
     jobs = list(result.scalars().all())
 
-    # Return HTML fragment for HTMX requests
-    accept = request.headers.get("Accept", "")
-    if "text/html" in accept:
-        if not hasattr(request.app.state, "templates"):
-            raise RuntimeError("Templates not initialized")
-        templates = request.app.state.templates
-        return templates.TemplateResponse(
-            "scraping/_jobs_table.html",
-            {"request": request, "jobs": jobs, "user": current_user},
-            media_type="text/html",
-        )
-
-    # Return JSON for API requests
     return jobs
 
 
@@ -371,24 +382,29 @@ async def get_scraping_job(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{job_id}/cancel", response_model=ScrapingJobRead)
+@router.post("/{job_id}/cancel", response_model=None)
 async def cancel_scraping_job(
     job_id: uuid.UUID,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-) -> ScrapingJob:
+):
     """Cancel a pending or running scraping job.
 
     Dispatches :func:`~issue_observatory.scraper.tasks.cancel_scraping_job_task`
     to revoke the Celery worker task and mark the job as ``'cancelled'``.
 
+    Returns HTML fragment for HTMX requests, otherwise JSON.
+
     Args:
         job_id: UUID of the scraping job to cancel.
+        request: The incoming HTTP request.
         db: Injected async database session.
         current_user: The authenticated, active user making the request.
 
     Returns:
-        The updated :class:`~issue_observatory.core.schemas.scraping.ScrapingJobRead`.
+        The updated :class:`~issue_observatory.core.schemas.scraping.ScrapingJobRead`
+        or an HTML fragment of the jobs table.
 
     Raises:
         HTTPException 404: If the job does not exist.
@@ -422,6 +438,12 @@ async def cancel_scraping_job(
         job_id=str(job_id),
         user_id=str(current_user.id),
     )
+
+    # Return HTML fragment for HTMX requests
+    if request.headers.get("HX-Request"):
+        return await _render_jobs_table(request, db, current_user)
+
+    # Return JSON for API requests
     return job
 
 
@@ -430,18 +452,25 @@ async def cancel_scraping_job(
 # ---------------------------------------------------------------------------
 
 
-@router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+@router.delete("/{job_id}", response_model=None)
 async def delete_scraping_job(
     job_id: uuid.UUID,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-) -> None:
+):
     """Delete a scraping job (only if in a terminal state).
+
+    Returns HTML fragment for HTMX requests, otherwise 204 No Content.
 
     Args:
         job_id: UUID of the scraping job to delete.
+        request: The incoming HTTP request.
         db: Injected async database session.
         current_user: The authenticated, active user making the request.
+
+    Returns:
+        204 No Content for API requests, or an HTML fragment of the jobs table for HTMX.
 
     Raises:
         HTTPException 404: If the job does not exist.
@@ -468,6 +497,13 @@ async def delete_scraping_job(
         job_id=str(job_id),
         user_id=str(current_user.id),
     )
+
+    # Return HTML fragment for HTMX requests
+    if request.headers.get("HX-Request"):
+        return await _render_jobs_table(request, db, current_user)
+
+    # Return 204 No Content for API requests
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ---------------------------------------------------------------------------

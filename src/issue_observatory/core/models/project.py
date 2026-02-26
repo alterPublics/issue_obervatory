@@ -22,6 +22,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from issue_observatory.core.models.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
+    from issue_observatory.core.models.collection import CollectionRun
     from issue_observatory.core.models.query_design import QueryDesign
     from issue_observatory.core.models.users import User
 
@@ -83,6 +84,10 @@ class Project(Base, TimestampMixin):
         "QueryDesign",
         back_populates="project",
         order_by="QueryDesign.name",
+    )
+    collection_runs: Mapped[list[CollectionRun]] = relationship(
+        "CollectionRun",
+        back_populates="project",
     )
 
     def __repr__(self) -> str:

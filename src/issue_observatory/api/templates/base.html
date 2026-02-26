@@ -44,7 +44,19 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 
     {# Application JS — must load before Alpine initialises (no defer). #}
-    <script src="{{ url_for('static', path='js/app.js') }}"></script>
+    <script src="{{ url_for('static', path='js/app.js') }}?v=4"></script>
+
+    {#
+        Alpine.js ↔ HTMX bridge (inline).
+        When hx-boost swaps page content, Alpine.js must re-initialise x-data
+        components on the new DOM. This inline copy ensures the bridge is always
+        active even if app.js is cached by the browser.
+    #}
+    <script>
+    document.addEventListener('htmx:load', function (evt) {
+        if (window.Alpine) window.Alpine.initTree(evt.detail.elt);
+    });
+    </script>
 
     {# Chart helpers — loaded after Chart.js CDN, also without defer so initVolumeChart etc. are available in template <script> blocks. #}
     <script src="{{ url_for('static', path='js/charts.js') }}"></script>
@@ -96,39 +108,41 @@
 
     <script>
     (function() {
-        // Session expiry warning: 30-minute TTL from auth.py cookie_max_age=1800 (30 minutes)
-        const SESSION_DURATION_MS = 30 * 60 * 1000; // 30 minutes
-        const WARNING_THRESHOLD_MS = 5 * 60 * 1000; // Show warning 5 minutes before expiry
+        // Session sliding window: the server middleware re-issues the JWT on
+        // every successful request, so the 30-minute TTL resets on activity.
+        // This client-side timer tracks the last known activity and warns
+        // when 30 minutes of inactivity are about to expire the session.
+        var SESSION_DURATION_MS = 30 * 60 * 1000;
+        var WARNING_THRESHOLD_MS = 5 * 60 * 1000;
 
-        // Calculate session expiry time (estimate based on page load time)
-        // This is a client-side approximation — the server cookie may have been set earlier.
-        // For production, consider embedding the actual expiry timestamp in a meta tag.
         window.__sessionExpiresAt = Date.now() + SESSION_DURATION_MS;
 
-        function checkSessionExpiry() {
-            const timeRemaining = window.__sessionExpiresAt - Date.now();
+        // Reset the expiry timer on every successful HTMX request, since the
+        // server middleware just refreshed the JWT cookie.
+        document.addEventListener('htmx:afterRequest', function (evt) {
+            if (evt.detail.xhr.status >= 200 && evt.detail.xhr.status < 400) {
+                window.__sessionExpiresAt = Date.now() + SESSION_DURATION_MS;
+                // Hide the warning banner if it was showing
+                var warningEl = document.getElementById('session-expiry-warning');
+                if (warningEl) {
+                    warningEl.classList.add('hidden');
+                    try { Alpine.$data(warningEl).show = false; } catch(e) {}
+                }
+            }
+        });
 
+        function checkSessionExpiry() {
+            var timeRemaining = window.__sessionExpiresAt - Date.now();
             if (timeRemaining <= WARNING_THRESHOLD_MS && timeRemaining > 0) {
-                // Show warning
-                const warningEl = document.getElementById('session-expiry-warning');
+                var warningEl = document.getElementById('session-expiry-warning');
                 if (warningEl) {
                     warningEl.classList.remove('hidden');
-                    // Trigger Alpine to show the banner
-                    const alpineComponent = Alpine.$data(warningEl);
-                    if (alpineComponent) {
-                        alpineComponent.show = true;
-                    }
+                    try { Alpine.$data(warningEl).show = true; } catch(e) {}
                 }
-            } else if (timeRemaining <= 0) {
-                // Session expired — clear the check interval
-                clearInterval(window.__sessionExpiryCheckInterval);
             }
         }
 
-        // Check every 30 seconds
-        window.__sessionExpiryCheckInterval = setInterval(checkSessionExpiry, 30000);
-
-        // Also check immediately on page load (in case user navigated late in session)
+        setInterval(checkSessionExpiry, 30000);
         document.addEventListener('DOMContentLoaded', checkSessionExpiry);
     })();
     </script>

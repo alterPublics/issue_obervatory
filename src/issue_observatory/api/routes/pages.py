@@ -521,7 +521,11 @@ async def collections_list(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
 ) -> HTMLResponse:
-    """Render the collection run history list page.
+    """Render the collection run history list page, grouped by project.
+
+    Runs with a project_id are aggregated into per-project rows showing
+    combined records, credits, and status. Orphan runs (no project) are
+    shown in a separate section at the bottom.
 
     Args:
         request: The current HTTP request.
@@ -531,19 +535,27 @@ async def collections_list(
     Returns:
         Rendered ``collections/list.html`` template.
     """
+    from issue_observatory.core.models.project import Project as ProjectModel  # noqa: PLC0415
+
     stmt = (
         select(CollectionRun)
-        .options(selectinload(CollectionRun.query_design))
+        .options(
+            selectinload(CollectionRun.query_design),
+            selectinload(CollectionRun.project),
+        )
         .where(CollectionRun.initiated_by == current_user.id)
         .order_by(CollectionRun.started_at.desc().nulls_last())
-        .limit(50)
+        .limit(200)
     )
     result = await db.execute(stmt)
     runs_rows = result.scalars().all()
 
-    runs = []
+    # Group runs by project_id
+    project_runs: dict[str, list] = {}  # project_id -> list of runs
+    orphan_runs: list[dict] = []
+
     for r in runs_rows:
-        runs.append({
+        run_dict = {
             "id": str(r.id),
             "query_design_name": r.query_design.name if r.query_design else "(unknown design)",
             "mode": r.mode,
@@ -552,12 +564,200 @@ async def collections_list(
             "records_collected": r.records_collected,
             "credits_spent": r.credits_spent,
             "started_at": r.started_at.isoformat() if r.started_at else "",
-        })
+        }
+
+        if r.project_id:
+            pid = str(r.project_id)
+            if pid not in project_runs:
+                project_runs[pid] = []
+            project_runs[pid].append(run_dict)
+        else:
+            orphan_runs.append(run_dict)
+
+    # Build per-project aggregates
+    projects_with_runs: list[dict] = []
+    for r in runs_rows:
+        if r.project_id and str(r.project_id) in project_runs:
+            pid = str(r.project_id)
+            # Only process each project once
+            if any(p["project_id"] == pid for p in projects_with_runs):
+                continue
+
+            runs_list = project_runs[pid]
+            statuses = {run["status"] for run in runs_list}
+            total_records = sum(run["records_collected"] for run in runs_list)
+            total_credits = sum(run["credits_spent"] for run in runs_list)
+            latest_started = max(
+                (run["started_at"] for run in runs_list if run["started_at"]),
+                default="",
+            )
+
+            # Aggregate status logic
+            if "running" in statuses or "pending" in statuses:
+                agg_status = "running"
+            elif statuses == {"completed"}:
+                agg_status = "completed"
+            elif statuses == {"failed"}:
+                agg_status = "failed"
+            elif "completed" in statuses:
+                agg_status = "partial"
+            else:
+                agg_status = "failed"
+
+            projects_with_runs.append({
+                "project_id": pid,
+                "project_name": r.project.name if r.project else "(unknown project)",
+                "status": agg_status,
+                "total_records": total_records,
+                "total_credits": total_credits,
+                "latest_started": latest_started,
+                "run_count": len(runs_list),
+                "qd_count": len({run["query_design_name"] for run in runs_list}),
+            })
+
+    # Sort by latest activity descending
+    projects_with_runs.sort(key=lambda p: p["latest_started"], reverse=True)
 
     tpl = _templates(request)
     return tpl.TemplateResponse(
         "collections/list.html",
-        {"request": request, "user": current_user, "runs": runs},
+        {
+            "request": request,
+            "user": current_user,
+            "projects_with_runs": projects_with_runs,
+            "orphan_runs": orphan_runs,
+        },
+    )
+
+
+@priority_router.get("/collections/project/{project_id:uuid}", response_class=HTMLResponse)
+async def project_collection_detail(
+    request: Request,
+    project_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> HTMLResponse:
+    """Render the project-level collection detail page.
+
+    Aggregates all collection runs for the given project into a single
+    view with combined stats, per-platform record counts, and a per-QD
+    run table.
+
+    Args:
+        request: The current HTTP request.
+        project_id: UUID of the project.
+        current_user: The authenticated, active user.
+        db: Injected async database session.
+
+    Returns:
+        Rendered ``collections/project_detail.html`` template.
+    """
+    from issue_observatory.core.models.content import UniversalContentRecord  # noqa: PLC0415
+
+    tpl = _templates(request)
+
+    # Load the project
+    proj_result = await db.execute(
+        select(Project).where(Project.id == project_id)
+    )
+    project = proj_result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Load all collection runs for this project with QD and tasks
+    runs_result = await db.execute(
+        select(CollectionRun)
+        .where(
+            CollectionRun.project_id == project_id,
+            CollectionRun.initiated_by == current_user.id,
+        )
+        .options(
+            selectinload(CollectionRun.query_design),
+            selectinload(CollectionRun.tasks),
+        )
+        .order_by(CollectionRun.started_at.desc().nulls_last())
+    )
+    runs = runs_result.scalars().all()
+
+    # Aggregate stats
+    total_records = sum(r.records_collected for r in runs)
+    total_credits = sum(r.credits_spent for r in runs)
+    total_estimated = sum(r.estimated_credits for r in runs)
+    statuses = {r.status for r in runs}
+
+    if "running" in statuses or "pending" in statuses:
+        overall_status = "running"
+    elif statuses == {"completed"}:
+        overall_status = "completed"
+    elif statuses == {"failed"}:
+        overall_status = "failed"
+    elif "completed" in statuses:
+        overall_status = "partial"
+    else:
+        overall_status = "pending" if runs else "no_runs"
+
+    any_running = overall_status == "running"
+
+    # Per-platform record counts across all runs
+    run_ids = [r.id for r in runs]
+    platform_counts: dict[str, int] = {}
+    if run_ids:
+        pc_result = await db.execute(
+            select(
+                UniversalContentRecord.platform,
+                func.count(UniversalContentRecord.id).label("count"),
+            )
+            .where(UniversalContentRecord.collection_run_id.in_(run_ids))
+            .group_by(UniversalContentRecord.platform)
+        )
+        platform_counts = {row.platform: row.count for row in pc_result.all()}
+
+    # Per-QD run list
+    qd_runs: list[dict] = []
+    for r in runs:
+        qd_runs.append({
+            "id": str(r.id),
+            "query_design_name": r.query_design.name if r.query_design else "(unknown)",
+            "query_design_id": str(r.query_design_id) if r.query_design_id else "",
+            "mode": r.mode,
+            "tier": r.tier,
+            "status": r.status,
+            "records_collected": r.records_collected,
+            "credits_spent": r.credits_spent,
+            "started_at": r.started_at.isoformat() if r.started_at else "",
+        })
+
+    # Date range across all runs
+    date_froms = [r.date_from for r in runs if r.date_from]
+    date_tos = [r.date_to for r in runs if r.date_to]
+    date_range = ""
+    if date_froms or date_tos:
+        earliest = min(date_froms).strftime("%Y-%m-%d") if date_froms else "?"
+        latest = max(date_tos).strftime("%Y-%m-%d") if date_tos else "?"
+        date_range = f"{earliest} to {latest}"
+
+    return tpl.TemplateResponse(
+        "collections/project_detail.html",
+        {
+            "request": request,
+            "user": current_user,
+            "project": {
+                "id": str(project.id),
+                "name": project.name,
+                "description": project.description,
+            },
+            "aggregate": {
+                "total_records": total_records,
+                "total_credits": total_credits,
+                "total_estimated": total_estimated,
+                "status": overall_status,
+                "run_count": len(runs),
+                "date_range": date_range,
+            },
+            "platform_counts": platform_counts,
+            "qd_runs": qd_runs,
+            "any_running": any_running,
+        },
     )
 
 
@@ -637,7 +837,30 @@ async def collections_new(
             "default_tier": d.default_tier if hasattr(d, "default_tier") else "free",
             "term_count": term_counts.get(d.id, 0),
             "actor_count": actor_counts.get(d.id, 0),
+            "project_id": str(d.project_id) if d.project_id else "",
         })
+
+    # Load user's projects for the project-based launcher.
+    from issue_observatory.core.models.project import Project as ProjectModel  # noqa: PLC0415
+
+    proj_stmt = (
+        select(ProjectModel)
+        .where(ProjectModel.owner_id == current_user.id)
+        .options(selectinload(ProjectModel.query_designs))
+        .order_by(ProjectModel.name)
+    )
+    proj_result = await db.execute(proj_stmt)
+    projects = [
+        {
+            "id": str(p.id),
+            "name": p.name,
+            "qd_count": len([qd for qd in p.query_designs if qd.is_active]),
+        }
+        for p in proj_result.scalars().all()
+    ]
+
+    # Check for ?project_id= query param to preselect
+    preselected_project_id = request.query_params.get("project_id", "")
 
     tpl = _templates(request)
     return tpl.TemplateResponse(
@@ -646,6 +869,8 @@ async def collections_new(
             "request": request,
             "user": current_user,
             "query_designs": design_dicts,
+            "projects": projects,
+            "preselected_project_id": preselected_project_id,
         },
     )
 

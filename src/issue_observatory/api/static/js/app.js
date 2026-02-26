@@ -12,15 +12,71 @@
  */
 
 // ---------------------------------------------------------------------------
-// 1. HTMX global 401 handler
-//    When any HTMX request receives a 401, save the current path so the login
-//    page can redirect back after a successful login, then navigate to login.
+// 0. Alpine.js ↔ HTMX bridge
+//    When hx-boost (or any HTMX swap) replaces page content, Alpine.js needs
+//    to initialise new x-data components in the swapped DOM.  Without this,
+//    @click handlers, x-ref, x-show etc. are dead after boost navigation.
 // ---------------------------------------------------------------------------
 
-document.body.addEventListener('htmx:responseError', function (evt) {
-  if (evt.detail.xhr.status === 401) {
+document.addEventListener('htmx:load', function (evt) {
+  if (window.Alpine) {
+    window.Alpine.initTree(evt.detail.elt);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 1. HTMX global 401 handler
+//    Intercept 401 responses BEFORE HTMX tries to swap error content into the
+//    page. Saves the current path for post-login redirect and navigates to the
+//    login page. Uses a flag to prevent multiple redirects from concurrent
+//    polling triggers.
+//
+//    NOTE: listeners are on `document` (not document.body) because this script
+//    runs in <head> before <body> exists.
+// ---------------------------------------------------------------------------
+
+(function () {
+  var redirecting = false;
+
+  function handleUnauthorized() {
+    if (redirecting) return;
+    redirecting = true;
     sessionStorage.setItem('redirect_after_login', window.location.pathname);
     window.location.href = '/auth/login?session_expired=1';
+  }
+
+  // Primary: intercept before swap so HTMX never replaces page content with
+  // the 401 JSON body.
+  document.addEventListener('htmx:beforeSwap', function (evt) {
+    if (evt.detail.xhr.status === 401) {
+      evt.detail.shouldSwap = false;
+      handleUnauthorized();
+    }
+  });
+
+  // Backup: catch any 401 that slips past beforeSwap.
+  document.addEventListener('htmx:responseError', function (evt) {
+    if (evt.detail.xhr.status === 401) {
+      handleUnauthorized();
+    }
+  });
+})();
+
+// ---------------------------------------------------------------------------
+// 1b. Strip empty query parameters from HTMX form submissions
+//     When HTMX serializes a form, <select> elements with <option value="">
+//     send empty strings. FastAPI rejects empty strings for UUID parameters
+//     with HTTP 422. Strip empty values so they are treated as absent (None).
+// ---------------------------------------------------------------------------
+
+document.addEventListener('htmx:configRequest', function (evt) {
+  var params = evt.detail.parameters;
+  if (params && typeof params === 'object') {
+    Object.keys(params).forEach(function (key) {
+      if (params[key] === '') {
+        delete params[key];
+      }
+    });
   }
 });
 
@@ -32,8 +88,8 @@ document.body.addEventListener('htmx:responseError', function (evt) {
 //    to the new run's detail page on success.
 // ---------------------------------------------------------------------------
 
-document.body.addEventListener('htmx:afterRequest', function (evt) {
-  const redirect = evt.detail.xhr.getResponseHeader('HX-Redirect');
+document.addEventListener('htmx:afterRequest', function (evt) {
+  var redirect = evt.detail.xhr.getResponseHeader('HX-Redirect');
   if (redirect) {
     window.location.href = redirect;
   }

@@ -1,8 +1,7 @@
 {#
-    HTMX / SSE fragment: single arena task row in the collection run detail table.
+    HTMX fragment: single arena task row in the collection run detail table.
 
-    Rendered server-side and streamed via SSE with `hx-swap-oob="true"` so each
-    update targets the correct row by ID without replacing the whole table.
+    Rendered inline at page load and included via the detail page template.
 
     Context:
         - task (dict):
@@ -20,7 +19,6 @@
 {% set status = task.status | default('pending') %}
 
 <tr id="task-row-{{ task.id }}"
-    hx-swap-oob="true"
     class="{% if status == 'running' %}bg-blue-50{% elif status == 'failed' %}bg-red-50{% elif status == 'success' %}bg-green-50/30{% else %}bg-white{% endif %} transition-colors">
 
     {# Arena / platform name #}

@@ -25,7 +25,7 @@ from typing import Annotated, AsyncGenerator, Optional
 import redis.asyncio as aioredis
 import structlog
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +41,7 @@ from issue_observatory.api.dependencies import (
 from issue_observatory.core.database import get_db
 from issue_observatory.core.email_service import EmailService, get_email_service
 from issue_observatory.core.models.collection import CollectionRun, CollectionTask
+from issue_observatory.core.models.project import Project
 from issue_observatory.core.models.query_design import QueryDesign
 from issue_observatory.core.models.users import User
 from issue_observatory.core.credit_service import CreditService
@@ -50,6 +51,7 @@ from issue_observatory.core.schemas.collection import (
     CollectionRunRead,
     CreditEstimateRequest,
     CreditEstimateResponse,
+    ProjectCollectionCreate,
 )
 from issue_observatory.analysis.alerting import fetch_recent_volume_spikes
 
@@ -136,11 +138,13 @@ def _templates(request: Request) -> Jinja2Templates:
 def _render_run_summary_fragment(
     request: Request,
     run: CollectionRun,
-) -> HTMLResponse:
+) -> Response:
     """Render the run summary card HTML fragment for HTMX responses.
 
     Converts the ORM run object to the context dict expected by the
-    ``_fragments/run_summary.html`` template.
+    ``_fragments/run_summary.html`` template.  Returned as the response
+    to cancel/suspend/resume POST requests so HTMX can ``outerHTML``
+    swap it into ``#run-summary-card``.
     """
     run_dict = {
         "id": str(run.id),
@@ -151,7 +155,7 @@ def _render_run_summary_fragment(
         "records_collected": run.records_collected or 0,
         "credits_spent": run.credits_spent or 0,
         "started_at": str(run.started_at) if run.started_at else None,
-        "finished_at": str(run.finished_at) if run.finished_at else None,
+        "finished_at": str(run.completed_at) if run.completed_at else None,
     }
     templates = _templates(request)
     return templates.TemplateResponse(
@@ -553,6 +557,8 @@ async def create_collection_run(  # type: ignore[misc]
 
     run = CollectionRun(
         query_design_id=payload.query_design_id,
+        # Auto-populate project_id from the query design's project association.
+        project_id=query_design.project_id,
         initiated_by=current_user.id,
         mode=payload.mode,
         # Global default tier — used for arenas not present in merged_arenas_config.
@@ -729,6 +735,164 @@ async def create_collection_run_form(
 
     return RedirectResponse(
         url=f"/collections/{run.id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Project-level collection launch
+# ---------------------------------------------------------------------------
+
+
+@router.post("/project", response_model=None, status_code=status.HTTP_201_CREATED)
+async def create_project_collection(
+    request: Request,
+    payload: ProjectCollectionCreate,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> list[CollectionRunRead]:
+    """Launch a collection run for every active query design in a project.
+
+    Creates one ``CollectionRun`` per active QD in the project. Each run
+    gets its own credit reservation and Celery dispatch. All runs share
+    the same ``project_id``, ``mode``, ``tier``, date range, and launcher-level
+    ``arenas_config``.
+
+    Args:
+        request: The incoming HTTP request.
+        payload: Validated ``ProjectCollectionCreate`` request body.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        List of created ``CollectionRunRead`` objects.
+
+    Raises:
+        HTTPException 404: If the project does not exist.
+        HTTPException 403: If the caller does not own the project.
+        HTTPException 422: If the project has no active query designs.
+    """
+    # Verify the project exists and is owned by this user
+    proj_result = await db.execute(
+        select(Project)
+        .where(Project.id == payload.project_id)
+        .options(selectinload(Project.query_designs))
+    )
+    project = proj_result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project '{payload.project_id}' not found.",
+        )
+    ownership_guard(project.owner_id, current_user)
+
+    # Filter to active query designs only
+    active_qds = [qd for qd in project.query_designs if qd.is_active]
+    if not active_qds:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Project has no active query designs. Add at least one active query design before launching a collection.",
+        )
+
+    # Create one CollectionRun per QD, delegating to the existing create function
+    created_runs: list[CollectionRunRead] = []
+    for qd in active_qds:
+        qd_payload = CollectionRunCreate(
+            query_design_id=qd.id,
+            mode=payload.mode,
+            tier=payload.tier,
+            date_from=payload.date_from,
+            date_to=payload.date_to,
+            arenas_config=payload.arenas_config,
+        )
+        run = await create_collection_run(request, qd_payload, db, current_user)
+        created_runs.append(CollectionRunRead.model_validate(run))
+
+    logger.info(
+        "project_collection_created",
+        project_id=str(payload.project_id),
+        runs_created=len(created_runs),
+        user_id=str(current_user.id),
+    )
+
+    return created_runs
+
+
+@router.post("/project-form", status_code=status.HTTP_303_SEE_OTHER)
+async def create_project_collection_form(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    project_id: Annotated[str, Form()],
+    mode: Annotated[str, Form()] = "batch",
+    tier: Annotated[str, Form()] = "free",
+    date_from: Annotated[Optional[str], Form()] = None,
+    date_to: Annotated[Optional[str], Form()] = None,
+) -> RedirectResponse:
+    """Launch a project-level collection from a browser form submission.
+
+    Accepts application/x-www-form-urlencoded data from the launcher form
+    and delegates to ``create_project_collection`` for all validation,
+    credit estimation, reservation, and orchestration logic.
+
+    Args:
+        request: The incoming HTTP request.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        project_id: UUID string of the project (form field).
+        mode: Collection mode (form field, default "batch").
+        tier: Global default tier (form field, default "free").
+        date_from: Optional start date in ISO format YYYY-MM-DD.
+        date_to: Optional end date in ISO format YYYY-MM-DD.
+
+    Returns:
+        HTTP 303 redirect to the project collection detail page.
+    """
+    try:
+        parsed_project_id = uuid.UUID(project_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid project ID",
+        ) from exc
+
+    parsed_date_from: Optional[date] = None
+    parsed_date_to: Optional[date] = None
+    if date_from:
+        try:
+            parsed_date_from = date.fromisoformat(date_from)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid date_from format: {date_from}",
+            ) from exc
+    if date_to:
+        try:
+            parsed_date_to = date.fromisoformat(date_to)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid date_to format: {date_to}",
+            ) from exc
+
+    payload = ProjectCollectionCreate(
+        project_id=parsed_project_id,
+        mode=mode,
+        tier=tier,
+        date_from=parsed_date_from,
+        date_to=parsed_date_to,
+    )
+
+    await create_project_collection(request, payload, db, current_user)
+
+    logger.info(
+        "project_collection_created_via_form",
+        project_id=project_id,
+        user_id=str(current_user.id),
+    )
+
+    return RedirectResponse(
+        url=f"/collections/project/{project_id}",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 

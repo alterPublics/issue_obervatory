@@ -15,6 +15,7 @@
         - records (list): initial page of content records
         - total_count (int): total matching records for the current filter
         - recent_runs (list): [{id, status, query_design_name, created_at}] for run selector
+        - user_projects (list): [{id, name}] for project filter
         - filter (dict): currently active filter values (from query params)
         - cursor (str|None): pagination cursor for next page
         - active_query_design_id (str|None): query design in scope, used by GR-17 actor-list fetch.
@@ -22,6 +23,7 @@
 {% set filter = filter | default({}) %}
 {% set records = records | default([]) %}
 {% set recent_runs = recent_runs | default([]) %}
+{% set user_projects = user_projects | default([]) %}
 {% set total_count = total_count | default(0) %}
 {% set cursor = cursor | default('') %}
 {% set active_query_design_id = active_query_design_id | default('') %}
@@ -145,6 +147,21 @@
                 <p class="text-xs text-gray-400 mt-0.5">
                     Filter by collection type: one-time batch runs or live tracking.
                 </p>
+            </div>
+
+            {# Project filter #}
+            <div>
+                <label for="project_id" class="block text-xs font-medium text-gray-700 mb-1 uppercase tracking-wider">Project</label>
+                <select id="project_id"
+                        name="project_id"
+                        class="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                    <option value="">All projects</option>
+                    {% for proj in user_projects | default([]) %}
+                    <option value="{{ proj.id }}" {% if filter.project_id | default('') == proj.id %}selected{% endif %}>
+                        {{ proj.name }}
+                    </option>
+                    {% endfor %}
+                </select>
             </div>
 
             {# Collection run — changing this also reloads the search term dropdown via HTMX #}
@@ -716,7 +733,8 @@ function contentBrowser() {
         triggerExport() {
             const form = document.getElementById('filter-form');
             if (!form) return;
-            const params = new URLSearchParams(new FormData(form)).toString();
+            const formData = new FormData(form);
+            const params = new URLSearchParams(formData).toString();
             window.location.href = '/content/export?' + params;
         },
     };

@@ -3,6 +3,11 @@
 Wraps :class:`InstagramCollector` methods as Celery tasks with retry logic,
 collection run status tracking, and error reporting.
 
+**Actor-only arena**: Instagram does not support keyword or hashtag-based collection
+via the Bright Data Web Scraper API. The ``instagram_collect_terms`` task immediately
+fails with a descriptive :exc:`~issue_observatory.core.exceptions.ArenaCollectionError`
+explaining that actor-based collection must be used instead.
+
 Task naming::
 
     issue_observatory.arenas.instagram.tasks.<action>
@@ -14,7 +19,7 @@ Retry policy:
 - ``NoCredentialAvailableError`` immediately marks the task as FAILED.
 
 Time limits:
-- ``time_limit=1800`` (30 minutes hard limit) because Bright Data dataset
+- ``time_limit=1800`` (30 minutes hard limit) because Bright Data Web Scraper API
   delivery can take 5-20 minutes.
 - ``soft_time_limit=1500`` (25 minutes soft limit sending SIGTERM first).
 
@@ -43,6 +48,14 @@ logger = logging.getLogger(__name__)
 
 _ARENA: str = "social_media"
 _PLATFORM: str = "instagram"
+
+_TERM_COLLECTION_NOT_SUPPORTED: str = (
+    "Instagram does not support keyword-based or hashtag-based collection. "
+    "The Bright Data Web Scraper API only supports actor-based collection "
+    "(Instagram profile URLs). "
+    "To collect from Instagram: add profiles to the Actor Directory "
+    "and use actor-based collection mode."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -113,13 +126,9 @@ def _update_task_status(
 @celery_app.task(
     name="issue_observatory.arenas.instagram.tasks.collect_by_terms",
     bind=True,
-    max_retries=2,
-    autoretry_for=(ArenaRateLimitError,),
-    retry_backoff=True,
-    retry_backoff_max=900,
+    max_retries=0,
     acks_late=True,
-    time_limit=1800,
-    soft_time_limit=1500,
+    time_limit=60,
 )
 def instagram_collect_terms(
     self: Any,
@@ -133,141 +142,56 @@ def instagram_collect_terms(
     language_filter: list[str] | None = None,
     **_extra: Any,
 ) -> dict[str, Any]:
-    """Collect Instagram posts matching hashtags derived from search terms.
+    """Immediately fail — Instagram does not support keyword-based collection.
 
-    Wraps :meth:`InstagramCollector.collect_by_terms` as a Celery task.
-    Terms are converted to hashtags for Instagram discovery. For reliable
-    Danish content, prefer ``instagram_collect_actors`` with known Danish accounts.
+    Facebook and Instagram are actor-only arenas. The Bright Data Web Scraper API
+    does not support keyword or hashtag-based discovery. This task exists to provide
+    a clear error message if it is mistakenly dispatched, rather than silently doing
+    nothing.
+
+    To collect from Instagram, add Instagram profiles to the Actor Directory and
+    use the ``instagram_collect_actors`` task instead.
 
     Args:
         query_design_id: UUID string of the owning query design.
         collection_run_id: UUID string of the owning collection run.
-        terms: Search terms or hashtags to query.
-        tier: Tier string — ``"medium"`` (Bright Data, default).
-        date_from: ISO 8601 lower date bound (optional).
-        date_to: ISO 8601 upper date bound (optional).
-        max_results: Optional cap on total records.
-
-    Returns:
-        Dict with:
-        - ``records_collected`` (int): Number of normalized records.
-        - ``status`` (str): ``"completed"``.
-        - ``arena`` (str): ``"social_media"``.
-        - ``platform`` (str): ``"instagram"``.
-        - ``tier`` (str): The tier used.
+        terms: Ignored — keyword search is not supported.
+        tier: Ignored.
+        date_from: Ignored.
+        date_to: Ignored.
+        max_results: Ignored.
+        language_filter: Ignored.
 
     Raises:
-        ArenaRateLimitError: Triggers automatic retry (max 2, backoff ≤ 900s).
-        ArenaCollectionError: Marks the task as FAILED.
-        NoCredentialAvailableError: Marks the task as FAILED immediately.
+        ArenaCollectionError: Always — Instagram does not support keyword search.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
-
     _settings = get_settings()
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    logger.info(
-        "instagram: collect_by_terms started — run=%s tier=%s terms=%d",
+    logger.error(
+        "instagram: collect_by_terms called but Instagram does not support keyword search. "
+        "run=%s — failing immediately.",
         collection_run_id,
-        tier,
-        len(terms),
     )
-    _update_task_status(collection_run_id, _PLATFORM, "running")
+    _update_task_status(
+        collection_run_id, _PLATFORM, "failed", error_message=_TERM_COLLECTION_NOT_SUPPORTED
+    )
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
         arena="social_media",
         platform="instagram",
-        status="running",
+        status="failed",
         records_collected=0,
-        error_message=None,
+        error_message=_TERM_COLLECTION_NOT_SUPPORTED,
         elapsed_seconds=elapsed_since(_task_start),
     )
-
-    credential_pool = CredentialPool()
-    collector = InstagramCollector(credential_pool=credential_pool)
-    tier_enum = Tier(tier)
-
-    try:
-        records = asyncio.run(
-            collector.collect_by_terms(
-                terms=terms,
-                tier=tier_enum,
-                date_from=date_from,
-                date_to=date_to,
-                max_results=max_results,
-                language_filter=language_filter,
-            )
-        )
-    except NoCredentialAvailableError as exc:
-        msg = f"instagram: no credential available for tier={tier}: {exc}"
-        logger.error(msg)
-        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="social_media",
-            platform="instagram",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
-            elapsed_seconds=elapsed_since(_task_start),
-        )
-        raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM) from exc
-    except ArenaRateLimitError:
-        logger.warning(
-            "instagram: rate limited on collect_by_terms for run=%s — will retry.",
-            collection_run_id,
-        )
-        raise
-    except ArenaCollectionError as exc:
-        msg = str(exc)
-        logger.error("instagram: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="social_media",
-            platform="instagram",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
-            elapsed_seconds=elapsed_since(_task_start),
-        )
-        raise
-
-    count = len(records)
-
-    # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
-
-    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
-    logger.info(
-        "instagram: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
-        collection_run_id,
-        count,
-        inserted,
-        skipped,
+    raise ArenaCollectionError(
+        _TERM_COLLECTION_NOT_SUPPORTED,
+        arena=_ARENA,
+        platform=_PLATFORM,
     )
-    _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="social_media",
-        platform="instagram",
-        status="completed",
-        records_collected=inserted,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-    return {
-        "records_collected": inserted,
-        "status": "completed",
-        "arena": _ARENA,
-        "platform": _PLATFORM,
-        "tier": tier,
-    }
 
 
 @celery_app.task(
@@ -294,8 +218,9 @@ def instagram_collect_actors(
     """Collect Instagram posts from specific profiles.
 
     Wraps :meth:`InstagramCollector.collect_by_actors` as a Celery task.
-    Actor IDs should be Instagram usernames (without ``@``) or profile URLs.
-    This is the most reliable mode for Danish-language content collection.
+    Actor IDs should be Instagram usernames (with or without ``@``) or full
+    profile URLs (e.g. ``https://www.instagram.com/drnyheder``). Uses the
+    Reels scraper which covers all content types (posts and reels).
 
     Args:
         query_design_id: UUID string of the owning query design.

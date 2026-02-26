@@ -1015,30 +1015,45 @@ OPENROUTER_API_KEY=sk-or-v1-...your_key_here
 
 ### 5.1 Facebook (via Bright Data / MCL)
 
-#### MEDIUM Tier: Bright Data
+#### MEDIUM Tier: Bright Data Web Scraper API
 
 | Field | Details |
 |-------|---------|
 | **Credentials needed** | Bright Data API token |
 | **Signup URL** | https://brightdata.com |
 | **Tier(s)** | MEDIUM |
-| **Pricing** | ~$2.50 per 1,000 records ($250 per 100K records) |
-| **Rate limits** | 2 API trigger calls per second (courtesy throttle); async delivery with polling |
+| **Pricing** | ~$1.50 per 1,000 records (pay-as-you-go); subscription plans from $0.75/1K |
+| **Rate limits** | 100 concurrent batch requests; 2 API calls/sec courtesy throttle in the application |
 
-**What This Arena Collects:** Public Facebook posts matching search criteria, delivered via Bright Data's Datasets v3 API. Operates asynchronously: a collection request triggers a dataset job, which is polled until delivery (up to 20 minutes).
+**What This Arena Collects:** Public Facebook posts from pages, groups, and profiles via Bright Data's Web Scraper API. Operates asynchronously: a collection request triggers a scraping job, which is polled until delivery. The Web Scraper API collects fresh, on-demand data (not pre-collected snapshots).
+
+**Available Facebook scrapers (each has a separate dataset ID):**
+
+| Scraper | Dataset ID | Input | Collects |
+|---------|-----------|-------|----------|
+| Posts | `gd_lkaxegm826bjpoo9m5` | Profile/Page/Group URL | Page and profile posts |
+| Comments | `gd_lkay758p1eanlolqw8` | Post URL | Comments on a specific post |
+| Reels | `gd_lyclm3ey2q6rww027t` | Profile URL | Reels from a profile |
+| Groups | `gd_lz11l67o2cb3r0lkj3` | Group URL | Group posts |
+| Events | `gd_m14sd0to1jz48ppm51` | Event URL | Event metadata |
+| Marketplace | `gd_lvt9iwuh6fbcwmx1a` | Listing URL or keyword | Product listings |
+
+The Issue Observatory uses the **Posts** scraper for pages/profiles and the **Groups** scraper for group URLs via `collect_by_actors()`. Group URLs (containing `/groups/`) are auto-detected and routed to the correct scraper. **Keyword search is not supported** — Facebook is an actor-only arena. Researchers must add Facebook pages, groups, or profiles to the Actor Directory before collecting.
 
 **Steps:**
 1. Go to https://brightdata.com.
 2. Click **"Start Free Trial"** or **"Sign Up"**.
 3. Create an account with your business email.
 4. After signing in, navigate to the Dashboard.
-5. Go to **"Datasets"** or **"Web Scraper API"** section.
-6. Find the **"Facebook"** dataset (dataset ID: `gd_l95fol7l1ru6rlo116`).
+5. Go to the **"Web Scraper API"** section in the left sidebar.
+6. Browse the Facebook scrapers to confirm they are available on your account.
 7. Generate an API token:
-   - Navigate to your account settings or API section.
-   - Create a new API token.
-   - Copy the token.
-8. Add funds to your account (minimum varies; pricing is per-record).
+   - Click your account avatar (top right) > **"Account settings"**.
+   - Go to the **"API tokens"** section (or navigate to https://brightdata.com/cp/setting/users).
+   - Click **"Add token"**, give it a name, and copy the token immediately (shown only once).
+8. Add funds to your account (pay-as-you-go billing; pricing is per successfully delivered record).
+
+**Note:** A single API token works for all Bright Data products (Web Scraper API, Datasets, etc.) and across all platforms (Facebook, Instagram). You only need one token.
 
 **Environment Variables:**
 ```
@@ -1048,7 +1063,7 @@ BRIGHTDATA_FACEBOOK_API_TOKEN=your_brightdata_api_token
 **Credential Pool (Admin UI):**
 - Platform: `brightdata_facebook`
 - Tier: `medium`
-- Payload: `{"api_token": "...", "zone": "facebook_zone"}`
+- Payload: `{"api_token": "..."}`
 
 #### PREMIUM Tier: Meta Content Library (MCL)
 
@@ -1084,22 +1099,31 @@ BRIGHTDATA_FACEBOOK_API_TOKEN=your_brightdata_api_token
 
 ### 5.2 Instagram (via Bright Data)
 
-#### MEDIUM Tier: Bright Data
+#### MEDIUM Tier: Bright Data Web Scraper API
 
 | Field | Details |
 |-------|---------|
-| **Credentials needed** | Bright Data API token |
+| **Credentials needed** | Bright Data API token (same token as Facebook) |
 | **Signup URL** | https://brightdata.com |
 | **Tier(s)** | MEDIUM |
-| **Pricing** | ~$1.50 per 1,000 records |
-| **Rate limits** | 2 API trigger calls per second (courtesy throttle); async delivery with polling |
+| **Pricing** | ~$1.50 per 1,000 records (pay-as-you-go) |
+| **Rate limits** | 100 concurrent batch requests; 2 API calls/sec courtesy throttle in the application |
 
-**What This Arena Collects:** Public Instagram posts (including Reels) matching search criteria via Bright Data's Datasets v3 API. Instagram has no native language filter; Danish content is identified by targeting known Danish accounts, searching Danish hashtags, and client-side language detection.
+**What This Arena Collects:** Public Instagram posts (including Reels) via Bright Data's Web Scraper API. **Keyword search is not supported** — Instagram is an actor-only arena. Researchers must add Instagram profiles to the Actor Directory before collecting. The Reels scraper (profile URL input) is used by default and returns all content types. Danish content is identified by targeting known Danish accounts and client-side language detection. Note: Instagram media URLs expire after 24 hours.
+
+**Available Instagram scrapers:**
+
+| Scraper | Dataset ID | Input | Collects |
+|---------|-----------|-------|----------|
+| Posts | `gd_lk5ns7kz21pck8jpis` | Post URL | Individual post data |
+| Reels | `gd_lyclm20il4r5helnj` | Profile URL | Reels from a profile |
+| Comments | `gd_ltppn085pokosxh13` | Post URL | Comments on a specific post |
+| Profiles | `gd_l1vikfch901nx3by4` | Profile URL | Profile metadata |
 
 **Steps:**
 1. Follow the same Bright Data signup process described in section 5.1 (Facebook).
-2. After signing in, find the **"Instagram"** dataset (dataset ID: `gd_lyclm20il4r5helnj`).
-3. Use the same API token created for Facebook (or create a separate one).
+2. Use the same API token created for Facebook -- a single token works for all platforms.
+3. No additional setup is needed; the Instagram scrapers are available on the same account.
 
 **Environment Variables:**
 ```
@@ -1109,7 +1133,7 @@ BRIGHTDATA_INSTAGRAM_API_TOKEN=your_brightdata_api_token
 **Credential Pool (Admin UI):**
 - Platform: `brightdata_instagram`
 - Tier: `medium`
-- Payload: `{"api_token": "...", "zone": "instagram_zone"}`
+- Payload: `{"api_token": "..."}`
 
 #### PREMIUM Tier: Meta Content Library (MCL)
 
@@ -1563,7 +1587,7 @@ Use this checklist to set up the Issue Observatory from scratch. Start with the 
 
 ### Phase 4: Premium Arenas (Significant Budget)
 
-- [ ] **Facebook (MEDIUM)** -- Sign up at https://brightdata.com (~$2.50/1K records)
+- [ ] **Facebook (MEDIUM)** -- Sign up at https://brightdata.com (~$1.50/1K records)
 - [ ] **Instagram (MEDIUM)** -- Sign up at https://brightdata.com (~$1.50/1K records)
 - [ ] **Majestic (PREMIUM)** -- Sign up at https://majestic.com ($399.99/month)
 - [ ] **Facebook/Instagram (PREMIUM)** -- Apply for Meta Content Library access (free-$371/month)
@@ -1592,8 +1616,8 @@ Use this checklist to set up the Issue Observatory from scratch. Start with the 
 | Event Registry (MEDIUM) | MEDIUM | ~$90 | NewsAPI.ai Starter |
 | X/Twitter (MEDIUM) | MEDIUM | $15-75 | TwitterAPI.io, pay-as-you-go |
 | AI Chat Search (MEDIUM) | MEDIUM | $5-15 | OpenRouter, pay-per-use |
-| Facebook (MEDIUM) | MEDIUM | $25-250 | Bright Data, per-record |
-| Instagram (MEDIUM) | MEDIUM | $15-150 | Bright Data, per-record |
+| Facebook (MEDIUM) | MEDIUM | $15-150 | Bright Data Web Scraper API, per-record |
+| Instagram (MEDIUM) | MEDIUM | $15-150 | Bright Data Web Scraper API, per-record |
 | Google Search (PREMIUM) | PREMIUM | $50-250 | SerpAPI subscription |
 | Event Registry (PREMIUM) | PREMIUM | ~$490 | NewsAPI.ai Business |
 | X/Twitter (PREMIUM) | PREMIUM | $5,000 | Official X API Pro |

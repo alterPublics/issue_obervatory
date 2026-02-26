@@ -8,7 +8,7 @@
     <div class="flex items-center justify-between">
         <div>
             <h1 class="text-xl font-bold text-gray-900">Collections</h1>
-            <p class="text-sm text-gray-500 mt-0.5">History of all your collection runs</p>
+            <p class="text-sm text-gray-500 mt-0.5">Organized by collection project</p>
         </div>
         <a href="/collections/new"
            class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
@@ -22,9 +22,95 @@
         </a>
     </div>
 
-    {# Runs table #}
+    {# Projects table #}
+    {% if projects_with_runs | default([]) | length > 0 %}
     <div class="bg-white rounded-lg shadow overflow-hidden">
-        {% if runs | default([]) | length > 0 %}
+        <table class="min-w-full divide-y divide-gray-200 text-sm">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="text-left px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Project Name</th>
+                    <th class="text-left px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Status</th>
+                    <th class="text-right px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Records</th>
+                    <th class="text-right px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Credits</th>
+                    <th class="text-left px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Latest Activity</th>
+                    <th class="px-6 py-3"><span class="sr-only">Actions</span></th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+                {% for project in projects_with_runs %}
+                <tr class="hover:bg-gray-50 transition-colors">
+                    <td class="px-6 py-4">
+                        <div>
+                            <a href="/collections/project/{{ project.project_id }}"
+                               class="font-medium text-gray-900 hover:text-blue-600">
+                                {{ project.project_name }}
+                            </a>
+                            <div class="text-xs text-gray-500 mt-0.5">
+                                {{ project.run_count }} run{{ 's' if project.run_count != 1 else '' }} across {{ project.qd_count }} design{{ 's' if project.qd_count != 1 else '' }}
+                            </div>
+                        </div>
+                    </td>
+                    <td class="px-6 py-4">
+                        {% set status = project.status | default('pending') %}
+                        {% if status == 'running' %}
+                            <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
+                                <svg class="animate-spin w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                </svg>
+                                Running
+                            </span>
+                        {% elif status == 'completed' %}
+                            <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">Completed</span>
+                        {% elif status == 'partial' %}
+                            <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">Partial</span>
+                        {% elif status == 'failed' %}
+                            <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">Failed</span>
+                        {% else %}
+                            <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">Pending</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4 text-right text-gray-700 font-mono text-xs">
+                        {{ project.total_records | default(0) | int | format_number }}
+                    </td>
+                    <td class="px-6 py-4 text-right text-gray-500 font-mono text-xs">
+                        {{ project.total_credits | default(0) }}
+                    </td>
+                    <td class="px-6 py-4 text-gray-500 text-xs">
+                        {% if project.latest_started %}
+                            {{ project.latest_started | string | truncate(16, true, '') }} <span class="text-gray-400">UTC</span>
+                        {% else %}
+                            <span class="text-gray-400">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4 text-right">
+                        <div class="flex items-center justify-end gap-3">
+                            <a href="/collections/project/{{ project.project_id }}"
+                               class="text-sm text-blue-600 hover:underline">
+                                Details
+                            </a>
+                            {% if project.total_records | default(0) | int > 0 %}
+                            <a href="/content?project_id={{ project.project_id }}"
+                               class="text-xs text-purple-600 hover:underline">
+                                Browse Content
+                            </a>
+                            {% endif %}
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    {# Orphan runs section #}
+    {% if orphan_runs | default([]) | length > 0 %}
+    <div class="bg-white rounded-lg shadow overflow-hidden">
+        <div class="px-6 py-3 bg-gray-50 border-b border-gray-200">
+            <h2 class="text-sm font-semibold text-gray-700">Unassigned Runs</h2>
+            <p class="text-xs text-gray-500 mt-0.5">Collection runs not linked to a project</p>
+        </div>
         <table class="min-w-full divide-y divide-gray-200 text-sm">
             <thead class="bg-gray-50">
                 <tr>
@@ -38,8 +124,8 @@
                     <th class="px-6 py-3"><span class="sr-only">Link</span></th>
                 </tr>
             </thead>
-            <tbody class="divide-y divide-gray-100" id="runs-tbody">
-                {% for run in runs %}
+            <tbody class="divide-y divide-gray-100">
+                {% for run in orphan_runs %}
                 <tr class="hover:bg-gray-50 transition-colors">
                     <td class="px-6 py-4">
                         <a href="/collections/{{ run.id }}"
@@ -123,23 +209,19 @@
                 {% endfor %}
             </tbody>
         </table>
+    </div>
+    {% endif %}
 
-        {% if next_cursor is defined or prev_cursor is defined %}
-        <div class="px-6 py-3 border-t border-gray-200">
-            {% set hx_target = '#runs-tbody' %}
-            {% set base_url = '/collections' %}
-            {% include '_partials/pagination.html' %}
-        </div>
-        {% endif %}
-
-        {% else %}
+    {# Empty state #}
+    {% if (projects_with_runs | default([]) | length == 0) and (orphan_runs | default([]) | length == 0) %}
+    <div class="bg-white rounded-lg shadow overflow-hidden">
         {% set empty_title = 'No collections yet' %}
         {% set empty_message = 'Start your first collection run by selecting a query design and configuring the collection parameters.' %}
         {% set empty_cta_label = 'Start New Collection' %}
         {% set empty_cta_href = '/collections/new' %}
         {% include '_partials/empty_state.html' %}
-        {% endif %}
     </div>
+    {% endif %}
 
 </div>
 {% endblock %}

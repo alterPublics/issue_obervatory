@@ -81,7 +81,9 @@ ARENA_DESCRIPTIONS: dict[str, str] = {
         "Global news aggregator (Event Registry) with strong Danish media coverage"
     ),
     "facebook": (
-        "Facebook public posts via third-party scraping API (paid tiers only)"
+        "Facebook public pages and groups via Bright Data Web Scraper API. "
+        "Actor-only collection — keyword search is not supported. "
+        "Add Facebook pages or groups to the Actor Directory first."
     ),
     "gab": (
         "Far-right social platform; public posts collected via unauthenticated API"
@@ -97,7 +99,9 @@ ARENA_DESCRIPTIONS: dict[str, str] = {
         "No free tier — use Google Autocomplete (free) for search trends."
     ),
     "instagram": (
-        "Instagram public posts via third-party scraping API (paid tiers only)"
+        "Instagram public profiles via Bright Data Web Scraper API. "
+        "Actor-only collection — keyword search is not supported. "
+        "Add Instagram profiles to the Actor Directory first."
     ),
     "majestic": (
         "Majestic backlink index — maps web authority and citation networks (premium)"
@@ -179,6 +183,36 @@ ARENA_DESCRIPTIONS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 ARENA_CUSTOM_CONFIG: dict[str, list[dict[str, str]]] = {
+    "facebook": [
+        {
+            "field": "actor_only_notice",
+            "label": "Actor-Only Collection",
+            "type": "notice",
+            "placeholder": "",
+            "help": (
+                "Facebook does not support keyword search. "
+                "Collection is based entirely on actors (pages and groups) "
+                "that you have added to the Actor Directory. "
+                "Add Facebook pages or groups there before launching a collection."
+            ),
+            "example": "https://www.facebook.com/drnyheder",
+        }
+    ],
+    "instagram": [
+        {
+            "field": "actor_only_notice",
+            "label": "Actor-Only Collection",
+            "type": "notice",
+            "placeholder": "",
+            "help": (
+                "Instagram does not support keyword search. "
+                "Collection is based entirely on actors (profiles) "
+                "that you have added to the Actor Directory. "
+                "Add Instagram profiles there before launching a collection."
+            ),
+            "example": "https://www.instagram.com/drnyheder",
+        }
+    ],
     "telegram": [
         {
             "field": "custom_channels",

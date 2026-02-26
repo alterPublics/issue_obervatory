@@ -30,7 +30,7 @@ from typing import Annotated, Any, Optional
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from sqlalchemy import func, select, text
+from sqlalchemy import Text as SAText, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from issue_observatory.analysis.export import ContentExporter
@@ -114,6 +114,26 @@ _EXPORT_EXTENSIONS: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
+# UUID parameter helper
+# ---------------------------------------------------------------------------
+
+
+def _parse_uuid(value: Optional[str]) -> Optional[uuid.UUID]:
+    """Parse an optional string as UUID, treating empty/whitespace as None.
+
+    HTMX form serialization sends empty strings for ``<select>`` elements with
+    ``<option value="">``.  FastAPI's ``Optional[uuid.UUID]`` rejects empty
+    strings with HTTP 422.  This helper provides a safe fallback.
+    """
+    if not value or not value.strip():
+        return None
+    try:
+        return uuid.UUID(value)
+    except (ValueError, AttributeError):
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Shared filter helper
 # ---------------------------------------------------------------------------
 
@@ -129,6 +149,7 @@ def _build_content_stmt(
     language: Optional[str],
     run_id: Optional[uuid.UUID],
     limit: Optional[int],
+    project_id: Optional[uuid.UUID] = None,
 ) -> Any:  # noqa: ANN401
     """Build a SELECT statement against ``content_records`` with ownership scope.
 
@@ -146,6 +167,8 @@ def _build_content_stmt(
         language: Optional ISO 639-1 language code filter.
         run_id: Optional specific collection run UUID filter.
         limit: Maximum number of rows to return (applied as SQL LIMIT).
+        project_id: Optional project UUID filter — restricts to runs belonging
+            to the given project.
 
     Returns:
         A SQLAlchemy ``Select`` statement ready for ``await db.execute()``.
@@ -167,9 +190,9 @@ def _build_content_stmt(
             .order_by(UniversalContentRecord.collected_at.desc())
         )
 
-    if platform is not None:
+    if platform:
         stmt = stmt.where(UniversalContentRecord.platform == platform)
-    if arena is not None:
+    if arena:
         stmt = stmt.where(UniversalContentRecord.arena == arena)
     if query_design_id is not None:
         stmt = stmt.where(UniversalContentRecord.query_design_id == query_design_id)
@@ -177,13 +200,24 @@ def _build_content_stmt(
         stmt = stmt.where(UniversalContentRecord.published_at >= date_from)
     if date_to is not None:
         stmt = stmt.where(UniversalContentRecord.published_at <= date_to)
-    if language is not None:
+    if language:
         stmt = stmt.where(UniversalContentRecord.language == language)
     if run_id is not None:
         stmt = stmt.where(UniversalContentRecord.collection_run_id == run_id)
-    if search_term is not None:
+    if project_id is not None:
+        project_run_ids = (
+            select(CollectionRun.id)
+            .where(CollectionRun.project_id == project_id)
+            .scalar_subquery()
+        )
+        stmt = stmt.where(UniversalContentRecord.collection_run_id.in_(project_run_ids))
+    if search_term:
+        from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY  # noqa: PLC0415
+
         stmt = stmt.where(
-            UniversalContentRecord.search_terms_matched.contains([search_term])
+            UniversalContentRecord.search_terms_matched.cast(PG_ARRAY(SAText)).contains(
+                [search_term]
+            )
         )
     if limit is not None:
         stmt = stmt.limit(limit)
@@ -307,6 +341,7 @@ def _build_browse_stmt(
     cursor_published_at: Optional[datetime],
     cursor_id: Optional[uuid.UUID],
     limit: int,
+    project_id: Optional[uuid.UUID] = None,
 ) -> Any:  # noqa: ANN401
     """Build a keyset-paginated SELECT for the content browser.
 
@@ -329,6 +364,8 @@ def _build_browse_stmt(
             previous page (keyset lower bound).
         cursor_id: ``id`` value of the last row on the previous page.
         limit: Maximum rows to return.
+        project_id: Optional project UUID filter — restricts to runs belonging
+            to the given project.
 
     Returns:
         A SQLAlchemy ``Select`` statement.
@@ -359,23 +396,29 @@ def _build_browse_stmt(
         )
 
     # Optional filters
-    if platform is not None:
+    if platform:
         stmt = stmt.where(ucr.platform == platform)
-    if arena is not None:
+    if arena:
         stmt = stmt.where(ucr.arena == arena)
     if date_from is not None:
         stmt = stmt.where(ucr.published_at >= date_from)
     if date_to is not None:
         stmt = stmt.where(ucr.published_at <= date_to)
-    if language is not None:
+    if language:
         stmt = stmt.where(ucr.language == language)
     if run_id is not None:
         stmt = stmt.where(ucr.collection_run_id == run_id)
-    if search_term is not None:
-        stmt = stmt.where(ucr.search_terms_matched.contains([search_term]))
+    if search_term:
+        # Use PostgreSQL array containment operator (@>) via cast to avoid
+        # SQLAlchemy's base ARRAY.contains() NotImplementedError.
+        from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY  # noqa: PLC0415
+
+        stmt = stmt.where(
+            ucr.search_terms_matched.cast(PG_ARRAY(SAText)).contains([search_term])
+        )
 
     # SB-13: Filter by collection mode (batch/live)
-    if mode is not None:
+    if mode:
         mode_run_ids_subq = (
             select(CollectionRun.id)
             .where(CollectionRun.mode == mode)
@@ -386,6 +429,15 @@ def _build_browse_stmt(
                 CollectionRun.initiated_by == current_user.id
             )
         stmt = stmt.where(ucr.collection_run_id.in_(mode_run_ids_subq.scalar_subquery()))
+
+    # Project-level filter: restrict to runs belonging to a specific project.
+    if project_id is not None:
+        project_run_ids_subq = (
+            select(CollectionRun.id)
+            .where(CollectionRun.project_id == project_id)
+            .scalar_subquery()
+        )
+        stmt = stmt.where(ucr.collection_run_id.in_(project_run_ids_subq))
 
     # Full-text search using the GIN index created in migration 001.
     if q:
@@ -504,6 +556,7 @@ async def _count_matching(
     run_id: Optional[uuid.UUID],
     mode: Optional[str],
     arenas_list: Optional[list[str]] = None,
+    project_id: Optional[uuid.UUID] = None,
 ) -> int:
     """Return the total number of records matching the current browser filters.
 
@@ -522,6 +575,8 @@ async def _count_matching(
         run_id: Collection run UUID filter.
         mode: Collection mode filter ('batch' or 'live').
         arenas_list: Multi-value platform filter (when multiple checkboxes selected).
+        project_id: Optional project UUID filter — restricts to runs belonging
+            to the given project.
 
     Returns:
         Integer row count (may be approximate on very large datasets).
@@ -542,6 +597,7 @@ async def _count_matching(
         cursor_published_at=None,
         cursor_id=None,
         limit=_BROWSE_CAP + 1,  # count up to cap+1 to detect overflow
+        project_id=project_id,
     )
 
     # Apply multi-arena IN filter if provided
@@ -658,7 +714,7 @@ def _orm_to_detail_dict(
 async def content_record_count(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    run_id: Optional[uuid.UUID] = Query(default=None, description="Filter by specific collection run UUID."),
+    run_id: Optional[str] = Query(default=None, description="Filter by specific collection run UUID."),
 ) -> dict[str, int]:
     """Return total content record count for the current user's collection runs.
 
@@ -672,6 +728,7 @@ async def content_record_count(
     Returns:
         Dict with a single ``total`` key containing the record count.
     """
+    run_id = _parse_uuid(run_id)  # type: ignore[assignment]
     stmt = (
         select(func.count())
         .select_from(UniversalContentRecord)
@@ -706,9 +763,10 @@ async def content_browser_page(
     date_to: Optional[str] = Query(default=None),
     language: Optional[str] = Query(default=None),
     search_term: Optional[str] = Query(default=None),
-    run_id: Optional[uuid.UUID] = Query(default=None),
+    run_id: Optional[str] = Query(default=None),
     mode: Optional[str] = Query(default=None, description="Collection mode filter: 'batch' or 'live'."),
-    query_design_id: Optional[uuid.UUID] = Query(default=None, description="Active query design for quick-add actor flow."),
+    query_design_id: Optional[str] = Query(default=None, description="Active query design for quick-add actor flow."),
+    project_id: Optional[str] = Query(default=None, description="Filter content to a specific project."),
 ) -> Response:
     """Render the full content browser HTML page.
 
@@ -727,11 +785,16 @@ async def content_browser_page(
         date_to: Optional upper date bound (YYYY-MM-DD string from form).
         language: Optional ISO 639-1 language code.
         search_term: Optional filter on ``search_terms_matched`` array.
-        run_id: Optional collection run UUID filter.
+        run_id: Optional collection run UUID filter (accepts empty string).
+        project_id: Optional project UUID filter (accepts empty string).
 
     Returns:
         ``TemplateResponse`` rendering ``content/browser.html``.
     """
+    run_id = _parse_uuid(run_id)  # type: ignore[assignment]
+    query_design_id = _parse_uuid(query_design_id)  # type: ignore[assignment]
+    project_id = _parse_uuid(project_id)  # type: ignore[assignment]
+
     templates = request.app.state.templates
 
     if templates is None:
@@ -760,6 +823,7 @@ async def content_browser_page(
         cursor_published_at=None,
         cursor_id=None,
         limit=_BROWSE_LIMIT,
+        project_id=project_id,
     )
 
     # Apply multi-arena IN filter when multiple checkboxes selected
@@ -791,6 +855,20 @@ async def content_browser_page(
     # Fetch recent collection runs for the sidebar run selector (last 20).
     recent_runs = await _fetch_recent_runs(db, current_user)
 
+    # Fetch user's projects for the project filter dropdown.
+    from issue_observatory.core.models.project import Project as ProjectModel  # noqa: PLC0415
+
+    projects_stmt = (
+        select(ProjectModel)
+        .where(ProjectModel.owner_id == current_user.id)
+        .order_by(ProjectModel.name)
+    )
+    projects_result = await db.execute(projects_stmt)
+    user_projects = [
+        {"id": str(p.id), "name": p.name}
+        for p in projects_result.scalars().all()
+    ]
+
     # Total count (approximate — count without cursor/limit for display).
     # For multi-arena counts, _count_matching will build the IN filter internally.
     count_platform = platform_filter if len(arenas_list) <= 1 else None
@@ -807,6 +885,7 @@ async def content_browser_page(
         run_id=run_id,
         mode=mode,
         arenas_list=arenas_list if len(arenas_list) > 1 else None,
+        project_id=project_id,
     )
 
     filter_ctx = {
@@ -819,6 +898,7 @@ async def content_browser_page(
         "search_term": search_term or "",
         "run_id": str(run_id) if run_id else "",
         "mode": mode or "",
+        "project_id": str(project_id) if project_id else "",
     }
 
     return templates.TemplateResponse(
@@ -832,6 +912,7 @@ async def content_browser_page(
             "filter": filter_ctx,
             "cursor": cursor or "",
             "active_query_design_id": str(query_design_id) if query_design_id else "",
+            "user_projects": user_projects,
         },
     )
 
@@ -854,8 +935,9 @@ async def content_records_fragment(
     date_to: Optional[str] = Query(default=None),
     language: Optional[str] = Query(default=None),
     search_term: Optional[str] = Query(default=None),
-    run_id: Optional[uuid.UUID] = Query(default=None),
+    run_id: Optional[str] = Query(default=None),
     mode: Optional[str] = Query(default=None, description="Collection mode filter: 'batch' or 'live'."),
+    project_id: Optional[str] = Query(default=None, description="Filter content to a specific project."),
     offset: int = Query(default=0, ge=0, description="Running total of rows already sent."),
     limit: int = Query(default=_BROWSE_LIMIT, ge=1, le=_MAX_LIMIT),
     format: Optional[str] = Query(
@@ -903,6 +985,10 @@ async def content_records_fragment(
         sentinel ``<tr hx-trigger="revealed">`` for further loading, or
         ``JSONResponse`` with records array and pagination metadata.
     """
+    # Coerce empty-string UUID params from HTMX form serialization.
+    run_id = _parse_uuid(run_id)  # type: ignore[arg-type]
+    project_id = _parse_uuid(project_id)  # type: ignore[arg-type]
+
     # Determine response format based on query param and Accept header.
     wants_json = _prefers_json(request, format)
 
@@ -964,6 +1050,7 @@ async def content_records_fragment(
         cursor_published_at=cursor_published_at,
         cursor_id=cursor_id_val,
         limit=remaining,
+        project_id=project_id,
     )
 
     # Multiple arena filter (IN clause) applied post-base when >1 selected.
@@ -1054,7 +1141,7 @@ async def content_records_fragment(
 async def get_search_terms_for_run(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    run_id: Optional[uuid.UUID] = Query(default=None, description="Collection run UUID."),
+    run_id: Optional[str] = Query(default=None, description="Collection run UUID."),
 ) -> HTMLResponse:
     """Return HTML ``<option>`` elements for the search-term filter dropdown.
 
@@ -1078,6 +1165,7 @@ async def get_search_terms_for_run(
         the "All terms" option when ``run_id`` is not provided or no terms are
         found.
     """
+    run_id = _parse_uuid(run_id)  # type: ignore[assignment]
     terms: list[str] = []
 
     if run_id is not None:
@@ -1131,7 +1219,7 @@ async def get_search_terms_for_run(
 async def get_discovered_links(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    query_design_id: Optional[uuid.UUID] = Query(
+    query_design_id: Optional[str] = Query(
         default=None,
         description=(
             "Optional UUID of a query design to scope to. "
@@ -1196,6 +1284,8 @@ async def get_discovered_links(
         HTTPException 404: Not raised — an empty result is returned when no
             links are found.
     """
+    query_design_id = _parse_uuid(query_design_id)  # type: ignore[assignment]
+
     from issue_observatory.analysis.link_miner import LinkMiner  # noqa: PLC0415
 
     miner = LinkMiner()
@@ -1264,13 +1354,14 @@ async def export_content_sync(  # type: ignore[misc]
             "One of: actor, term, bipartite."
         ),
     ),
+    arenas: Optional[list[str]] = Query(default=None, description="Multi-value platform filter from checkboxes."),
     platform: Optional[str] = Query(default=None, description="Filter by platform name."),
     arena: Optional[str] = Query(default=None, description="Filter by arena name."),
-    query_design_id: Optional[uuid.UUID] = Query(default=None),
-    date_from: Optional[datetime] = Query(default=None),
-    date_to: Optional[datetime] = Query(default=None),
+    query_design_id: Optional[str] = Query(default=None),
+    date_from: Optional[str] = Query(default=None),
+    date_to: Optional[str] = Query(default=None),
     language: Optional[str] = Query(default=None),
-    run_id: Optional[uuid.UUID] = Query(
+    run_id: Optional[str] = Query(
         default=None, description="Filter by specific collection run UUID."
     ),
     search_term: Optional[str] = Query(default=None),
@@ -1304,11 +1395,11 @@ async def export_content_sync(  # type: ignore[misc]
             ``"actor"``.
         platform: Optional platform filter.
         arena: Optional arena filter.
-        query_design_id: Optional query design UUID filter.
+        query_design_id: Optional query design UUID filter (accepts empty string).
         date_from: Optional lower bound on ``published_at``.
         date_to: Optional upper bound on ``published_at``.
         language: Optional ISO 639-1 language code filter.
-        run_id: Optional collection run UUID filter.
+        run_id: Optional collection run UUID filter (accepts empty string).
         search_term: Optional term contained in ``search_terms_matched``.
         limit: Maximum records (1–10 000; default 10 000).
         include_metadata: If True, include ``raw_metadata`` as a JSON string
@@ -1324,6 +1415,11 @@ async def export_content_sync(  # type: ignore[misc]
         HTTPException 500: If serialization fails due to a missing optional
             dependency (openpyxl / pyarrow not installed).
     """
+    query_design_id = _parse_uuid(query_design_id)  # type: ignore[assignment]
+    run_id = _parse_uuid(run_id)  # type: ignore[assignment]
+    date_from = _parse_date_param(date_from)  # type: ignore[assignment]
+    date_to = _parse_date_param(date_to)  # type: ignore[assignment]
+
     if format not in _EXPORT_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1340,9 +1436,15 @@ async def export_content_sync(  # type: ignore[misc]
             ),
         )
 
+    # Handle arenas multi-value filter (same logic as content browser)
+    arenas_list: list[str] = arenas or []
+    platform_filter: Optional[str] = platform
+    if len(arenas_list) == 1:
+        platform_filter = arenas_list[0]
+
     stmt = _build_content_stmt(
         current_user=current_user,
-        platform=platform,
+        platform=platform_filter if len(arenas_list) <= 1 else None,
         arena=arena,
         query_design_id=query_design_id,
         date_from=date_from,
@@ -1352,6 +1454,10 @@ async def export_content_sync(  # type: ignore[misc]
         run_id=run_id,
         limit=limit,
     )
+
+    # Apply multi-arena IN filter when multiple checkboxes selected
+    if len(arenas_list) > 1:
+        stmt = stmt.where(UniversalContentRecord.platform.in_(arenas_list))
 
     db_result = await db.execute(stmt)
     orm_rows = list(db_result.scalars().all())
@@ -1454,11 +1560,11 @@ async def export_content_async(
     ),
     platform: Optional[str] = Query(default=None),
     arena: Optional[str] = Query(default=None),
-    query_design_id: Optional[uuid.UUID] = Query(default=None),
-    date_from: Optional[datetime] = Query(default=None),
-    date_to: Optional[datetime] = Query(default=None),
+    query_design_id: Optional[str] = Query(default=None),
+    date_from: Optional[str] = Query(default=None),
+    date_to: Optional[str] = Query(default=None),
     language: Optional[str] = Query(default=None),
-    run_id: Optional[uuid.UUID] = Query(default=None),
+    run_id: Optional[str] = Query(default=None),
     search_term: Optional[str] = Query(default=None),
 ) -> dict[str, str]:
     """Dispatch an asynchronous export job for large datasets.
@@ -1479,11 +1585,11 @@ async def export_content_async(
             ``"actor"``.
         platform: Optional platform filter.
         arena: Optional arena filter.
-        query_design_id: Optional query design UUID.
+        query_design_id: Optional query design UUID (accepts empty string).
         date_from: Optional lower bound on ``published_at``.
         date_to: Optional upper bound on ``published_at``.
         language: Optional ISO 639-1 language code.
-        run_id: Optional collection run UUID.
+        run_id: Optional collection run UUID (accepts empty string).
         search_term: Optional term in ``search_terms_matched``.
 
     Returns:
@@ -1493,6 +1599,11 @@ async def export_content_async(
         HTTPException 400: If the format is not supported, or if
             ``network_type`` is invalid for GEXF exports.
     """
+    query_design_id = _parse_uuid(query_design_id)  # type: ignore[assignment]
+    run_id = _parse_uuid(run_id)  # type: ignore[assignment]
+    date_from = _parse_date_param(date_from)  # type: ignore[assignment]
+    date_to = _parse_date_param(date_to)  # type: ignore[assignment]
+
     if format not in _EXPORT_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

@@ -173,7 +173,22 @@
       "Bash(else)",
       "Bash(fi)",
       "Bash(uvicorn:*)",
-      "Bash(alembic history:*)"
+      "Bash(alembic history:*)",
+      "WebFetch(domain:unpkg.com)",
+      "Bash(pip show:*)",
+      "Bash(.venv/bin/pip show:*)",
+      "Bash(xxd:*)",
+      "Bash(__NEW_LINE_0ceb1f19a1446c6d__ echo \"=== Arena filter ===\")",
+      "Bash(__NEW_LINE_a69aac2f4740a4a7__ echo \"=== Language filter ===\")",
+      "Bash(__NEW_LINE_ecca6e7bf910c554__ echo \"=== Search term filter ===\")",
+      "Bash(__NEW_LINE_7c892829e86ca42d__ echo \"=== Full form serialization \\(all empty\\) ===\")",
+      "Bash(__NEW_LINE_e744c8360b5b81c0__ echo \"=== Full page load ===\")",
+      "WebFetch(domain:discordjs.guide)",
+      "WebFetch(domain:www.blustboosts.com)",
+      "WebFetch(domain:discordpy.readthedocs.io)",
+      "WebFetch(domain:docs.brightdata.com)",
+      "WebFetch(domain:brightdata.com)",
+      "Bash(tail:*)"
     ]
   }
 }

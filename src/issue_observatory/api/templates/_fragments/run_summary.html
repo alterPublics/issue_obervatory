@@ -1,8 +1,8 @@
 {#
-    HTMX / SSE fragment: collection run-level summary card.
+    HTMX fragment: collection run-level summary card.
 
-    Streamed via SSE and swapped into #run-summary-card using `hx-swap-oob`.
-    Also rendered inline at page load from the initial context.
+    Rendered inline at page load from the initial context, and also
+    returned by cancel/suspend/resume endpoints for HTMX outerHTML swap.
 
     Context:
         - run (dict):
@@ -24,7 +24,7 @@
 {% set tasks_total = run.tasks_total | default(0) | int %}
 {% set tasks_done  = run.tasks_done  | default(0) | int %}
 
-<div id="run-summary-card" hx-swap-oob="true"
+<div id="run-summary-card"
      class="bg-white rounded-lg shadow p-6 space-y-4">
 
     {# Header row: status badge + run metadata #}

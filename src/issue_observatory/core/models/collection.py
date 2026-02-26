@@ -25,6 +25,7 @@ from issue_observatory.core.models.base import Base
 
 if TYPE_CHECKING:
     from issue_observatory.core.models.credentials import ApiCredential
+    from issue_observatory.core.models.project import Project
     from issue_observatory.core.models.query_design import QueryDesign
     from issue_observatory.core.models.users import User
 
@@ -60,6 +61,12 @@ class CollectionRun(Base):
     query_design_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("query_designs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    project_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("projects.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -132,6 +139,10 @@ class CollectionRun(Base):
     # Relationships
     query_design: Mapped[Optional[QueryDesign]] = relationship(
         "QueryDesign",
+        back_populates="collection_runs",
+    )
+    project: Mapped[Optional[Project]] = relationship(
+        "Project",
         back_populates="collection_runs",
     )
     initiator: Mapped[User] = relationship(

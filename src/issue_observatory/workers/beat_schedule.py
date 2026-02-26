@@ -16,10 +16,10 @@ Schedule overview:
 | daily_collection          | 00:00 Copenhagen    | Trigger all active live-     |
 |                           |                     | tracking query designs.      |
 +---------------------------+---------------------+-----------------------------+
-| health_check_all_arenas   | Every 5 minutes     | Poll all arena health-check  |
+| health_check_all_arenas   | Every 30 minutes    | Poll all arena health-check  |
 |                           |                     | endpoints, update admin UI.  |
 +---------------------------+---------------------+-----------------------------+
-| credit_settlement         | Every hour          | Settle pending credit        |
+| credit_settlement         | Every 6 hours       | Settle pending credit        |
 |                           |                     | reservations from completed  |
 |                           |                     | collection tasks.            |
 +---------------------------+---------------------+-----------------------------+
@@ -51,36 +51,36 @@ beat_schedule: dict[str, dict] = {  # type: ignore[type-arg]
         },
     },
     # ------------------------------------------------------------------
-    # Arena health checks — every 5 minutes
+    # Arena health checks — every 30 minutes
     # ------------------------------------------------------------------
     "health_check_all_arenas": {
         "task": "issue_observatory.workers.tasks.health_check_all_arenas",
-        "schedule": crontab(minute="*/5"),
+        "schedule": crontab(minute="*/30"),
         "options": {
             "queue": "celery",
-            "expires": 240,  # discard if not started within 4 minutes
+            "expires": 1_500,  # discard if not started within 25 minutes
         },
     },
     # ------------------------------------------------------------------
-    # Credit settlement — every hour
+    # Credit settlement — every 6 hours
     # ------------------------------------------------------------------
     "credit_settlement": {
         "task": "issue_observatory.workers.tasks.settle_pending_credits",
-        "schedule": crontab(minute=30),  # at :30 past each hour
+        "schedule": crontab(minute=30, hour="*/6"),  # at :30 past every 6th hour
         "options": {
             "queue": "celery",
-            "expires": 1_800,
+            "expires": 3_600,
         },
     },
     # ------------------------------------------------------------------
-    # Stale run cleanup — every 10 minutes
+    # Stale run cleanup — 03:00 Copenhagen time (daily)
     # ------------------------------------------------------------------
     "stale_run_cleanup": {
         "task": "issue_observatory.workers.tasks.cleanup_stale_runs",
-        "schedule": crontab(minute="*/10"),
+        "schedule": crontab(hour=3, minute=0),
         "options": {
             "queue": "celery",
-            "expires": 540,  # discard if not started within 9 minutes
+            "expires": 3_600,
         },
     },
     # ------------------------------------------------------------------

@@ -20,6 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
+import jwt as pyjwt
 import structlog
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
@@ -229,6 +230,57 @@ def create_app() -> FastAPI:
         status = str(response.status_code)
         http_requests_total.labels(method=method, path=path, status=status).inc()
         http_request_duration_seconds.labels(method=method, path=path).observe(duration)
+
+        return response
+
+    # ---- Session refresh middleware (sliding window) -----------------------
+    # The JWT has a fixed lifetime (default 30 min).  This middleware re-issues
+    # the token when the user is actively making requests, so the session only
+    # expires after 30 minutes of *inactivity* rather than 30 minutes after login.
+
+    @application.middleware("http")
+    async def session_refresh_middleware(
+        request: Request, call_next: Callable
+    ) -> Response:
+        response = await call_next(request)
+
+        token = request.cookies.get("access_token")
+        if not token or response.status_code >= 400:
+            return response
+
+        try:
+            _settings = get_settings()
+            secret = _settings.secret_key
+            lifetime = _settings.access_token_expire_minutes * 60
+
+            payload = pyjwt.decode(
+                token,
+                secret,
+                algorithms=["HS256"],
+                audience=["fastapi-users:auth"],
+            )
+
+            remaining = payload.get("exp", 0) - time.time()
+            # Only re-issue when more than half the lifetime has elapsed,
+            # to avoid re-signing on every single request.
+            if remaining < lifetime / 2:
+                now = int(time.time())
+                payload["exp"] = now + lifetime
+                payload["iat"] = now
+                new_token = pyjwt.encode(payload, secret, algorithm="HS256")
+                response.set_cookie(
+                    key="access_token",
+                    value=new_token,
+                    max_age=lifetime,
+                    httponly=True,
+                    samesite="lax",
+                    secure=not _settings.debug,
+                    path="/",
+                )
+        except pyjwt.ExpiredSignatureError:
+            pass  # Token already expired — let 401 handler deal with it
+        except Exception:
+            pass  # Don't break the response if refresh fails
 
         return response
 

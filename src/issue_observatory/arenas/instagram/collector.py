@@ -2,7 +2,7 @@
 
 Collects public Instagram posts and profile data via two tiers:
 
-- **MEDIUM** (:class:`Tier.MEDIUM`): Bright Data Instagram Scraper API.
+- **MEDIUM** (:class:`Tier.MEDIUM`): Bright Data Web Scraper API.
   Polling-based delivery: POST trigger → poll progress → download snapshot.
   Credential: ``platform="brightdata_instagram"``, JSONB ``api_token`` + ``zone``.
 
@@ -10,13 +10,22 @@ Collects public Instagram posts and profile data via two tiers:
   Both collection methods raise ``NotImplementedError`` — MCL integration is
   pending institutional approval. Stubs are in place for future implementation.
 
-Danish defaults:
-- Instagram has no native language or country filter.
-- ``collect_by_terms()`` maps query terms to hashtags and targets Danish hashtags.
-- ``collect_by_actors()`` targets known Danish accounts by username.
-- Client-side language detection: if the ``lang`` field is present in the raw
-  record, it is preserved. Non-Danish records are not filtered out — the caller
-  can apply language filtering downstream.
+**Actor-only collection arena**: Instagram does not expose a public keyword search
+API. The Bright Data Web Scraper API does not support keyword or hashtag-based
+discovery for Instagram (tested 2026-02-26). This arena collects exclusively via
+``collect_by_actors()`` using profile URLs. ``collect_by_terms()`` raises
+:exc:`~issue_observatory.core.exceptions.ArenaCollectionError` with guidance.
+
+Default scraper: The Reels scraper (``gd_lyclm20il4r5helnj``) accepts a profile
+URL and returns all recent content types (posts and reels). This is preferred over
+the Posts scraper (``gd_lk5ns7kz21pck8jpis``), which requires individual post URLs.
+
+Input format::
+
+    [{"url": "https://www.instagram.com/drnyheder/", "num_of_posts": 100,
+      "start_date": "01-01-2026", "end_date": "02-26-2026"}]
+
+Date format: ``MM-DD-YYYY`` (Web Scraper API requirement).
 
 Rate limiting:
 - Courtesy throttle: 2 calls/sec via :class:`RateLimiter`.
@@ -34,18 +43,19 @@ from typing import Any
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
-from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.instagram.config import (
-    BRIGHTDATA_INSTAGRAM_POSTS_URL,
     BRIGHTDATA_MAX_POLL_ATTEMPTS,
     BRIGHTDATA_POLL_INTERVAL,
     BRIGHTDATA_PROGRESS_URL,
     BRIGHTDATA_RATE_LIMIT_MAX_CALLS,
     BRIGHTDATA_RATE_LIMIT_WINDOW_SECONDS,
     BRIGHTDATA_SNAPSHOT_URL,
+    INSTAGRAM_DATASET_ID_REELS,
     INSTAGRAM_REEL_MEDIA_TYPES,
     INSTAGRAM_REEL_PRODUCT_TYPES,
     INSTAGRAM_TIERS,
+    build_trigger_url,
+    to_brightdata_date,
 )
 from issue_observatory.arenas.registry import register
 from issue_observatory.config.tiers import TierConfig
@@ -62,10 +72,37 @@ logger = logging.getLogger(__name__)
 _ARENA: str = "social_media"
 _PLATFORM: str = "instagram"
 
+# Number of posts to request per actor per API call.
+_DEFAULT_NUM_POSTS: int = 100
+
+
+def _normalize_profile_url(actor_id: str) -> str:
+    """Normalize an actor identifier to a full Instagram profile URL.
+
+    Handles three input formats:
+    - Full URL: returned as-is (e.g. ``https://www.instagram.com/drnyheder/``)
+    - Username with ``@``: strips ``@`` and builds URL
+    - Plain username: builds ``https://www.instagram.com/{username}/``
+
+    Args:
+        actor_id: Instagram username (with or without ``@``) or full profile URL.
+
+    Returns:
+        Full Instagram profile URL string.
+    """
+    if actor_id.startswith("http"):
+        return actor_id
+    clean = actor_id.lstrip("@")
+    return f"https://www.instagram.com/{clean}/"
+
 
 @register
 class InstagramCollector(ArenaCollector):
-    """Collects Instagram posts via Bright Data (medium) or MCL (premium).
+    """Collects Instagram posts via Bright Data Web Scraper API (medium) or MCL (premium).
+
+    Instagram is an **actor-only** collection arena — keyword or hashtag-based
+    discovery is not supported by the Web Scraper API. ``collect_by_terms()``
+    raises :exc:`ArenaCollectionError` with guidance to use the Actor Directory.
 
     Class Attributes:
         arena_name: ``"social_media"``
@@ -107,99 +144,33 @@ class InstagramCollector(ArenaCollector):
         term_groups: list[list[str]] | None = None,
         language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Collect Instagram posts matching one or more search terms or hashtags.
+        """Raise ArenaCollectionError — Instagram does not support keyword search.
 
-        MEDIUM tier: Maps each term to an Instagram hashtag and submits a
-        Bright Data hashtag scraper request. Because Instagram has no native
-        full-text search API, terms are converted to hashtags by stripping
-        spaces (e.g. ``"klima debat"`` → ``"#klimadebat"``). Terms that are
-        already hashtags (start with ``#``) are used as-is.
-
-        Language filtering: Instagram does not tag posts with language metadata.
-        The ``lang`` field is passed through if present in the raw data. Use
-        ``collect_by_actors()`` for more reliable Danish-language collection.
-
-        PREMIUM tier: Raises ``NotImplementedError`` — MCL pending approval.
+        The Bright Data Web Scraper API does not support keyword or hashtag-based
+        discovery for Instagram (tested 2026-02-26). To collect from Instagram, add
+        profile URLs to the Actor Directory and use ``collect_by_actors()``.
 
         Args:
-            terms: Search terms or hashtags to query.
-            tier: :attr:`Tier.MEDIUM` (Bright Data) or :attr:`Tier.PREMIUM` (MCL stub).
-            date_from: Earliest publication date (inclusive).
-            date_to: Latest publication date (inclusive).
-            max_results: Upper bound on returned records.
-
-        Returns:
-            List of normalized content record dicts.
+            terms: Not used — keyword search is not supported.
+            tier: Not used.
+            date_from: Not used.
+            date_to: Not used.
+            max_results: Not used.
+            term_groups: Not used.
+            language_filter: Not used.
 
         Raises:
-            NotImplementedError: For PREMIUM tier (MCL pending approval).
-            ArenaRateLimitError: On HTTP 429 from Bright Data.
-            ArenaAuthError: On HTTP 401/403 from Bright Data.
-            ArenaCollectionError: On other unrecoverable API errors.
-            NoCredentialAvailableError: When no credential is available.
+            ArenaCollectionError: Always — Instagram does not support keyword search.
         """
-        self._validate_tier(tier)
-
-        if tier == Tier.PREMIUM:
-            raise NotImplementedError(
-                "Meta Content Library integration pending approval. "
-                "PREMIUM tier is not yet operational for the Instagram arena. "
-                "Use Tier.MEDIUM (Bright Data) until MCL access is confirmed."
-            )
-
-        tier_config = self.get_tier_config(tier)
-        effective_max = (
-            max_results if max_results is not None
-            else (tier_config.max_results_per_run if tier_config else 10_000)
+        raise ArenaCollectionError(
+            "Instagram does not support keyword-based or hashtag-based collection. "
+            "The Bright Data Web Scraper API only supports actor-based collection "
+            "(Instagram profile URLs). "
+            "To collect from Instagram: add profiles to the Actor Directory "
+            "and use actor-based collection mode.",
+            arena=_ARENA,
+            platform=_PLATFORM,
         )
-
-        cred = await self._acquire_medium_credential()
-        if cred is None:
-            raise NoCredentialAvailableError(platform="brightdata_instagram", tier="medium")
-
-        cred_id: str = cred["id"]
-        api_token: str = cred.get("api_token") or cred.get("api_key", "")
-
-        # Build effective terms from groups or use plain list.
-        if term_groups is not None:
-            effective_terms: list[str] = [
-                format_boolean_query_for_platform(groups=[grp], platform="bluesky")
-                for grp in term_groups
-                if grp
-            ]
-        else:
-            effective_terms = list(terms)
-
-        all_records: list[dict[str, Any]] = []
-
-        try:
-            async with self._build_http_client() as client:
-                for term in effective_terms:
-                    if len(all_records) >= effective_max:
-                        break
-                    remaining = effective_max - len(all_records)
-                    hashtag = _term_to_hashtag(term)
-                    records = await self._collect_brightdata_hashtag(
-                        client,
-                        api_token,
-                        cred_id,
-                        hashtag,
-                        remaining,
-                        date_from,
-                        date_to,
-                    )
-                    all_records.extend(records)
-        finally:
-            if self.credential_pool:
-                await self.credential_pool.release(credential_id=cred_id)
-
-        logger.info(
-            "instagram: collect_by_terms completed — tier=%s terms=%d records=%d",
-            tier.value,
-            len(terms),
-            len(all_records),
-        )
-        return all_records
 
     async def collect_by_actors(
         self,
@@ -213,19 +184,17 @@ class InstagramCollector(ArenaCollector):
 
         MEDIUM tier: Each actor_id should be an Instagram username (without ``@``)
         or a full profile URL (e.g. ``https://www.instagram.com/drnyheder``).
-        Submits a Bright Data profile scraper request.
-
-        This is the most reliable collection mode for Danish content — target
-        known Danish media, political, and organizational accounts.
+        Uses the Reels scraper (``gd_lyclm20il4r5helnj``) which accepts profile
+        URLs and returns all recent content types (posts and reels).
 
         PREMIUM tier: Raises ``NotImplementedError`` — MCL pending approval.
 
         Args:
-            actor_ids: Instagram usernames (without ``@``) or profile URLs.
+            actor_ids: Instagram usernames (with or without ``@``) or profile URLs.
             tier: :attr:`Tier.MEDIUM` (Bright Data) or :attr:`Tier.PREMIUM` (MCL stub).
-            date_from: Earliest publication date (inclusive).
-            date_to: Latest publication date (inclusive).
-            max_results: Upper bound on returned records.
+            date_from: Earliest publication date (inclusive). Formatted as ``MM-DD-YYYY``.
+            date_to: Latest publication date (inclusive). Formatted as ``MM-DD-YYYY``.
+            max_results: Upper bound on returned records across all actors.
 
         Returns:
             List of normalized content record dicts.
@@ -267,11 +236,12 @@ class InstagramCollector(ArenaCollector):
                     if len(all_records) >= effective_max:
                         break
                     remaining = effective_max - len(all_records)
+                    profile_url = _normalize_profile_url(actor_id)
                     records = await self._collect_brightdata_profile(
                         client,
                         api_token,
                         cred_id,
-                        actor_id,
+                        profile_url,
                         remaining,
                         date_from,
                         date_to,
@@ -346,108 +316,52 @@ class InstagramCollector(ArenaCollector):
     # Tier-specific collection helpers
     # ------------------------------------------------------------------
 
-    async def _collect_brightdata_hashtag(
-        self,
-        client: httpx.AsyncClient,
-        api_token: str,
-        cred_id: str,
-        hashtag: str,
-        max_results: int,
-        date_from: datetime | str | None,
-        date_to: datetime | str | None,
-    ) -> list[dict[str, Any]]:
-        """Submit a Bright Data Instagram hashtag request and return records.
-
-        Args:
-            client: Shared HTTP client.
-            api_token: Bright Data API token.
-            cred_id: Credential ID for rate limiting.
-            hashtag: Instagram hashtag (with or without leading ``#``).
-            max_results: Maximum records to return.
-            date_from: Date range lower bound (optional).
-            date_to: Date range upper bound (optional).
-
-        Returns:
-            List of normalized Instagram post records.
-        """
-        await self._wait_rate_limit(cred_id)
-
-        # Strip leading # for the API payload.
-        clean_hashtag = hashtag.lstrip("#")
-
-        payload: dict[str, Any] = {
-            "hashtag": clean_hashtag,
-            "limit": min(max_results, 500),
-        }
-        if date_from:
-            date_str = _to_date_str(date_from)
-            if date_str:
-                payload["start_date"] = date_str
-        if date_to:
-            date_str = _to_date_str(date_to)
-            if date_str:
-                payload["end_date"] = date_str
-
-        snapshot_id = await self._trigger_dataset(client, api_token, payload)
-        raw_items = await self._poll_and_download(client, api_token, snapshot_id)
-
-        records: list[dict[str, Any]] = []
-        for item in raw_items[:max_results]:
-            try:
-                records.append(self.normalize(item, source="brightdata"))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("instagram: normalization error for item: %s", exc)
-        return records
-
     async def _collect_brightdata_profile(
         self,
         client: httpx.AsyncClient,
         api_token: str,
         cred_id: str,
-        actor_id: str,
+        profile_url: str,
         max_results: int,
         date_from: datetime | str | None,
         date_to: datetime | str | None,
     ) -> list[dict[str, Any]]:
-        """Submit a Bright Data Instagram profile request and return records.
+        """Submit a Web Scraper API Reels request for a profile and return records.
+
+        Uses the Reels scraper (``gd_lyclm20il4r5helnj``) which accepts a profile
+        URL and returns all content types (posts and reels). This is the primary
+        scraper for profile-level Instagram collection.
 
         Args:
             client: Shared HTTP client.
             api_token: Bright Data API token.
             cred_id: Credential ID for rate limiting.
-            actor_id: Instagram username (without ``@``) or profile URL.
+            profile_url: Full Instagram profile URL (``https://www.instagram.com/...``).
             max_results: Maximum records to return.
-            date_from: Date range lower bound (optional).
-            date_to: Date range upper bound (optional).
+            date_from: Date range lower bound (optional, ``MM-DD-YYYY`` format).
+            date_to: Date range upper bound (optional, ``MM-DD-YYYY`` format).
 
         Returns:
             List of normalized Instagram post records.
         """
         await self._wait_rate_limit(cred_id)
 
-        # Build the target specification.
-        if actor_id.startswith("http"):
-            payload: dict[str, Any] = {
-                "profile_url": actor_id,
-                "limit": min(max_results, 500),
-            }
-        else:
-            clean_username = actor_id.lstrip("@")
-            payload = {
-                "username": clean_username,
-                "limit": min(max_results, 500),
-            }
+        per_actor_limit = min(_DEFAULT_NUM_POSTS, max_results)
+        start_date_str = to_brightdata_date(date_from)
+        end_date_str = to_brightdata_date(date_to)
 
-        if date_from:
-            date_str = _to_date_str(date_from)
-            if date_str:
-                payload["start_date"] = date_str
-        if date_to:
-            date_str = _to_date_str(date_to)
-            if date_str:
-                payload["end_date"] = date_str
+        entry: dict[str, Any] = {
+            "url": profile_url,
+            "num_of_posts": per_actor_limit,
+        }
+        if start_date_str:
+            entry["start_date"] = start_date_str
+        if end_date_str:
+            entry["end_date"] = end_date_str
 
-        snapshot_id = await self._trigger_dataset(client, api_token, payload)
+        payload: list[dict[str, Any]] = [entry]
+        trigger_url = build_trigger_url(INSTAGRAM_DATASET_ID_REELS)
+        snapshot_id = await self._trigger_dataset(client, api_token, trigger_url, payload)
         raw_items = await self._poll_and_download(client, api_token, snapshot_id)
 
         records: list[dict[str, Any]] = []
@@ -463,33 +377,63 @@ class InstagramCollector(ArenaCollector):
     # ------------------------------------------------------------------
 
     def _parse_brightdata_instagram(self, raw: dict[str, Any]) -> dict[str, Any]:
-        """Parse a Bright Data Instagram post to a flat normalizer-ready dict.
+        """Parse a Bright Data Web Scraper API Instagram record to a flat dict.
 
-        Detects Reels from ``product_type`` or ``media_type`` fields.
-        Constructs the canonical URL from shortcode. Extracts all carousel
-        media URLs.
+        Maps Web Scraper API field names to the universal content record schema.
+        Uses defensive ``.get()`` with fallback chains for schema resilience.
+
+        Web Scraper API field mapping:
+        - ``description`` → ``text_content`` (was ``caption`` / ``text``)
+        - ``user_posted`` → ``author_display_name`` (was ``owner_username`` / ``username``)
+        - ``date_posted`` → ``published_at`` (was ``timestamp`` / ``created_at``)
+        - ``likes`` → ``likes_count`` (was ``likes_count``)
+        - ``num_comments`` → ``comments_count`` (was ``comments_count``)
+        - ``video_view_count`` / ``video_play_count`` → ``views_count``
+        - Post URL is extracted from ``url`` field; ``shortcode`` used as fallback ID.
 
         Args:
-            raw: Raw post dict from the Bright Data Instagram dataset.
+            raw: Raw post dict from the Bright Data Web Scraper API (Reels scraper).
 
         Returns:
             Flat dict for :meth:`Normalizer.normalize`.
         """
-        # ID and URL construction
-        post_id: str = str(raw.get("id") or raw.get("shortcode") or "")
-        shortcode: str = raw.get("shortcode") or str(raw.get("id", ""))
-        post_url: str | None = None
-        if shortcode:
+        # ID: prefer shortcode, then extract from URL, then numeric id.
+        post_url: str | None = raw.get("url")
+        shortcode: str = raw.get("shortcode") or ""
+        if not shortcode and post_url:
+            # Extract shortcode from URL e.g. https://www.instagram.com/p/ABC123/
+            parts = [p for p in (post_url or "").split("/") if p]
+            if "p" in parts:
+                idx = parts.index("p")
+                shortcode = parts[idx + 1] if idx + 1 < len(parts) else ""
+            elif "reel" in parts:
+                idx = parts.index("reel")
+                shortcode = parts[idx + 1] if idx + 1 < len(parts) else ""
+
+        post_id: str = shortcode or str(raw.get("id") or "")
+
+        if not post_url and shortcode:
             post_url = f"https://www.instagram.com/p/{shortcode}/"
 
-        # Author fields
-        owner_id: str = str(raw.get("owner_id") or raw.get("user_id", ""))
-        username: str = raw.get("username") or raw.get("owner_username", "")
+        # Author: user_posted is the Web Scraper API field; owner_username is legacy.
+        username: str = (
+            raw.get("user_posted")
+            or raw.get("owner_username")
+            or raw.get("username")
+            or ""
+        )
+        owner_id: str = str(
+            raw.get("owner_id") or raw.get("user_id") or ""
+        )
 
-        # Caption text
-        text: str = raw.get("caption") or raw.get("text", "")
+        # Caption text: description is the Web Scraper API field.
+        text: str = (
+            raw.get("description")
+            or raw.get("caption")
+            or raw.get("text", "")
+        )
 
-        # Content type detection: Reel vs. regular post
+        # Content type detection: Reel vs. regular post.
         product_type: str = str(raw.get("product_type") or "").lower()
         media_type: str = str(raw.get("media_type") or "")
         if (
@@ -500,21 +444,34 @@ class InstagramCollector(ArenaCollector):
         else:
             content_type = "post"
 
-        # Engagement metrics
-        likes_count: int | None = _extract_int(raw, "likes_count") or _extract_int(raw, "likes")
-        comments_count: int | None = _extract_int(raw, "comments_count") or _extract_int(raw, "comments")
-        # Instagram does not expose share counts via Bright Data.
-        shares_count: int | None = None
-        # Video view count for videos and Reels.
-        views_count: int | None = _extract_int(raw, "video_view_count") or _extract_int(raw, "views_count")
+        # Published timestamp: date_posted is the Web Scraper API field.
+        published_at: str | None = (
+            raw.get("date_posted")
+            or raw.get("timestamp")
+            or raw.get("created_at")
+        )
 
-        published_at: str | None = raw.get("timestamp") or raw.get("created_at")
+        # Engagement metrics: Web Scraper API uses ``likes`` (not ``likes_count``).
+        likes_count: int | None = (
+            _extract_int(raw, "likes")
+            or _extract_int(raw, "likes_count")
+        )
+        comments_count: int | None = (
+            _extract_int(raw, "num_comments")
+            or _extract_int(raw, "comments_count")
+            or _extract_int(raw, "comments")
+        )
+        shares_count: int | None = None  # Instagram does not expose share counts.
+        views_count: int | None = (
+            _extract_int(raw, "video_view_count")
+            or _extract_int(raw, "video_play_count")
+            or _extract_int(raw, "views_count")
+        )
 
         # Media URLs: display image, video, and carousel items.
         media_urls: list[str] = _extract_ig_media_urls(raw)
 
         # Language: Instagram does not provide language metadata natively.
-        # Pass through if Bright Data enriches the field; otherwise None.
         language: str | None = raw.get("lang") or raw.get("language")
 
         flat: dict[str, Any] = {
@@ -608,14 +565,15 @@ class InstagramCollector(ArenaCollector):
         date_to: datetime | str | None = None,
         max_results: int | None = None,
     ) -> int:
-        """Estimate the credit cost for an Instagram collection run.
+        """Estimate the credit cost for an Instagram actor-based collection run.
 
-        Instagram via Bright Data charges per post collected.
-        Estimates assume 100-300 posts per term per day.
+        Instagram is an actor-only arena. Term-based estimation is not supported.
+        Estimates are based on the number of actors and a posts-per-actor heuristic,
+        adjusted by the date range.
 
         Args:
-            terms: Search hashtags or keywords.
-            actor_ids: Not yet implemented for Instagram.
+            terms: Not used — Instagram only supports actor-based collection.
+            actor_ids: Instagram profile URLs or usernames to collect from.
             tier: MEDIUM or PREMIUM.
             date_from: Start of collection date range.
             date_to: End of collection date range.
@@ -627,30 +585,33 @@ class InstagramCollector(ArenaCollector):
         if tier not in self.supported_tiers:
             return 0
 
-        all_terms = list(terms or [])
-        if not all_terms:
+        all_actors = list(actor_ids or [])
+        if not all_actors:
             return 0
 
-        # Estimate date range in days
+        # Estimate date range in days.
         date_range_days = 7
         if date_from and date_to:
             if isinstance(date_from, str):
                 date_from = datetime.fromisoformat(date_from.replace("Z", "+00:00"))
             if isinstance(date_to, str):
                 date_to = datetime.fromisoformat(date_to.replace("Z", "+00:00"))
-            delta = date_to - date_from
-            date_range_days = max(1, delta.days)
+            if isinstance(date_from, datetime) and isinstance(date_to, datetime):
+                delta = date_to - date_from
+                date_range_days = max(1, delta.days)
 
-        # Heuristic: 150 posts per term per day
-        posts_per_term_per_day = 150
-        estimated_posts = len(all_terms) * date_range_days * posts_per_term_per_day
+        # Heuristic: 15 posts per profile per day (Instagram accounts post less frequently).
+        posts_per_actor_per_day = 15
+        estimated_posts = len(all_actors) * date_range_days * posts_per_actor_per_day
 
-        # Apply max_results cap
+        # Apply max_results cap.
         tier_config = self.get_tier_config(tier)
-        effective_max = max_results if max_results is not None else tier_config.max_results_per_run
+        effective_max = max_results if max_results is not None else (
+            tier_config.max_results_per_run if tier_config else 10_000
+        )
         estimated_posts = min(estimated_posts, effective_max)
 
-        # 1 credit = 1 post collected
+        # 1 credit = 1 record collected (Web Scraper API: $0.0015/record).
         return estimated_posts
 
     # ------------------------------------------------------------------
@@ -726,14 +687,16 @@ class InstagramCollector(ArenaCollector):
         self,
         client: httpx.AsyncClient,
         api_token: str,
-        payload: dict[str, Any],
+        trigger_url: str,
+        payload: list[dict[str, Any]],
     ) -> str:
-        """POST a dataset trigger request to Bright Data and return the snapshot_id.
+        """POST a Web Scraper API trigger request and return the snapshot_id.
 
         Args:
             client: Shared HTTP client.
             api_token: Bright Data API token.
-            payload: Request body with filter and limit parameters.
+            trigger_url: Full trigger URL (including dataset_id query parameter).
+            payload: Request body — list of URL input dicts.
 
         Returns:
             Snapshot ID string for polling.
@@ -745,7 +708,7 @@ class InstagramCollector(ArenaCollector):
         """
         try:
             response = await client.post(
-                BRIGHTDATA_INSTAGRAM_POSTS_URL,
+                trigger_url,
                 json=payload,
                 headers={
                     "Authorization": f"Bearer {api_token}",
@@ -963,6 +926,7 @@ def _extract_ig_media_urls(raw: dict[str, Any]) -> list[str]:
     """Extract all media URLs from a Bright Data Instagram post object.
 
     Handles single images, videos, and carousel (multi-media) posts.
+    Covers both Web Scraper API and legacy Dataset field names.
 
     Args:
         raw: Raw post dict from Bright Data.
@@ -973,7 +937,7 @@ def _extract_ig_media_urls(raw: dict[str, Any]) -> list[str]:
     urls: list[str] = []
 
     # Primary display image or video.
-    for field in ("display_url", "video_url", "thumbnail_url"):
+    for field in ("display_url", "video_url", "thumbnail_url", "image_url"):
         value = raw.get(field)
         if isinstance(value, str) and value:
             urls.append(value)
@@ -1004,39 +968,5 @@ def _extract_hashtags(text: str) -> list[str]:
     if not text:
         return []
     import re  # noqa: PLC0415
+
     return re.findall(r"#(\w+)", text)
-
-
-def _term_to_hashtag(term: str) -> str:
-    """Convert a search term to an Instagram hashtag.
-
-    If the term already starts with ``#``, it is returned as-is.
-    Otherwise, spaces are stripped and ``#`` is prepended.
-
-    Args:
-        term: Raw search term (e.g. ``"klima debat"`` or ``"#dkpol"``).
-
-    Returns:
-        Hashtag string with leading ``#`` (e.g. ``"#klimadebat"``).
-    """
-    if term.startswith("#"):
-        return term
-    return "#" + term.replace(" ", "").lower()
-
-
-def _to_date_str(value: datetime | str | None) -> str | None:
-    """Convert a datetime or string to a ``YYYY-MM-DD`` date string.
-
-    Args:
-        value: Datetime object, ISO 8601 string, or ``None``.
-
-    Returns:
-        Date string in ``YYYY-MM-DD`` format, or ``None``.
-    """
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%d")
-    if isinstance(value, str):
-        return value[:10] if len(value) >= 10 else value
-    return None

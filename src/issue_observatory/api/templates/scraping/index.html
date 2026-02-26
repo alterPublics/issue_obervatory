@@ -2,7 +2,7 @@
 {% block title %}Scraping Jobs{% endblock %}
 
 {% block content %}
-<div class="max-w-6xl mx-auto space-y-6" x-data>
+<div class="max-w-6xl mx-auto space-y-6">
 
     {# Page header #}
     <div class="flex items-center justify-between">
@@ -11,7 +11,7 @@
             <p class="text-sm text-gray-500 mt-0.5">Enrich collected content with full-text extraction</p>
         </div>
         <button type="button"
-                @click="$refs.createDialog.showModal()"
+                onclick="document.getElementById('create-scraping-dialog').showModal()"
                 class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
             <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
                  stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -39,9 +39,9 @@
     </div>
 
 {# Create job dialog #}
-<dialog x-ref="createDialog"
+<dialog id="create-scraping-dialog"
         class="bg-white rounded-lg shadow-xl max-w-lg w-full p-0 backdrop:bg-black/50"
-        @click.outside="$el.close()">
+        onclick="if(event.target===this)this.close()">
     <div class="px-6 py-5 border-b border-gray-200">
         <h2 class="text-lg font-semibold text-gray-900">Create Scraping Job</h2>
         <p class="text-sm text-gray-500 mt-1">Extract full-text content from URLs</p>
@@ -50,7 +50,7 @@
     <form hx-post="/api/scraping-jobs/form"
           hx-target="#jobs-container"
           hx-swap="innerHTML"
-          @htmx:after-request="$refs.createDialog.close(); htmx.trigger(document.body, 'jobCreated')"
+          @htmx:after-request="if(event.detail.successful) { document.getElementById('create-scraping-dialog').close(); }"
           class="px-6 py-5 space-y-4">
 
         {# Source type selection #}
@@ -150,7 +150,7 @@
         {# Submit buttons #}
         <div class="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
             <button type="button"
-                    @click="$refs.createDialog.close()"
+                    onclick="document.getElementById('create-scraping-dialog').close()"
                     class="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
                 Cancel
             </button>

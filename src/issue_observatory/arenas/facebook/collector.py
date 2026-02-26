@@ -1,18 +1,32 @@
 """Facebook arena collector implementation.
 
-Collects public Facebook posts and page data via two tiers:
+Collects public Facebook posts via two tiers:
 
-- **MEDIUM** (:class:`Tier.MEDIUM`): Bright Data Facebook Datasets.
-  Asynchronous dataset delivery: POST trigger → poll progress → download snapshot.
+- **MEDIUM** (:class:`Tier.MEDIUM`): Bright Data Web Scraper API.
+  Asynchronous delivery: POST trigger → poll progress → download snapshot.
   Credential: ``platform="brightdata_facebook"``, JSONB ``api_token`` + ``zone``.
 
 - **PREMIUM** (:class:`Tier.PREMIUM`): Meta Content Library (MCL).
   Both collection methods raise ``NotImplementedError`` — MCL integration is
   pending institutional approval. Stubs are in place for future implementation.
 
-Danish defaults:
-- MEDIUM: ``country="DK"`` filter passed in dataset trigger payload.
-- PREMIUM: ``country=DK`` and ``language=da`` parameters (when implemented).
+**Actor-only collection arena**: Facebook and Instagram do not expose a public
+keyword search API. The Bright Data Web Scraper API does not support keyword-
+based discovery (tested 2026-02-26). These arenas collect exclusively via
+``collect_by_actors()`` — researchers must curate Facebook pages, groups, or
+profiles in the Actor Directory. ``collect_by_terms()`` raises
+:exc:`~issue_observatory.core.exceptions.ArenaCollectionError` with guidance.
+
+Dataset routing (Web Scraper API):
+- Facebook page/profile URL → Posts scraper (``gd_lkaxegm826bjpoo9m5``)
+- Facebook group URL (contains ``/groups/``) → Groups scraper (``gd_lz11l67o2cb3r0lkj3``)
+
+Input format::
+
+    [{"url": "https://www.facebook.com/drnyheder", "num_of_posts": 100,
+      "start_date": "01-01-2026", "end_date": "02-26-2026"}]
+
+Date format: ``MM-DD-YYYY`` (Web Scraper API requirement).
 
 Rate limiting:
 - Courtesy throttle: 2 calls/sec via :class:`RateLimiter`.
@@ -31,17 +45,18 @@ from typing import Any
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
-from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.facebook.config import (
-    BRIGHTDATA_FACEBOOK_COUNTRY,
     BRIGHTDATA_MAX_POLL_ATTEMPTS,
     BRIGHTDATA_POLL_INTERVAL,
     BRIGHTDATA_PROGRESS_URL,
     BRIGHTDATA_RATE_LIMIT_MAX_CALLS,
     BRIGHTDATA_RATE_LIMIT_WINDOW_SECONDS,
     BRIGHTDATA_SNAPSHOT_URL,
-    BRIGHTDATA_TRIGGER_URL,
+    FACEBOOK_DATASET_ID_GROUPS,
+    FACEBOOK_DATASET_ID_POSTS,
     FACEBOOK_TIERS,
+    build_trigger_url,
+    to_brightdata_date,
 )
 from issue_observatory.arenas.registry import register
 from issue_observatory.config.tiers import TierConfig
@@ -58,10 +73,35 @@ logger = logging.getLogger(__name__)
 _ARENA: str = "social_media"
 _PLATFORM: str = "facebook"
 
+# Number of posts to request per actor per API call.
+_DEFAULT_NUM_POSTS: int = 100
+
+
+def _detect_facebook_dataset_id(url: str) -> str:
+    """Select the correct Web Scraper dataset ID based on the Facebook URL type.
+
+    Facebook group URLs contain ``/groups/`` in the path and are routed to the
+    Groups scraper. All other URLs (pages, profiles) use the Posts scraper.
+
+    Args:
+        url: Facebook page, profile, or group URL.
+
+    Returns:
+        Bright Data dataset ID string — either :data:`FACEBOOK_DATASET_ID_GROUPS`
+        or :data:`FACEBOOK_DATASET_ID_POSTS`.
+    """
+    if "/groups/" in url:
+        return FACEBOOK_DATASET_ID_GROUPS
+    return FACEBOOK_DATASET_ID_POSTS
+
 
 @register
 class FacebookCollector(ArenaCollector):
-    """Collects Facebook posts via Bright Data (medium) or MCL (premium).
+    """Collects Facebook posts via Bright Data Web Scraper API (medium) or MCL (premium).
+
+    Facebook and Instagram are **actor-only** collection arenas — they do not
+    support keyword-based discovery. ``collect_by_terms()`` raises
+    :exc:`ArenaCollectionError` with guidance to use the Actor Directory instead.
 
     Class Attributes:
         arena_name: ``"social_media"``
@@ -103,92 +143,33 @@ class FacebookCollector(ArenaCollector):
         term_groups: list[list[str]] | None = None,
         language_filter: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Collect Facebook posts matching one or more search terms.
+        """Raise ArenaCollectionError — Facebook does not support keyword search.
 
-        MEDIUM tier: Submits a Bright Data discover_new dataset request
-        with keyword filtering and ``country="DK"`` geo-targeting. Polls
-        until delivery, then downloads and normalizes results.
-
-        PREMIUM tier: Raises ``NotImplementedError`` — MCL pending approval.
+        The Bright Data Web Scraper API does not support keyword-based discovery
+        for Facebook (tested 2026-02-26). To collect from Facebook, add pages,
+        groups, or profiles to the Actor Directory and use ``collect_by_actors()``.
 
         Args:
-            terms: Search terms or keywords to query.
-            tier: :attr:`Tier.MEDIUM` (Bright Data) or :attr:`Tier.PREMIUM` (MCL stub).
-            date_from: Earliest publication date (inclusive).
-            date_to: Latest publication date (inclusive).
-            max_results: Upper bound on returned records.
-
-        Returns:
-            List of normalized content record dicts.
+            terms: Not used — keyword search is not supported.
+            tier: Not used.
+            date_from: Not used.
+            date_to: Not used.
+            max_results: Not used.
+            term_groups: Not used.
+            language_filter: Not used.
 
         Raises:
-            NotImplementedError: For PREMIUM tier (MCL pending approval).
-            ArenaRateLimitError: On HTTP 429 from Bright Data.
-            ArenaAuthError: On HTTP 401/403 from Bright Data.
-            ArenaCollectionError: On other unrecoverable API errors.
-            NoCredentialAvailableError: When no credential is available.
+            ArenaCollectionError: Always — Facebook does not support keyword search.
         """
-        self._validate_tier(tier)
-
-        if tier == Tier.PREMIUM:
-            raise NotImplementedError(
-                "Meta Content Library integration pending approval. "
-                "PREMIUM tier is not yet operational for the Facebook arena. "
-                "Use Tier.MEDIUM (Bright Data) until MCL access is confirmed."
-            )
-
-        tier_config = self.get_tier_config(tier)
-        effective_max = (
-            max_results if max_results is not None
-            else (tier_config.max_results_per_run if tier_config else 10_000)
+        raise ArenaCollectionError(
+            "Facebook does not support keyword-based collection. "
+            "The Bright Data Web Scraper API only supports actor-based collection "
+            "(Facebook page URLs, group URLs, or profile URLs). "
+            "To collect from Facebook: add pages or groups to the Actor Directory "
+            "and use actor-based collection mode.",
+            arena=_ARENA,
+            platform=_PLATFORM,
         )
-
-        cred = await self._acquire_medium_credential()
-        if cred is None:
-            raise NoCredentialAvailableError(platform="brightdata_facebook", tier="medium")
-
-        cred_id: str = cred["id"]
-        api_token: str = cred.get("api_token") or cred.get("api_key", "")
-
-        # Build effective terms from groups or use plain list.
-        if term_groups is not None:
-            effective_terms: list[str] = [
-                format_boolean_query_for_platform(groups=[grp], platform="bluesky")
-                for grp in term_groups
-                if grp
-            ]
-        else:
-            effective_terms = list(terms)
-
-        all_records: list[dict[str, Any]] = []
-
-        try:
-            async with self._build_http_client() as client:
-                for term in effective_terms:
-                    if len(all_records) >= effective_max:
-                        break
-                    remaining = effective_max - len(all_records)
-                    records = await self._collect_brightdata_terms(
-                        client,
-                        api_token,
-                        cred_id,
-                        term,
-                        remaining,
-                        date_from,
-                        date_to,
-                    )
-                    all_records.extend(records)
-        finally:
-            if self.credential_pool:
-                await self.credential_pool.release(credential_id=cred_id)
-
-        logger.info(
-            "facebook: collect_by_terms completed — tier=%s terms=%d records=%d",
-            tier.value,
-            len(terms),
-            len(all_records),
-        )
-        return all_records
 
     async def collect_by_actors(
         self,
@@ -198,20 +179,29 @@ class FacebookCollector(ArenaCollector):
         date_to: datetime | str | None = None,
         max_results: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Collect Facebook posts from specific pages or user profiles.
+        """Collect Facebook posts from specific pages, groups, or profiles.
 
-        MEDIUM tier: Submits a Bright Data request targeting specific Facebook
-        page URLs or page IDs. Each actor_id should be a Facebook page URL
-        (e.g. ``https://www.facebook.com/drnyheder``) or a numeric page ID.
+        MEDIUM tier: Builds a Web Scraper API payload targeting specific Facebook
+        page URLs, group URLs, or profile URLs. Each actor_id should be a full
+        Facebook URL (e.g. ``https://www.facebook.com/drnyheder`` for pages or
+        ``https://www.facebook.com/groups/politikdanmark`` for groups).
+
+        Dataset routing:
+        - URLs containing ``/groups/`` → Groups scraper (``gd_lz11l67o2cb3r0lkj3``)
+        - All other URLs → Posts scraper (``gd_lkaxegm826bjpoo9m5``)
+
+        Multiple content types are handled in a single call by grouping actor_ids
+        by their detected dataset ID and issuing one request per dataset.
 
         PREMIUM tier: Raises ``NotImplementedError`` — MCL pending approval.
 
         Args:
-            actor_ids: Facebook page URLs or numeric page IDs.
+            actor_ids: Facebook page URLs, group URLs, or profile URLs.
+                Each should be a full ``https://www.facebook.com/...`` URL.
             tier: :attr:`Tier.MEDIUM` (Bright Data) or :attr:`Tier.PREMIUM` (MCL stub).
-            date_from: Earliest publication date (inclusive).
-            date_to: Latest publication date (inclusive).
-            max_results: Upper bound on returned records.
+            date_from: Earliest publication date (inclusive). Formatted as ``MM-DD-YYYY``.
+            date_to: Latest publication date (inclusive). Formatted as ``MM-DD-YYYY``.
+            max_results: Upper bound on returned records across all actors.
 
         Returns:
             List of normalized content record dicts.
@@ -245,11 +235,17 @@ class FacebookCollector(ArenaCollector):
         cred_id: str = cred["id"]
         api_token: str = cred.get("api_token") or cred.get("api_key", "")
 
+        # Group actor_ids by dataset ID so each content type gets one request.
+        dataset_groups: dict[str, list[str]] = {}
+        for actor_id in actor_ids:
+            dataset_id = _detect_facebook_dataset_id(actor_id)
+            dataset_groups.setdefault(dataset_id, []).append(actor_id)
+
         all_records: list[dict[str, Any]] = []
 
         try:
             async with self._build_http_client() as client:
-                for actor_id in actor_ids:
+                for dataset_id, urls in dataset_groups.items():
                     if len(all_records) >= effective_max:
                         break
                     remaining = effective_max - len(all_records)
@@ -257,7 +253,8 @@ class FacebookCollector(ArenaCollector):
                         client,
                         api_token,
                         cred_id,
-                        actor_id,
+                        dataset_id,
+                        urls,
                         remaining,
                         date_from,
                         date_to,
@@ -332,118 +329,58 @@ class FacebookCollector(ArenaCollector):
     # Tier-specific collection helpers
     # ------------------------------------------------------------------
 
-    async def _collect_brightdata_terms(
-        self,
-        client: httpx.AsyncClient,
-        api_token: str,
-        cred_id: str,
-        term: str,
-        max_results: int,
-        date_from: datetime | str | None,
-        date_to: datetime | str | None,
-    ) -> list[dict[str, Any]]:
-        """Submit a Bright Data keyword dataset request and return normalized records.
-
-        Implements the full asynchronous dataset delivery cycle:
-        trigger → poll until ready → download → normalize.
-
-        Args:
-            client: Shared HTTP client.
-            api_token: Bright Data API token.
-            cred_id: Credential ID for rate limiting.
-            term: Keyword or search phrase.
-            max_results: Maximum records to return.
-            date_from: Date range lower bound (optional).
-            date_to: Date range upper bound (optional).
-
-        Returns:
-            List of normalized Facebook post records.
-        """
-        await self._wait_rate_limit(cred_id)
-
-        # Build filter payload for the dataset trigger.
-        filters: list[dict[str, Any]] = [
-            {"type": "keyword", "value": term},
-            {"type": "country", "value": BRIGHTDATA_FACEBOOK_COUNTRY},
-        ]
-        if date_from:
-            date_str = _to_date_str(date_from)
-            if date_str:
-                filters.append({"type": "date_from", "value": date_str})
-        if date_to:
-            date_str = _to_date_str(date_to)
-            if date_str:
-                filters.append({"type": "date_to", "value": date_str})
-
-        payload: dict[str, Any] = {
-            "filters": filters,
-            "limit": min(max_results, 1000),
-        }
-
-        snapshot_id = await self._trigger_dataset(client, api_token, payload)
-        raw_items = await self._poll_and_download(client, api_token, snapshot_id)
-
-        records: list[dict[str, Any]] = []
-        for item in raw_items[:max_results]:
-            try:
-                records.append(self.normalize(item, source="brightdata"))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("facebook: normalization error for item: %s", exc)
-        return records
-
     async def _collect_brightdata_actors(
         self,
         client: httpx.AsyncClient,
         api_token: str,
         cred_id: str,
-        actor_id: str,
+        dataset_id: str,
+        urls: list[str],
         max_results: int,
         date_from: datetime | str | None,
         date_to: datetime | str | None,
     ) -> list[dict[str, Any]]:
-        """Submit a Bright Data page-targeted dataset request and return records.
+        """Submit a Web Scraper API request targeting Facebook URLs and return records.
 
-        Targets a specific Facebook page by URL or numeric ID.
+        Builds a list payload where each entry specifies a URL, a post count
+        cap, and optional date bounds. All URLs share the same dataset ID (and
+        therefore the same scraper type — Posts or Groups).
 
         Args:
             client: Shared HTTP client.
             api_token: Bright Data API token.
             cred_id: Credential ID for rate limiting.
-            actor_id: Facebook page URL or numeric page ID.
-            max_results: Maximum records to return.
-            date_from: Date range lower bound (optional).
-            date_to: Date range upper bound (optional).
+            dataset_id: Bright Data dataset ID (Posts or Groups scraper).
+            urls: List of Facebook page/group URLs to collect from.
+            max_results: Maximum total records to return.
+            date_from: Date range lower bound (optional, ``MM-DD-YYYY`` format).
+            date_to: Date range upper bound (optional, ``MM-DD-YYYY`` format).
 
         Returns:
             List of normalized Facebook post records.
         """
         await self._wait_rate_limit(cred_id)
 
-        # Determine if actor_id is a URL or numeric ID.
-        if actor_id.startswith("http"):
-            target_filter = {"type": "page_url", "value": actor_id}
-        else:
-            target_filter = {"type": "page_id", "value": actor_id}
+        # Distribute max_results evenly across all URLs; minimum 10 per URL.
+        per_actor_limit = max(10, min(_DEFAULT_NUM_POSTS, max_results // max(1, len(urls))))
 
-        filters: list[dict[str, Any]] = [
-            target_filter,
-            {"type": "country", "value": BRIGHTDATA_FACEBOOK_COUNTRY},
-        ]
-        if date_from:
-            date_str = _to_date_str(date_from)
-            if date_str:
-                filters.append({"type": "date_from", "value": date_str})
-        if date_to:
-            date_str = _to_date_str(date_to)
-            if date_str:
-                filters.append({"type": "date_to", "value": date_str})
+        start_date_str = to_brightdata_date(date_from)
+        end_date_str = to_brightdata_date(date_to)
 
-        payload: dict[str, Any] = {
-            "filters": filters,
-            "limit": min(max_results, 1000),
-        }
+        payload: list[dict[str, Any]] = []
+        for url in urls:
+            entry: dict[str, Any] = {
+                "url": url,
+                "num_of_posts": per_actor_limit,
+            }
+            if start_date_str:
+                entry["start_date"] = start_date_str
+            if end_date_str:
+                entry["end_date"] = end_date_str
+            payload.append(entry)
 
-        snapshot_id = await self._trigger_dataset(client, api_token, payload)
+        trigger_url = build_trigger_url(dataset_id)
+        snapshot_id = await self._trigger_dataset(client, api_token, trigger_url, payload)
         raw_items = await self._poll_and_download(client, api_token, snapshot_id)
 
         records: list[dict[str, Any]] = []
@@ -459,51 +396,83 @@ class FacebookCollector(ArenaCollector):
     # ------------------------------------------------------------------
 
     def _parse_brightdata_facebook(self, raw: dict[str, Any]) -> dict[str, Any]:
-        """Parse a Bright Data Facebook post to a flat normalizer-ready dict.
+        """Parse a Bright Data Web Scraper API Facebook record to a flat dict.
 
-        Maps Bright Data field names to the universal content record schema.
-        Reaction totals are mapped to ``likes_count``; the full breakdown is
-        preserved in the flat dict for inclusion in ``raw_metadata``.
+        Maps Web Scraper API field names to the universal content record schema.
+        Uses defensive ``.get()`` with fallback chains to handle schema variations
+        across Posts, Groups, and Reels scrapers.
+
+        Web Scraper API field mapping:
+        - ``content`` → ``text_content`` (was ``message`` / ``description``)
+        - ``user_url`` → ``author_platform_id`` (was ``page_id``)
+        - ``page_name`` → ``author_display_name`` (unchanged)
+        - ``date_posted`` → ``published_at`` (was ``created_time`` / ``date``)
+        - ``num_likes`` → ``likes_count`` (was ``reactions.total``)
+        - ``num_comments`` → ``comments_count`` (was ``comments``)
+        - ``attachments`` / ``post_image`` → ``media_urls`` (was ``images``)
+        - ``video_view_count`` → ``views_count`` (was ``views``)
 
         Args:
-            raw: Raw post dict from the Bright Data Facebook dataset.
+            raw: Raw post dict from the Bright Data Web Scraper API.
 
         Returns:
             Flat dict for :meth:`Normalizer.normalize`.
         """
         post_id: str = str(raw.get("post_id") or raw.get("id", ""))
-        page_id: str = str(raw.get("page_id") or raw.get("user_id", ""))
-        page_name: str = raw.get("page_name") or raw.get("user_name", "")
 
-        text: str = raw.get("message") or raw.get("description") or raw.get("story", "")
+        # Author: user_url replaces page_id in the Web Scraper API.
+        author_url: str = str(
+            raw.get("user_url") or raw.get("page_id") or raw.get("user_id", "")
+        )
+        page_name: str = (
+            raw.get("page_name") or raw.get("user_name") or raw.get("username", "")
+        )
+
+        # Text content: primary field is now ``content``.
+        text: str = (
+            raw.get("content")
+            or raw.get("message")
+            or raw.get("description")
+            or raw.get("story", "")
+        )
         title: str | None = raw.get("name")  # link post title
 
+        # Post URL.
         post_url: str | None = raw.get("url") or raw.get("permalink_url")
         if not post_url and post_id:
             post_url = f"https://www.facebook.com/{post_id}"
 
-        # Reactions: Bright Data may provide total or breakdown dict.
-        reactions = raw.get("reactions") or {}
-        if isinstance(reactions, dict):
-            likes_count: int | None = reactions.get("total") or sum(
-                v for k, v in reactions.items() if isinstance(v, int)
-            ) or None
-        elif isinstance(reactions, (int, float)):
-            likes_count = int(reactions)
-        else:
-            likes_count = raw.get("likes")
+        # Published timestamp: primary field is now ``date_posted``.
+        published_at: str | None = (
+            raw.get("date_posted") or raw.get("created_time") or raw.get("date")
+        )
 
+        # Engagement: reactions -> num_likes; comments -> num_comments.
+        likes_count: int | None = _extract_int(raw, "num_likes")
+        if likes_count is None:
+            # Fallback to legacy reactions dict format.
+            reactions = raw.get("reactions") or {}
+            if isinstance(reactions, dict):
+                likes_count = reactions.get("total") or sum(
+                    v for k, v in reactions.items() if isinstance(v, int)
+                ) or None
+            elif isinstance(reactions, (int, float)):
+                likes_count = int(reactions)
+            else:
+                likes_count = _extract_int(raw, "likes")
+
+        comments_count: int | None = (
+            _extract_int(raw, "num_comments") or _extract_int(raw, "comments")
+        )
         shares_count: int | None = _extract_int(raw, "shares")
-        comments_count: int | None = _extract_int(raw, "comments")
-        # Facebook via Bright Data does not expose view counts.
-        views_count: int | None = None
+        views_count: int | None = _extract_int(raw, "video_view_count") or _extract_int(
+            raw, "views"
+        )
 
-        published_at: str | None = raw.get("created_time") or raw.get("date")
-
-        # Media URLs
+        # Media URLs: attachments and post_image replace images.
         media_urls: list[str] = _extract_fb_media_urls(raw)
 
-        # Determine content type
+        # Content type.
         content_type: str = "comment" if raw.get("comment_id") else "post"
 
         flat: dict[str, Any] = {
@@ -513,18 +482,20 @@ class FacebookCollector(ArenaCollector):
             "text_content": text,
             "title": title,
             "url": post_url,
-            "language": None,  # Bright Data does not provide language; detect downstream
+            "language": None,  # No language field — detect downstream
             "published_at": published_at,
-            "author_platform_id": page_id,
+            "author_platform_id": author_url,
             "author_display_name": page_name,
             "likes_count": likes_count,
             "shares_count": shares_count,
             "comments_count": comments_count,
             "views_count": views_count,
             "media_urls": media_urls,
-            # Raw metadata passthrough fields
+            # Raw metadata passthrough fields.
             "post_type": raw.get("post_type") or raw.get("type"),
-            "reactions_breakdown": reactions if isinstance(reactions, dict) else None,
+            "reactions_breakdown": (
+                raw.get("reactions") if isinstance(raw.get("reactions"), dict) else None
+            ),
             "parent_id": raw.get("parent_id"),
             "group_id": raw.get("group_id"),
             "event_id": raw.get("event_id"),
@@ -591,14 +562,15 @@ class FacebookCollector(ArenaCollector):
         date_to: datetime | str | None = None,
         max_results: int | None = None,
     ) -> int:
-        """Estimate the credit cost for a Facebook collection run.
+        """Estimate the credit cost for a Facebook actor-based collection run.
 
-        Facebook via Bright Data charges per post collected.
-        Estimates assume 100-300 posts per term per day.
+        Facebook is an actor-only arena. Term-based estimation is not supported.
+        Estimates are based on the number of actors and a configurable posts-per-actor
+        heuristic, adjusted by the date range.
 
         Args:
-            terms: Search keywords.
-            actor_ids: Not yet implemented for Facebook.
+            terms: Not used — Facebook only supports actor-based collection.
+            actor_ids: Facebook page, group, or profile URLs to collect from.
             tier: MEDIUM or PREMIUM.
             date_from: Start of collection date range.
             date_to: End of collection date range.
@@ -610,30 +582,33 @@ class FacebookCollector(ArenaCollector):
         if tier not in self.supported_tiers:
             return 0
 
-        all_terms = list(terms or [])
-        if not all_terms:
+        all_actors = list(actor_ids or [])
+        if not all_actors:
             return 0
 
-        # Estimate date range in days
+        # Estimate date range in days.
         date_range_days = 7
         if date_from and date_to:
             if isinstance(date_from, str):
                 date_from = datetime.fromisoformat(date_from.replace("Z", "+00:00"))
             if isinstance(date_to, str):
                 date_to = datetime.fromisoformat(date_to.replace("Z", "+00:00"))
-            delta = date_to - date_from
-            date_range_days = max(1, delta.days)
+            if isinstance(date_from, datetime) and isinstance(date_to, datetime):
+                delta = date_to - date_from
+                date_range_days = max(1, delta.days)
 
-        # Heuristic: 150 posts per term per day
-        posts_per_term_per_day = 150
-        estimated_posts = len(all_terms) * date_range_days * posts_per_term_per_day
+        # Heuristic: 20 posts per actor per day (Facebook pages post less frequently).
+        posts_per_actor_per_day = 20
+        estimated_posts = len(all_actors) * date_range_days * posts_per_actor_per_day
 
-        # Apply max_results cap
+        # Apply max_results cap.
         tier_config = self.get_tier_config(tier)
-        effective_max = max_results if max_results is not None else tier_config.max_results_per_run
+        effective_max = max_results if max_results is not None else (
+            tier_config.max_results_per_run if tier_config else 10_000
+        )
         estimated_posts = min(estimated_posts, effective_max)
 
-        # 1 credit = 1 post collected
+        # 1 credit = 1 record collected (Web Scraper API: $0.0015/record).
         return estimated_posts
 
     # ------------------------------------------------------------------
@@ -711,14 +686,16 @@ class FacebookCollector(ArenaCollector):
         self,
         client: httpx.AsyncClient,
         api_token: str,
-        payload: dict[str, Any],
+        trigger_url: str,
+        payload: list[dict[str, Any]],
     ) -> str:
-        """POST a dataset trigger request to Bright Data and return the snapshot_id.
+        """POST a Web Scraper API trigger request and return the snapshot_id.
 
         Args:
             client: Shared HTTP client.
             api_token: Bright Data API token.
-            payload: Request body with filter and limit parameters.
+            trigger_url: Full trigger URL (including dataset_id query parameter).
+            payload: Request body — list of URL input dicts.
 
         Returns:
             Snapshot ID string for polling.
@@ -730,7 +707,7 @@ class FacebookCollector(ArenaCollector):
         """
         try:
             response = await client.post(
-                BRIGHTDATA_TRIGGER_URL,
+                trigger_url,
                 json=payload,
                 headers={
                     "Authorization": f"Bearer {api_token}",
@@ -946,9 +923,10 @@ def _extract_int(raw: dict[str, Any], key: str) -> int | None:
 
 
 def _extract_fb_media_urls(raw: dict[str, Any]) -> list[str]:
-    """Extract all media URLs from a Bright Data Facebook post object.
+    """Extract all media URLs from a Bright Data Web Scraper API Facebook record.
 
-    Checks common field names for image and video URLs.
+    Handles the Web Scraper API field names (``attachments``, ``post_image``)
+    as well as legacy Dataset field names (``images``, ``image_url``).
 
     Args:
         raw: Raw post dict from Bright Data.
@@ -958,13 +936,28 @@ def _extract_fb_media_urls(raw: dict[str, Any]) -> list[str]:
     """
     urls: list[str] = []
 
-    # Single image or video URL fields
+    # Web Scraper API primary image field.
+    post_image = raw.get("post_image")
+    if isinstance(post_image, str) and post_image:
+        urls.append(post_image)
+
+    # Web Scraper API attachments list (images or video thumbnails).
+    attachments = raw.get("attachments") or []
+    if isinstance(attachments, list):
+        for att in attachments:
+            if isinstance(att, dict):
+                src = att.get("url") or att.get("src") or att.get("link")
+                if isinstance(src, str) and src:
+                    urls.append(src)
+            elif isinstance(att, str) and att:
+                urls.append(att)
+
+    # Legacy field names (Dataset product, kept for backward compatibility).
     for field in ("image_url", "video_url", "full_picture", "picture"):
         value = raw.get(field)
         if isinstance(value, str) and value:
             urls.append(value)
 
-    # List of image objects
     images = raw.get("images") or []
     if isinstance(images, list):
         for img in images:
@@ -976,21 +969,3 @@ def _extract_fb_media_urls(raw: dict[str, Any]) -> list[str]:
                 urls.append(img)
 
     return list(dict.fromkeys(urls))  # deduplicate while preserving order
-
-
-def _to_date_str(value: datetime | str | None) -> str | None:
-    """Convert a datetime or string to a ``YYYY-MM-DD`` date string.
-
-    Args:
-        value: Datetime object, ISO 8601 string, or ``None``.
-
-    Returns:
-        Date string in ``YYYY-MM-DD`` format, or ``None``.
-    """
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%d")
-    if isinstance(value, str):
-        return value[:10] if len(value) >= 10 else value
-    return None

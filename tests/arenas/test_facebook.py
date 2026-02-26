@@ -1,11 +1,16 @@
-"""Tests for the Facebook arena collector.
+"""Tests for the Facebook arena collector — Web Scraper API migration.
 
 Covers:
-- normalize() unit tests: Bright Data field mapping, comment detection, reaction
-  aggregation, media URL extraction
+- collect_by_terms() now raises ArenaCollectionError (actor-only arena)
+- normalize() unit tests: Web Scraper API field mapping (content, user_url,
+  page_name, date_posted, num_likes, num_comments, video_view_count,
+  post_image, attachments)
+- normalize() fallback chains: legacy Dataset field names handled correctly
 - normalize() MCL path: field mapping from Meta Content Library dict
-- collect_by_terms() / collect_by_actors(): full Bright Data async dataset
-  cycle (trigger -> poll -> download) with respx mocks
+- collect_by_actors(): full Bright Data Web Scraper API async cycle
+  (trigger -> poll -> download) with respx mocks and URL-based payloads
+- Dataset ID routing: page/profile URL -> Posts scraper, group URL -> Groups scraper
+- Date format conversion: to_brightdata_date() outputs MM-DD-YYYY
 - HTTP 429 -> ArenaRateLimitError, HTTP 401/403 -> ArenaAuthError
 - PREMIUM tier raises NotImplementedError
 - FREE tier raises ValueError (unsupported)
@@ -20,9 +25,10 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -37,11 +43,17 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
 from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.facebook.collector import FacebookCollector  # noqa: E402
+from issue_observatory.arenas.facebook.collector import (  # noqa: E402
+    FacebookCollector,
+    _detect_facebook_dataset_id,
+)
 from issue_observatory.arenas.facebook.config import (  # noqa: E402
-    BRIGHTDATA_TRIGGER_URL,
     BRIGHTDATA_PROGRESS_URL,
     BRIGHTDATA_SNAPSHOT_URL,
+    FACEBOOK_DATASET_ID_GROUPS,
+    FACEBOOK_DATASET_ID_POSTS,
+    build_trigger_url,
+    to_brightdata_date,
 )
 from issue_observatory.core.exceptions import (  # noqa: E402
     ArenaAuthError,
@@ -59,22 +71,44 @@ _SNAPSHOT_ID = "snap_fb_test_001"
 _PROGRESS_URL = BRIGHTDATA_PROGRESS_URL.format(snapshot_id=_SNAPSHOT_ID)
 _SNAPSHOT_URL = BRIGHTDATA_SNAPSHOT_URL.format(snapshot_id=_SNAPSHOT_ID)
 
+# Default trigger URL for the Posts scraper (page/profile URLs).
+_TRIGGER_URL_POSTS = build_trigger_url(FACEBOOK_DATASET_ID_POSTS)
+# Trigger URL for the Groups scraper (group URLs).
+_TRIGGER_URL_GROUPS = build_trigger_url(FACEBOOK_DATASET_ID_GROUPS)
 
-def _load_snapshot_fixture() -> list[dict[str, Any]]:
-    """Load the recorded Bright Data Facebook snapshot fixture."""
+
+def _load_web_scraper_fixture() -> list[dict[str, Any]]:
+    """Load the Web Scraper API Facebook snapshot fixture (new format)."""
+    return json.loads(
+        (FIXTURES_DIR / "web_scraper_snapshot_response.json").read_text(encoding="utf-8")
+    )
+
+
+def _load_legacy_fixture() -> list[dict[str, Any]]:
+    """Load the legacy Bright Data Dataset Facebook snapshot fixture (old format)."""
     return json.loads(
         (FIXTURES_DIR / "brightdata_snapshot_response.json").read_text(encoding="utf-8")
     )
 
 
 def _first_post() -> dict[str, Any]:
-    """Return the first post dict from the fixture (a regular post with reactions)."""
-    return _load_snapshot_fixture()[0]
+    """Return the first post dict from the Web Scraper API fixture."""
+    return _load_web_scraper_fixture()[0]
 
 
 def _comment_post() -> dict[str, Any]:
-    """Return the comment post dict from the fixture (has comment_id set)."""
-    return _load_snapshot_fixture()[4]
+    """Return the comment dict from the Web Scraper API fixture (has comment_id)."""
+    return _load_web_scraper_fixture()[4]
+
+
+def _group_post() -> dict[str, Any]:
+    """Return the group post dict from the Web Scraper API fixture."""
+    return _load_web_scraper_fixture()[5]
+
+
+def _video_post() -> dict[str, Any]:
+    """Return the video post dict from the Web Scraper API fixture (has video_view_count)."""
+    return _load_web_scraper_fixture()[6]
 
 
 # ---------------------------------------------------------------------------
@@ -119,10 +153,11 @@ def _make_collector_with_client(
 
 def _mock_brightdata_full_cycle(
     snapshot_data: list[dict[str, Any]],
+    trigger_url: str = _TRIGGER_URL_POSTS,
 ) -> None:
     """Register respx routes for trigger -> poll-ready -> download cycle."""
     # Trigger: POST returns snapshot_id
-    respx.post(BRIGHTDATA_TRIGGER_URL).mock(
+    respx.post(trigger_url).mock(
         return_value=httpx.Response(200, json={"snapshot_id": _SNAPSHOT_ID})
     )
     # Progress: GET returns status=ready immediately
@@ -136,11 +171,97 @@ def _mock_brightdata_full_cycle(
 
 
 # ---------------------------------------------------------------------------
-# normalize() unit tests — Bright Data path
+# to_brightdata_date() unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestToBrightdataDate:
+    """Verify that to_brightdata_date() outputs the MM-DD-YYYY format."""
+
+    def test_datetime_object_formatted_as_mm_dd_yyyy(self) -> None:
+        """A datetime(2026, 1, 15) should produce '01-15-2026'."""
+        dt = datetime(2026, 1, 15, tzinfo=timezone.utc)
+        assert to_brightdata_date(dt) == "01-15-2026"
+
+    def test_iso_string_converted_to_mm_dd_yyyy(self) -> None:
+        """An ISO 8601 string '2026-02-26' should produce '02-26-2026'."""
+        assert to_brightdata_date("2026-02-26") == "02-26-2026"
+
+    def test_iso_string_with_time_converted_to_mm_dd_yyyy(self) -> None:
+        """An ISO 8601 string with time '2026-12-01T10:00:00Z' -> '12-01-2026'."""
+        assert to_brightdata_date("2026-12-01T10:00:00Z") == "12-01-2026"
+
+    def test_none_returns_none(self) -> None:
+        """None input should return None."""
+        assert to_brightdata_date(None) is None
+
+    def test_invalid_string_returns_none(self) -> None:
+        """An unparseable string should return None."""
+        assert to_brightdata_date("not-a-date") is None
+
+    def test_short_string_returns_none(self) -> None:
+        """A string shorter than 10 characters should return None."""
+        assert to_brightdata_date("2026") is None
+
+
+# ---------------------------------------------------------------------------
+# Dataset ID routing tests
+# ---------------------------------------------------------------------------
+
+
+class TestDetectFacebookDatasetId:
+    """Verify that _detect_facebook_dataset_id() routes correctly."""
+
+    def test_page_url_routes_to_posts_scraper(self) -> None:
+        """A Facebook page URL should route to the Posts dataset ID."""
+        url = "https://www.facebook.com/drnyheder"
+        assert _detect_facebook_dataset_id(url) == FACEBOOK_DATASET_ID_POSTS
+
+    def test_profile_url_routes_to_posts_scraper(self) -> None:
+        """A Facebook profile URL should route to the Posts dataset ID."""
+        url = "https://www.facebook.com/profile.php?id=100012345678"
+        assert _detect_facebook_dataset_id(url) == FACEBOOK_DATASET_ID_POSTS
+
+    def test_group_url_routes_to_groups_scraper(self) -> None:
+        """A Facebook group URL (containing /groups/) should route to Groups dataset ID."""
+        url = "https://www.facebook.com/groups/politikdanmark"
+        assert _detect_facebook_dataset_id(url) == FACEBOOK_DATASET_ID_GROUPS
+
+    def test_group_url_with_post_routes_to_groups_scraper(self) -> None:
+        """A URL with /groups/ even if it has a post path should route to Groups."""
+        url = "https://www.facebook.com/groups/dkpolitik/posts/123456"
+        assert _detect_facebook_dataset_id(url) == FACEBOOK_DATASET_ID_GROUPS
+
+
+class TestBuildTriggerUrl:
+    """Verify that build_trigger_url() produces correct trigger URLs."""
+
+    def test_posts_trigger_url_contains_posts_dataset_id(self) -> None:
+        """Trigger URL for Posts should contain the Posts dataset ID."""
+        url = build_trigger_url(FACEBOOK_DATASET_ID_POSTS)
+        assert FACEBOOK_DATASET_ID_POSTS in url
+        assert "trigger?dataset_id=" in url
+
+    def test_groups_trigger_url_contains_groups_dataset_id(self) -> None:
+        """Trigger URL for Groups should contain the Groups dataset ID."""
+        url = build_trigger_url(FACEBOOK_DATASET_ID_GROUPS)
+        assert FACEBOOK_DATASET_ID_GROUPS in url
+
+    def test_trigger_url_does_not_contain_discover_new(self) -> None:
+        """Web Scraper API trigger URL must not contain type=discover_new."""
+        url = build_trigger_url(FACEBOOK_DATASET_ID_POSTS)
+        assert "discover_new" not in url
+        assert "notify=none" not in url
+
+
+# ---------------------------------------------------------------------------
+# normalize() unit tests -- Web Scraper API path
 # ---------------------------------------------------------------------------
 
 
 class TestNormalizeBrightData:
+    """Normalize Web Scraper API Facebook records to the universal schema."""
+
     def _collector(self) -> FacebookCollector:
         return FacebookCollector()
 
@@ -174,13 +295,13 @@ class TestNormalizeBrightData:
 
         assert result["platform_id"] == post["post_id"]
 
-    def test_normalize_text_content_from_message_field(self) -> None:
-        """normalize() maps 'message' to text_content."""
+    def test_normalize_text_content_from_content_field(self) -> None:
+        """normalize() maps 'content' (Web Scraper API primary field) to text_content."""
         collector = self._collector()
         post = _first_post()
         result = collector.normalize(post, source="brightdata")
 
-        assert result["text_content"] == post["message"]
+        assert result["text_content"] == post["content"]
 
     def test_normalize_url_from_url_field(self) -> None:
         """normalize() maps 'url' to the url field."""
@@ -197,6 +318,14 @@ class TestNormalizeBrightData:
 
         assert result["author_display_name"] == "DR Nyheder"
 
+    def test_normalize_author_platform_id_from_user_url(self) -> None:
+        """normalize() maps 'user_url' to author_platform_id."""
+        collector = self._collector()
+        post = _first_post()
+        result = collector.normalize(post, source="brightdata")
+
+        assert result["author_platform_id"] == post["user_url"]
+
     def test_normalize_pseudonymized_author_id_set_when_author_present(self) -> None:
         """normalize() computes pseudonymized_author_id when page_name is present."""
         collector = self._collector()
@@ -205,36 +334,36 @@ class TestNormalizeBrightData:
         assert result["pseudonymized_author_id"] is not None
         assert len(result["pseudonymized_author_id"]) == 64
 
-    def test_normalize_likes_count_from_reactions_total(self) -> None:
-        """normalize() sums reaction.total into likes_count."""
+    def test_normalize_likes_count_from_num_likes(self) -> None:
+        """normalize() maps 'num_likes' to likes_count."""
         collector = self._collector()
         result = collector.normalize(_first_post(), source="brightdata")
 
         assert result["likes_count"] == 628
 
-    def test_normalize_shares_count_from_shares_field(self) -> None:
-        """normalize() maps 'shares' to shares_count."""
-        collector = self._collector()
-        result = collector.normalize(_first_post(), source="brightdata")
-
-        assert result["shares_count"] == 89
-
-    def test_normalize_comments_count_from_comments_field(self) -> None:
-        """normalize() maps 'comments' to comments_count."""
+    def test_normalize_comments_count_from_num_comments(self) -> None:
+        """normalize() maps 'num_comments' to comments_count."""
         collector = self._collector()
         result = collector.normalize(_first_post(), source="brightdata")
 
         assert result["comments_count"] == 134
 
-    def test_normalize_views_count_is_none_for_brightdata(self) -> None:
-        """normalize() sets views_count=None (Bright Data does not expose views)."""
+    def test_normalize_views_count_from_video_view_count(self) -> None:
+        """normalize() maps 'video_view_count' to views_count for video posts."""
+        collector = self._collector()
+        result = collector.normalize(_video_post(), source="brightdata")
+
+        assert result["views_count"] == 32000
+
+    def test_normalize_views_count_none_when_no_video(self) -> None:
+        """normalize() sets views_count=None when video_view_count is null."""
         collector = self._collector()
         result = collector.normalize(_first_post(), source="brightdata")
 
         assert result["views_count"] is None
 
-    def test_normalize_media_urls_from_image_url(self) -> None:
-        """normalize() extracts image_url into media_urls list."""
+    def test_normalize_media_urls_from_post_image(self) -> None:
+        """normalize() extracts post_image into media_urls list."""
         collector = self._collector()
         result = collector.normalize(_first_post(), source="brightdata")
 
@@ -242,16 +371,25 @@ class TestNormalizeBrightData:
         assert len(result["media_urls"]) >= 1
         assert "facebook.com" in result["media_urls"][0]
 
-    def test_normalize_media_urls_empty_when_no_image(self) -> None:
-        """normalize() returns empty media_urls when no image fields are set."""
+    def test_normalize_media_urls_from_attachments(self) -> None:
+        """normalize() extracts attachments list items into media_urls."""
         collector = self._collector()
-        post = _load_snapshot_fixture()[3]  # fourth post has no image
+        post = _load_web_scraper_fixture()[1]  # second post has attachments
+        result = collector.normalize(post, source="brightdata")
+
+        assert isinstance(result["media_urls"], list)
+        assert any("velfaerd_link_preview" in url for url in result["media_urls"])
+
+    def test_normalize_media_urls_empty_when_no_media(self) -> None:
+        """normalize() returns empty media_urls when post_image is null and no attachments."""
+        collector = self._collector()
+        post = _load_web_scraper_fixture()[3]  # fourth post has no media
         result = collector.normalize(post, source="brightdata")
 
         assert result["media_urls"] == []
 
-    def test_normalize_published_at_from_created_time(self) -> None:
-        """normalize() maps 'created_time' to published_at."""
+    def test_normalize_published_at_from_date_posted(self) -> None:
+        """normalize() maps 'date_posted' to published_at."""
         collector = self._collector()
         result = collector.normalize(_first_post(), source="brightdata")
 
@@ -276,30 +414,30 @@ class TestNormalizeBrightData:
         assert len(result["content_hash"]) == 64
         assert all(c in "0123456789abcdef" for c in result["content_hash"])
 
-    def test_normalize_preserves_danish_text_in_message(self) -> None:
-        """ae, o, a in Facebook message survive normalize() without corruption."""
+    def test_normalize_preserves_danish_text_in_content(self) -> None:
+        """ae, o, a in Facebook content survive normalize() without corruption."""
         collector = self._collector()
         result = collector.normalize(_first_post(), source="brightdata")
 
-        assert "Grøn" in result["text_content"]
-        assert "Ålborg" in result["text_content"]
+        assert "Gr\u00f8n" in result["text_content"]
+        assert "\u00c5lborg" in result["text_content"]
 
-    @pytest.mark.parametrize("char", ["æ", "ø", "å", "Æ", "Ø", "Å"])
-    def test_normalize_handles_each_danish_character_in_message(self, char: str) -> None:
-        """Each Danish character in Facebook message survives normalize() without error."""
+    @pytest.mark.parametrize("char", ["\u00e6", "\u00f8", "\u00e5", "\u00c6", "\u00d8", "\u00c5"])
+    def test_normalize_handles_each_danish_character_in_content(self, char: str) -> None:
+        """Each Danish character in Facebook content survives normalize() without error."""
         collector = self._collector()
-        post = {**_first_post(), "message": f"Indhold med {char} tegn i opslaget."}
+        post = {**_first_post(), "content": f"Indhold med {char} tegn i opslaget."}
         result = collector.normalize(post, source="brightdata")
 
         assert char in result["text_content"]
 
-    def test_normalize_null_shares_and_comments_produce_none(self) -> None:
-        """normalize() maps null shares/comments to None engagement counts."""
+    def test_normalize_null_num_likes_and_num_comments_produce_none(self) -> None:
+        """normalize() maps null num_likes/num_comments to None engagement counts."""
         collector = self._collector()
-        post = _load_snapshot_fixture()[3]  # fourth post has null shares/comments
+        post = _load_web_scraper_fixture()[3]  # fourth post has null engagement
         result = collector.normalize(post, source="brightdata")
 
-        assert result["shares_count"] is None
+        assert result["likes_count"] is None
         assert result["comments_count"] is None
 
     def test_normalize_url_constructed_from_post_id_when_missing(self) -> None:
@@ -313,7 +451,62 @@ class TestNormalizeBrightData:
 
 
 # ---------------------------------------------------------------------------
-# normalize() unit tests — MCL path
+# normalize() fallback chain tests -- legacy Dataset fields
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeLegacyFallback:
+    """Verify that normalize() handles legacy Dataset field names correctly."""
+
+    def _collector(self) -> FacebookCollector:
+        return FacebookCollector()
+
+    def test_normalize_falls_back_to_message_when_content_absent(self) -> None:
+        """normalize() maps 'message' to text_content when 'content' is absent."""
+        collector = self._collector()
+        legacy_post = _load_legacy_fixture()[0]
+        result = collector.normalize(legacy_post, source="brightdata")
+
+        assert result["text_content"] == legacy_post["message"]
+        assert "Gr\u00f8n" in result["text_content"]
+
+    def test_normalize_falls_back_to_reactions_total_when_num_likes_absent(self) -> None:
+        """normalize() sums reactions.total when 'num_likes' is not present."""
+        collector = self._collector()
+        legacy_post = _load_legacy_fixture()[0]
+        result = collector.normalize(legacy_post, source="brightdata")
+
+        assert result["likes_count"] == 628
+
+    def test_normalize_falls_back_to_created_time_when_date_posted_absent(self) -> None:
+        """normalize() maps 'created_time' when 'date_posted' is not present."""
+        collector = self._collector()
+        legacy_post = _load_legacy_fixture()[0]
+        result = collector.normalize(legacy_post, source="brightdata")
+
+        assert result["published_at"] is not None
+        assert "2026-02-15" in result["published_at"]
+
+    def test_normalize_falls_back_to_page_id_when_user_url_absent(self) -> None:
+        """normalize() maps 'page_id' to author_platform_id when 'user_url' absent."""
+        collector = self._collector()
+        legacy_post = _load_legacy_fixture()[0]
+        result = collector.normalize(legacy_post, source="brightdata")
+
+        assert result["author_platform_id"] == "page_drdk"
+
+    def test_normalize_falls_back_to_image_url_for_media(self) -> None:
+        """normalize() extracts 'image_url' into media_urls when post_image absent."""
+        collector = self._collector()
+        legacy_post = _load_legacy_fixture()[0]
+        result = collector.normalize(legacy_post, source="brightdata")
+
+        assert isinstance(result["media_urls"], list)
+        assert any("facebook.com" in url for url in result["media_urls"])
+
+
+# ---------------------------------------------------------------------------
+# normalize() unit tests -- MCL path
 # ---------------------------------------------------------------------------
 
 
@@ -326,7 +519,7 @@ class TestNormalizeMCL:
             "id": "mcl_post_001",
             "page_id": "mcl_page_001",
             "page_name": "DR Nyheder",
-            "message": "Grøn omstilling diskuteres i Folketing.",
+            "message": "Gr\u00f8n omstilling diskuteres i Folketing.",
             "url": "https://www.facebook.com/watch?v=mcl_post_001",
             "creation_time": "2026-02-15T10:00:00+0000",
             "language": "da",
@@ -394,158 +587,52 @@ class TestTierValidation:
 
 
 # ---------------------------------------------------------------------------
-# collect_by_terms() integration tests
+# collect_by_terms() -- must raise ArenaCollectionError (actor-only arena)
 # ---------------------------------------------------------------------------
 
 
 class TestCollectByTerms:
-    @pytest.mark.asyncio
-    async def test_collect_by_terms_returns_non_empty_list(self) -> None:
-        """collect_by_terms() returns non-empty list when Bright Data delivers records."""
-        snapshot = _load_snapshot_fixture()
-        pool = _make_mock_pool()
+    """collect_by_terms() must raise ArenaCollectionError for all tiers.
 
-        with respx.mock:
-            _mock_brightdata_full_cycle(snapshot)
-            async with httpx.AsyncClient() as client:
-                collector = _make_collector_with_client(client, pool)
-                records = await collector.collect_by_terms(
-                    terms=["grøn omstilling"], tier=Tier.MEDIUM, max_results=10
-                )
-
-        assert isinstance(records, list)
-        assert len(records) > 0
-        assert records[0]["platform"] == "facebook"
-        assert records[0]["arena"] == "social_media"
+    Facebook is an actor-only arena. The Web Scraper API does not support
+    keyword-based discovery.
+    """
 
     @pytest.mark.asyncio
-    async def test_collect_by_terms_empty_snapshot_returns_empty_list(self) -> None:
-        """collect_by_terms() returns [] when snapshot download returns empty list."""
-        pool = _make_mock_pool()
-
-        with respx.mock:
-            _mock_brightdata_full_cycle([])
-            async with httpx.AsyncClient() as client:
-                collector = _make_collector_with_client(client, pool)
-                records = await collector.collect_by_terms(
-                    terms=["nonexistent xyz"], tier=Tier.MEDIUM, max_results=10
-                )
-
-        assert records == []
-
-    @pytest.mark.asyncio
-    async def test_collect_by_terms_429_on_trigger_raises_rate_limit_error(self) -> None:
-        """collect_by_terms() raises ArenaRateLimitError when trigger returns 429."""
-        pool = _make_mock_pool()
-
-        with respx.mock:
-            respx.post(BRIGHTDATA_TRIGGER_URL).mock(
-                return_value=httpx.Response(429, headers={"Retry-After": "60"})
+    async def test_collect_by_terms_raises_arena_collection_error(self) -> None:
+        """collect_by_terms() raises ArenaCollectionError regardless of tier."""
+        collector = FacebookCollector()
+        with pytest.raises(ArenaCollectionError):
+            await collector.collect_by_terms(
+                terms=["gr\u00f8n omstilling"], tier=Tier.MEDIUM, max_results=10
             )
-            async with httpx.AsyncClient() as client:
-                collector = _make_collector_with_client(client, pool)
-                with pytest.raises(ArenaRateLimitError):
-                    await collector.collect_by_terms(
-                        terms=["test"], tier=Tier.MEDIUM, max_results=5
-                    )
 
     @pytest.mark.asyncio
-    async def test_collect_by_terms_401_on_trigger_raises_auth_error(self) -> None:
-        """collect_by_terms() raises ArenaAuthError when trigger returns 401."""
-        pool = _make_mock_pool()
-
-        with respx.mock:
-            respx.post(BRIGHTDATA_TRIGGER_URL).mock(
-                return_value=httpx.Response(401)
+    async def test_collect_by_terms_error_message_mentions_actor_directory(self) -> None:
+        """The error message guides users to the Actor Directory."""
+        collector = FacebookCollector()
+        with pytest.raises(ArenaCollectionError, match="Actor Directory"):
+            await collector.collect_by_terms(
+                terms=["test"], tier=Tier.MEDIUM, max_results=5
             )
-            async with httpx.AsyncClient() as client:
-                collector = _make_collector_with_client(client, pool)
-                with pytest.raises(ArenaAuthError):
-                    await collector.collect_by_terms(
-                        terms=["test"], tier=Tier.MEDIUM, max_results=5
-                    )
 
     @pytest.mark.asyncio
-    async def test_collect_by_terms_403_on_trigger_raises_auth_error(self) -> None:
-        """collect_by_terms() raises ArenaAuthError when trigger returns 403."""
-        pool = _make_mock_pool()
-
-        with respx.mock:
-            respx.post(BRIGHTDATA_TRIGGER_URL).mock(
-                return_value=httpx.Response(403)
+    async def test_collect_by_terms_error_message_mentions_keyword_not_supported(self) -> None:
+        """The error message explains keyword search is not supported."""
+        collector = FacebookCollector()
+        with pytest.raises(ArenaCollectionError, match="does not support keyword"):
+            await collector.collect_by_terms(
+                terms=["klima"], tier=Tier.MEDIUM, max_results=5
             )
-            async with httpx.AsyncClient() as client:
-                collector = _make_collector_with_client(client, pool)
-                with pytest.raises(ArenaAuthError):
-                    await collector.collect_by_terms(
-                        terms=["test"], tier=Tier.MEDIUM, max_results=5
-                    )
 
     @pytest.mark.asyncio
-    async def test_collect_by_terms_premium_tier_raises_not_implemented(self) -> None:
-        """collect_by_terms() raises NotImplementedError for PREMIUM tier (MCL pending)."""
-        pool = _make_mock_pool()
-        collector = FacebookCollector(credential_pool=pool)
-        with pytest.raises(NotImplementedError):
+    async def test_collect_by_terms_raises_for_premium_tier_too(self) -> None:
+        """collect_by_terms() raises ArenaCollectionError even for PREMIUM tier."""
+        collector = FacebookCollector()
+        with pytest.raises(ArenaCollectionError):
             await collector.collect_by_terms(
                 terms=["test"], tier=Tier.PREMIUM, max_results=5
             )
-
-    @pytest.mark.asyncio
-    async def test_collect_by_terms_trigger_no_snapshot_id_raises_collection_error(
-        self,
-    ) -> None:
-        """collect_by_terms() raises ArenaCollectionError when trigger returns no snapshot_id."""
-        pool = _make_mock_pool()
-
-        with respx.mock:
-            respx.post(BRIGHTDATA_TRIGGER_URL).mock(
-                return_value=httpx.Response(200, json={"status": "queued"})  # no snapshot_id
-            )
-            async with httpx.AsyncClient() as client:
-                collector = _make_collector_with_client(client, pool)
-                with pytest.raises(ArenaCollectionError):
-                    await collector.collect_by_terms(
-                        terms=["test"], tier=Tier.MEDIUM, max_results=5
-                    )
-
-    @pytest.mark.asyncio
-    async def test_collect_by_terms_preserves_danish_text(self) -> None:
-        """Danish characters in Facebook posts survive the full collect -> normalize pipeline."""
-        snapshot = _load_snapshot_fixture()
-        pool = _make_mock_pool()
-
-        with respx.mock:
-            _mock_brightdata_full_cycle(snapshot)
-            async with httpx.AsyncClient() as client:
-                collector = _make_collector_with_client(client, pool)
-                records = await collector.collect_by_terms(
-                    terms=["grøn"], tier=Tier.MEDIUM, max_results=10
-                )
-
-        texts = [r.get("text_content", "") or "" for r in records]
-        assert any("ø" in t or "å" in t or "æ" in t for t in texts)
-
-    @pytest.mark.asyncio
-    async def test_collect_by_terms_snapshot_failed_status_raises_collection_error(
-        self,
-    ) -> None:
-        """collect_by_terms() raises ArenaCollectionError when snapshot status is 'failed'."""
-        pool = _make_mock_pool()
-
-        with respx.mock:
-            respx.post(BRIGHTDATA_TRIGGER_URL).mock(
-                return_value=httpx.Response(200, json={"snapshot_id": _SNAPSHOT_ID})
-            )
-            respx.get(_PROGRESS_URL).mock(
-                return_value=httpx.Response(200, json={"status": "failed"})
-            )
-            async with httpx.AsyncClient() as client:
-                collector = _make_collector_with_client(client, pool)
-                with pytest.raises(ArenaCollectionError):
-                    await collector.collect_by_terms(
-                        terms=["test"], tier=Tier.MEDIUM, max_results=5
-                    )
 
 
 # ---------------------------------------------------------------------------
@@ -557,11 +644,11 @@ class TestCollectByActors:
     @pytest.mark.asyncio
     async def test_collect_by_actors_page_url_returns_records(self) -> None:
         """collect_by_actors() with a Facebook page URL returns normalized records."""
-        snapshot = _load_snapshot_fixture()
+        snapshot = _load_web_scraper_fixture()
         pool = _make_mock_pool()
 
         with respx.mock:
-            _mock_brightdata_full_cycle(snapshot)
+            _mock_brightdata_full_cycle(snapshot, trigger_url=_TRIGGER_URL_POSTS)
             async with httpx.AsyncClient() as client:
                 collector = _make_collector_with_client(client, pool)
                 records = await collector.collect_by_actors(
@@ -575,22 +662,65 @@ class TestCollectByActors:
         assert all(r["platform"] == "facebook" for r in records)
 
     @pytest.mark.asyncio
-    async def test_collect_by_actors_numeric_id_returns_records(self) -> None:
-        """collect_by_actors() with a numeric page_id returns normalized records."""
-        snapshot = _load_snapshot_fixture()
+    async def test_collect_by_actors_group_url_uses_groups_dataset_id(self) -> None:
+        """collect_by_actors() with a group URL routes to the Groups dataset ID."""
+        snapshot = _load_web_scraper_fixture()
         pool = _make_mock_pool()
 
         with respx.mock:
-            _mock_brightdata_full_cycle(snapshot)
+            # Mock both trigger URLs to handle the routing
+            _mock_brightdata_full_cycle(snapshot, trigger_url=_TRIGGER_URL_GROUPS)
             async with httpx.AsyncClient() as client:
                 collector = _make_collector_with_client(client, pool)
                 records = await collector.collect_by_actors(
-                    actor_ids=["123456789"],
+                    actor_ids=["https://www.facebook.com/groups/dkpolitik"],
                     tier=Tier.MEDIUM,
                     max_results=10,
                 )
 
         assert isinstance(records, list)
+        assert len(records) > 0
+
+    @pytest.mark.asyncio
+    async def test_collect_by_actors_mixed_urls_group_by_dataset_id(self) -> None:
+        """collect_by_actors() groups page and group URLs into separate dataset requests."""
+        snapshot = _load_web_scraper_fixture()[:2]
+        pool = _make_mock_pool()
+
+        with respx.mock:
+            # Both trigger endpoints need to be mocked
+            respx.post(_TRIGGER_URL_POSTS).mock(
+                return_value=httpx.Response(200, json={"snapshot_id": "snap_posts"})
+            )
+            respx.post(_TRIGGER_URL_GROUPS).mock(
+                return_value=httpx.Response(200, json={"snapshot_id": "snap_groups"})
+            )
+            # Progress and snapshot for both
+            for snap_id in ("snap_posts", "snap_groups"):
+                respx.get(
+                    BRIGHTDATA_PROGRESS_URL.format(snapshot_id=snap_id)
+                ).mock(
+                    return_value=httpx.Response(200, json={"status": "ready"})
+                )
+                respx.get(
+                    BRIGHTDATA_SNAPSHOT_URL.format(snapshot_id=snap_id)
+                ).mock(
+                    return_value=httpx.Response(200, json=snapshot)
+                )
+
+            async with httpx.AsyncClient() as client:
+                collector = _make_collector_with_client(client, pool)
+                records = await collector.collect_by_actors(
+                    actor_ids=[
+                        "https://www.facebook.com/drnyheder",
+                        "https://www.facebook.com/groups/dkpolitik",
+                    ],
+                    tier=Tier.MEDIUM,
+                    max_results=20,
+                )
+
+        assert isinstance(records, list)
+        # Should have results from both page and group requests
         assert len(records) > 0
 
     @pytest.mark.asyncio
@@ -611,7 +741,7 @@ class TestCollectByActors:
         pool = _make_mock_pool()
 
         with respx.mock:
-            respx.post(BRIGHTDATA_TRIGGER_URL).mock(
+            respx.post(_TRIGGER_URL_POSTS).mock(
                 return_value=httpx.Response(429, headers={"Retry-After": "30"})
             )
             async with httpx.AsyncClient() as client:
@@ -622,6 +752,117 @@ class TestCollectByActors:
                         tier=Tier.MEDIUM,
                         max_results=5,
                     )
+
+    @pytest.mark.asyncio
+    async def test_collect_by_actors_401_raises_auth_error(self) -> None:
+        """collect_by_actors() raises ArenaAuthError on 401 from trigger."""
+        pool = _make_mock_pool()
+
+        with respx.mock:
+            respx.post(_TRIGGER_URL_POSTS).mock(
+                return_value=httpx.Response(401)
+            )
+            async with httpx.AsyncClient() as client:
+                collector = _make_collector_with_client(client, pool)
+                with pytest.raises(ArenaAuthError):
+                    await collector.collect_by_actors(
+                        actor_ids=["https://www.facebook.com/drnyheder"],
+                        tier=Tier.MEDIUM,
+                        max_results=5,
+                    )
+
+    @pytest.mark.asyncio
+    async def test_collect_by_actors_403_raises_auth_error(self) -> None:
+        """collect_by_actors() raises ArenaAuthError on 403 from trigger."""
+        pool = _make_mock_pool()
+
+        with respx.mock:
+            respx.post(_TRIGGER_URL_POSTS).mock(
+                return_value=httpx.Response(403)
+            )
+            async with httpx.AsyncClient() as client:
+                collector = _make_collector_with_client(client, pool)
+                with pytest.raises(ArenaAuthError):
+                    await collector.collect_by_actors(
+                        actor_ids=["https://www.facebook.com/drnyheder"],
+                        tier=Tier.MEDIUM,
+                        max_results=5,
+                    )
+
+    @pytest.mark.asyncio
+    async def test_collect_by_actors_no_snapshot_id_raises_collection_error(self) -> None:
+        """collect_by_actors() raises ArenaCollectionError when trigger returns no snapshot_id."""
+        pool = _make_mock_pool()
+
+        with respx.mock:
+            respx.post(_TRIGGER_URL_POSTS).mock(
+                return_value=httpx.Response(200, json={"status": "queued"})
+            )
+            async with httpx.AsyncClient() as client:
+                collector = _make_collector_with_client(client, pool)
+                with pytest.raises(ArenaCollectionError):
+                    await collector.collect_by_actors(
+                        actor_ids=["https://www.facebook.com/drnyheder"],
+                        tier=Tier.MEDIUM,
+                        max_results=5,
+                    )
+
+    @pytest.mark.asyncio
+    async def test_collect_by_actors_snapshot_failed_raises_collection_error(self) -> None:
+        """collect_by_actors() raises ArenaCollectionError when snapshot status is 'failed'."""
+        pool = _make_mock_pool()
+
+        with respx.mock:
+            respx.post(_TRIGGER_URL_POSTS).mock(
+                return_value=httpx.Response(200, json={"snapshot_id": _SNAPSHOT_ID})
+            )
+            respx.get(_PROGRESS_URL).mock(
+                return_value=httpx.Response(200, json={"status": "failed"})
+            )
+            async with httpx.AsyncClient() as client:
+                collector = _make_collector_with_client(client, pool)
+                with pytest.raises(ArenaCollectionError):
+                    await collector.collect_by_actors(
+                        actor_ids=["https://www.facebook.com/drnyheder"],
+                        tier=Tier.MEDIUM,
+                        max_results=5,
+                    )
+
+    @pytest.mark.asyncio
+    async def test_collect_by_actors_empty_snapshot_returns_empty_list(self) -> None:
+        """collect_by_actors() returns [] when snapshot download returns empty list."""
+        pool = _make_mock_pool()
+
+        with respx.mock:
+            _mock_brightdata_full_cycle([], trigger_url=_TRIGGER_URL_POSTS)
+            async with httpx.AsyncClient() as client:
+                collector = _make_collector_with_client(client, pool)
+                records = await collector.collect_by_actors(
+                    actor_ids=["https://www.facebook.com/drnyheder"],
+                    tier=Tier.MEDIUM,
+                    max_results=10,
+                )
+
+        assert records == []
+
+    @pytest.mark.asyncio
+    async def test_collect_by_actors_preserves_danish_text(self) -> None:
+        """Danish characters survive the full collect_by_actors -> normalize pipeline."""
+        snapshot = _load_web_scraper_fixture()
+        pool = _make_mock_pool()
+
+        with respx.mock:
+            _mock_brightdata_full_cycle(snapshot, trigger_url=_TRIGGER_URL_POSTS)
+            async with httpx.AsyncClient() as client:
+                collector = _make_collector_with_client(client, pool)
+                records = await collector.collect_by_actors(
+                    actor_ids=["https://www.facebook.com/drnyheder"],
+                    tier=Tier.MEDIUM,
+                    max_results=10,
+                )
+
+        texts = [r.get("text_content", "") or "" for r in records]
+        assert any("\u00f8" in t or "\u00e5" in t or "\u00e6" in t for t in texts)
 
 
 # ---------------------------------------------------------------------------

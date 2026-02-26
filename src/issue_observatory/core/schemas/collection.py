@@ -65,6 +65,7 @@ class CollectionRunRead(BaseModel):
 
     id: uuid.UUID
     query_design_id: Optional[uuid.UUID]
+    project_id: Optional[uuid.UUID] = None
     initiated_by: uuid.UUID
     mode: str
     status: str
@@ -80,6 +81,29 @@ class CollectionRunRead(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectCollectionCreate(BaseModel):
+    """Payload for launching a collection across all QDs in a project.
+
+    Creates one CollectionRun per active query design in the project.
+    All runs share the same mode, tier, date range, and arenas_config.
+
+    Attributes:
+        project_id: The project whose query designs will be collected.
+        mode: Operation mode -- ``'batch'`` or ``'live'``.
+        tier: Default collection tier for arenas without an explicit override.
+        date_from: Start of the collection window (batch mode only).
+        date_to: End of the collection window (batch mode only).
+        arenas_config: Per-arena tier overrides.
+    """
+
+    project_id: uuid.UUID
+    mode: str = Field(default="batch", pattern="^(batch|live)$")
+    tier: str = Field(default="free", pattern="^(free|medium|premium)$")
+    date_from: Optional[datetime] = None
+    date_to: Optional[datetime] = None
+    arenas_config: dict = Field(default_factory=dict)
 
 
 class CreditEstimateRequest(BaseModel):
