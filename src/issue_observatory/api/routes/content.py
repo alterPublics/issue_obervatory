@@ -150,6 +150,8 @@ def _build_content_stmt(
     run_id: Optional[uuid.UUID],
     limit: Optional[int],
     project_id: Optional[uuid.UUID] = None,
+    show_all: bool = False,
+    scrape_status: Optional[str] = None,
 ) -> Any:  # noqa: ANN401
     """Build a SELECT statement against ``content_records`` with ownership scope.
 
@@ -219,6 +221,12 @@ def _build_content_stmt(
                 [search_term]
             )
         )
+    # Default: only show term-matched content unless show_all is True
+    if not show_all:
+        stmt = stmt.where(UniversalContentRecord.term_matched.is_(True))
+    # Scrape status filter
+    if scrape_status:
+        stmt = stmt.where(UniversalContentRecord.scrape_status == scrape_status)
     if limit is not None:
         stmt = stmt.limit(limit)
 
@@ -259,6 +267,8 @@ def _record_to_dict(record: UniversalContentRecord) -> dict[str, Any]:
         "query_design_id": record.query_design_id,
         "raw_metadata": record.raw_metadata,
         "content_hash": record.content_hash,
+        "scrape_status": record.scrape_status,
+        "term_matched": record.term_matched,
     }
 
 
@@ -342,6 +352,8 @@ def _build_browse_stmt(
     cursor_id: Optional[uuid.UUID],
     limit: int,
     project_id: Optional[uuid.UUID] = None,
+    show_all: bool = False,
+    scrape_status: Optional[str] = None,
 ) -> Any:  # noqa: ANN401
     """Build a keyset-paginated SELECT for the content browser.
 
@@ -438,6 +450,13 @@ def _build_browse_stmt(
             .scalar_subquery()
         )
         stmt = stmt.where(ucr.collection_run_id.in_(project_run_ids_subq))
+
+    # Default: only show term-matched content unless show_all is True
+    if not show_all:
+        stmt = stmt.where(ucr.term_matched.is_(True))
+    # Scrape status filter
+    if scrape_status:
+        stmt = stmt.where(ucr.scrape_status == scrape_status)
 
     # Full-text search using the GIN index created in migration 001.
     if q:
@@ -557,6 +576,8 @@ async def _count_matching(
     mode: Optional[str],
     arenas_list: Optional[list[str]] = None,
     project_id: Optional[uuid.UUID] = None,
+    show_all: bool = False,
+    scrape_status: Optional[str] = None,
 ) -> int:
     """Return the total number of records matching the current browser filters.
 
@@ -598,6 +619,8 @@ async def _count_matching(
         cursor_id=None,
         limit=_BROWSE_CAP + 1,  # count up to cap+1 to detect overflow
         project_id=project_id,
+        show_all=show_all,
+        scrape_status=scrape_status,
     )
 
     # Apply multi-arena IN filter if provided
@@ -642,6 +665,7 @@ def _orm_row_to_template_dict(row: Any) -> dict[str, Any]:  # noqa: ANN401
     resolved_name = _get("_resolved_name")
     author = resolved_name or _get("author_display_name") or ""
 
+    metadata = _get("raw_metadata") or {}
     return {
         "id": str(_get("id") or ""),
         "platform": _get("platform") or "",
@@ -659,8 +683,11 @@ def _orm_row_to_template_dict(row: Any) -> dict[str, Any]:  # noqa: ANN401
         "engagement_score": _get("engagement_score") or 0,
         "search_terms_matched": terms if isinstance(terms, list) else [],
         "run_id": str(_get("collection_run_id") or ""),
-        "metadata": _get("raw_metadata") or {},
+        "metadata": metadata,
         "mode": mode,
+        "scrape_status": _get("scrape_status") or "",
+        "term_matched": _get("term_matched") if _get("term_matched") is not None else True,
+        "actual_poster_name": metadata.get("actual_poster_name", ""),
     }
 
 
@@ -684,6 +711,7 @@ def _orm_to_detail_dict(
     # A2: Prefer resolved actor name over raw display name
     author = resolved_name or record.author_display_name or ""
 
+    metadata = record.raw_metadata or {}
     return {
         "id": str(record.id),
         "platform": record.platform or "",
@@ -701,7 +729,10 @@ def _orm_to_detail_dict(
         "engagement_score": record.engagement_score or 0,
         "search_terms_matched": terms if isinstance(terms, list) else [],
         "run_id": str(record.collection_run_id or ""),
-        "metadata": record.raw_metadata or {},
+        "metadata": metadata,
+        "scrape_status": record.scrape_status or "",
+        "term_matched": record.term_matched if record.term_matched is not None else True,
+        "actual_poster_name": metadata.get("actual_poster_name", ""),
     }
 
 
@@ -767,6 +798,8 @@ async def content_browser_page(
     mode: Optional[str] = Query(default=None, description="Collection mode filter: 'batch' or 'live'."),
     query_design_id: Optional[str] = Query(default=None, description="Active query design for quick-add actor flow."),
     project_id: Optional[str] = Query(default=None, description="Filter content to a specific project."),
+    show_all: bool = Query(default=False, description="Show all content including non-term-matched records."),
+    scrape_status_filter: Optional[str] = Query(default=None, alias="scrape_status", description="Filter by scrape status: pending, scraped, failed."),
 ) -> Response:
     """Render the full content browser HTML page.
 
@@ -787,6 +820,8 @@ async def content_browser_page(
         search_term: Optional filter on ``search_terms_matched`` array.
         run_id: Optional collection run UUID filter (accepts empty string).
         project_id: Optional project UUID filter (accepts empty string).
+        show_all: If True, include non-term-matched records (default: False).
+        scrape_status_filter: Filter by scrape status (pending/scraped/failed).
 
     Returns:
         ``TemplateResponse`` rendering ``content/browser.html``.
@@ -824,6 +859,8 @@ async def content_browser_page(
         cursor_id=None,
         limit=_BROWSE_LIMIT,
         project_id=project_id,
+        show_all=show_all,
+        scrape_status=scrape_status_filter,
     )
 
     # Apply multi-arena IN filter when multiple checkboxes selected
@@ -886,6 +923,8 @@ async def content_browser_page(
         mode=mode,
         arenas_list=arenas_list if len(arenas_list) > 1 else None,
         project_id=project_id,
+        show_all=show_all,
+        scrape_status=scrape_status_filter,
     )
 
     filter_ctx = {
@@ -899,6 +938,8 @@ async def content_browser_page(
         "run_id": str(run_id) if run_id else "",
         "mode": mode or "",
         "project_id": str(project_id) if project_id else "",
+        "show_all": show_all,
+        "scrape_status": scrape_status_filter or "",
     }
 
     return templates.TemplateResponse(
@@ -938,6 +979,8 @@ async def content_records_fragment(
     run_id: Optional[str] = Query(default=None),
     mode: Optional[str] = Query(default=None, description="Collection mode filter: 'batch' or 'live'."),
     project_id: Optional[str] = Query(default=None, description="Filter content to a specific project."),
+    show_all: bool = Query(default=False, description="Show all content including non-term-matched records."),
+    scrape_status_filter: Optional[str] = Query(default=None, alias="scrape_status", description="Filter by scrape status: pending, scraped, failed."),
     offset: int = Query(default=0, ge=0, description="Running total of rows already sent."),
     limit: int = Query(default=_BROWSE_LIMIT, ge=1, le=_MAX_LIMIT),
     format: Optional[str] = Query(
@@ -1051,6 +1094,8 @@ async def content_records_fragment(
         cursor_id=cursor_id_val,
         limit=remaining,
         project_id=project_id,
+        show_all=show_all,
+        scrape_status=scrape_status_filter,
     )
 
     # Multiple arena filter (IN clause) applied post-base when >1 selected.

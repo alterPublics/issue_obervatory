@@ -2223,3 +2223,163 @@ async def suggest_subreddits(
         user_id=str(current_user.id),
     )
     return suggestions
+
+
+# ---------------------------------------------------------------------------
+# Arena Override Terms
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{design_id:uuid}/terms/override",
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_override_term(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    parent_term_id: Annotated[str, Form()],
+    override_arena: Annotated[str, Form()],
+    term: Annotated[str, Form()],
+    term_type: Annotated[str, Form()] = "keyword",
+) -> HTMLResponse:
+    """Create an arena-specific override term linked to a parent default term.
+
+    When override terms exist for an arena, they completely replace the default
+    terms for that arena during collection.
+
+    Args:
+        design_id: UUID of the target query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user.
+        parent_term_id: UUID string of the parent default term.
+        override_arena: Arena platform_name this override applies to.
+        term: The override term string.
+        term_type: Interpretation type (keyword, phrase, hashtag, url_pattern).
+
+    Returns:
+        HTML ``<li>`` fragment for HTMX insertion.
+    """
+    term = term.strip()
+    if not term:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Override term must not be empty.",
+        )
+
+    override_arena = override_arena.strip()
+    if not override_arena:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Override arena must not be empty.",
+        )
+
+    design = await _get_design_or_404(design_id, db)
+    ownership_guard(design.owner_id, current_user)
+
+    # Validate parent term exists and belongs to this design
+    try:
+        parent_uuid = uuid.UUID(parent_term_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid parent_term_id UUID.",
+        ) from exc
+
+    parent = await db.get(SearchTerm, parent_uuid)
+    if parent is None or parent.query_design_id != design_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Parent term not found in this query design.",
+        )
+    if parent.parent_term_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot create an override of an override. Parent must be a default term.",
+        )
+
+    # Inherit group_id from parent for boolean grouping continuity
+    new_term = SearchTerm(
+        query_design_id=design_id,
+        term=term,
+        term_type=term_type,
+        group_id=parent.group_id,
+        group_label=parent.group_label,
+        parent_term_id=parent_uuid,
+        override_arena=override_arena,
+        is_active=True,
+    )
+    db.add(new_term)
+    await db.commit()
+    await db.refresh(new_term)
+
+    logger.info(
+        "override_term_added",
+        design_id=str(design_id),
+        term=term,
+        parent_term_id=str(parent_uuid),
+        override_arena=override_arena,
+    )
+
+    # Render a compact override item HTML fragment
+    fragment = (
+        f'<li id="term-{new_term.id}" class="flex items-center justify-between gap-3 py-1.5 px-3'
+        f' rounded-md bg-amber-50 border border-amber-200 group text-sm">'
+        f'<div class="flex items-center gap-2 min-w-0">'
+        f'<span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium'
+        f' bg-amber-100 text-amber-700 flex-shrink-0">{_html_escape(override_arena)}</span>'
+        f'<span class="text-gray-900 font-medium truncate">{_html_escape(term)}</span>'
+        f'<span class="text-xs text-gray-400">overrides: {_html_escape(parent.term)}</span>'
+        f"</div>"
+        f'<button type="button"'
+        f' hx-delete="/query-designs/{design_id}/terms/{new_term.id}"'
+        f' hx-target="#term-{new_term.id}"'
+        f' hx-swap="outerHTML"'
+        f' hx-confirm="Delete override term \'{_html_escape(term)}\'?"'
+        f' class="flex-shrink-0 opacity-0 group-hover:opacity-100'
+        f' transition-opacity p-1 rounded text-gray-400'
+        f' hover:text-red-500 hover:bg-red-50">'
+        f'<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">'
+        f'<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"'
+        f' d="M6 18L18 6M6 6l12 12"/></svg></button></li>'
+    )
+    return HTMLResponse(content=fragment, status_code=status.HTTP_201_CREATED)
+
+
+@router.get(
+    "/{design_id:uuid}/overrides/{arena_name}",
+    response_model=list[SearchTermRead],
+)
+async def list_override_terms(
+    design_id: uuid.UUID,
+    arena_name: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> list[SearchTermRead]:
+    """List all override terms for a specific arena in a query design.
+
+    Returns override terms with their parent term info, allowing the UI
+    to display which default term each override derives from.
+
+    Args:
+        design_id: UUID of the target query design.
+        arena_name: Platform name of the arena (e.g. "tiktok", "bluesky").
+        db: Injected async database session.
+        current_user: The authenticated, active user.
+
+    Returns:
+        List of SearchTermRead objects for the arena's overrides.
+    """
+    design = await _get_design_or_404(design_id, db)
+    ownership_guard(design.owner_id, current_user)
+
+    stmt = (
+        select(SearchTerm)
+        .where(SearchTerm.query_design_id == design_id)
+        .where(SearchTerm.override_arena == arena_name)
+        .where(SearchTerm.parent_term_id.isnot(None))
+        .order_by(SearchTerm.added_at)
+    )
+    result = await db.execute(stmt)
+    terms = result.scalars().all()
+    return [SearchTermRead.model_validate(t) for t in terms]

@@ -215,6 +215,38 @@
                 </p>
             </div>
 
+            {# Scrape status filter #}
+            <div>
+                <label for="scrape_status" class="block text-xs font-medium text-gray-700 mb-1 uppercase tracking-wider">Scrape Status</label>
+                <select id="scrape_status"
+                        name="scrape_status"
+                        class="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                    <option value="" {% if not filter.scrape_status | default('') %}selected{% endif %}>All scrape statuses</option>
+                    <option value="pending" {% if filter.scrape_status | default('') == 'pending' %}selected{% endif %}>Needs scraping</option>
+                    <option value="scraped" {% if filter.scrape_status | default('') == 'scraped' %}selected{% endif %}>Scraped</option>
+                    <option value="failed"  {% if filter.scrape_status | default('') == 'failed'  %}selected{% endif %}>Scrape failed</option>
+                </select>
+                <p class="text-xs text-gray-400 mt-0.5">
+                    Filter by whether full page content has been retrieved.
+                </p>
+            </div>
+
+            {# Show non-matching content toggle #}
+            <div>
+                <p class="text-xs font-medium text-gray-700 mb-1.5 uppercase tracking-wider">Matching</p>
+                <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                    <input type="checkbox"
+                           name="show_all"
+                           value="true"
+                           {% if filter.show_all | default(false) %}checked{% endif %}
+                           class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                    Show non-matching content
+                </label>
+                <p class="text-xs text-gray-400 mt-0.5">
+                    Include records collected by actor tracking that did not match any search term.
+                </p>
+            </div>
+
             {# Reset filters button #}
             <div class="pt-2">
                 <a href="/content"
@@ -315,7 +347,7 @@
                         <tr>
                             <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Platform</th>
                             <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Content</th>
-                            <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden lg:table-cell">Author</th>
+                            <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden lg:table-cell">Sender</th>
                             <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden md:table-cell">Published</th>
                             <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Arena</th>
                             <th class="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden md:table-cell">
@@ -357,6 +389,27 @@
                                         {% if record.mode == 'live' %}bg-green-100 text-green-700
                                         {% else %}bg-gray-100 text-gray-600{% endif %}">
                                         {{ record.mode | capitalize }}
+                                    </span>
+                                    {% endif %}
+
+                                    {# Scrape status badge #}
+                                    {% set ss = record.scrape_status | default('') %}
+                                    {% if ss == 'pending' %}
+                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700"
+                                          title="Full content not yet scraped">
+                                        <span class="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0" aria-hidden="true"></span>
+                                        Pending
+                                    </span>
+                                    {% elif ss == 'scraped' %}
+                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700"
+                                          title="Full content scraped">
+                                        <span class="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" aria-hidden="true"></span>
+                                    </span>
+                                    {% elif ss == 'failed' %}
+                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700"
+                                          title="Scrape attempt failed">
+                                        <span class="w-1.5 h-1.5 rounded-full bg-red-500 flex-shrink-0" aria-hidden="true"></span>
+                                        Failed
                                     </span>
                                     {% endif %}
                                 </div>

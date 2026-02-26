@@ -23,6 +23,41 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+# Mapping from model-identifier prefix to the producing organisation.
+# Used to populate ``author_display_name`` on AI chat response records.
+MODEL_PRODUCERS: dict[str, str] = {
+    "gpt-": "OpenAI",
+    "claude-": "Anthropic",
+    "sonar-": "Perplexity",
+    "gemini-": "Google",
+    "llama-": "Meta",
+    "mistral-": "Mistral",
+    "qwen-": "Alibaba",
+    "deepseek-": "DeepSeek",
+}
+
+
+def _resolve_model_producer(model_id: str) -> str | None:
+    """Resolve a human-readable producer name from an OpenRouter model identifier.
+
+    Strips the optional provider prefix (e.g. ``"perplexity/"`` in
+    ``"perplexity/sonar"``), then matches the remainder against
+    :data:`MODEL_PRODUCERS` by prefix.
+
+    Args:
+        model_id: OpenRouter model identifier string (e.g. ``"perplexity/sonar"``,
+            ``"openai/gpt-4o"``, ``"claude-3-5-sonnet"``).
+
+    Returns:
+        Producer name string (e.g. ``"Perplexity"``) or ``None`` if unrecognised.
+    """
+    # Strip provider routing prefix (e.g. "perplexity/sonar" -> "sonar")
+    bare = model_id.split("/")[-1] if "/" in model_id else model_id
+    for prefix, producer in MODEL_PRODUCERS.items():
+        if bare.startswith(prefix):
+            return producer
+    return None
+
 
 def _sha256(s: str) -> str:
     """Return the hex-encoded SHA-256 digest of a UTF-8 string.
@@ -108,10 +143,13 @@ def make_response_record(
         "completion": usage.get("completion_tokens"),
     }
 
+    model_producer: str | None = _resolve_model_producer(model_used)
+
     raw_metadata: dict[str, Any] = {
         "query_phrasing": phrasing,
         "search_term_original": original_term,
         "model_used": model_used,
+        "model_producer": model_producer,
         "citations": citations,
         "tokens_used": tokens_used,
         "temperature": 0,
@@ -130,7 +168,7 @@ def make_response_record(
         "published_at": now.isoformat(),
         "collected_at": now.isoformat(),
         "author_platform_id": model_used,
-        "author_display_name": None,
+        "author_display_name": model_producer,
         "views_count": None,
         "likes_count": None,
         "shares_count": None,

@@ -154,12 +154,16 @@ class SearchTermRead(SearchTermCreate):
         query_design_id: Parent query design UUID.
         is_active: Whether the term is currently active.
         added_at: Timestamp when the term was added.
+        parent_term_id: UUID of the parent default term (for overrides).
+        override_arena: Arena platform_name this override applies to.
     """
 
     id: uuid.UUID
     query_design_id: uuid.UUID
     is_active: bool
     added_at: datetime
+    parent_term_id: Optional[uuid.UUID] = None
+    override_arena: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -81,11 +81,35 @@
     </div>
     {% endif %}
 
+    {# Google Search snippet preview — shown when full content is pending and a snippet is available #}
+    {% set ss = record.scrape_status | default('') %}
+    {% set snippet = record.metadata.search_snippet | default('') if record.metadata | default({}) else '' %}
+    {% if ss == 'pending' and snippet %}
+    <div class="bg-gray-50 rounded-md p-3 border border-gray-200 space-y-1">
+        <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Search snippet</p>
+        <p class="text-sm text-gray-600 italic leading-relaxed">{{ snippet }}</p>
+        <p class="text-xs text-gray-400">Search snippet (full content not yet scraped)</p>
+    </div>
+    {% endif %}
+
+    {# Scrape status — shown as a notice when not yet scraped or failed #}
+    {% if ss == 'pending' %}
+    <div class="flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+        <span class="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" aria-hidden="true"></span>
+        Full page content has not been scraped yet.
+    </div>
+    {% elif ss == 'failed' %}
+    <div class="flex items-center gap-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+        <span class="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" aria-hidden="true"></span>
+        Scrape attempt failed — only metadata collected.
+    </div>
+    {% endif %}
+
     {# Metadata grid #}
     <dl class="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
         {% if record.author | default('') %}
         <div>
-            <dt class="text-gray-500 font-medium">Author</dt>
+            <dt class="text-gray-500 font-medium">Sender</dt>
             <dd class="text-gray-900 mt-0.5">
                 {% if record.author_id | default('') %}
                 <a href="/actors?q={{ record.author }}"
@@ -94,6 +118,13 @@
                 {{ record.author }}
                 {% endif %}
             </dd>
+        </div>
+        {% endif %}
+
+        {% if record.actual_poster_name | default('') %}
+        <div>
+            <dt class="text-gray-500 font-medium">Posted by</dt>
+            <dd class="text-gray-900 mt-0.5">{{ record.actual_poster_name }}</dd>
         </div>
         {% endif %}
 

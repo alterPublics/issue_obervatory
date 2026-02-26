@@ -475,6 +475,22 @@ class FacebookCollector(ArenaCollector):
         # Content type.
         content_type: str = "comment" if raw.get("comment_id") else "post"
 
+        # For group posts, use the group name as the display sender so that
+        # content is attributed to the community rather than the individual
+        # poster.  The original poster name is preserved in raw_metadata.
+        is_group_post: bool = "/groups/" in (post_url or "")
+        group_name: str = raw.get("group_name") or raw.get("group_title") or ""
+        if is_group_post and group_name:
+            display_name: str = group_name
+        else:
+            display_name = page_name
+
+        actual_poster_name: str | None = (
+            raw.get("user_name") or raw.get("username") or None
+            if is_group_post
+            else None
+        )
+
         flat: dict[str, Any] = {
             "platform_id": post_id,
             "id": post_id,
@@ -485,7 +501,7 @@ class FacebookCollector(ArenaCollector):
             "language": None,  # No language field — detect downstream
             "published_at": published_at,
             "author_platform_id": author_url,
-            "author_display_name": page_name,
+            "author_display_name": display_name,
             "likes_count": likes_count,
             "shares_count": shares_count,
             "comments_count": comments_count,
@@ -499,6 +515,7 @@ class FacebookCollector(ArenaCollector):
             "parent_id": raw.get("parent_id"),
             "group_id": raw.get("group_id"),
             "event_id": raw.get("event_id"),
+            "actual_poster_name": actual_poster_name,
         }
         return flat
 

@@ -737,6 +737,10 @@ class RSSFeedsCollector(ArenaCollector):
         if content_hash:
             normalized["content_hash"] = content_hash
 
+        # Mark records with a URL for downstream scraping
+        if url:
+            normalized["scrape_status"] = "pending"
+
         return normalized
 
 

@@ -274,9 +274,9 @@ class GoogleAutocompleteCollector(ArenaCollector):
         enriched["language"] = "da"
         # No URL associated with an autocomplete suggestion.
         enriched["url"] = None
-        # No author concept.
+        # Autocomplete suggestions are produced by Google.
         enriched["author_platform_id"] = None
-        enriched["author_display_name"] = None
+        enriched["author_display_name"] = "Google"
 
         # Deterministic platform_id: hash(query + suggestion + minute-bucket).
         minute_bucket = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M")

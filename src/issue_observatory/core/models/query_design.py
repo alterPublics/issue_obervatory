@@ -236,10 +236,53 @@ class SearchTerm(Base):
         ),
     )
 
+    # Arena override mechanism: when both are set, this term replaces the
+    # parent default term for the specified arena.  When both are NULL, this
+    # is a default term that applies to all arenas (unless overridden).
+    parent_term_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("search_terms.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    override_arena: Mapped[str | None] = mapped_column(
+        sa.String(50),
+        nullable=True,
+        comment=(
+            "Arena platform_name this override applies to. "
+            "NULL = default term (applies to all arenas unless overridden)."
+        ),
+    )
+
     # Relationships
     query_design: Mapped[QueryDesign] = relationship(
         "QueryDesign",
         back_populates="search_terms",
+    )
+    parent_term: Mapped[SearchTerm | None] = relationship(
+        "SearchTerm",
+        remote_side=[id],
+        foreign_keys=[parent_term_id],
+        back_populates="arena_overrides",
+    )
+    arena_overrides: Mapped[list[SearchTerm]] = relationship(
+        "SearchTerm",
+        foreign_keys="SearchTerm.parent_term_id",
+        back_populates="parent_term",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "idx_search_term_parent_override",
+            "parent_term_id",
+            "override_arena",
+        ),
+        sa.CheckConstraint(
+            "(parent_term_id IS NULL AND override_arena IS NULL) "
+            "OR (parent_term_id IS NOT NULL AND override_arena IS NOT NULL)",
+            name="ck_search_term_override_pair",
+        ),
     )
 
     def __repr__(self) -> str:

@@ -166,25 +166,33 @@ async def _post_completion(
 
 
 def extract_citations(response: dict[str, Any]) -> list[dict[str, Any]]:
-    """Extract Perplexity citations from an OpenRouter response dict.
+    """Extract citations from an OpenRouter response dict.
 
-    Handles two citation formats that Perplexity may return:
+    Handles three citation formats across different models:
 
-    **Format A** — top-level ``citations`` array of URL strings::
+    **Format C** — OpenRouter ``:online`` / web-search plugin annotations
+    (returned by ``openai/gpt-5-nano:online`` and any model using the web
+    plugin).  Citations are in ``choices[0].message.annotations``::
 
-        {"citations": ["https://dr.dk/...", "https://berlingske.dk/..."], ...}
+        {"choices": [{"message": {"annotations": [
+            {"type": "url_citation", "url_citation": {
+                "url": "...", "title": "...", "content": "...",
+                "start_index": 0, "end_index": 42
+            }}
+        ]}}]}
 
-    **Format B** — per-message ``citations`` array of objects::
+    **Format B** — Perplexity per-message ``citations`` array of objects::
 
         {"choices": [{"message": {"citations": [
             {"url": "...", "title": "...", "snippet": "..."}
         ]}}]}
 
-    The function checks both locations and normalises to a consistent list of
-    ``{"url": ..., "title": ..., "snippet": ...}`` dicts.  For Format A,
-    ``title`` and ``snippet`` are ``None``.
+    **Format A** — Perplexity top-level ``citations`` array of URL strings::
 
-    If neither location contains citations, an empty list is returned.
+        {"citations": ["https://dr.dk/...", "https://berlingske.dk/..."], ...}
+
+    Formats are checked in order C → B → A.  All normalise to a consistent
+    list of ``{"url": ..., "title": ..., "snippet": ...}`` dicts.
 
     Args:
         response: Parsed JSON response dict from the OpenRouter API.
@@ -195,34 +203,53 @@ def extract_citations(response: dict[str, Any]) -> list[dict[str, Any]]:
     """
     normalised: list[dict[str, Any]] = []
 
-    # -- Format B: choices[0].message.citations (objects with url/title/snippet)
     try:
         choices = response.get("choices") or []
-        if choices:
-            message_citations = choices[0].get("message", {}).get("citations")
-            if message_citations and isinstance(message_citations, list):
-                for item in message_citations:
-                    if isinstance(item, dict) and item.get("url"):
+        message: dict[str, Any] = choices[0].get("message", {}) if choices else {}
+
+        # -- Format C: annotations array (OpenRouter :online / web plugin)
+        annotations = message.get("annotations")
+        if annotations and isinstance(annotations, list):
+            for item in annotations:
+                if isinstance(item, dict) and item.get("type") == "url_citation":
+                    cite = item.get("url_citation", {})
+                    url = cite.get("url")
+                    if url:
                         normalised.append(
                             {
-                                "url": item["url"],
-                                "title": item.get("title"),
-                                "snippet": item.get("snippet"),
+                                "url": url,
+                                "title": cite.get("title"),
+                                "snippet": cite.get("content"),
                             }
                         )
-                if normalised:
-                    return normalised
+            if normalised:
+                return normalised
+
+        # -- Format B: choices[0].message.citations (Perplexity objects)
+        message_citations = message.get("citations")
+        if message_citations and isinstance(message_citations, list):
+            for item in message_citations:
+                if isinstance(item, dict) and item.get("url"):
+                    normalised.append(
+                        {
+                            "url": item["url"],
+                            "title": item.get("title"),
+                            "snippet": item.get("snippet"),
+                        }
+                    )
+            if normalised:
+                return normalised
+
     except (KeyError, IndexError, TypeError):
         pass
 
-    # -- Format A: top-level citations array of URL strings
+    # -- Format A: top-level citations array of URL strings (Perplexity)
     top_level = response.get("citations")
     if top_level and isinstance(top_level, list):
         for item in top_level:
             if isinstance(item, str) and item:
                 normalised.append({"url": item, "title": None, "snippet": None})
             elif isinstance(item, dict) and item.get("url"):
-                # Defensive: some hybrid formats exist
                 normalised.append(
                     {
                         "url": item["url"],

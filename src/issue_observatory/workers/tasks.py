@@ -58,6 +58,7 @@ from issue_observatory.workers._task_helpers import (
     fetch_batch_run_details,
     fetch_live_tracking_designs,
     fetch_public_figure_ids_for_design,
+    fetch_resolved_terms_for_arena,
     fetch_search_terms_for_arena,
     fetch_stale_runs,
     fetch_unsettled_reservations,
@@ -231,7 +232,7 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
             # registry (e.g., "reddit", "bluesky", "google_search").
             try:
                 arena_terms = asyncio.run(
-                    fetch_search_terms_for_arena(design_id, arena_name)
+                    fetch_resolved_terms_for_arena(design_id, arena_name)
                 )
             except Exception as terms_exc:
                 task_log.error(
@@ -1169,7 +1170,7 @@ async def _dispatch_batch_async(
     for entry in arena_entries:
         platform_name = entry["platform_name"]
         try:
-            arena_terms = await fetch_search_terms_for_arena(design_id, platform_name)
+            arena_terms = await fetch_resolved_terms_for_arena(design_id, platform_name)
             arena_terms_map[platform_name] = arena_terms
 
             # If no terms found, mark the task as failed immediately (within async context)

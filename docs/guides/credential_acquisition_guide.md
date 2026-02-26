@@ -1047,10 +1047,11 @@ The Issue Observatory uses the **Posts** scraper for pages/profiles and the **Gr
 4. After signing in, navigate to the Dashboard.
 5. Go to the **"Web Scraper API"** section in the left sidebar.
 6. Browse the Facebook scrapers to confirm they are available on your account.
-7. Generate an API token:
-   - Click your account avatar (top right) > **"Account settings"**.
-   - Go to the **"API tokens"** section (or navigate to https://brightdata.com/cp/setting/users).
-   - Click **"Add token"**, give it a name, and copy the token immediately (shown only once).
+7. Generate an API key:
+   - Go to **Account settings** > **Users** (direct URL: https://brightdata.com/cp/setting/users). You need admin-level access.
+   - Click **"Add API key"** in the top right.
+   - Assign a user, select a permission level, set an expiration date, and click **Save**.
+   - Copy the key immediately — it is only shown once. Each user can have one API key.
 8. Add funds to your account (pay-as-you-go billing; pricing is per successfully delivered record).
 
 **Note:** A single API token works for all Bright Data products (Web Scraper API, Datasets, etc.) and across all platforms (Facebook, Instagram). You only need one token.

@@ -503,6 +503,245 @@
         {% endif %}
     </div>
 
+    {# Arena-Specific Term Overrides — allows researchers to specify per-arena variants
+       of existing default search terms. Useful when a term has a different form on a
+       specific platform (e.g., a hashtag on Bluesky vs. a keyword for RSS/news search).
+
+       Backend contract expected:
+           POST /query-designs/{design_id}/terms/override
+           Body (form): {
+               parent_term_id: str,   — UUID of the default term being overridden
+               term: str,             — arena-specific variant text
+               term_type: str,        — keyword | phrase | hashtag | url_pattern
+               arena: str,            — platform_name this override applies to
+           }
+           Returns: HTMX fragment — a new <li> appended to #overrides-list.
+    #}
+    {% if is_edit %}
+    <div class="bg-white rounded-lg shadow p-6"
+         x-data="arenaTermOverrides()"
+         x-init="loadArenas()">
+
+        {# Section header — collapsible #}
+        <button type="button"
+                @click="expanded = !expanded"
+                class="flex items-center justify-between w-full text-left">
+            <div class="flex items-center gap-2">
+                <svg class="w-4 h-4 text-amber-500 flex-shrink-0"
+                     xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M8 9l4-4 4 4m0 6l-4 4-4-4"/>
+                </svg>
+                <h2 class="text-sm font-semibold text-gray-900">Arena-Specific Term Overrides</h2>
+                <span class="text-xs text-gray-400 font-normal">override defaults for individual arenas</span>
+            </div>
+            <svg class="w-4 h-4 text-gray-400 transition-transform flex-shrink-0"
+                 :class="{ 'rotate-180': expanded }"
+                 xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+            </svg>
+        </button>
+
+        {# Collapsed hint #}
+        <p x-show="!expanded" class="text-xs text-gray-400 mt-1.5">
+            Provide platform-specific variants of your default search terms — e.g., a hashtag form on Bluesky vs. a keyword for RSS feeds.
+        </p>
+
+        {# Expanded content #}
+        <div x-show="expanded"
+             x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0 -translate-y-1"
+             x-transition:enter-end="opacity-100 translate-y-0"
+             x-transition:leave="transition ease-in duration-150"
+             x-transition:leave-start="opacity-100 translate-y-0"
+             x-transition:leave-end="opacity-0 -translate-y-1"
+             class="mt-4 space-y-4">
+
+            {# Explainer #}
+            <div class="rounded-md bg-amber-50 border border-amber-100 px-3 py-2.5 text-xs text-amber-900 space-y-1">
+                <p>
+                    <strong>When to use this:</strong> If a term like "ytringsfrihed" should be collected
+                    as a hashtag (#ytringsfrihed) on Bluesky but as a keyword on news arenas, add an override
+                    here. Overrides apply <em>in addition to</em> the default term — they do not replace it globally.
+                </p>
+            </div>
+
+            {# Step 1: select the target arena
+               The arena list is loaded once via Alpine's fetch on x-init (same pattern as
+               arenaConfigGrid). We reuse the `availableArenas` data already fetched by the
+               parent `termArenaSelector()` Alpine component bound to the search-terms panel.
+               If arenas haven't loaded yet, we show a loading placeholder option. #}
+            <div>
+                <label for="override-arena-select"
+                       class="block text-xs font-medium text-gray-700 mb-1 uppercase tracking-wider">
+                    Step 1 — Select arena
+                </label>
+                <select id="override-arena-select"
+                        x-model="selectedArena"
+                        class="w-full border border-gray-300 rounded px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white">
+                    <option value="">Choose an arena…</option>
+                    {# Arena options populated from /api/arenas/ by the arenaTermOverrides() Alpine component #}
+                    <template x-for="arena in arenas" :key="arena.platform_name">
+                        <option :value="arena.platform_name"
+                                x-text="arena.displayLabel || arena.platform_name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())">
+                        </option>
+                    </template>
+                </select>
+                <p class="text-xs text-gray-400 mt-0.5">Overrides will only apply when collecting from this arena.</p>
+            </div>
+
+            {# Step 2: define the override — shown once an arena is selected #}
+            <div x-show="selectedArena !== ''"
+                 x-transition:enter="transition ease-out duration-150"
+                 x-transition:enter-start="opacity-0"
+                 x-transition:enter-end="opacity-100">
+
+                <p class="text-xs font-medium text-gray-700 mb-2 uppercase tracking-wider">Step 2 — Define override term</p>
+
+                <form hx-post="/query-designs/{{ design_id }}/terms/override"
+                      hx-target="#overrides-list"
+                      hx-swap="beforeend"
+                      hx-on::after-request="if(event.detail.successful){ this.reset(); selectedArena = ''; }"
+                      class="space-y-3 bg-amber-50 border border-amber-200 rounded-md p-4">
+
+                    {# Hidden: which arena this override targets #}
+                    <input type="hidden" name="arena" :value="selectedArena">
+
+                    {# Parent term selector — pulls from #terms-list above #}
+                    <div>
+                        <label for="override-parent-term"
+                               class="block text-xs font-medium text-gray-700 mb-1">
+                            Default term to override <span class="text-red-500">*</span>
+                        </label>
+                        <select id="override-parent-term"
+                                name="parent_term_id"
+                                required
+                                class="w-full border border-gray-300 rounded px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white">
+                            <option value="">Select a default term…</option>
+                            {% for term in terms %}
+                            <option value="{{ term.id }}">
+                                {{ term.term | default('') }}
+                                {% if term.term_type | default('keyword') != 'keyword' %}
+                                    ({{ term.term_type }})
+                                {% endif %}
+                                {% if term.group_label %}[{{ term.group_label }}]{% endif %}
+                            </option>
+                            {% endfor %}
+                        </select>
+                        <p class="text-xs text-gray-400 mt-0.5">
+                            This links the override to the default term for reporting and deduplication.
+                        </p>
+                    </div>
+
+                    {# Override term text + type #}
+                    <div class="flex gap-2">
+                        <div class="flex-shrink-0">
+                            <label for="override-term-type"
+                                   class="block text-xs font-medium text-gray-700 mb-1">Type</label>
+                            <select id="override-term-type"
+                                    name="term_type"
+                                    class="border border-gray-300 rounded px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white">
+                                <option value="keyword">Keyword</option>
+                                <option value="phrase">Phrase</option>
+                                <option value="hashtag">Hashtag</option>
+                                <option value="url_pattern">URL pattern</option>
+                            </select>
+                        </div>
+                        <div class="flex-1">
+                            <label for="override-term-text"
+                                   class="block text-xs font-medium text-gray-700 mb-1">
+                                Arena-specific term <span class="text-red-500">*</span>
+                            </label>
+                            <input type="text"
+                                   id="override-term-text"
+                                   name="term"
+                                   required
+                                   placeholder="e.g. #ytringsfrihed"
+                                   autocomplete="off"
+                                   class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent">
+                        </div>
+                    </div>
+
+                    {# Submit #}
+                    <div class="flex items-center justify-between pt-1">
+                        <p class="text-xs text-amber-700">
+                            Override will apply only to
+                            <strong x-text="selectedArena"></strong>.
+                        </p>
+                        <button type="submit"
+                                class="inline-flex items-center gap-1.5 px-3 py-2 bg-amber-600 text-white text-sm font-medium rounded hover:bg-amber-700 transition-colors flex-shrink-0">
+                            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+                            </svg>
+                            Add Override
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            {# Existing overrides list #}
+            <div>
+                <p class="text-xs font-medium text-gray-700 mb-2 uppercase tracking-wider">Active overrides</p>
+                <ul class="space-y-1.5" id="overrides-list" aria-live="polite">
+                    {# Override term rows — amber-themed, appended by HTMX #}
+                    {% for term in terms if term.parent_term_id | default(None) %}
+                    <li id="override-term-{{ term.id }}"
+                        class="flex items-center justify-between gap-3 py-2 px-3 rounded-md bg-amber-50 border border-amber-200 group">
+                        <div class="flex items-center gap-2 min-w-0 flex-wrap">
+                            {# Override type badge — amber to distinguish from defaults #}
+                            {% set ttype = term.term_type | default('keyword') %}
+                            {% if ttype == 'hashtag' %}
+                                <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-amber-200 text-amber-800 flex-shrink-0">#</span>
+                            {% elif ttype == 'phrase' %}
+                                <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-amber-200 text-amber-800 flex-shrink-0">""</span>
+                            {% elif ttype == 'url_pattern' %}
+                                <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-amber-200 text-amber-800 flex-shrink-0">URL</span>
+                            {% else %}
+                                <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-amber-200 text-amber-800 flex-shrink-0">keyword</span>
+                            {% endif %}
+
+                            <span class="text-sm text-gray-900 font-medium truncate">{{ term.term | default('') }}</span>
+
+                            {# Arena scope badge #}
+                            {% if term.target_arenas %}
+                            <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700 flex-shrink-0">
+                                {{ term.target_arenas | join(', ') }}
+                            </span>
+                            {% endif %}
+
+                            {# Parent term reference #}
+                            <span class="text-xs text-gray-400 italic">override</span>
+                        </div>
+
+                        <button type="button"
+                                hx-delete="/query-designs/{{ design_id }}/terms/{{ term.id }}"
+                                hx-target="#override-term-{{ term.id }}"
+                                hx-swap="outerHTML"
+                                hx-confirm="Delete this override term?"
+                                class="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-amber-400 hover:text-red-600 hover:bg-red-50"
+                                aria-label="Delete override">
+                            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                            </svg>
+                        </button>
+                    </li>
+                    {% else %}
+                    <li id="overrides-empty" class="text-sm text-gray-400 text-center py-4">
+                        No overrides yet. Add one above.
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+
+        </div>{# /expanded #}
+    </div>
+    {% endif %}
+
     {# SB-11: AI Chat Search as Discovery Accelerator #}
     <div class="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-6">
         <div class="flex items-start gap-4">

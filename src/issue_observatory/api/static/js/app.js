@@ -168,6 +168,55 @@ document.addEventListener('alpine:init', () => {
    * No global registration needed — kept here as documentation.
    */
 
+
+  /**
+   * arenaTermOverrides — Alpine component for the Arena-Specific Term Overrides
+   * panel in the query design editor.
+   *
+   * Fetches the list of registered arenas from /api/arenas/ on init, then
+   * drives the arena selector dropdown and form show/hide state.
+   *
+   * State:
+   *   expanded       {boolean}  — whether the collapsible section is open
+   *   selectedArena  {string}   — platform_name of the chosen arena target
+   *   arenas         {Array}    — list of { platform_name, displayLabel } objects
+   *   arenasLoading  {boolean}  — true while fetching from /api/arenas/
+   */
+  window.arenaTermOverrides = function () {
+    return {
+      expanded: false,
+      selectedArena: '',
+      arenas: [],
+      arenasLoading: false,
+
+      /**
+       * Fetch the arena registry from the API and build the options list.
+       * Reuses the same response shape as arenaConfigGrid and termArenaSelector.
+       */
+      async loadArenas() {
+        this.arenasLoading = true;
+        try {
+          const resp = await fetch('/api/arenas/', { credentials: 'include' });
+          if (!resp.ok) return;
+          const data = await resp.json();
+          const items = Array.isArray(data) ? data : (data.arenas || []);
+          this.arenas = items.map(function (a) {
+            return {
+              platform_name: a.platform_name,
+              displayLabel: a.display_name || a.platform_name
+                .replace(/_/g, ' ')
+                .replace(/\b\w/g, function (c) { return c.toUpperCase(); }),
+            };
+          });
+        } catch (err) {
+          console.warn('arenaTermOverrides: failed to load arenas', err);
+        } finally {
+          this.arenasLoading = false;
+        }
+      },
+    };
+  };
+
 });
 
 // ---------------------------------------------------------------------------

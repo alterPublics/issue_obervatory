@@ -469,6 +469,53 @@ async def fetch_search_terms_for_arena(
         return [str(term) for term in rows]
 
 
+async def fetch_resolved_terms_for_arena(
+    query_design_id: Any,
+    arena_platform_name: str,
+) -> list[str]:
+    """Return resolved search term strings for an arena using the override mechanism.
+
+    Implements the all-or-nothing arena override logic:
+
+    1. Check if any override terms exist for ``arena_platform_name`` in this
+       query design (rows where ``override_arena == arena_platform_name`` and
+       ``parent_term_id IS NOT NULL``).
+    2. If YES: use ONLY those override terms (all defaults excluded).
+    3. If NO: fall back to :func:`fetch_search_terms_for_arena` which returns
+       default terms filtered by the legacy YF-01 ``target_arenas`` mechanism.
+
+    Args:
+        query_design_id: UUID of the ``QueryDesign`` whose search terms to load.
+        arena_platform_name: Platform identifier string (e.g., ``"tiktok"``,
+            ``"bluesky"``, ``"google_search"``).
+
+    Returns:
+        List of search term strings.  Empty when no active terms resolve for
+        the given arena.
+    """
+    from issue_observatory.core.models.query_design import SearchTerm  # noqa: PLC0415
+
+    async with AsyncSessionLocal() as db:
+        # Step 1: check for override terms
+        override_stmt = (
+            select(SearchTerm.term)
+            .where(SearchTerm.query_design_id == query_design_id)
+            .where(SearchTerm.is_active.is_(True))
+            .where(SearchTerm.override_arena == arena_platform_name)
+            .where(SearchTerm.parent_term_id.isnot(None))
+            .order_by(SearchTerm.added_at)
+        )
+        result = await db.execute(override_stmt)
+        override_terms = result.scalars().all()
+
+        if override_terms:
+            # Arena has overrides -> use ONLY those
+            return [str(t) for t in override_terms]
+
+    # Step 2: no overrides -> fall back to default term resolution (YF-01)
+    return await fetch_search_terms_for_arena(query_design_id, arena_platform_name)
+
+
 # ---------------------------------------------------------------------------
 # SB-03: Post-Collection Discovery Summary (enrichment completion)
 # ---------------------------------------------------------------------------
@@ -855,6 +902,14 @@ def persist_collected_records(
 
     if not records:
         return 0, 0
+
+    # Set term_matched based on search_terms_matched presence.
+    for record in records:
+        matched_terms = record.get("search_terms_matched")
+        if matched_terms and len(matched_terms) > 0:
+            record.setdefault("term_matched", True)
+        else:
+            record.setdefault("term_matched", False)
 
     # Columns that need explicit CAST() for psycopg2 type inference.
     _JSONB_COLS = {"raw_metadata"}

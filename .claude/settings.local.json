@@ -188,7 +188,8 @@
       "WebFetch(domain:discordpy.readthedocs.io)",
       "WebFetch(domain:docs.brightdata.com)",
       "WebFetch(domain:brightdata.com)",
-      "Bash(tail:*)"
+      "Bash(tail:*)",
+      "WebFetch(domain:openrouter.ai)"
     ]
   }
 }

@@ -32,17 +32,21 @@ OPENROUTER_API_URL: str = "https://openrouter.ai/api/v1/chat/completions"
 # Model identifiers
 # ---------------------------------------------------------------------------
 
-CHAT_MODEL_MEDIUM: str = "perplexity/sonar"
-"""Perplexity Sonar model used at the MEDIUM tier.
+CHAT_MODEL_MEDIUM: str = "openai/gpt-5-nano:online"
+"""Default model for the MEDIUM tier — GPT-5 Nano with OpenRouter web search.
 
-Performs a live web search and returns a synthesized answer plus citations.
-Cost: approximately $1/1M input tokens and $1/1M output tokens via OpenRouter.
+The ``:online`` suffix activates OpenRouter's web search plugin, which
+incorporates real-time search results into the response and returns citations
+as ``annotations`` objects in the message.  This is equivalent to passing
+``{"plugins": {"web": {}}}`` in the request body.
+
+Cost: pay-per-token via OpenRouter; GPT-5 Nano is among the cheapest options.
 """
 
 CHAT_MODEL_PREMIUM: str = "perplexity/sonar-pro"
 """Perplexity Sonar Pro model used at the PREMIUM tier.
 
-More thorough web search; higher per-token cost.
+More thorough web search with higher source coverage; higher per-token cost.
 Cost: approximately $3/1M input tokens and $15/1M output tokens via OpenRouter.
 """
 
