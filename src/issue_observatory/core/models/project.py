@@ -48,6 +48,9 @@ class Project(Base, TimestampMixin):
     """
 
     __tablename__ = "projects"
+    __table_args__ = (
+        sa.UniqueConstraint("owner_id", "name", name="uq_project_owner_name"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

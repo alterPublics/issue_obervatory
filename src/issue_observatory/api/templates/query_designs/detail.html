@@ -632,7 +632,7 @@ function arenaConfigReadOnly(designId) {
                 if (arenaResp.ok) {
                     const arenaList = await arenaResp.json();
                     arenaList.forEach(a => {
-                        metaMap[a.arena_name] = a;
+                        metaMap[a.platform_name] = a;
                     });
                 }
 

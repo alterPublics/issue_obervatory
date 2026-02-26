@@ -607,7 +607,7 @@
                       class="space-y-3 bg-amber-50 border border-amber-200 rounded-md p-4">
 
                     {# Hidden: which arena this override targets #}
-                    <input type="hidden" name="arena" :value="selectedArena">
+                    <input type="hidden" name="override_arena" :value="selectedArena">
 
                     {# Parent term selector — pulls from #terms-list above #}
                     <div>
@@ -1241,9 +1241,8 @@
         </div>
 
         {# Save arena config button with success feedback #}
-        <div class="mt-4 flex items-center justify-end gap-3"
-             x-data="{ saved: false, saveError: false }">
-            <span x-show="saved"
+        <div class="mt-4 flex items-center justify-end gap-3">
+            <span x-show="_saved"
                   x-cloak
                   x-transition:enter="transition ease-out duration-150"
                   x-transition:enter-start="opacity-0"
@@ -1254,25 +1253,20 @@
                   class="text-sm text-green-700 font-medium">
                 Saved
             </span>
-            <span x-show="saveError"
+            <span x-show="_saveError"
                   x-cloak
                   class="text-sm text-red-600">
                 Save failed — please try again.
             </span>
             <button type="button"
-                    hx-post="/query-designs/{{ design_id }}/arena-config"
-                    hx-include="#arena-config-form"
-                    hx-swap="none"
-                    hx-indicator="#save-arena-spinner"
-                    hx-on::after-settle="if(event.detail.successful){ saved = true; saveError = false; setTimeout(() => { saved = false; }, 3000); } else { saveError = true; saved = false; }"
-                    class="inline-flex items-center gap-2 px-4 py-2 bg-gray-800 text-white text-sm font-medium rounded-md hover:bg-gray-700 transition-colors">
-                <span id="save-arena-spinner" class="htmx-indicator">
-                    <svg class="animate-spin w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg"
-                         fill="none" viewBox="0 0 24 24" aria-hidden="true">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                    </svg>
-                </span>
+                    @click="saveConfig()"
+                    :disabled="_saving"
+                    class="inline-flex items-center gap-2 px-4 py-2 bg-gray-800 text-white text-sm font-medium rounded-md hover:bg-gray-700 transition-colors disabled:opacity-50">
+                <svg x-show="_saving" class="animate-spin w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg"
+                     fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
                 Save Arena Config
             </button>
         </div>
@@ -2045,6 +2039,9 @@ function arenaConfigGrid(defaultTier) {
         arenas: [],
         _estimateTimer: null,
         _loadError: null,
+        _saving: false,
+        _saved: false,
+        _saveError: false,
 
         async init() {
             // Step 1: Fetch the live arena list from the backend.
@@ -2155,6 +2152,36 @@ function arenaConfigGrid(defaultTier) {
          */
         unsupportedTierTitle(arena) {
             return 'This arena only supports ' + arena.supportedTiers.join(', ') + ' tier(s)';
+        },
+
+        async saveConfig() {
+            this._saving = true;
+            this._saveError = false;
+            const designId = document.querySelector('input[name="design_id"]')?.value;
+            if (!designId) { this._saveError = true; this._saving = false; return; }
+            const payload = {
+                arenas: this.arenas.map(a => ({
+                    id: a.id,
+                    enabled: a.enabled,
+                    tier: a.tier,
+                })),
+            };
+            try {
+                const resp = await fetch('/query-designs/' + designId + '/arena-config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify(payload),
+                });
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                this._saved = true;
+                setTimeout(() => { this._saved = false; }, 3000);
+            } catch (err) {
+                console.warn('saveConfig failed:', err);
+                this._saveError = true;
+            } finally {
+                this._saving = false;
+            }
         },
     };
 }

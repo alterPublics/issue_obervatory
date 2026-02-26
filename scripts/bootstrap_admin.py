@@ -124,9 +124,9 @@ async def _bootstrap() -> None:
     print("[bootstrap_admin] Done.")
     print(
         "\nNext steps:\n"
-        "  1. Log in at  http://localhost:8000/auth/cookie/login\n"
+        "  1. Log in at  http://localhost:8000/auth/login\n"
         "  2. Activate researcher accounts at  http://localhost:8000/admin/users\n"
-        "  3. Allocate credits at  http://localhost:8000/credits/admin/grant\n"
+        "  3. Allocate credits at  http://localhost:8000/admin/credits/allocate\n"
     )
 
 

@@ -1,0 +1,127 @@
+# =============================================================================
+# The Issue Observatory — Environment Configuration
+# =============================================================================
+# Copy this file to .env and fill in your values.
+# NEVER commit .env to version control.
+#
+# Arena API credentials configured here are automatically populated into the
+# database-backed credential pool on application startup. You do NOT need to
+# manually re-enter them via the admin UI (/admin/credentials). The bootstrap
+# process is idempotent — it only inserts missing credentials and never
+# overwrites manually-added ones.
+
+# --- Database ---
+DATABASE_URL=postgresql+asyncpg://observatory:observatory@localhost:5432/observatory
+
+# --- Redis ---
+REDIS_URL=redis://localhost:6379/0
+
+# --- Celery ---
+CELERY_BROKER_URL=redis://localhost:6379/1
+CELERY_RESULT_BACKEND=redis://localhost:6379/2
+
+# --- Application ---
+# SECURITY WARNING (BB-02): SECRET_KEY must be changed before production deployment.
+# The application will reject known weak values like "change-me-in-production", "secret", "changeme".
+# Generate a strong key with: openssl rand -hex 32
+SECRET_KEY=0f1d82044c98f4871307e7379bf84fd886d9a65049474496bc044742981cb878  
+DEBUG=true
+LOG_LEVEL=INFO
+ALLOWED_ORIGINS=["http://localhost:8000"]
+
+# --- Authentication ---
+FIRST_ADMIN_EMAIL=admin@example.com
+FIRST_ADMIN_PASSWORD=change-me-in-production
+
+# --- Security (CRITICAL) ---
+# SECURITY WARNING (BB-03): CREDENTIAL_ENCRYPTION_KEY must be a valid Fernet key.
+# This encrypts all stored API credentials. If lost, credentials become unrecoverable.
+# Generate with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
+CREDENTIAL_ENCRYPTION_KEY=6JPDLuOE8rPcNNUGu9nKmWyGbYeX8Gh-DySRL-D2mVc=
+
+# GDPR REQUIREMENT (BB-01): PSEUDONYMIZATION_SALT is required for GDPR-compliant data collection.
+# The application will refuse to start without a valid salt.
+# Generate a long random string (32+ characters recommended): openssl rand -hex 32
+PSEUDONYMIZATION_SALT=6fa19c449745b74936d41d26a7f9f5419e8284f740df47ab3a130fbefc1afd1c
+
+# --- Object Storage (MinIO / S3) ---
+# MinIO is used for database backups and optional media file archival.
+# The docker-compose.yml file includes a MinIO service pre-configured with these defaults.
+# Change these credentials in production and set MINIO_SECURE=true when using TLS.
+MINIO_ENDPOINT=localhost:9000
+MINIO_ROOT_USER=minioadmin
+MINIO_ROOT_PASSWORD=minioadmin
+MINIO_BUCKET=observatory-backups
+MINIO_SECURE=false
+
+# --- Default Cost Tier ---
+# Options: free, medium, premium
+DEFAULT_TIER=free
+
+# --- Google Search / Google Autocomplete APIs ---
+# These keys are shared between the Google Search and Google Autocomplete arenas.
+# SERPER_API_KEY is used for both arenas at the MEDIUM tier.
+# SERPAPI_API_KEY is used for both arenas at the PREMIUM tier.
+SERPER_API_KEY=022d22c1ef2cfabb9f0aa80d653953ecad8f767e
+SERPAPI_API_KEY=
+
+# --- Social Media APIs ---
+BLUESKY_HANDLE=
+BLUESKY_APP_PASSWORD=
+REDDIT_CLIENT_ID=
+REDDIT_CLIENT_SECRET=
+REDDIT_USER_AGENT=IssueObservatory/1.0
+TIKTOK_CLIENT_KEY=
+TIKTOK_CLIENT_SECRET=
+TELEGRAM_API_ID=
+TELEGRAM_API_HASH=
+# Session string must be generated manually via Telethon interactive login.
+# See docs/guides/credential_acquisition_guide.md for instructions.
+TELEGRAM_SESSION_STRING=
+YOUTUBE_API_KEY=
+
+# --- News APIs ---
+EVENT_REGISTRY_API_KEY=
+
+# --- X/Twitter ---
+X_BEARER_TOKEN=
+X_API_KEY=
+X_API_SECRET=
+TWITTERAPIIO_API_KEY=
+
+# --- Wikipedia (Phase 2.5) ---
+# Wikipedia APIs are unauthenticated — only a User-Agent header is required.
+# Override the default User-Agent string here (optional).
+# WIKIPEDIA_USER_AGENT=IssueObservatory/1.0 (https://github.com/issue-observatory; contact@observatory.dk) python-httpx
+
+# --- Discord ---
+DISCORD_BOT_TOKEN=
+
+# --- Twitch (deferred) ---
+TWITCH_CLIENT_ID=
+TWITCH_CLIENT_SECRET=
+
+# --- Gab ---
+GAB_ACCESS_TOKEN=
+
+# --- Threads ---
+THREADS_ACCESS_TOKEN=
+
+# --- Bright Data Web Scraper API (Facebook / Instagram) ---
+# Both arenas are actor-only (no keyword search). Add Facebook pages/groups
+# and Instagram profiles to the Actor Directory, then collect via actors.
+# A single Bright Data API token works for both platforms. You can use the
+# same token for both variables, or use separate tokens for billing isolation.
+# Signup: https://brightdata.com → Web Scraper API → generate API token
+BRIGHTDATA_FACEBOOK_API_TOKEN=
+BRIGHTDATA_INSTAGRAM_API_TOKEN=
+
+# --- AI Chat Search (OpenRouter) ---
+OPENROUTER_API_KEY=
+
+# --- Majestic ---
+MAJESTIC_API_KEY=
+
+# --- VKontakte / VK (Future — pending legal review) ---
+# DO NOT enable without university legal review of EU sanctions implications.
+# VK_ACCESS_TOKEN=
