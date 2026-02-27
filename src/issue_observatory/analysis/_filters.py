@@ -74,11 +74,16 @@ def build_content_filters(
     if run_id is not None:
         # Include both directly collected records AND records linked from
         # other runs via the content_record_links table (cross-design reindex).
+        # Uses EXISTS with an indexed lookup on content_record_links
+        # (idx_content_record_links_run) rather than IN (SELECT ...) to
+        # avoid materialising the full subquery result set.
         clauses.append(
             f"({prefix}collection_run_id = :run_id"
-            f" OR ({prefix}id, {prefix}published_at) IN ("
-            f"SELECT content_record_id, content_record_published_at "
-            f"FROM content_record_links WHERE collection_run_id = :run_id))"
+            f" OR EXISTS ("
+            f"SELECT 1 FROM content_record_links crl "
+            f"WHERE crl.collection_run_id = :run_id "
+            f"AND crl.content_record_id = {prefix}id "
+            f"AND crl.content_record_published_at = {prefix}published_at))"
         )
         params["run_id"] = str(run_id)
 

@@ -106,4 +106,18 @@ beat_schedule: dict[str, dict] = {  # type: ignore[type-arg]
             "expires": 3_600,  # discard if not started within 1 hour
         },
     },
+    # ------------------------------------------------------------------
+    # Collection attempt reconciliation — weekly Sunday 05:00 Copenhagen
+    # Validates that collection_attempts entries still have corresponding
+    # data in content_records.  Invalidates stale entries so coverage
+    # checks don't block re-collection of deleted data.
+    # ------------------------------------------------------------------
+    "reconcile_collection_attempts": {
+        "task": "issue_observatory.workers.tasks.reconcile_collection_attempts",
+        "schedule": crontab(hour=5, minute=0, day_of_week="sunday"),
+        "options": {
+            "queue": "celery",
+            "expires": 7_200,  # discard if not started within 2 hours
+        },
+    },
 }

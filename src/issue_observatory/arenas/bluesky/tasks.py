@@ -330,6 +330,7 @@ def bluesky_collect_terms(
     # Persist collected records to the database.
     from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
         persist_collected_records,
+        record_collection_attempts_batch,
         reindex_existing_records,
     )
 
@@ -344,6 +345,20 @@ def bluesky_collect_terms(
         date_from=date_from,
         date_to=date_to,
     )
+
+    # Record successful collection attempts for future pre-checks.
+    if date_from and date_to:
+        record_collection_attempts_batch(
+            platform="bluesky",
+            collection_run_id=collection_run_id,
+            query_design_id=query_design_id,
+            inputs=terms,
+            input_type="term",
+            date_from=date_from,
+            date_to=date_to,
+            records_returned=inserted,
+        )
+
     logger.info(
         "bluesky: collect_by_terms completed — run=%s records=%d inserted=%d "
         "skipped=%d linked=%d",
@@ -475,6 +490,7 @@ def bluesky_collect_actors(
     # Persist collected records to the database.
     from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
         persist_collected_records,
+        record_collection_attempts_batch,
         reindex_existing_records,
     )
 
@@ -489,6 +505,20 @@ def bluesky_collect_actors(
         date_from=date_from,
         date_to=date_to,
     )
+
+    # Record successful collection attempts for future pre-checks.
+    if date_from and date_to:
+        record_collection_attempts_batch(
+            platform="bluesky",
+            collection_run_id=collection_run_id,
+            query_design_id=query_design_id,
+            inputs=actor_ids,
+            input_type="actor",
+            date_from=date_from,
+            date_to=date_to,
+            records_returned=inserted,
+        )
+
     skipped_actors = collector.skipped_actors
     logger.info(
         "bluesky: collect_by_actors completed — run=%s records=%d inserted=%d "

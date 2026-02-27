@@ -78,6 +78,16 @@ class ContentRecordLink(Base):
             "collection_run_id",
             name="uq_content_record_link",
         ),
+        # Composite index for the EXISTS join in analysis _filters.py:
+        # WHERE crl.collection_run_id = :run_id
+        #   AND crl.content_record_id = cr.id
+        #   AND crl.content_record_published_at = cr.published_at
+        sa.Index(
+            "idx_content_record_links_run_record",
+            "collection_run_id",
+            "content_record_id",
+            "content_record_published_at",
+        ),
     )
 
     def __repr__(self) -> str:

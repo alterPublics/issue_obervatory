@@ -1,8 +1,11 @@
-"""Add content_record_links table for cross-design record linking.
+"""Add content_record_links table and supporting indexes.
 
 When a collection run overlaps with data already collected by another run,
 links are created instead of re-fetching from the upstream API.  Analysis
 filters include linked records when querying by collection_run_id.
+
+Also adds ``idx_content_author_platform_id`` on ``content_records`` to
+support efficient author-based coverage checks and reindex queries.
 
 Revision ID: 025
 Revises: 024
@@ -66,10 +69,14 @@ def upgrade() -> None:
             name="uq_content_record_link",
         ),
     )
+    # Index for the analysis filter EXISTS join:
+    # WHERE crl.collection_run_id = :run_id
+    #   AND crl.content_record_id = cr.id
+    #   AND crl.content_record_published_at = cr.published_at
     op.create_index(
-        "idx_content_record_links_run",
+        "idx_content_record_links_run_record",
         "content_record_links",
-        ["collection_run_id"],
+        ["collection_run_id", "content_record_id", "content_record_published_at"],
     )
     op.create_index(
         "idx_content_record_links_design",
@@ -77,8 +84,18 @@ def upgrade() -> None:
         ["query_design_id"],
     )
 
+    # B-tree index on content_records.author_platform_id for efficient
+    # actor-based coverage checks and reindex queries.  This is inherited
+    # by all monthly partitions automatically (PostgreSQL 11+).
+    op.create_index(
+        "idx_content_author_platform_id",
+        "content_records",
+        ["author_platform_id"],
+    )
+
 
 def downgrade() -> None:
+    op.drop_index("idx_content_author_platform_id", table_name="content_records")
     op.drop_index("idx_content_record_links_design", table_name="content_record_links")
-    op.drop_index("idx_content_record_links_run", table_name="content_record_links")
+    op.drop_index("idx_content_record_links_run_record", table_name="content_record_links")
     op.drop_table("content_record_links")

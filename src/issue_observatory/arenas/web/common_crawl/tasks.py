@@ -193,13 +193,56 @@ def common_crawl_collect_terms(
 
     collector = CommonCrawlCollector(cc_index=cc_index or CC_DEFAULT_INDEX)
 
+    # --- Pre-collection coverage check ---
+    force_recollect = _extra.get("force_recollect", False)
+    effective_date_from = date_from
+    effective_date_to = date_to
+
+    if not force_recollect and date_from and date_to:
+        from datetime import datetime as _dt  # noqa: PLC0415
+        from issue_observatory.core.coverage_checker import check_existing_coverage  # noqa: PLC0415
+
+        gaps = check_existing_coverage(
+            platform="common_crawl",
+            date_from=_dt.fromisoformat(date_from),
+            date_to=_dt.fromisoformat(date_to),
+            terms=terms,
+        )
+        if not gaps:
+            logger.info(
+                "common_crawl: full coverage exists for run=%s — skipping API call",
+                collection_run_id,
+            )
+            _update_task_status(
+                collection_run_id, _PLATFORM, "completed", records_collected=0
+            )
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="web",
+                platform="common_crawl",
+                status="completed",
+                records_collected=0,
+                error_message=None,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            return {
+                "records_collected": 0,
+                "status": "completed",
+                "arena": _ARENA,
+                "tier": tier,
+                "coverage_skip": True,
+            }
+        effective_date_from = gaps[0][0].isoformat()
+        effective_date_to = gaps[-1][1].isoformat()
+
     try:
         records = asyncio.run(
             collector.collect_by_terms(
                 terms=terms,
                 tier=tier_enum,
-                date_from=date_from,
-                date_to=date_to,
+                date_from=effective_date_from,
+                date_to=effective_date_to,
                 max_results=max_results,
                 language_filter=language_filter,
             )
@@ -239,6 +282,22 @@ def common_crawl_collect_terms(
         inserted,
         skipped,
     )
+
+    # --- Record collection attempt metadata ---
+    if date_from and date_to:
+        from issue_observatory.workers._task_helpers import record_collection_attempts_batch  # noqa: PLC0415
+
+        record_collection_attempts_batch(
+            platform="common_crawl",
+            collection_run_id=collection_run_id,
+            query_design_id=query_design_id,
+            inputs=terms,
+            input_type="term",
+            date_from=date_from,
+            date_to=date_to,
+            records_returned=inserted,
+        )
+
     _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,
@@ -278,6 +337,7 @@ def common_crawl_collect_actors(
     date_to: str | None = None,
     max_results: int | None = None,
     cc_index: str | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Collect Common Crawl index entries for the specified actor domains.
 
@@ -342,13 +402,56 @@ def common_crawl_collect_actors(
 
     collector = CommonCrawlCollector(cc_index=cc_index or CC_DEFAULT_INDEX)
 
+    # --- Pre-collection coverage check ---
+    force_recollect = _extra.get("force_recollect", False)
+    effective_date_from = date_from
+    effective_date_to = date_to
+
+    if not force_recollect and date_from and date_to:
+        from datetime import datetime as _dt  # noqa: PLC0415
+        from issue_observatory.core.coverage_checker import check_existing_coverage  # noqa: PLC0415
+
+        gaps = check_existing_coverage(
+            platform="common_crawl",
+            date_from=_dt.fromisoformat(date_from),
+            date_to=_dt.fromisoformat(date_to),
+            actor_ids=actor_ids,
+        )
+        if not gaps:
+            logger.info(
+                "common_crawl: full coverage exists for run=%s — skipping API call",
+                collection_run_id,
+            )
+            _update_task_status(
+                collection_run_id, _PLATFORM, "completed", records_collected=0
+            )
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="web",
+                platform="common_crawl",
+                status="completed",
+                records_collected=0,
+                error_message=None,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            return {
+                "records_collected": 0,
+                "status": "completed",
+                "arena": _ARENA,
+                "tier": tier,
+                "coverage_skip": True,
+            }
+        effective_date_from = gaps[0][0].isoformat()
+        effective_date_to = gaps[-1][1].isoformat()
+
     try:
         records = asyncio.run(
             collector.collect_by_actors(
                 actor_ids=actor_ids,
                 tier=tier_enum,
-                date_from=date_from,
-                date_to=date_to,
+                date_from=effective_date_from,
+                date_to=effective_date_to,
                 max_results=max_results,
             )
         )
@@ -387,6 +490,22 @@ def common_crawl_collect_actors(
         inserted,
         skipped,
     )
+
+    # --- Record collection attempt metadata ---
+    if date_from and date_to:
+        from issue_observatory.workers._task_helpers import record_collection_attempts_batch  # noqa: PLC0415
+
+        record_collection_attempts_batch(
+            platform="common_crawl",
+            collection_run_id=collection_run_id,
+            query_design_id=query_design_id,
+            inputs=actor_ids,
+            input_type="actor",
+            date_from=date_from,
+            date_to=date_to,
+            records_returned=inserted,
+        )
+
     _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,

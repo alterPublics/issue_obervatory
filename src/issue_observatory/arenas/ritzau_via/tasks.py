@@ -159,6 +159,10 @@ def ritzau_via_collect_terms(
 
     collector = RitzauViaCollector()
 
+    # NOTE: Via Ritzau is FORWARD_ONLY — it serves live press releases and
+    # does not support date-range filtering.  Coverage pre-check is
+    # intentionally skipped because the API always returns current content.
+
     try:
         records = asyncio.run(
             collector.collect_by_terms(
@@ -198,6 +202,7 @@ def ritzau_via_collect_terms(
     from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
 
     inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
     logger.info(
         "ritzau_via: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
         collection_run_id,
@@ -242,6 +247,7 @@ def ritzau_via_collect_actors(
     date_from: str | None = None,
     date_to: str | None = None,
     max_results: int | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Collect Via Ritzau press releases from specific publishers.
 
@@ -288,6 +294,9 @@ def ritzau_via_collect_actors(
 
     collector = RitzauViaCollector()
 
+    # NOTE: Via Ritzau is FORWARD_ONLY — coverage pre-check skipped.
+    # See collect_by_terms for explanation.
+
     try:
         records = asyncio.run(
             collector.collect_by_actors(
@@ -328,6 +337,7 @@ def ritzau_via_collect_actors(
     from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
 
     inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
     logger.info(
         "ritzau_via: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
         collection_run_id,

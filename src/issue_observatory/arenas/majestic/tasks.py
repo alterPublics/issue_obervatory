@@ -247,6 +247,21 @@ def majestic_collect_terms(
         inserted,
         skipped,
     )
+
+    # --- Record collection attempt metadata ---
+    from issue_observatory.workers._task_helpers import record_collection_attempts_batch  # noqa: PLC0415
+
+    record_collection_attempts_batch(
+        platform="majestic",
+        collection_run_id=collection_run_id,
+        query_design_id=query_design_id,
+        inputs=terms,
+        input_type="term",
+        date_from=date_from or "",
+        date_to=date_to or "",
+        records_returned=inserted,
+    )
+
     _update_task_status(
         collection_run_id, _PLATFORM, "completed", records_collected=inserted
     )
@@ -277,6 +292,7 @@ def majestic_collect_actors(
     date_from: str | None = None,
     date_to: str | None = None,
     max_results: int | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Collect domain metrics and individual backlinks for domain actor IDs.
 
@@ -349,13 +365,56 @@ def majestic_collect_actors(
     credential_pool = CredentialPool()
     collector = MajesticCollector(credential_pool=credential_pool)
 
+    # --- Pre-collection coverage check ---
+    force_recollect = _extra.get("force_recollect", False)
+    effective_date_from = date_from
+    effective_date_to = date_to
+
+    if not force_recollect and date_from and date_to:
+        from datetime import datetime as _dt  # noqa: PLC0415
+        from issue_observatory.core.coverage_checker import check_existing_coverage  # noqa: PLC0415
+
+        gaps = check_existing_coverage(
+            platform="majestic",
+            date_from=_dt.fromisoformat(date_from),
+            date_to=_dt.fromisoformat(date_to),
+            actor_ids=actor_ids,
+        )
+        if not gaps:
+            logger.info(
+                "majestic: full coverage exists for run=%s — skipping API call",
+                collection_run_id,
+            )
+            _update_task_status(
+                collection_run_id, _PLATFORM, "completed", records_collected=0
+            )
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="web",
+                platform="majestic",
+                status="completed",
+                records_collected=0,
+                error_message=None,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            return {
+                "records_collected": 0,
+                "status": "completed",
+                "arena": _ARENA,
+                "tier": tier,
+                "coverage_skip": True,
+            }
+        effective_date_from = gaps[0][0].isoformat()
+        effective_date_to = gaps[-1][1].isoformat()
+
     try:
         records = asyncio.run(
             collector.collect_by_actors(
                 actor_ids=actor_ids,
                 tier=tier_enum,
-                date_from=date_from,
-                date_to=date_to,
+                date_from=effective_date_from,
+                date_to=effective_date_to,
                 max_results=max_results,
             )
         )
@@ -396,6 +455,22 @@ def majestic_collect_actors(
         inserted,
         skipped,
     )
+
+    # --- Record collection attempt metadata ---
+    if date_from and date_to:
+        from issue_observatory.workers._task_helpers import record_collection_attempts_batch  # noqa: PLC0415
+
+        record_collection_attempts_batch(
+            platform="majestic",
+            collection_run_id=collection_run_id,
+            query_design_id=query_design_id,
+            inputs=actor_ids,
+            input_type="actor",
+            date_from=date_from,
+            date_to=date_to,
+            records_returned=inserted,
+        )
+
     _update_task_status(
         collection_run_id, _PLATFORM, "completed", records_collected=inserted
     )

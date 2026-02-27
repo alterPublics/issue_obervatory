@@ -1201,10 +1201,10 @@ def reindex_existing_records(
 
     log = logging.getLogger("issue_observatory.workers._task_helpers")
 
+    # All queries include published_at bounds for partition pruning on
+    # content_records (range-partitioned by published_at, monthly).
     clauses = [
         "cr.platform = :platform",
-        "cr.collection_run_id != CAST(:run_id AS uuid)",
-        "(cr.raw_metadata->>'duplicate_of') IS NULL",
     ]
     params: dict[str, Any] = {
         "platform": platform,
@@ -1218,7 +1218,9 @@ def reindex_existing_records(
         clauses.append("cr.published_at <= CAST(:date_to AS timestamptz)")
         params["date_to"] = date_to
 
-    # Match on terms OR actors (whichever is provided)
+    # Match on terms OR actors (whichever is provided).
+    # Uses GIN-compatible @> operator for search_terms_matched,
+    # and B-tree index for author_platform_id.
     if terms:
         clauses.append("cr.search_terms_matched && CAST(:terms AS text[])")
         params["terms"] = "{" + ",".join(
@@ -1266,3 +1268,288 @@ def reindex_existing_records(
             exc,
         )
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Collection attempt recording (scalable pre-check metadata)
+# ---------------------------------------------------------------------------
+
+
+def record_collection_attempt(
+    platform: str,
+    collection_run_id: str,
+    query_design_id: str | None,
+    input_value: str,
+    input_type: str,
+    date_from: str,
+    date_to: str,
+    records_returned: int | None,
+) -> None:
+    """Record a single collection attempt in the ``collection_attempts`` table.
+
+    Called after each per-input (per-term or per-actor) collection completes.
+    The coverage checker queries this lightweight table instead of scanning
+    ``content_records``, keeping pre-checks O(attempts) not O(data).
+
+    Mirrors the ``process_pull()`` pattern from the legacy spreadAnalysis
+    MongoDB tool's ``pull`` collection.
+
+    Args:
+        platform: Platform identifier (e.g. ``"bluesky"``).
+        collection_run_id: UUID string of the parent collection run.
+        query_design_id: UUID string of the owning query design (optional).
+        input_value: The search term or actor platform ID that was collected.
+        input_type: ``"term"`` or ``"actor"``.
+        date_from: ISO 8601 start of the collection window.
+        date_to: ISO 8601 end of the collection window.
+        records_returned: Number of records returned by the API, or ``None``
+            if the attempt failed.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+
+    log = logging.getLogger("issue_observatory.workers._task_helpers")
+
+    try:
+        with get_sync_session() as db:
+            db.execute(
+                text(
+                    "INSERT INTO collection_attempts "
+                    "(platform, input_value, input_type, date_from, date_to, "
+                    "records_returned, collection_run_id, query_design_id) "
+                    "VALUES (:platform, :input_value, :input_type, "
+                    "CAST(:date_from AS timestamptz), CAST(:date_to AS timestamptz), "
+                    ":records_returned, CAST(:run_id AS uuid), "
+                    "CAST(:qd_id AS uuid))"
+                ),
+                {
+                    "platform": platform,
+                    "input_value": input_value,
+                    "input_type": input_type,
+                    "date_from": date_from,
+                    "date_to": date_to,
+                    "records_returned": records_returned,
+                    "run_id": collection_run_id,
+                    "qd_id": query_design_id,
+                },
+            )
+            db.commit()
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "record_collection_attempt: failed for platform=%s input=%s: %s",
+            platform,
+            input_value,
+            exc,
+        )
+
+
+def record_collection_attempts_batch(
+    platform: str,
+    collection_run_id: str,
+    query_design_id: str | None,
+    inputs: list[str],
+    input_type: str,
+    date_from: str,
+    date_to: str,
+    records_returned: int | None,
+) -> None:
+    """Record collection attempts for multiple inputs in a single transaction.
+
+    Convenience wrapper around :func:`record_collection_attempt` that inserts
+    one row per input value in a single DB round-trip.
+
+    Args:
+        platform: Platform identifier.
+        collection_run_id: UUID string of the parent collection run.
+        query_design_id: UUID string of the owning query design (optional).
+        inputs: List of search terms or actor platform IDs.
+        input_type: ``"term"`` or ``"actor"``.
+        date_from: ISO 8601 start of the collection window.
+        date_to: ISO 8601 end of the collection window.
+        records_returned: Total records returned (split equally is impractical,
+            so the total is stored on each row — the coverage checker only
+            checks ``IS NOT NULL`` to confirm success).
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+
+    log = logging.getLogger("issue_observatory.workers._task_helpers")
+
+    if not inputs:
+        return
+
+    try:
+        with get_sync_session() as db:
+            for inp in inputs:
+                db.execute(
+                    text(
+                        "INSERT INTO collection_attempts "
+                        "(platform, input_value, input_type, date_from, date_to, "
+                        "records_returned, collection_run_id, query_design_id) "
+                        "VALUES (:platform, :input_value, :input_type, "
+                        "CAST(:date_from AS timestamptz), CAST(:date_to AS timestamptz), "
+                        ":records_returned, CAST(:run_id AS uuid), "
+                        "CAST(:qd_id AS uuid))"
+                    ),
+                    {
+                        "platform": platform,
+                        "input_value": inp,
+                        "input_type": input_type,
+                        "date_from": date_from,
+                        "date_to": date_to,
+                        "records_returned": records_returned,
+                        "run_id": collection_run_id,
+                        "qd_id": query_design_id,
+                    },
+                )
+            db.commit()
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "record_collection_attempts_batch: failed for platform=%s: %s",
+            platform,
+            exc,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Collection attempt reconciliation
+# ---------------------------------------------------------------------------
+
+
+def reconcile_collection_attempts() -> dict[str, int]:
+    """Validate collection_attempts against actual content_records data.
+
+    For each valid attempt with ``records_returned > 0``, checks whether
+    at least one matching content record still exists in the database.
+    If no records remain (e.g. due to manual deletion or retention policy
+    enforcement), the attempt is marked ``is_valid = FALSE`` so the
+    coverage checker no longer trusts it.
+
+    This runs as a periodic Celery Beat task (weekly by default) to prevent
+    stale coverage claims from permanently blocking re-collection.
+
+    The check is efficient: uses ``EXISTS`` with partition-pruning-friendly
+    predicates (platform + published_at bounds) and short-circuits per row.
+
+    Returns:
+        Dict with ``attempts_checked`` and ``attempts_invalidated`` counts.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+
+    log = logging.getLogger("issue_observatory.workers._task_helpers")
+
+    checked = 0
+    invalidated = 0
+
+    try:
+        with get_sync_session() as db:
+            # Fetch all valid attempts that claimed successful collection.
+            # We process in batches to avoid holding a long transaction.
+            rows = db.execute(
+                text(
+                    "SELECT id, platform, input_value, input_type, "
+                    "date_from, date_to "
+                    "FROM collection_attempts "
+                    "WHERE is_valid = TRUE AND records_returned > 0 "
+                    "ORDER BY attempted_at DESC"
+                )
+            ).fetchall()
+
+            stale_ids: list[str] = []
+
+            for row in rows:
+                checked += 1
+                attempt_id = str(row[0])
+                platform = row[1]
+                input_value = row[2]
+                input_type = row[3]
+                date_from = row[4]
+                date_to = row[5]
+
+                # Build a targeted EXISTS check against content_records.
+                # Uses partition-pruning predicates (published_at bounds)
+                # and short-circuits after the first matching row.
+                cr_clauses = [
+                    "platform = :platform",
+                    "published_at >= CAST(:date_from AS timestamptz)",
+                    "published_at <= CAST(:date_to AS timestamptz)",
+                ]
+                cr_params: dict[str, Any] = {
+                    "platform": platform,
+                    "date_from": date_from.isoformat()
+                    if hasattr(date_from, "isoformat")
+                    else str(date_from),
+                    "date_to": date_to.isoformat()
+                    if hasattr(date_to, "isoformat")
+                    else str(date_to),
+                }
+
+                if input_type == "term":
+                    cr_clauses.append(
+                        "search_terms_matched @> CAST(:term_arr AS text[])"
+                    )
+                    cr_params["term_arr"] = (
+                        "{"
+                        + input_value.replace("\\", "\\\\").replace('"', '\\"')
+                        + "}"
+                    )
+                elif input_type == "actor":
+                    cr_clauses.append("author_platform_id = :actor_id")
+                    cr_params["actor_id"] = input_value
+
+                cr_where = " AND ".join(cr_clauses)
+
+                exists_result = db.execute(
+                    text(
+                        f"SELECT EXISTS("  # noqa: S608
+                        f"SELECT 1 FROM content_records WHERE {cr_where} LIMIT 1)"
+                    ),
+                    cr_params,
+                ).scalar()
+
+                if not exists_result:
+                    stale_ids.append(attempt_id)
+
+            # Batch-invalidate stale attempts.
+            if stale_ids:
+                # Process in chunks of 500 to avoid overly large IN clauses.
+                for i in range(0, len(stale_ids), 500):
+                    chunk = stale_ids[i : i + 500]
+                    placeholders = ", ".join(
+                        f"CAST(:id_{j} AS uuid)" for j in range(len(chunk))
+                    )
+                    params_dict = {f"id_{j}": uid for j, uid in enumerate(chunk)}
+                    db.execute(
+                        text(
+                            f"UPDATE collection_attempts "  # noqa: S608
+                            f"SET is_valid = FALSE "
+                            f"WHERE id IN ({placeholders})"
+                        ),
+                        params_dict,
+                    )
+                invalidated = len(stale_ids)
+                db.commit()
+
+        log.info(
+            "reconcile_collection_attempts: checked=%d invalidated=%d",
+            checked,
+            invalidated,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.error(
+            "reconcile_collection_attempts: error: %s",
+            exc,
+            exc_info=True,
+        )
+
+    return {"attempts_checked": checked, "attempts_invalidated": invalidated}

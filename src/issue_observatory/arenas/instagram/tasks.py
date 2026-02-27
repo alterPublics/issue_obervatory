@@ -271,13 +271,81 @@ def instagram_collect_actors(
     collector = InstagramCollector(credential_pool=credential_pool)
     tier_enum = Tier(tier)
 
+    # Check if force_recollect is set (opt-out from coverage check)
+    force_recollect = _extra.get("force_recollect", False)
+
+    # Pre-collection coverage check: narrow date range to uncovered gaps
+    effective_date_from = date_from
+    effective_date_to = date_to
+    if not force_recollect and date_from and date_to:
+        from datetime import datetime as _dt  # noqa: PLC0415
+
+        from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
+            check_existing_coverage,
+        )
+
+        gaps = check_existing_coverage(
+            platform=_PLATFORM,
+            date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
+            date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
+            actor_ids=actor_ids,
+        )
+        if not gaps:
+            logger.info(
+                "instagram: full coverage exists for run=%s — skipping API call, "
+                "will reindex existing records only.",
+                collection_run_id,
+            )
+            from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+                reindex_existing_records,
+            )
+
+            linked = reindex_existing_records(
+                platform=_PLATFORM,
+                collection_run_id=collection_run_id,
+                query_design_id=query_design_id,
+                actor_ids=actor_ids,
+                date_from=date_from,
+                date_to=date_to,
+            )
+            _update_task_status(
+                collection_run_id, _PLATFORM, "completed", records_collected=0
+            )
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena=_ARENA,
+                platform=_PLATFORM,
+                status="completed",
+                records_collected=0,
+                error_message=None,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            return {
+                "records_collected": 0,
+                "records_linked": linked,
+                "status": "completed",
+                "arena": _ARENA,
+                "platform": _PLATFORM,
+                "tier": tier,
+                "coverage_skip": True,
+            }
+        effective_date_from = gaps[0][0].isoformat()
+        effective_date_to = gaps[-1][1].isoformat()
+        logger.info(
+            "instagram: narrowing collection to uncovered range %s — %s (run=%s)",
+            effective_date_from,
+            effective_date_to,
+            collection_run_id,
+        )
+
     try:
         records = asyncio.run(
             collector.collect_by_actors(
                 actor_ids=actor_ids,
                 tier=tier_enum,
-                date_from=date_from,
-                date_to=date_to,
+                date_from=effective_date_from,
+                date_to=effective_date_to,
                 max_results=max_results,
             )
         )
@@ -323,9 +391,26 @@ def instagram_collect_actors(
     count = len(records)
 
     # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+    from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+        persist_collected_records,
+        record_collection_attempts_batch,
+    )
 
     inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
+    # Record successful collection attempts for future pre-checks.
+    if date_from and date_to:
+        record_collection_attempts_batch(
+            platform=_PLATFORM,
+            collection_run_id=collection_run_id,
+            query_design_id=query_design_id,
+            inputs=actor_ids,
+            input_type="actor",
+            date_from=date_from,
+            date_to=date_to,
+            records_returned=inserted,
+        )
+
     logger.info(
         "instagram: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
         collection_run_id,
@@ -337,8 +422,8 @@ def instagram_collect_actors(
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
-        arena="social_media",
-        platform="instagram",
+        arena=_ARENA,
+        platform=_PLATFORM,
         status="completed",
         records_collected=inserted,
         error_message=None,

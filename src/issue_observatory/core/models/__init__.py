@@ -27,6 +27,7 @@ from issue_observatory.core.models.collection import (
     CollectionTask,
     CreditTransaction,
 )
+from issue_observatory.core.models.collection_attempts import CollectionAttempt
 from issue_observatory.core.models.content import UniversalContentRecord
 from issue_observatory.core.models.content_links import ContentRecordLink
 from issue_observatory.core.models.credentials import ApiCredential
@@ -74,6 +75,7 @@ __all__ = [
     # Collection
     "CollectionRun",
     "CollectionTask",
+    "CollectionAttempt",
     "CreditTransaction",
     # Credentials
     "ApiCredential",

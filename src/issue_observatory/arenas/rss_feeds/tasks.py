@@ -174,6 +174,11 @@ def rss_feeds_collect_terms(
 
     collector = RSSFeedsCollector()
 
+    # NOTE: RSS feeds are FORWARD_ONLY — they only return current/recent
+    # entries and cannot backfill historical data.  Coverage pre-check is
+    # intentionally skipped because it would prevent re-fetching feeds
+    # whose content changes with every poll.
+
     try:
         records = asyncio.run(
             collector.collect_by_terms(
@@ -214,6 +219,7 @@ def rss_feeds_collect_terms(
     from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
 
     inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
     logger.info(
         "rss_feeds: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
         collection_run_id,
@@ -266,6 +272,7 @@ def rss_feeds_collect_actors(
     date_from: str | None = None,
     date_to: str | None = None,
     max_results: int | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Collect all RSS entries from feeds associated with specific outlets.
 
@@ -292,6 +299,9 @@ def rss_feeds_collect_actors(
         ArenaCollectionError: Marks the task as FAILED.
     """
     from issue_observatory.arenas.base import Tier  # noqa: PLC0415
+    from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+        update_collection_task_status,
+    )
 
     _settings = get_settings()
     _redis_url = _settings.redis_url
@@ -334,6 +344,9 @@ def rss_feeds_collect_actors(
 
     collector = RSSFeedsCollector()
 
+    # NOTE: RSS feeds are FORWARD_ONLY — coverage pre-check skipped.
+    # See collect_by_terms for explanation.
+
     try:
         records = asyncio.run(
             collector.collect_by_actors(
@@ -373,6 +386,7 @@ def rss_feeds_collect_actors(
     from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
 
     inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
     logger.info(
         "rss_feeds: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
         collection_run_id,

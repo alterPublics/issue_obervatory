@@ -244,6 +244,10 @@ def wikipedia_collect_terms(
 
     collector = WikipediaCollector()
 
+    # NOTE: Wikipedia is FORWARD_ONLY — it monitors editorial revisions and
+    # pageviews going forward.  Coverage pre-check is intentionally skipped
+    # because revision monitoring should always fetch the latest state.
+
     try:
         records = asyncio.run(
             collector.collect_by_terms(
@@ -284,6 +288,7 @@ def wikipedia_collect_terms(
     from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
 
     inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
     logger.info(
         "wikipedia: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
         collection_run_id,
@@ -329,6 +334,7 @@ def wikipedia_collect_actors(
     date_from: str | None = None,
     date_to: str | None = None,
     max_results: int | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Collect Wikipedia revisions authored by specific Wikipedia editors.
 
@@ -396,6 +402,9 @@ def wikipedia_collect_actors(
 
     collector = WikipediaCollector()
 
+    # NOTE: Wikipedia is FORWARD_ONLY — coverage pre-check skipped.
+    # See collect_by_terms for explanation.
+
     try:
         records = asyncio.run(
             collector.collect_by_actors(
@@ -434,6 +443,7 @@ def wikipedia_collect_actors(
     from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
 
     inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
     logger.info(
         "wikipedia: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
         collection_run_id,

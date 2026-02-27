@@ -782,7 +782,64 @@ def enforce_retention_policy() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Task 6: enrich_collection_run
+# Task 6: reconcile_collection_attempts
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(
+    name="issue_observatory.workers.tasks.reconcile_collection_attempts",
+    bind=False,
+)
+def reconcile_collection_attempts_task() -> dict[str, Any]:
+    """Validate collection_attempts against actual content_records data.
+
+    For each valid attempt with ``records_returned > 0``, checks whether
+    at least one matching content record still exists.  If not (e.g. due
+    to manual deletion or retention policy enforcement), marks the attempt
+    as ``is_valid = FALSE`` so the coverage checker stops trusting it and
+    future collection runs can re-fetch the data.
+
+    Runs weekly via Celery Beat (Sunday 05:00 Copenhagen time).
+
+    Returns:
+        Dict with ``attempts_checked`` and ``attempts_invalidated`` counts.
+    """
+    _task_start = time.perf_counter()
+    log = logger.bind(task="reconcile_collection_attempts")
+    log.info("reconcile_collection_attempts: starting")
+
+    from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+        reconcile_collection_attempts,
+    )
+
+    result = reconcile_collection_attempts()
+
+    log.info(
+        "reconcile_collection_attempts: complete",
+        attempts_checked=result["attempts_checked"],
+        attempts_invalidated=result["attempts_invalidated"],
+    )
+    try:
+        from issue_observatory.api.metrics import (  # noqa: PLC0415
+            celery_task_duration_seconds,
+            celery_tasks_total,
+        )
+        celery_tasks_total.labels(
+            task_name="reconcile_collection_attempts", status="success"
+        ).inc()
+        celery_task_duration_seconds.labels(
+            task_name="reconcile_collection_attempts"
+        ).observe(time.perf_counter() - _task_start)
+    except Exception as _metrics_exc:  # noqa: BLE001
+        _stdlib_logger.debug(
+            "reconcile_collection_attempts: metrics recording failed: %s",
+            _metrics_exc,
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Task 7: enrich_collection_run
 # ---------------------------------------------------------------------------
 
 
