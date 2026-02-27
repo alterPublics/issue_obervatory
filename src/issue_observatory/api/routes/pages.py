@@ -433,7 +433,9 @@ async def query_designs_edit(
         select(QueryDesign)
         .where(QueryDesign.id == design_id)
         .options(
-            selectinload(QueryDesign.search_terms),
+            selectinload(QueryDesign.search_terms).selectinload(
+                SearchTerm.parent_term
+            ),
             selectinload(QueryDesign.project),
         )
     )

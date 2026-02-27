@@ -416,14 +416,21 @@ async def fetch_search_terms_for_arena(
     query_design_id: Any,
     arena_platform_name: str,
 ) -> list[str]:
-    """Return the list of active search term strings scoped to a specific arena.
+    """Return the list of active DEFAULT search term strings scoped to a specific arena.
 
-    Queries the ``search_terms`` table for all active terms associated with
-    *query_design_id*, filtering to include only terms where:
+    Queries the ``search_terms`` table for all active **default** terms
+    (``parent_term_id IS NULL``) associated with *query_design_id*, filtering
+    to include only terms where:
 
     - ``is_active`` is ``True``
+    - ``parent_term_id`` is ``NULL`` (excludes arena-specific overrides)
     - ``target_arenas`` is ``NULL`` (applies to all arenas), OR
     - ``target_arenas`` contains *arena_platform_name* in its JSONB array
+
+    Override terms (``parent_term_id IS NOT NULL``) are excluded because they
+    are handled by :func:`fetch_resolved_terms_for_arena` via the
+    ``override_arena`` column.  Without this exclusion, overrides (which have
+    ``target_arenas=NULL``) would leak into every arena's default term list.
 
     This implements YF-01 per-arena search term scoping, allowing researchers
     to target specific terms to specific platforms (e.g., hashtags to Twitter
@@ -452,6 +459,11 @@ async def fetch_search_terms_for_arena(
             select(SearchTerm.term)
             .where(SearchTerm.query_design_id == query_design_id)
             .where(SearchTerm.is_active.is_(True))
+            # Exclude override terms — they are arena-specific and handled
+            # by fetch_resolved_terms_for_arena() via the override_arena
+            # column.  Without this filter, override terms (which have
+            # target_arenas=NULL) leak into every arena's default term list.
+            .where(SearchTerm.parent_term_id.is_(None))
             .where(
                 or_(
                     # SQL NULL (from server_default or direct SQL insert):
