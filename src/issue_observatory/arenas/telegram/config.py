@@ -41,6 +41,28 @@ baseline exists only to prevent accidental burst.
 """
 
 # ---------------------------------------------------------------------------
+# Humanizing inter-request delays
+# ---------------------------------------------------------------------------
+
+TELEGRAM_INTER_REQUEST_DELAY_MIN: float = 1.0
+"""Minimum delay in seconds between consecutive Telegram API calls.
+
+Adds randomized jitter on top of the sliding-window rate limiter to mimic
+human pacing and reduce the risk of ``FloodWaitError`` from the MTProto server.
+"""
+
+TELEGRAM_INTER_REQUEST_DELAY_MAX: float = 3.0
+"""Maximum delay in seconds between consecutive Telegram API calls."""
+
+TELEGRAM_CHANNEL_RESOLUTION_DELAY: float = 0.5
+"""Delay in seconds before resolving a channel entity via ``get_entity()``.
+
+Channel resolution is a lightweight RPC but still counts toward Telegram's
+internal rate budget.  A short delay before each resolution reduces the chance
+of triggering ``FloodWaitError`` during the channel discovery phase.
+"""
+
+# ---------------------------------------------------------------------------
 # Pagination
 # ---------------------------------------------------------------------------
 

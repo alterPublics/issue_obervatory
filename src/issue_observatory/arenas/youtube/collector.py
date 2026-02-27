@@ -256,15 +256,26 @@ class YouTubeCollector(ArenaCollector):
         date_from_dt = self._parse_datetime(date_from)
         date_to_dt = self._parse_datetime(date_to)
         all_video_ids: list[str] = []
+        self._skipped_actors = []
 
         for channel_id in actor_ids:
             if len(all_video_ids) >= effective_max:
                 break
-            rss_ids = await poll_channel_rss(
-                channel_id=channel_id,
-                date_from=date_from_dt,
-                date_to=date_to_dt,
-            )
+            try:
+                rss_ids = await poll_channel_rss(
+                    channel_id=channel_id,
+                    date_from=date_from_dt,
+                    date_to=date_to_dt,
+                )
+            except ArenaRateLimitError:
+                raise
+            except (ArenaCollectionError, Exception) as exc:
+                self._record_skipped_actor(
+                    actor_id=channel_id,
+                    reason="rss_error",
+                    error=str(exc),
+                )
+                continue
             all_video_ids.extend(rss_ids)
 
         cred = await self._acquire_credential()
@@ -281,8 +292,8 @@ class YouTubeCollector(ArenaCollector):
                 await self.credential_pool.release(credential_id=cred["id"])
 
         logger.info(
-            "youtube: collect_by_actors — channels=%d, rss_ids=%d, records=%d",
-            len(actor_ids), len(all_video_ids), len(records),
+            "youtube: collect_by_actors — channels=%d, rss_ids=%d, records=%d, skipped=%d",
+            len(actor_ids), len(all_video_ids), len(records), len(self._skipped_actors),
         )
         return records
 

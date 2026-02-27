@@ -28,6 +28,7 @@ from issue_observatory.core.models.collection import (
     CreditTransaction,
 )
 from issue_observatory.core.models.content import UniversalContentRecord
+from issue_observatory.core.models.content_links import ContentRecordLink
 from issue_observatory.core.models.credentials import ApiCredential
 from issue_observatory.core.models.project import Project
 from issue_observatory.core.models.scraping import ScrapingJob
@@ -58,6 +59,7 @@ __all__ = [
     "RefreshToken",
     # Content
     "UniversalContentRecord",
+    "ContentRecordLink",
     # Actors
     "Actor",
     "ActorAlias",

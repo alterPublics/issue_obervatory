@@ -52,6 +52,9 @@ from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.telegram.config import (
     DANISH_TELEGRAM_CHANNELS,
     MAX_MESSAGES_PER_REQUEST,
+    TELEGRAM_CHANNEL_RESOLUTION_DELAY,
+    TELEGRAM_INTER_REQUEST_DELAY_MAX,
+    TELEGRAM_INTER_REQUEST_DELAY_MIN,
     TELEGRAM_TIERS,
 )
 from issue_observatory.config.tiers import TierConfig
@@ -718,10 +721,14 @@ class TelegramCollector(ArenaCollector):
         """
         from telethon.errors import ChannelPrivateError, PeerIdInvalidError  # noqa: PLC0415
 
+        import asyncio  # noqa: PLC0415
+        import random  # noqa: PLC0415
+
         records: list[dict[str, Any]] = []
         offset_id = 0
 
         try:
+            await asyncio.sleep(TELEGRAM_CHANNEL_RESOLUTION_DELAY)
             entity = await client.get_entity(channel)
         except ChannelPrivateError:
             logger.warning("telegram: channel %r is private — skipping.", channel)
@@ -735,6 +742,9 @@ class TelegramCollector(ArenaCollector):
 
         while len(records) < max_results:
             await self._wait_for_rate_limit(cred_id)
+            await asyncio.sleep(
+                random.uniform(TELEGRAM_INTER_REQUEST_DELAY_MIN, TELEGRAM_INTER_REQUEST_DELAY_MAX)
+            )
             batch_limit = min(MAX_MESSAGES_PER_REQUEST, max_results - len(records))
 
             messages = await client.get_messages(
@@ -807,10 +817,14 @@ class TelegramCollector(ArenaCollector):
         """
         from telethon.errors import ChannelPrivateError, PeerIdInvalidError  # noqa: PLC0415
 
+        import asyncio  # noqa: PLC0415
+        import random  # noqa: PLC0415
+
         records: list[dict[str, Any]] = []
         offset_id = 0
 
         try:
+            await asyncio.sleep(TELEGRAM_CHANNEL_RESOLUTION_DELAY)
             entity = await client.get_entity(channel)
         except ChannelPrivateError:
             logger.warning("telegram: channel %r is private — skipping.", channel)
@@ -824,6 +838,9 @@ class TelegramCollector(ArenaCollector):
 
         while len(records) < max_results:
             await self._wait_for_rate_limit(cred_id)
+            await asyncio.sleep(
+                random.uniform(TELEGRAM_INTER_REQUEST_DELAY_MIN, TELEGRAM_INTER_REQUEST_DELAY_MAX)
+            )
             batch_limit = min(MAX_MESSAGES_PER_REQUEST, max_results - len(records))
 
             messages = await client.get_messages(

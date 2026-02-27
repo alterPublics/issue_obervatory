@@ -1158,3 +1158,111 @@ async def fetch_actor_ids_for_design_and_platform(
             actor_ids.append(identifier)
 
     return actor_ids
+
+
+# ---------------------------------------------------------------------------
+# Cross-design record linking (Issue 3: avoid recollection)
+# ---------------------------------------------------------------------------
+
+
+def reindex_existing_records(
+    platform: str,
+    collection_run_id: str,
+    query_design_id: str | None,
+    terms: list[str] | None = None,
+    actor_ids: list[str] | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> int:
+    """Link existing content records from OTHER runs to this collection run.
+
+    Finds records that match the given terms/actors and date range from
+    previous collection runs and creates ``content_record_links`` rows so
+    that the current run's analysis includes them without re-fetching.
+
+    Args:
+        platform: Platform identifier (e.g. ``"bluesky"``).
+        collection_run_id: UUID string of the current collection run.
+        query_design_id: UUID string of the owning query design (optional).
+        terms: Search terms to match against ``search_terms_matched``.
+        actor_ids: Actor platform IDs to match against ``author_platform_id``.
+        date_from: ISO 8601 lower date bound (optional).
+        date_to: ISO 8601 upper date bound (optional).
+
+    Returns:
+        Number of link rows created.
+    """
+    import json
+    import logging
+
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+
+    log = logging.getLogger("issue_observatory.workers._task_helpers")
+
+    clauses = [
+        "cr.platform = :platform",
+        "cr.collection_run_id != CAST(:run_id AS uuid)",
+        "(cr.raw_metadata->>'duplicate_of') IS NULL",
+    ]
+    params: dict[str, Any] = {
+        "platform": platform,
+        "run_id": collection_run_id,
+    }
+
+    if date_from:
+        clauses.append("cr.published_at >= CAST(:date_from AS timestamptz)")
+        params["date_from"] = date_from
+    if date_to:
+        clauses.append("cr.published_at <= CAST(:date_to AS timestamptz)")
+        params["date_to"] = date_to
+
+    # Match on terms OR actors (whichever is provided)
+    if terms:
+        clauses.append("cr.search_terms_matched && CAST(:terms AS text[])")
+        params["terms"] = "{" + ",".join(
+            '"' + t.replace("\\", "\\\\").replace('"', '\\"') + '"' for t in terms
+        ) + "}"
+    elif actor_ids:
+        clauses.append("cr.author_platform_id = ANY(:actor_ids)")
+        params["actor_ids"] = actor_ids
+
+    where = " AND ".join(clauses)
+
+    qd_value = f"CAST(:qd_id AS uuid)" if query_design_id else "NULL"
+    if query_design_id:
+        params["qd_id"] = query_design_id
+
+    insert_sql = text(
+        f"INSERT INTO content_record_links "  # noqa: S608
+        f"(content_record_id, content_record_published_at, collection_run_id, "
+        f"query_design_id, link_type) "
+        f"SELECT cr.id, cr.published_at, CAST(:run_id AS uuid), "
+        f"{qd_value}, 'reindex' "
+        f"FROM content_records cr WHERE {where} "
+        f"ON CONFLICT (content_record_id, content_record_published_at, collection_run_id) "
+        f"DO NOTHING"
+    )
+
+    try:
+        with get_sync_session() as db:
+            result = db.execute(insert_sql, params)
+            linked = result.rowcount
+            db.commit()
+
+        log.info(
+            "reindex_existing_records: linked %d records for platform=%s run=%s",
+            linked,
+            platform,
+            collection_run_id,
+        )
+        return linked
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "reindex_existing_records: failed for platform=%s run=%s: %s",
+            platform,
+            collection_run_id,
+            exc,
+        )
+        return 0

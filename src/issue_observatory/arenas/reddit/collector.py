@@ -251,6 +251,7 @@ class RedditCollector(ArenaCollector):
         """
         self._validate_tier(tier)
         effective_max = max_results if max_results is not None else DEFAULT_MAX_RESULTS
+        self._skipped_actors = []
         cred = await self._acquire_credential()
 
         try:
@@ -281,9 +282,10 @@ class RedditCollector(ArenaCollector):
                 await self.credential_pool.release(credential_id=cred.get("id", "default"))
 
         logger.info(
-            "reddit: collect_by_actors completed — %d records for %d actors",
+            "reddit: collect_by_actors completed — %d records for %d actors (%d skipped)",
             len(all_records),
             len(actor_ids),
+            len(self._skipped_actors),
         )
         return all_records
 
@@ -510,6 +512,7 @@ class RedditCollector(ArenaCollector):
                 time_filter=DEFAULT_TIME_FILTER,
             )
 
+            page_counter = 0
             async for post in search_gen:
                 if post.id in seen_post_ids:
                     continue
@@ -523,6 +526,13 @@ class RedditCollector(ArenaCollector):
                         credential_id=credential_id,
                     )
                     records.extend(comment_records)
+
+                # asyncpraw internally fetches 100 results per API call.
+                # Check the rate limiter every 100 posts consumed to ensure
+                # pagination respects the shared rate budget.
+                page_counter += 1
+                if page_counter % 100 == 0:
+                    await self._wait_for_rate_limit(credential_id)
 
                 if len(records) >= max_results:
                     break
@@ -674,11 +684,11 @@ class RedditCollector(ArenaCollector):
                 "reddit: forbidden access to user %r — skipping. error=%s", username, exc
             )
         except Exception as exc:
-            raise ArenaCollectionError(
-                f"reddit: unexpected error collecting user={username!r}: {exc}",
-                arena=self.arena_name,
-                platform=self.platform_name,
-            ) from exc
+            self._record_skipped_actor(
+                actor_id=username,
+                reason="unexpected_error",
+                error=str(exc),
+            )
 
         logger.debug("reddit: user=%r collected %d records", username, len(records))
         return records

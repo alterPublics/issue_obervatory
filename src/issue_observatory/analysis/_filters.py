@@ -72,7 +72,14 @@ def build_content_filters(
         params["query_design_id"] = str(query_design_id)
 
     if run_id is not None:
-        clauses.append(f"{prefix}collection_run_id = :run_id")
+        # Include both directly collected records AND records linked from
+        # other runs via the content_record_links table (cross-design reindex).
+        clauses.append(
+            f"({prefix}collection_run_id = :run_id"
+            f" OR ({prefix}id, {prefix}published_at) IN ("
+            f"SELECT content_record_id, content_record_published_at "
+            f"FROM content_record_links WHERE collection_run_id = :run_id))"
+        )
         params["run_id"] = str(run_id)
 
     if arena is not None:

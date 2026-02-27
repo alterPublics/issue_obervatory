@@ -262,25 +262,37 @@ class BlueskyCollector(ArenaCollector):
 
         all_records: list[dict[str, Any]] = []
 
+        self._skipped_actors = []
         try:
             async with self._build_http_client() as client:
                 for actor_id in actor_ids:
                     if len(all_records) >= effective_max:
                         break
                     remaining = effective_max - len(all_records)
-                    records = await self._fetch_author_feed(
-                        client=client,
-                        actor=actor_id,
-                        max_results=remaining,
-                        date_from=date_from_dt,
-                        date_to=date_to_dt,
-                    )
+                    try:
+                        records = await self._fetch_author_feed(
+                            client=client,
+                            actor=actor_id,
+                            max_results=remaining,
+                            date_from=date_from_dt,
+                            date_to=date_to_dt,
+                        )
+                    except ArenaRateLimitError:
+                        raise
+                    except ArenaCollectionError as exc:
+                        self._record_skipped_actor(
+                            actor_id=actor_id,
+                            reason="collection_error",
+                            error=str(exc),
+                        )
+                        continue
                     all_records.extend(records)
 
             logger.info(
-                "bluesky: collected %d posts for %d actors",
+                "bluesky: collected %d posts for %d actors (%d skipped)",
                 len(all_records),
                 len(actor_ids),
+                len(self._skipped_actors),
             )
             return all_records
         finally:

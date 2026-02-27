@@ -68,6 +68,8 @@ def _update_task_status(
     status: str,
     records_collected: int = 0,
     error_message: str | None = None,
+    actors_skipped: int = 0,
+    skipped_actor_detail: list[dict[str, str]] | None = None,
 ) -> None:
     """Best-effort update of the ``collection_tasks`` row for this arena.
 
@@ -80,11 +82,15 @@ def _update_task_status(
         status: New status (``"running"`` | ``"completed"`` | ``"failed"``).
         records_collected: Number of records collected.
         error_message: Error description for ``"failed"`` updates.
+        actors_skipped: Number of actors skipped due to per-actor errors.
+        skipped_actor_detail: List of dicts with actor_id, reason, error.
     """
     try:
         from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
 
         with get_sync_session() as session:
+            import json  # noqa: PLC0415
+
             from sqlalchemy import text  # noqa: PLC0415
 
             session.execute(
@@ -94,6 +100,8 @@ def _update_task_status(
                     SET status            = :status,
                         records_collected = :records_collected,
                         error_message     = :error_message,
+                        actors_skipped    = :actors_skipped,
+                        skipped_actor_detail = :skipped_actor_detail,
                         completed_at      = CASE
                             WHEN :status IN ('completed', 'failed') THEN NOW()
                             ELSE completed_at END,
@@ -108,6 +116,10 @@ def _update_task_status(
                     "status": status,
                     "records_collected": records_collected,
                     "error_message": error_message,
+                    "actors_skipped": actors_skipped,
+                    "skipped_actor_detail": json.dumps(skipped_actor_detail)
+                    if skipped_actor_detail
+                    else None,
                     "run_id": collection_run_id,
                     "arena": arena,
                 },
@@ -274,15 +286,30 @@ def youtube_collect_terms(
     count = len(records)
 
     # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+    from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+        persist_collected_records,
+        reindex_existing_records,
+    )
 
     inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
+    # Link existing records from other runs that match these terms/dates.
+    linked = reindex_existing_records(
+        platform="youtube",
+        collection_run_id=collection_run_id,
+        query_design_id=query_design_id,
+        terms=terms,
+        date_from=date_from,
+        date_to=date_to,
+    )
     logger.info(
-        "youtube: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
+        "youtube: collect_by_terms completed — run=%s records=%d inserted=%d "
+        "skipped=%d linked=%d",
         collection_run_id,
         count,
         inserted,
         skipped,
+        linked,
     )
     _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
     publish_task_update(
@@ -443,17 +470,41 @@ def youtube_collect_actors(
     count = len(records)
 
     # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+    from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+        persist_collected_records,
+        reindex_existing_records,
+    )
 
     inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
+    # Link existing records from other runs that match these actors/dates.
+    linked = reindex_existing_records(
+        platform="youtube",
+        collection_run_id=collection_run_id,
+        query_design_id=query_design_id,
+        actor_ids=actor_ids,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    skipped_actors = collector.skipped_actors
     logger.info(
-        "youtube: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
+        "youtube: collect_by_actors completed — run=%s records=%d inserted=%d "
+        "dupes_skipped=%d actors_skipped=%d linked=%d",
         collection_run_id,
         count,
         inserted,
         skipped,
+        len(skipped_actors),
+        linked,
     )
-    _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
+    _update_task_status(
+        collection_run_id,
+        _PLATFORM,
+        "completed",
+        records_collected=inserted,
+        actors_skipped=len(skipped_actors),
+        skipped_actor_detail=skipped_actors or None,
+    )
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
@@ -471,6 +522,7 @@ def youtube_collect_actors(
         "arena": _ARENA,
         "platform": _PLATFORM,
         "tier": tier,
+        "actors_skipped": len(skipped_actors),
     }
 
 

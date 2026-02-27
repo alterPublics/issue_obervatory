@@ -231,27 +231,39 @@ class XTwitterCollector(ArenaCollector):
         date_to_str = _to_date_str(date_to)
 
         all_records: list[dict[str, Any]] = []
+        self._skipped_actors = []
 
         async with self._build_http_client() as client:
             for actor_id in actor_ids:
                 if len(all_records) >= effective_max:
                     break
                 remaining = effective_max - len(all_records)
-                if tier == Tier.MEDIUM:
-                    records = await self._collect_medium_actor(
-                        client, actor_id, remaining, date_from_str, date_to_str
+                try:
+                    if tier == Tier.MEDIUM:
+                        records = await self._collect_medium_actor(
+                            client, actor_id, remaining, date_from_str, date_to_str
+                        )
+                    else:
+                        records = await self._collect_premium_actor(
+                            client, actor_id, remaining, date_from_str, date_to_str
+                        )
+                except ArenaRateLimitError:
+                    raise
+                except ArenaCollectionError as exc:
+                    self._record_skipped_actor(
+                        actor_id=actor_id,
+                        reason="collection_error",
+                        error=str(exc),
                     )
-                else:
-                    records = await self._collect_premium_actor(
-                        client, actor_id, remaining, date_from_str, date_to_str
-                    )
+                    continue
                 all_records.extend(records)
 
         logger.info(
-            "x_twitter: collect_by_actors completed — tier=%s actors=%d records=%d",
+            "x_twitter: collect_by_actors completed — tier=%s actors=%d records=%d skipped=%d",
             tier.value,
             len(actor_ids),
             len(all_records),
+            len(self._skipped_actors),
         )
         return all_records
 

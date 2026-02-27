@@ -237,6 +237,15 @@ class CollectionTask(Base):
         sa.Text,
         nullable=True,
     )
+    actors_skipped: Mapped[int] = mapped_column(
+        sa.Integer,
+        nullable=False,
+        server_default=sa.text("0"),
+    )
+    skipped_actor_detail: Mapped[Optional[dict]] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
     rate_limit_state: Mapped[Optional[dict]] = mapped_column(
         JSONB,
         nullable=True,

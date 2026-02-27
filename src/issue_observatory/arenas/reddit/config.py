@@ -43,10 +43,16 @@ REDDIT_WINDOW_SECONDS: int = 60
 # Search configuration
 # ---------------------------------------------------------------------------
 
-MAX_RESULTS_PER_SEARCH: int = 100
-"""Maximum results per Reddit search call (Reddit API hard limit)."""
+MAX_RESULTS_PER_SEARCH: int = 1000
+"""Maximum results per Reddit search call.
 
-DEFAULT_MAX_RESULTS: int = 100
+asyncpraw handles Reddit's ``after`` token pagination automatically via its
+generator.  The old value of 100 capped results at a single page.  Reddit's
+listing API has a hard ceiling of ~1000 results regardless of pagination; this
+constant matches that platform-imposed limit.
+"""
+
+DEFAULT_MAX_RESULTS: int = 1000
 """Default upper bound on results when ``max_results`` is not specified."""
 
 DEFAULT_SEARCH_SORT: str = "new"
@@ -119,7 +125,7 @@ credential payload does not include a ``user_agent`` field and the
 REDDIT_TIERS: dict[Tier, TierConfig] = {
     Tier.FREE: TierConfig(
         tier=Tier.FREE,
-        max_results_per_run=1_000,
+        max_results_per_run=5_000,
         rate_limit_per_minute=REDDIT_RATE_LIMIT_PER_MINUTE,
         requires_credential=True,
         estimated_credits_per_1k=0,
