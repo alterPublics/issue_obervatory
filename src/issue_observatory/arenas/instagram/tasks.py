@@ -214,6 +214,7 @@ def instagram_collect_actors(
     date_from: str | None = None,
     date_to: str | None = None,
     max_results: int | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
     """Collect Instagram posts from specific profiles.
 
@@ -230,6 +231,9 @@ def instagram_collect_actors(
         date_from: ISO 8601 lower date bound (optional).
         date_to: ISO 8601 upper date bound (optional).
         max_results: Optional cap on total records.
+        **_extra: Extra keyword arguments passed by the orchestration layer
+            (e.g. ``public_figure_ids``, ``language_filter``). Silently
+            ignored — actor-only tasks do not use these parameters.
 
     Returns:
         Dict with ``records_collected``, ``status``, ``arena``, ``platform``, ``tier``.

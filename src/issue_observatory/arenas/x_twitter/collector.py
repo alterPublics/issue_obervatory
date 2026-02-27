@@ -3,7 +3,7 @@
 Collects tweets from two tiers:
 
 - **MEDIUM** (:class:`Tier.MEDIUM`): TwitterAPI.io third-party search service.
-  POST to ``/twitter/tweet/advanced_search`` with cursor-based pagination.
+  GET ``/twitter/tweet/advanced_search`` with cursor-based pagination.
   Credential: ``platform="twitterapi_io"``, JSONB field ``api_key``.
 
 - **PREMIUM** (:class:`Tier.PREMIUM`): Official X API v2 Pro.
@@ -354,7 +354,7 @@ class XTwitterCollector(ArenaCollector):
                 if cursor:
                     payload["cursor"] = cursor
 
-                data = await self._post_twitterapiio(client, api_key, payload)
+                data = await self._get_twitterapiio(client, api_key, payload)
                 tweets = data.get("tweets") or []
                 if not tweets:
                     break
@@ -420,7 +420,7 @@ class XTwitterCollector(ArenaCollector):
                 if cursor:
                     payload["cursor"] = cursor
 
-                data = await self._post_twitterapiio(client, api_key, payload)
+                data = await self._get_twitterapiio(client, api_key, payload)
                 tweets = data.get("tweets") or []
                 if not tweets:
                     break
@@ -834,13 +834,13 @@ class XTwitterCollector(ArenaCollector):
             api_key = cred.get("api_key", "")
             try:
                 async with httpx.AsyncClient(timeout=15.0) as client:
-                    payload = {
+                    params = {
                         "query": f"test {DANISH_LANG_OPERATOR}",
                         "queryType": TWITTERAPIIO_QUERY_TYPE,
                     }
-                    response = await client.post(
+                    response = await client.get(
                         TWITTERAPIIO_BASE_URL,
-                        json=payload,
+                        params=params,
                         headers={"X-API-Key": api_key},
                     )
                     if response.status_code == 429:
@@ -917,18 +917,21 @@ class XTwitterCollector(ArenaCollector):
             return self._http_client  # type: ignore[return-value]
         return httpx.AsyncClient(timeout=30.0)
 
-    async def _post_twitterapiio(
+    async def _get_twitterapiio(
         self,
         client: httpx.AsyncClient,
         api_key: str,
-        payload: dict[str, Any],
+        params: dict[str, Any],
     ) -> dict[str, Any]:
-        """POST to TwitterAPI.io advanced search with API key auth.
+        """GET from TwitterAPI.io advanced search with API key auth.
+
+        Note: TwitterAPI.io migrated from POST to GET in early 2026.
+        Parameters are now sent as query string parameters instead of JSON body.
 
         Args:
             client: Shared HTTP client.
             api_key: TwitterAPI.io API key.
-            payload: Request body dict.
+            params: Query parameters dict.
 
         Returns:
             Parsed JSON response dict.
@@ -939,9 +942,9 @@ class XTwitterCollector(ArenaCollector):
             ArenaCollectionError: On other non-2xx or connection errors.
         """
         try:
-            response = await client.post(
+            response = await client.get(
                 TWITTERAPIIO_BASE_URL,
-                json=payload,
+                params=params,
                 headers={"X-API-Key": api_key},
             )
             if response.status_code == 429:

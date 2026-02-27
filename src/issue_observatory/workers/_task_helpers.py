@@ -786,7 +786,11 @@ async def check_all_tasks_terminal(run_id: Any) -> dict[str, Any] | None:
             .where(
                 CollectionTask.collection_run_id == run_id,
                 CollectionTask.status == "pending",
-                CollectionTask.created_at < stuck_cutoff,
+                CollectionTask.started_at.is_(None),
+                select(CollectionRun.started_at)
+                .where(CollectionRun.id == run_id)
+                .scalar_subquery()
+                < stuck_cutoff,
             )
             .values(
                 status="failed",
@@ -1085,3 +1089,72 @@ def update_collection_task_status(
             status=status,
             error=str(exc),
         )
+
+
+# ---------------------------------------------------------------------------
+# Actor-only arena helpers
+# ---------------------------------------------------------------------------
+
+
+async def fetch_actor_ids_for_design_and_platform(
+    query_design_id: Any,
+    platform_name: str,
+) -> list[str]:
+    """Return platform actor identifiers for an actor-only arena's collection.
+
+    Queries ``ActorPlatformPresence`` rows linked (via ``ActorListMember`` and
+    ``ActorList``) to the actor lists of *query_design_id*, filtered to
+    ``platform == platform_name``.
+
+    The returned strings are the best available identifier for each presence,
+    chosen in this precedence order:
+
+    1. ``profile_url`` — preferred for Facebook and Instagram, whose
+       Bright Data collectors accept full page/group/profile URLs.
+    2. ``platform_user_id`` — native numeric or opaque user ID returned
+       by the upstream API (e.g. Twitter user ID).
+    3. ``platform_username`` — display handle (e.g. ``"drnyheder"``), used
+       as a fallback when neither URL nor numeric ID is available.
+
+    Presences where all three fields are NULL are silently excluded.
+
+    Args:
+        query_design_id: UUID of the ``QueryDesign`` whose actor lists to
+            inspect.
+        platform_name: Platform identifier matching ``ActorPlatformPresence.platform``
+            (e.g. ``"facebook"``, ``"instagram"``).
+
+    Returns:
+        Deduplicated list of actor identifier strings.  Empty list when no
+        presences matching *platform_name* are found for the design.
+    """
+    async with AsyncSessionLocal() as db:
+        stmt = (
+            select(
+                ActorPlatformPresence.profile_url,
+                ActorPlatformPresence.platform_user_id,
+                ActorPlatformPresence.platform_username,
+            )
+            .join(Actor, Actor.id == ActorPlatformPresence.actor_id)
+            .join(ActorListMember, ActorListMember.actor_id == Actor.id)
+            .join(ActorList, ActorList.id == ActorListMember.actor_list_id)
+            .where(ActorList.query_design_id == query_design_id)
+            .where(ActorPlatformPresence.platform == platform_name)
+        )
+        result = await db.execute(stmt)
+        rows = result.mappings().all()
+
+    seen: set[str] = set()
+    actor_ids: list[str] = []
+    for row in rows:
+        # Precedence: profile_url > platform_user_id > platform_username
+        identifier: str | None = (
+            row["profile_url"]
+            or row["platform_user_id"]
+            or row["platform_username"]
+        )
+        if identifier and identifier not in seen:
+            seen.add(identifier)
+            actor_ids.append(identifier)
+
+    return actor_ids

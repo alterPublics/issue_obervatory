@@ -413,7 +413,11 @@ class TelegramCollector(ArenaCollector):
             client = TelegramClient(
                 StringSession(session_string), api_id, api_hash
             )
-            async with client:
+            # IMPORTANT: Do NOT use ``async with client:`` — see the comment
+            # in ``_collect_terms_with_credential`` for details on why start()
+            # hangs in non-interactive contexts.
+            try:
+                await client.connect()
                 me = await client.get_me()
                 if me is None:
                     return {
@@ -426,6 +430,8 @@ class TelegramCollector(ArenaCollector):
                     "status": "ok",
                     "detail": f"Authenticated as user_id={me.id}",
                 }
+            finally:
+                await client.disconnect()
         except Exception as exc:
             return {**base, "status": "down", "detail": f"Connection error: {exc}"}
         finally:
@@ -534,7 +540,21 @@ class TelegramCollector(ArenaCollector):
 
         client = TelegramClient(StringSession(session_string), api_id, api_hash)
         try:
-            async with client:
+            # IMPORTANT: Do NOT use ``async with client:`` here.  The context
+            # manager calls ``client.start()`` which falls back to interactive
+            # ``input()`` when the session is invalid/expired.  In a Celery
+            # worker ``input()`` blocks the thread forever with no way to
+            # recover.  Instead, connect explicitly and verify the session.
+            await client.connect()
+            me = await client.get_me()
+            if me is None:
+                raise ArenaCollectionError(
+                    "telegram: session is invalid or expired — get_me() returned None. "
+                    "Re-generate the Telethon StringSession and update the credential.",
+                    arena=self.arena_name,
+                    platform=self.platform_name,
+                )
+            try:
                 for term in terms:
                     if len(records) >= max_results:
                         break
@@ -553,6 +573,10 @@ class TelegramCollector(ArenaCollector):
                             seen=seen,
                         )
                         records.extend(channel_records)
+            finally:
+                await client.disconnect()
+        except ArenaCollectionError:
+            raise
         except FloodWaitError as exc:
             await self._set_flood_wait_cooldown(cred_id, exc.seconds)
             raise ArenaRateLimitError(
@@ -612,7 +636,18 @@ class TelegramCollector(ArenaCollector):
 
         client = TelegramClient(StringSession(session_string), api_id, api_hash)
         try:
-            async with client:
+            # IMPORTANT: Do NOT use ``async with client:`` here.  See the
+            # comment in ``_collect_terms_with_credential`` for details.
+            await client.connect()
+            me = await client.get_me()
+            if me is None:
+                raise ArenaCollectionError(
+                    "telegram: session is invalid or expired — get_me() returned None. "
+                    "Re-generate the Telethon StringSession and update the credential.",
+                    arena=self.arena_name,
+                    platform=self.platform_name,
+                )
+            try:
                 for channel_id in actor_ids:
                     if len(records) >= max_results:
                         break
@@ -627,6 +662,10 @@ class TelegramCollector(ArenaCollector):
                         seen=seen,
                     )
                     records.extend(channel_records)
+            finally:
+                await client.disconnect()
+        except ArenaCollectionError:
+            raise
         except FloodWaitError as exc:
             await self._set_flood_wait_cooldown(cred_id, exc.seconds)
             raise ArenaRateLimitError(

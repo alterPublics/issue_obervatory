@@ -118,6 +118,9 @@ class FacebookCollector(ArenaCollector):
     platform_name: str = _PLATFORM
     supported_tiers: list[Tier] = [Tier.MEDIUM, Tier.PREMIUM]
     temporal_mode: TemporalMode = TemporalMode.RECENT
+    # Actor-only arena: keyword search is not supported by the Bright Data API.
+    # The orchestration layer will dispatch collect_by_actors() instead.
+    supports_term_search: bool = False
 
     def __init__(
         self,

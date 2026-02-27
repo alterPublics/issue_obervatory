@@ -16,14 +16,18 @@ discovery for Instagram (tested 2026-02-26). This arena collects exclusively via
 ``collect_by_actors()`` using profile URLs. ``collect_by_terms()`` raises
 :exc:`~issue_observatory.core.exceptions.ArenaCollectionError` with guidance.
 
-Default scraper: The Reels scraper (``gd_lyclm20il4r5helnj``) accepts a profile
-URL and returns all recent content types (posts and reels). This is preferred over
-the Posts scraper (``gd_lk5ns7kz21pck8jpis``), which requires individual post URLs.
+Scraper used for profile collection: Posts scraper (``gd_lk5ns7kz21pck8jpis``)
+in **discovery mode** (``type=discover_new&discover_by=url``). This is the only
+scraper that correctly accepts profile URLs and returns posts. The Reels scraper
+(``gd_lyclm20il4r5helnj``) rejects profile URLs with ``error_code: "dead_page"``
+and is reserved for future individual reel URL collection only.
 
-Input format::
+Verified working via curl (2026-02-27)::
 
-    [{"url": "https://www.instagram.com/drnyheder/", "num_of_posts": 100,
-      "start_date": "01-01-2026", "end_date": "02-26-2026"}]
+    POST https://api.brightdata.com/datasets/v3/trigger
+        ?dataset_id=gd_lk5ns7kz21pck8jpis
+        &type=discover_new&discover_by=url&include_errors=true
+    [{"url": "https://www.instagram.com/enhedslisten/", "num_of_posts": 5}]
 
 Date format: ``MM-DD-YYYY`` (Web Scraper API requirement).
 
@@ -50,7 +54,7 @@ from issue_observatory.arenas.instagram.config import (
     BRIGHTDATA_RATE_LIMIT_MAX_CALLS,
     BRIGHTDATA_RATE_LIMIT_WINDOW_SECONDS,
     BRIGHTDATA_SNAPSHOT_URL,
-    INSTAGRAM_DATASET_ID_REELS,
+    INSTAGRAM_DATASET_ID_POSTS,
     INSTAGRAM_REEL_MEDIA_TYPES,
     INSTAGRAM_REEL_PRODUCT_TYPES,
     INSTAGRAM_TIERS,
@@ -119,6 +123,9 @@ class InstagramCollector(ArenaCollector):
     platform_name: str = _PLATFORM
     supported_tiers: list[Tier] = [Tier.MEDIUM, Tier.PREMIUM]
     temporal_mode: TemporalMode = TemporalMode.RECENT
+    # Actor-only arena: keyword search is not supported by the Bright Data API.
+    # The orchestration layer will dispatch collect_by_actors() instead.
+    supports_term_search: bool = False
 
     def __init__(
         self,
@@ -184,8 +191,9 @@ class InstagramCollector(ArenaCollector):
 
         MEDIUM tier: Each actor_id should be an Instagram username (without ``@``)
         or a full profile URL (e.g. ``https://www.instagram.com/drnyheder``).
-        Uses the Reels scraper (``gd_lyclm20il4r5helnj``) which accepts profile
-        URLs and returns all recent content types (posts and reels).
+        Uses the Posts scraper (``gd_lk5ns7kz21pck8jpis``) in discovery mode
+        (``type=discover_new&discover_by=url``), which correctly accepts profile
+        URLs and returns recent posts. The Reels scraper rejects profile URLs.
 
         PREMIUM tier: Raises ``NotImplementedError`` — MCL pending approval.
 
@@ -326,11 +334,12 @@ class InstagramCollector(ArenaCollector):
         date_from: datetime | str | None,
         date_to: datetime | str | None,
     ) -> list[dict[str, Any]]:
-        """Submit a Web Scraper API Reels request for a profile and return records.
+        """Submit a Web Scraper API Posts request for a profile and return records.
 
-        Uses the Reels scraper (``gd_lyclm20il4r5helnj``) which accepts a profile
-        URL and returns all content types (posts and reels). This is the primary
-        scraper for profile-level Instagram collection.
+        Uses the Posts scraper (``gd_lk5ns7kz21pck8jpis``) in discovery mode
+        (``type=discover_new&discover_by=url``). This is the only scraper that
+        correctly accepts Instagram profile URLs — the Reels scraper rejects them
+        with ``error_code: "dead_page"``.
 
         Args:
             client: Shared HTTP client.
@@ -360,7 +369,8 @@ class InstagramCollector(ArenaCollector):
             entry["end_date"] = end_date_str
 
         payload: list[dict[str, Any]] = [entry]
-        trigger_url = build_trigger_url(INSTAGRAM_DATASET_ID_REELS)
+        # Posts scraper in discovery mode: required for profile URL input.
+        trigger_url = build_trigger_url(INSTAGRAM_DATASET_ID_POSTS, discover_by_url=True)
         snapshot_id = await self._trigger_dataset(client, api_token, trigger_url, payload)
         raw_items = await self._poll_and_download(client, api_token, snapshot_id)
 
@@ -392,7 +402,8 @@ class InstagramCollector(ArenaCollector):
         - Post URL is extracted from ``url`` field; ``shortcode`` used as fallback ID.
 
         Args:
-            raw: Raw post dict from the Bright Data Web Scraper API (Reels scraper).
+            raw: Raw post dict from the Bright Data Web Scraper API (Posts scraper,
+                discovery mode).
 
         Returns:
             Flat dict for :meth:`Normalizer.normalize`.

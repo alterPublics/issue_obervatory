@@ -368,6 +368,9 @@ def list_arenas() -> list[dict]:  # type: ignore[type-arg]
         - ``supported_tiers`` (list[str]): Tier values the collector supports.
         - ``temporal_mode`` (str): Temporal capability mode (``"historical"``,
           ``"recent"``, ``"forward_only"``, or ``"mixed"``).
+        - ``supports_term_search`` (bool): Whether the arena supports keyword-
+          based collection via ``collect_by_terms()``.  ``False`` for actor-only
+          arenas such as Facebook and Instagram.
         - ``description`` (str): One-line human-readable description from
           :data:`ARENA_DESCRIPTIONS`, looked up first by ``platform_name``
           then by ``arena_name`` (empty string if neither is defined).
@@ -388,6 +391,7 @@ def list_arenas() -> list[dict]:  # type: ignore[type-arg]
                 if hasattr(cls, "temporal_mode")
                 else "recent"  # default fallback for arenas not yet updated
             ),
+            "supports_term_search": getattr(cls, "supports_term_search", True),
             "description": (
                 ARENA_DESCRIPTIONS.get(cls.platform_name)  # type: ignore[attr-defined]
                 or ARENA_DESCRIPTIONS.get(cls.arena_name, "")  # type: ignore[attr-defined]

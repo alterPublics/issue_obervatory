@@ -170,7 +170,13 @@ def _make_async_client_mock(
         me = me_obj
     client.get_me = AsyncMock(return_value=me)
 
-    # Async context manager protocol
+    # Explicit connect/disconnect (used by the collector instead of async-with/start
+    # to avoid the start() interactive input() hang in non-interactive contexts).
+    client.connect = AsyncMock(return_value=None)
+    client.disconnect = AsyncMock(return_value=None)
+
+    # Async context manager protocol (kept for backward compatibility with any
+    # code still using ``async with client``).
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=None)
     return client

@@ -12,11 +12,11 @@ Each credential JSONB payload must contain:
     - ``session_string`` (str): Serialized Telethon StringSession. Generated
       once via interactive phone verification and stored permanently.
 
-**Channel list**: :data:`DANISH_TELEGRAM_CHANNELS` is a starter list of known
-Danish-language public Telegram channels.  This list is intentionally minimal
-at Phase 1 launch; expansion is tracked as pre-Phase task E.5 in
-``IMPLEMENTATION_PLAN.md``.  Users can extend the list by passing additional
-channel identifiers in the ``actor_ids`` argument of collection methods.
+**Channel list**: :data:`DANISH_TELEGRAM_CHANNELS` is empty by default because
+Danish news outlets do not operate official public Telegram channels.  Channels
+must be configured per query design via ``arenas_config["telegram"]["custom_channels"]``
+(GR-02).  Passing fake or unverified usernames produces silent 0-result runs
+without surfacing any error, so no defaults are shipped.
 
 **Rate limiting**: Telegram uses FloodWaitError rather than a fixed rate window.
 A conservative baseline of 20 requests per minute per account is configured in
@@ -51,22 +51,19 @@ MAX_MESSAGES_PER_REQUEST: int = 100
 # Default Danish channel list
 # ---------------------------------------------------------------------------
 
-DANISH_TELEGRAM_CHANNELS: list[str] = [
-    "dr_nyheder",
-    "tv2nyhederne",
-    "berlingske",
-    "politiken_dk",
-    "bt_dk",
-    "informationdk",
-]
-"""Starter list of known Danish public Telegram channel usernames.
+DANISH_TELEGRAM_CHANNELS: list[str] = []
+"""Default list of Danish public Telegram channel usernames.
 
-This list is intentionally small at Phase 1 launch.  Expansion is tracked as
-pre-Phase task E.5 in ``IMPLEMENTATION_PLAN.md``.  Channels are identified by
-their public username (without the leading ``@``).
+This is intentionally empty. Danish news outlets (DR, TV2, Politiken, BT,
+Berlingske, etc.) do not operate official public Telegram channels, so
+shipping placeholder usernames would silently produce 0 results without
+surfacing any error to the researcher.
 
-Supply additional channel identifiers via ``actor_ids`` in collection calls or
-by extending this list in a local configuration override.
+Channels must be configured explicitly per query design via:
+    ``arenas_config["telegram"]["custom_channels"]``
+
+on the Query Design editor (GR-02). Channels are identified by their public
+username without the leading ``@`` (e.g. ``"some_channel"``).
 
 Important: The Telegram collector only covers *public* broadcast channels.
 Encrypted Secret Chats and private groups are not accessible via the MTProto

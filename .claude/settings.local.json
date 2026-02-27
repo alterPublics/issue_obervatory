@@ -189,7 +189,9 @@
       "WebFetch(domain:docs.brightdata.com)",
       "WebFetch(domain:brightdata.com)",
       "Bash(tail:*)",
-      "WebFetch(domain:openrouter.ai)"
+      "WebFetch(domain:openrouter.ai)",
+      "WebFetch(domain:status.commoncrawl.org)",
+      "Bash(source .venv/bin/activate && PSEUDONYMIZATION_SALT=test SECRET_KEY=test CREDENTIAL_ENCRYPTION_KEY=dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA== python -c \"from issue_observatory.arenas.x_twitter.collector import XTwitterCollector; c = XTwitterCollector\\(\\); print\\('Import OK, method exists:', hasattr\\(c, '_get_twitterapiio'\\)\\); print\\('Old method gone:', not hasattr\\(c, '_post_twitterapiio'\\)\\)\" 2>&1)"
     ]
   }
 }

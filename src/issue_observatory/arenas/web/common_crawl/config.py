@@ -33,7 +33,7 @@ Returns a JSON array of available crawl indexes with metadata (id, name,
 timegate, cdx-api URL). Used by the health check and to resolve 'latest'.
 """
 
-CC_DEFAULT_INDEX: str = "CC-MAIN-2025-51"
+CC_DEFAULT_INDEX: str = "CC-MAIN-2026-08"
 """Default Common Crawl index to query when no explicit index is specified.
 
 This should be updated periodically to reflect the most recent available crawl.

@@ -785,15 +785,17 @@ class EventRegistryCollector(ArenaCollector):
             ) from exc
 
         if response.status_code == 401:
-            if self.credential_pool is not None:
-                await self.credential_pool.report_error(
-                    platform=self.platform_name, credential_id=credential_id
-                )
-            raise ArenaAuthError(
+            auth_error = ArenaAuthError(
                 f"event_registry: API key rejected (HTTP 401) for credential {credential_id}",
                 arena=self.arena_name,
                 platform=self.platform_name,
             )
+            if self.credential_pool is not None:
+                await self.credential_pool.report_error(
+                    credential_id=credential_id,
+                    error=auth_error,
+                )
+            raise auth_error
 
         if response.status_code == 402:
             raise ArenaCollectionError(

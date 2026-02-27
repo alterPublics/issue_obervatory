@@ -110,6 +110,18 @@ class ArenaCollector(ABC):
     platform_name: str
     supported_tiers: list[Tier]
     temporal_mode: TemporalMode
+    supports_term_search: bool = True
+    """Whether this arena supports keyword-based collection via ``collect_by_terms()``.
+
+    Set to ``False`` for actor-only arenas (e.g. Facebook, Instagram) that do not
+    expose a public keyword search API.  When ``False``, the orchestration layer
+    will dispatch ``collect_by_actors()`` instead of ``collect_by_terms()``,
+    fetching actor platform presences from the query design's actor lists.
+
+    Collectors where this is ``False`` should still implement ``collect_by_terms()``
+    as a stub that raises :exc:`~issue_observatory.core.exceptions.ArenaCollectionError`
+    with a clear guidance message (in case it is ever accidentally dispatched).
+    """
 
     def __init__(
         self,

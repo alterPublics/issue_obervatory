@@ -14,10 +14,14 @@ Credential locations:
   NOTE: MCL access is not yet approved — both PREMIUM methods raise NotImplementedError.
 
 Dataset routing (Web Scraper API):
-- Instagram profile URL -> Reels scraper (``gd_lyclm20il4r5helnj``) — covers all content types.
-  This is the primary scraper for profile-based collection (posts and reels).
-- Instagram individual post URL -> Posts scraper (``gd_lk5ns7kz21pck8jpis``).
-  Used for targeted scraping of specific post URLs.
+- Instagram profile URL -> Posts scraper (``gd_lk5ns7kz21pck8jpis``) in discovery mode.
+  This is the primary scraper for actor-based (profile-level) collection.
+  Trigger URL must include ``type=discover_new&discover_by=url`` query parameters.
+  Payload: ``[{"url": "https://www.instagram.com/{username}/", "num_of_posts": N}]``
+  Verified working via curl (2026-02-27). The Reels scraper rejects profile URLs
+  with ``error_code: "dead_page"`` — it only accepts individual reel URLs.
+- Instagram individual reel URL -> Reels scraper (``gd_lyclm20il4r5helnj``).
+  Used for targeted scraping of specific reel URLs (not currently a collection path).
 
 Date format: Web Scraper API requires ``MM-DD-YYYY`` (not ISO 8601).
 
@@ -50,19 +54,22 @@ BRIGHTDATA_SNAPSHOT_URL: str = f"{BRIGHTDATA_API_BASE}/snapshot/{{snapshot_id}}?
 # Web Scraper API — dataset IDs by content type
 # ---------------------------------------------------------------------------
 
-INSTAGRAM_DATASET_ID_REELS: str = "gd_lyclm20il4r5helnj"
-"""Web Scraper API dataset ID for Instagram Reels (profile URL input).
+INSTAGRAM_DATASET_ID_POSTS: str = "gd_lk5ns7kz21pck8jpis"
+"""Web Scraper API dataset ID for Instagram Posts (profile URL input, discovery mode).
 
-This is the primary scraper for actor-based collection. Accepts a profile URL
-and returns all recent content (posts and reels). Preferred over the Posts
-scraper for profile-level collection because it covers all content types.
+This is the primary scraper for actor-based (profile-level) collection.
+Must be triggered with ``type=discover_new&discover_by=url`` query parameters.
+Accepts a full profile URL (e.g. ``https://www.instagram.com/enhedslisten/``)
+and returns the most recent posts. Verified working via curl (2026-02-27).
+Use :func:`build_trigger_url` with ``discover_by_url=True`` for this scraper.
 """
 
-INSTAGRAM_DATASET_ID_POSTS: str = "gd_lk5ns7kz21pck8jpis"
-"""Web Scraper API dataset ID for Instagram Posts (individual post URL input).
+INSTAGRAM_DATASET_ID_REELS: str = "gd_lyclm20il4r5helnj"
+"""Web Scraper API dataset ID for Instagram Reels (individual reel URL input).
 
-Used for targeted scraping of specific post URLs. Not suitable for
-profile-level collection — use ``INSTAGRAM_DATASET_ID_REELS`` for profiles.
+Only accepts individual reel URLs — NOT profile URLs. Giving a profile URL
+results in ``error_code: "dead_page"``. Reserved for future targeted reel
+collection; not used in the current profile-level collection path.
 """
 
 # ---------------------------------------------------------------------------
@@ -70,19 +77,28 @@ profile-level collection — use ``INSTAGRAM_DATASET_ID_REELS`` for profiles.
 # ---------------------------------------------------------------------------
 
 
-def build_trigger_url(dataset_id: str) -> str:
+def build_trigger_url(dataset_id: str, *, discover_by_url: bool = False) -> str:
     """Build the full trigger URL for a given Instagram Web Scraper dataset ID.
 
-    The Web Scraper API does not use ``type=discover_new`` or ``&notify=none``
-    parameters that were present in the legacy Datasets product trigger URL.
+    For profile-level collection using the Posts scraper (``INSTAGRAM_DATASET_ID_POSTS``),
+    pass ``discover_by_url=True``. This adds ``type=discover_new&discover_by=url`` to the
+    query string, which is required for the Posts scraper to accept profile URLs.
+
+    Without discovery mode, the Posts scraper expects individual post URLs as input.
+    The Reels scraper (``INSTAGRAM_DATASET_ID_REELS``) does not use discovery mode.
 
     Args:
         dataset_id: One of the ``INSTAGRAM_DATASET_ID_*`` constants.
+        discover_by_url: When ``True``, appends ``type=discover_new&discover_by=url``
+            query parameters. Required for profile-based collection via the Posts scraper.
 
     Returns:
         Full trigger URL string ready for HTTP POST.
     """
-    return f"{BRIGHTDATA_API_BASE}/trigger?dataset_id={dataset_id}&include_errors=true"
+    base = f"{BRIGHTDATA_API_BASE}/trigger?dataset_id={dataset_id}&include_errors=true"
+    if discover_by_url:
+        base += "&type=discover_new&discover_by=url"
+    return base
 
 
 # ---------------------------------------------------------------------------
