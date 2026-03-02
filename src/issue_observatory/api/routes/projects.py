@@ -272,7 +272,11 @@ async def get_project_detail(
     for design in query_designs:
         latest_run = None
         if design.collection_runs:
-            latest_run = max(design.collection_runs, key=lambda r: r.started_at)
+            runs_with_start = [r for r in design.collection_runs if r.started_at is not None]
+            if runs_with_start:
+                latest_run = max(runs_with_start, key=lambda r: r.started_at)
+            else:
+                latest_run = design.collection_runs[0]
 
         designs_with_runs.append({
             "id": design.id,

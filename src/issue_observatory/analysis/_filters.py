@@ -41,6 +41,7 @@ def build_content_filters(
     date_to: Any,
     params: dict[str, Any],
     table_alias: str = "",
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> list[str]:
     """Build a list of SQL WHERE predicates for ``content_records``.
 
@@ -58,6 +59,9 @@ def build_content_filters(
         params: Mutable dict that receives bind parameter values.
         table_alias: Optional table alias prefix (e.g. ``"a."``).  Include
             the trailing dot.
+        query_design_ids: Restrict to records belonging to any of these query
+            designs.  Mutually exclusive with *query_design_id* — if both are
+            provided, *query_design_ids* takes precedence.
 
     Returns:
         List of SQL predicate strings (without a leading ``WHERE`` keyword).
@@ -67,7 +71,12 @@ def build_content_filters(
     prefix = table_alias
     clauses: list[str] = []
 
-    if query_design_id is not None:
+    if query_design_ids is not None and len(query_design_ids) > 0:
+        placeholders = ", ".join(f":qd_id_{i}" for i in range(len(query_design_ids)))
+        clauses.append(f"{prefix}query_design_id IN ({placeholders})")
+        for i, qd_id in enumerate(query_design_ids):
+            params[f"qd_id_{i}"] = str(qd_id)
+    elif query_design_id is not None:
         clauses.append(f"{prefix}query_design_id = :query_design_id")
         params["query_design_id"] = str(query_design_id)
 
@@ -121,6 +130,7 @@ def build_content_where(
     date_from: Any,
     date_to: Any,
     params: dict[str, Any],
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> str:
     """Return a full ``WHERE …`` SQL fragment for ``content_records`` filters.
 
@@ -139,6 +149,8 @@ def build_content_where(
         date_from: Inclusive lower bound on ``published_at``.
         date_to: Inclusive upper bound on ``published_at``.
         params: Mutable dict that receives bind parameter values.
+        query_design_ids: Restrict to records belonging to any of these query
+            designs.  Takes precedence over *query_design_id* if both given.
 
     Returns:
         A SQL string starting with ``WHERE`` followed by the predicate list
@@ -146,6 +158,7 @@ def build_content_where(
         duplicate exclusion predicate is always present.
     """
     clauses = build_content_filters(
-        query_design_id, run_id, arena, platform, date_from, date_to, params
+        query_design_id, run_id, arena, platform, date_from, date_to, params,
+        query_design_ids=query_design_ids,
     )
     return "WHERE " + " AND ".join(clauses)

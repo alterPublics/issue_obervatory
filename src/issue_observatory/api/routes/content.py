@@ -313,21 +313,27 @@ def _decode_cursor(cursor: str) -> tuple[Optional[datetime], Optional[uuid.UUID]
         return None, None
 
 
-def _parse_date_param(value: Optional[str]) -> Optional[datetime]:
+def _parse_date_param(value: Optional[str], *, end_of_day: bool = False) -> Optional[datetime]:
     """Parse a YYYY-MM-DD date string into a timezone-aware ``datetime``.
 
     Returns ``None`` if the value is missing or cannot be parsed.
 
     Args:
         value: A date string in ISO format (e.g. ``"2024-01-15"``).
+        end_of_day: If True, set time to 23:59:59 instead of 00:00:00.
+            Use for upper-bound (date_to) parameters so that "2026-02-26"
+            includes all records published on that day.
 
     Returns:
-        A UTC-midnight ``datetime`` or ``None``.
+        A UTC ``datetime`` or ``None``.
     """
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+        dt = datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+        if end_of_day:
+            dt = dt.replace(hour=23, minute=59, second=59)
+        return dt
     except ValueError:
         return None
 
@@ -354,12 +360,16 @@ def _build_browse_stmt(
     project_id: Optional[uuid.UUID] = None,
     show_all: bool = False,
     scrape_status: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    sort_dir: Optional[str] = None,
+    page_offset: int = 0,
 ) -> Any:  # noqa: ANN401
-    """Build a keyset-paginated SELECT for the content browser.
+    """Build a paginated SELECT for the content browser.
 
-    Ordering is ``(published_at DESC NULLS LAST, id DESC)`` to support stable
-    cursor pagination on the partitioned table.  Full-text search uses
-    ``to_tsvector('danish', ...)`` with ``plainto_tsquery``.
+    Default ordering is ``(published_at DESC NULLS LAST, id DESC)`` with keyset
+    cursor pagination.  When a non-default ``sort_by`` is requested, simple
+    offset pagination is used instead (the 2000-row cap makes this safe).
+    Full-text search uses ``to_tsvector('danish', ...)`` with ``plainto_tsquery``.
 
     Args:
         current_user: Authenticated user — used for ownership scoping.
@@ -378,6 +388,10 @@ def _build_browse_stmt(
         limit: Maximum rows to return.
         project_id: Optional project UUID filter — restricts to runs belonging
             to the given project.
+        sort_by: Column to sort by (whitelist: published_at, platform, author,
+            arena, engagement_score).  Default: published_at.
+        sort_dir: Sort direction — ``asc`` or ``desc``.  Default: desc.
+        page_offset: Offset for simple pagination when non-default sort is active.
 
     Returns:
         A SQLAlchemy ``Select`` statement.
@@ -460,34 +474,62 @@ def _build_browse_stmt(
 
     # Full-text search using the GIN index created in migration 001.
     if q:
-        tsvector_expr = text(
+        fts_clause = text(
             "to_tsvector('danish', coalesce(content_records.text_content, '')"
             " || ' ' || coalesce(content_records.title, ''))"
-        )
-        tsquery_expr = text("plainto_tsquery('danish', :q)")
-        stmt = stmt.where(tsvector_expr.op("@@")(tsquery_expr)).params(q=q)
+            " @@ plainto_tsquery('danish', :q)"
+        ).bindparams(q=q)
+        stmt = stmt.where(fts_clause)
 
-    # Keyset cursor: rows strictly before (published_at, id) in DESC order.
-    if cursor_published_at is not None and cursor_id is not None:
-        stmt = stmt.where(
-            (ucr.published_at < cursor_published_at)
-            | (
-                (ucr.published_at == cursor_published_at)
-                & (ucr.id < cursor_id)
-            )
-        )
-    elif cursor_id is not None:
-        # Cursor with null published_at — both null rows come last already.
-        stmt = stmt.where(ucr.id < cursor_id)
+    # --- Sorting and pagination ---
+    # Whitelist of sortable columns.
+    _sort_columns = {
+        "published_at": ucr.published_at,
+        "platform": ucr.platform,
+        "author": ucr.author_display_name,
+        "arena": ucr.arena,
+        "engagement_score": ucr.engagement_score,
+    }
 
-    stmt = (
-        stmt.order_by(
-            ucr.published_at.desc().nullslast(),
-            ucr.id.desc(),
-        )
-        .limit(limit)
-    )
+    effective_sort = sort_by if sort_by in _sort_columns else "published_at"
+    effective_dir = "asc" if sort_dir == "asc" else "desc"
+    use_keyset = effective_sort == "published_at"
 
+    if use_keyset:
+        # Keyset cursor: rows strictly before (published_at, id) in DESC/ASC order.
+        if cursor_published_at is not None and cursor_id is not None:
+            if effective_dir == "desc":
+                stmt = stmt.where(
+                    (ucr.published_at < cursor_published_at)
+                    | (
+                        (ucr.published_at == cursor_published_at)
+                        & (ucr.id < cursor_id)
+                    )
+                )
+            else:
+                stmt = stmt.where(
+                    (ucr.published_at > cursor_published_at)
+                    | (
+                        (ucr.published_at == cursor_published_at)
+                        & (ucr.id > cursor_id)
+                    )
+                )
+        elif cursor_id is not None:
+            if effective_dir == "desc":
+                stmt = stmt.where(ucr.id < cursor_id)
+            else:
+                stmt = stmt.where(ucr.id > cursor_id)
+
+    sort_col = _sort_columns[effective_sort]
+    if effective_dir == "desc":
+        stmt = stmt.order_by(sort_col.desc().nullslast(), ucr.id.desc())
+    else:
+        stmt = stmt.order_by(sort_col.asc().nullsfirst(), ucr.id.asc())
+
+    if not use_keyset and page_offset > 0:
+        stmt = stmt.offset(page_offset)
+
+    stmt = stmt.limit(limit)
     return stmt
 
 
@@ -800,6 +842,8 @@ async def content_browser_page(
     project_id: Optional[str] = Query(default=None, description="Filter content to a specific project."),
     show_all: bool = Query(default=False, description="Show all content including non-term-matched records."),
     scrape_status_filter: Optional[str] = Query(default=None, alias="scrape_status", description="Filter by scrape status: pending, scraped, failed."),
+    sort_by: Optional[str] = Query(default=None, description="Column to sort by."),
+    sort_dir: Optional[str] = Query(default=None, description="Sort direction: asc or desc."),
 ) -> Response:
     """Render the full content browser HTML page.
 
@@ -822,12 +866,17 @@ async def content_browser_page(
         project_id: Optional project UUID filter (accepts empty string).
         show_all: If True, include non-term-matched records (default: False).
         scrape_status_filter: Filter by scrape status (pending/scraped/failed).
+        sort_by: Column to sort by (published_at, platform, author, arena, engagement_score).
+        sort_dir: Sort direction (asc or desc).
 
     Returns:
         ``TemplateResponse`` rendering ``content/browser.html``.
     """
     run_id = _parse_uuid(run_id)  # type: ignore[assignment]
     query_design_id = _parse_uuid(query_design_id)  # type: ignore[assignment]
+    # Track whether project_id was explicitly passed (even as empty string)
+    # so we can distinguish "absent" (auto-select default) from "empty" (show all).
+    project_id_was_explicit = project_id is not None
     project_id = _parse_uuid(project_id)  # type: ignore[assignment]
 
     templates = request.app.state.templates
@@ -836,7 +885,21 @@ async def content_browser_page(
         raise HTTPException(status_code=500, detail="Template engine not initialised.")
 
     date_from_dt = _parse_date_param(date_from)
-    date_to_dt = _parse_date_param(date_to)
+    date_to_dt = _parse_date_param(date_to, end_of_day=True)
+
+    # Auto-select the project with the most recent collection data when no
+    # project_id was explicitly provided in the URL.
+    if not project_id_was_explicit and project_id is None:
+        latest_project_stmt = (
+            select(CollectionRun.project_id)
+            .where(CollectionRun.initiated_by == current_user.id)
+            .where(CollectionRun.project_id.isnot(None))
+            .order_by(CollectionRun.started_at.desc().nulls_last())
+            .limit(1)
+        )
+        latest_pid = (await db.execute(latest_project_stmt)).scalar_one_or_none()
+        if latest_pid:
+            project_id = latest_pid  # type: ignore[assignment]
 
     # Handle arenas multi-value filter (same logic as /content/records)
     arenas_list: list[str] = arenas or []
@@ -861,6 +924,8 @@ async def content_browser_page(
         project_id=project_id,
         show_all=show_all,
         scrape_status=scrape_status_filter,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
     )
 
     # Apply multi-arena IN filter when multiple checkboxes selected
@@ -881,13 +946,19 @@ async def content_browser_page(
         ucr_obj._browse_mode = rrow.get("mode", "")  # type: ignore[attr-defined]
         records.append(ucr_obj)
 
+    effective_sort_page = sort_by if sort_by in {"published_at", "platform", "author", "arena", "engagement_score"} else "published_at"
+    use_keyset_page = effective_sort_page == "published_at"
+
     cursor: Optional[str] = None
     if len(records) == _BROWSE_LIMIT:
-        last_rec = records[-1]
-        pub_at = getattr(last_rec, "published_at", None)
-        rec_id = getattr(last_rec, "id", None)
-        if pub_at and rec_id:
-            cursor = _encode_cursor(pub_at, rec_id)
+        if use_keyset_page:
+            last_rec = records[-1]
+            pub_at = getattr(last_rec, "published_at", None)
+            rec_id = getattr(last_rec, "id", None)
+            if pub_at and rec_id:
+                cursor = _encode_cursor(pub_at, rec_id)
+        else:
+            cursor = "offset"
 
     # Fetch recent collection runs for the sidebar run selector (last 20).
     recent_runs = await _fetch_recent_runs(db, current_user)
@@ -940,6 +1011,8 @@ async def content_browser_page(
         "project_id": str(project_id) if project_id else "",
         "show_all": show_all,
         "scrape_status": scrape_status_filter or "",
+        "sort_by": sort_by or "published_at",
+        "sort_dir": sort_dir or "desc",
     }
 
     return templates.TemplateResponse(
@@ -987,6 +1060,8 @@ async def content_records_fragment(
         default=None,
         description="Response format: 'json' or omit for HTML. Also checks Accept header.",
     ),
+    sort_by: Optional[str] = Query(default=None, description="Column to sort by."),
+    sort_dir: Optional[str] = Query(default=None, description="Sort direction: asc or desc."),
 ) -> Response:
     """Return content records as HTML fragment or JSON array.
 
@@ -1067,7 +1142,7 @@ async def content_records_fragment(
         cursor_published_at, cursor_id_val = _decode_cursor(cursor)
 
     date_from_dt = _parse_date_param(date_from)
-    date_to_dt = _parse_date_param(date_to)
+    date_to_dt = _parse_date_param(date_to, end_of_day=True)
 
     # Merge arenas multi-value list with singular platform/arena params.
     # Note: 'arenas' checkbox group sends platform_name values, so we filter on platform column.
@@ -1078,6 +1153,10 @@ async def content_records_fragment(
     if len(arenas_list) == 1:
         platform_filter = arenas_list[0]
     # When multiple arenas checked we build an IN filter below.
+
+    # Determine if we're using non-default sort (offset pagination).
+    effective_sort = sort_by if sort_by in {"published_at", "platform", "author", "arena", "engagement_score"} else "published_at"
+    use_keyset = effective_sort == "published_at"
 
     stmt = _build_browse_stmt(
         current_user=current_user,
@@ -1090,12 +1169,15 @@ async def content_records_fragment(
         search_term=search_term,
         run_id=run_id,
         mode=mode,
-        cursor_published_at=cursor_published_at,
-        cursor_id=cursor_id_val,
+        cursor_published_at=cursor_published_at if use_keyset else None,
+        cursor_id=cursor_id_val if use_keyset else None,
         limit=remaining,
         project_id=project_id,
         show_all=show_all,
         scrape_status=scrape_status_filter,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        page_offset=offset if not use_keyset else 0,
     )
 
     # Multiple arena filter (IN clause) applied post-base when >1 selected.
@@ -1118,11 +1200,16 @@ async def content_records_fragment(
     new_offset = offset + len(records)
     next_cursor: Optional[str] = None
     if len(records) == remaining and new_offset < _BROWSE_CAP:
-        last_rec = records[-1]
-        pub_at = getattr(last_rec, "published_at", None)
-        rec_id = getattr(last_rec, "id", None)
-        if pub_at and rec_id:
-            next_cursor = _encode_cursor(pub_at, rec_id)
+        if use_keyset:
+            last_rec = records[-1]
+            pub_at = getattr(last_rec, "published_at", None)
+            rec_id = getattr(last_rec, "id", None)
+            if pub_at and rec_id:
+                next_cursor = _encode_cursor(pub_at, rec_id)
+        else:
+            # Offset pagination: use a placeholder cursor so the sentinel renders.
+            # The actual pagination is driven by the offset param.
+            next_cursor = "offset"
 
     template_records = [_orm_row_to_template_dict(r) for r in records]
 
@@ -1174,6 +1261,40 @@ async def content_records_fragment(
                 "browse_cap": _BROWSE_CAP,
             }
         )
+
+        # OOB count update: on fresh filter requests (no cursor, offset=0),
+        # compute the total count and send it as an out-of-band swap so the
+        # record-count badge stays in sync with filters.
+        if not cursor and offset == 0:
+            count_platform = platform_filter if len(arenas_list) <= 1 else None
+            total_count = await _count_matching(
+                db=db,
+                current_user=current_user,
+                q=q,
+                platform=count_platform,
+                arena=None,
+                date_from=date_from_dt,
+                date_to=date_to_dt,
+                language=language,
+                search_term=search_term,
+                run_id=run_id,
+                mode=mode,
+                arenas_list=arenas_list if len(arenas_list) > 1 else None,
+                project_id=project_id,
+                show_all=show_all,
+                scrape_status=scrape_status_filter,
+            )
+            if total_count > _BROWSE_CAP:
+                count_text = "2,000+ records"
+            elif total_count > 0:
+                count_text = f"{total_count:,} record{'s' if total_count != 1 else ''}"
+            else:
+                count_text = ""
+            html += (
+                f'<span id="record-count" hx-swap-oob="innerHTML">'
+                f"{count_text}</span>"
+            )
+
         return HTMLResponse(html, status_code=200)
 
 
@@ -1463,7 +1584,7 @@ async def export_content_sync(  # type: ignore[misc]
     query_design_id = _parse_uuid(query_design_id)  # type: ignore[assignment]
     run_id = _parse_uuid(run_id)  # type: ignore[assignment]
     date_from = _parse_date_param(date_from)  # type: ignore[assignment]
-    date_to = _parse_date_param(date_to)  # type: ignore[assignment]
+    date_to = _parse_date_param(date_to, end_of_day=True)  # type: ignore[assignment]
 
     if format not in _EXPORT_CONTENT_TYPES:
         raise HTTPException(
@@ -1647,7 +1768,7 @@ async def export_content_async(
     query_design_id = _parse_uuid(query_design_id)  # type: ignore[assignment]
     run_id = _parse_uuid(run_id)  # type: ignore[assignment]
     date_from = _parse_date_param(date_from)  # type: ignore[assignment]
-    date_to = _parse_date_param(date_to)  # type: ignore[assignment]
+    date_to = _parse_date_param(date_to, end_of_day=True)  # type: ignore[assignment]
 
     if format not in _EXPORT_CONTENT_TYPES:
         raise HTTPException(

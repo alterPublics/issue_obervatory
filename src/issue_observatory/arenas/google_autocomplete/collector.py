@@ -513,7 +513,17 @@ class GoogleAutocompleteCollector(ArenaCollector):
             params={"q": term, "client": "firefox", **DANISH_PARAMS},
         )
         response.raise_for_status()
-        data = response.json()
+        # Google's autocomplete API often returns Latin-1 encoded text
+        # (e.g. Danish "å" as 0xe5) which response.json() fails to decode
+        # as UTF-8. Decode with charset from headers, falling back to latin-1.
+        import json as _json  # noqa: PLC0415
+
+        charset = response.charset_encoding or "utf-8"
+        try:
+            text_body = response.content.decode(charset)
+        except (UnicodeDecodeError, LookupError):
+            text_body = response.content.decode("latin-1")
+        data = _json.loads(text_body)
         # Format: ["query", ["sug1", "sug2", ...]]
         if isinstance(data, list) and len(data) >= 2 and isinstance(data[1], list):
             return [str(s) for s in data[1] if s]

@@ -8,7 +8,7 @@
             - id (str):              task UUID
             - arena (str):           arena slug (e.g. 'google_search')
             - platform (str):        human-readable platform name
-            - status (str):          'pending' | 'running' | 'success' | 'failed' | 'cancelled'
+            - status (str):          'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
             - records_collected (int, optional)
             - credits_spent (int, optional)
             - error_message (str, optional): short error if status == 'failed'
@@ -19,7 +19,7 @@
 {% set status = task.status | default('pending') %}
 
 <tr id="task-row-{{ task.id }}"
-    class="{% if status == 'running' %}bg-blue-50{% elif status == 'failed' %}bg-red-50{% elif status == 'success' %}bg-green-50/30{% else %}bg-white{% endif %} transition-colors">
+    class="{% if status == 'running' %}bg-blue-50{% elif status == 'failed' %}bg-red-50{% elif status == 'completed' %}bg-green-50/30{% else %}bg-white{% endif %} transition-colors">
 
     {# Arena / platform name #}
     <td class="px-6 py-3 text-sm font-medium text-gray-900 whitespace-nowrap">
@@ -37,7 +37,7 @@
                 </svg>
                 Running
             </span>
-        {% elif status == 'success' %}
+        {% elif status == 'completed' %}
             <span class="inline-flex items-center gap-1.5 text-xs font-medium text-green-700">
                 <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none"
                      viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true">

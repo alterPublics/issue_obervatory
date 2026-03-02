@@ -418,6 +418,7 @@ def create_app() -> FastAPI:
         credits,
         health as health_routes,
         imports,
+        live_tracking,
         pages,
         projects,
         query_designs,
@@ -439,6 +440,7 @@ def create_app() -> FastAPI:
     application.include_router(projects.router, prefix="/projects", tags=["projects"])
     application.include_router(query_designs.router, prefix="/query-designs", tags=["query-designs"])
     application.include_router(collections.router, prefix="/collections", tags=["collections"])
+    application.include_router(live_tracking.router, prefix="/live-tracking", tags=["live-tracking"])
     application.include_router(content.router, prefix="/content", tags=["content"])
     application.include_router(annotations.router, prefix="/annotations", tags=["annotations"])
     application.include_router(codebooks.router, prefix="/codebooks", tags=["codebooks"])

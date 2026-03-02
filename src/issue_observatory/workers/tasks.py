@@ -57,6 +57,7 @@ from issue_observatory.workers._task_helpers import (
     enforce_retention,
     fetch_actor_ids_for_design_and_platform,
     fetch_batch_run_details,
+    fetch_designs_with_prep,
     fetch_live_tracking_designs,
     fetch_public_figure_ids_for_design,
     fetch_resolved_terms_for_arena,
@@ -111,8 +112,11 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
     log = logger.bind(task="trigger_daily_collection")
     log.info("trigger_daily_collection: starting")
 
+    # Single asyncio.run() for ALL async DB queries.  Multiple asyncio.run()
+    # calls cause "Future attached to a different loop" errors because the
+    # SQLAlchemy async connection pool ties connections to the first event loop.
     try:
-        designs = asyncio.run(fetch_live_tracking_designs())
+        designs = asyncio.run(fetch_designs_with_prep())
     except Exception as exc:
         log.error(
             "trigger_daily_collection: DB error fetching designs",
@@ -132,13 +136,13 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
     for design in designs:
         design_id = design["query_design_id"]
         run_id = design["run_id"]
-        owner_id = design["owner_id"]
-        arenas_config: dict[str, str] = design.get("arenas_config") or {}
         default_tier: str = design.get("default_tier") or "free"
+        raw_arenas_config: dict = design.get("arenas_config") or {}
+        arenas_config: dict[str, str] = design.get("_flat_arenas") or {}
+
         # GR-05: arenas_config["languages"] takes priority over the single
-        # query_design.language field.  If the key is missing, fall back to
-        # [query_design.language] (IP2-052 behaviour).
-        config_languages = arenas_config.get("languages") if isinstance(arenas_config, dict) else None
+        # query_design.language field.
+        config_languages = raw_arenas_config.get("languages") if isinstance(raw_arenas_config, dict) else None
         if isinstance(config_languages, list) and config_languages:
             language_filter: list[str] = [str(lc) for lc in config_languages if lc]
         else:
@@ -150,26 +154,18 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
         )
         task_log.info("trigger_daily_collection: processing design")
 
-        # --- Credit gate ---
-        try:
-            balance = asyncio.run(get_user_credit_balance(owner_id))
-        except Exception as exc:
-            task_log.error(
-                "trigger_daily_collection: failed to fetch credit balance",
-                error=str(exc),
-                exc_info=True,
-            )
-            skipped += 1
-            continue
+        balance = design.get("credit_balance", 0)
+        public_figure_ids: list[str] = design.get("public_figure_ids", [])
 
+        # --- Credit gate ---
         if balance <= 0:
             task_log.warning(
                 "trigger_daily_collection: insufficient credits; suspending run",
                 balance=balance,
             )
-            try:
-                user_email = asyncio.run(get_user_email(owner_id))
-                if user_email:
+            user_email = design.get("user_email")
+            if user_email:
+                try:
                     asyncio.run(
                         email_service.send_low_credit_warning(
                             user_email=user_email,
@@ -177,11 +173,11 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                             threshold=settings.low_credit_warning_threshold,
                         )
                     )
-            except Exception as email_exc:
-                task_log.warning(
-                    "trigger_daily_collection: low-credit email failed",
-                    error=str(email_exc),
-                )
+                except Exception as email_exc:
+                    task_log.warning(
+                        "trigger_daily_collection: low-credit email failed",
+                        error=str(email_exc),
+                    )
             try:
                 asyncio.run(suspend_run(run_id))
             except Exception as suspend_exc:
@@ -199,34 +195,13 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
             skipped += 1
             continue
 
-        # --- GR-14: build set of public-figure platform user IDs ---
-        # This is fetched once per design (not per arena) and passed to every
-        # arena task so the normalizer can bypass pseudonymization for known
-        # public officials without a per-record DB lookup at collection time.
-        public_figure_ids: list[str] = []
-        try:
-            pf_set = asyncio.run(fetch_public_figure_ids_for_design(design_id))
-            public_figure_ids = list(pf_set)
-            if public_figure_ids:
-                task_log.info(
-                    "trigger_daily_collection: GR-14 public-figure IDs loaded",
-                    count=len(public_figure_ids),
-                )
-        except Exception as pf_exc:
-            # Non-fatal: log and continue without the bypass.
-            # Arena tasks will still run; all authors will be pseudonymized.
-            task_log.warning(
-                "trigger_daily_collection: failed to fetch public-figure IDs; "
-                "all authors will be pseudonymized (GR-14 bypass unavailable)",
-                error=str(pf_exc),
+        if public_figure_ids:
+            task_log.info(
+                "trigger_daily_collection: GR-14 public-figure IDs loaded",
+                count=len(public_figure_ids),
             )
 
         # --- Dispatch arena tasks ---
-        # YF-01: Load and filter search terms per arena based on target_arenas.
-        # Each arena receives only the terms that are either globally applicable
-        # (target_arenas=NULL) or explicitly targeted to that arena's platform_name.
-        # Actor-only arenas (supports_term_search=False) skip term fetching and
-        # dispatch collect_by_actors using actor platform presences instead.
         from issue_observatory.arenas.registry import (  # noqa: PLC0415
             get_arena as _get_arena,
             get_task_module as _gtm,
@@ -235,14 +210,10 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
         for arena_name, arena_tier in arenas_config.items():
             tier = arena_tier or default_tier
 
-            # Detect whether this is an actor-only arena.
-            # arena_name here is the platform_name (registry key).
             try:
                 _collector_cls = _get_arena(arena_name)
                 _is_actor_only = not getattr(_collector_cls, "supports_term_search", True)
             except KeyError:
-                # Arena not registered — fall through to term-based dispatch,
-                # which will fail gracefully via the task itself.
                 _is_actor_only = False
 
             try:
@@ -251,28 +222,12 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                 _task_module = f"issue_observatory.arenas.{arena_name}.tasks"
 
             if _is_actor_only:
-                # --- Actor-only arena: fetch actor IDs and dispatch collect_by_actors ---
-                try:
-                    actor_ids = asyncio.run(
-                        fetch_actor_ids_for_design_and_platform(design_id, arena_name)
-                    )
-                except Exception as actors_exc:
-                    task_log.error(
-                        "trigger_daily_collection: failed to fetch actor IDs for actor-only arena",
-                        arena=arena_name,
-                        error=str(actors_exc),
-                        exc_info=True,
-                    )
-                    skipped += 1
-                    continue
-
+                actor_ids = design.get("arena_actor_ids", {}).get(arena_name, [])
                 if not actor_ids:
                     task_log.warning(
                         "trigger_daily_collection: actor-only arena has no actors configured; skipping",
                         arena=arena_name,
                     )
-                    # No actors configured — skip dispatch.  This is a researcher
-                    # configuration issue, not an error in the collection pipeline.
                     skipped += 1
                     continue
 
@@ -285,7 +240,6 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                             "collection_run_id": str(run_id),
                             "actor_ids": actor_ids,
                             "tier": tier,
-                            # GR-14: public-figure bypass IDs.
                             "public_figure_ids": public_figure_ids,
                         },
                         queue="celery",
@@ -307,38 +261,15 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                     continue
 
             else:
-                # --- Term-based arena: fetch YF-01-scoped terms and dispatch collect_by_terms ---
-                # YF-01: Fetch search terms scoped to this arena's platform_name.
-                # The arena_name in arenas_config is the platform_name used in the
-                # registry (e.g., "reddit", "bluesky", "google_search").
-                try:
-                    arena_terms = asyncio.run(
-                        fetch_resolved_terms_for_arena(design_id, arena_name)
-                    )
-                except Exception as terms_exc:
-                    task_log.error(
-                        "trigger_daily_collection: failed to fetch search terms for arena",
-                        arena=arena_name,
-                        error=str(terms_exc),
-                        exc_info=True,
-                    )
-                    # Non-fatal: log and skip this arena rather than failing the
-                    # entire daily collection.  The run will continue with the
-                    # remaining arenas.
-                    skipped += 1
-                    continue
-
+                arena_terms = design.get("arena_terms", {}).get(arena_name, [])
                 if not arena_terms:
                     task_log.info(
                         "trigger_daily_collection: no search terms scoped to arena; skipping",
                         arena=arena_name,
                     )
-                    # No terms for this arena — skip dispatch but don't count as an
-                    # error.  This is expected when YF-01 per-arena scoping is in use.
                     continue
 
                 _task_name = f"{_task_module}.collect_by_terms"
-
                 try:
                     celery_app.send_task(
                         _task_name,
@@ -347,12 +278,7 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                             "collection_run_id": str(run_id),
                             "terms": arena_terms,
                             "tier": tier,
-                            # IP2-052: pass language filter so arena tasks can
-                            # restrict results to the design's configured language(s).
                             "language_filter": language_filter,
-                            # GR-14: public-figure platform user IDs; arena tasks
-                            # forward this to the normalizer to bypass
-                            # pseudonymization for known public officials.
                             "public_figure_ids": public_figure_ids,
                         },
                         queue="celery",

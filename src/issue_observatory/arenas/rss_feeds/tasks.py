@@ -26,6 +26,8 @@ import logging
 import time
 from typing import Any
 
+from celery.exceptions import SoftTimeLimitExceeded
+
 from issue_observatory.arenas.rss_feeds.collector import RSSFeedsCollector
 from issue_observatory.config.settings import get_settings
 from issue_observatory.core.event_bus import elapsed_since, publish_task_update
@@ -87,6 +89,8 @@ def _load_arenas_config(query_design_id: str) -> dict:
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
+    soft_time_limit=600,
+    time_limit=720,
 )
 def rss_feeds_collect_terms(
     self: Any,
@@ -133,125 +137,140 @@ def rss_feeds_collect_terms(
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    logger.info(
-        "rss_feeds: collect_by_terms started — run=%s terms=%d tier=%s",
-        collection_run_id,
-        len(terms),
-        tier,
-    )
-    from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-        update_collection_task_status,
-    )
-
-    update_collection_task_status(collection_run_id, _ARENA, "running")
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena=_ARENA,
-        platform="rss_feeds",
-        status="running",
-        records_collected=0,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-
-    # GR-01: read researcher-configured extra feed URLs from arenas_config.
-    arenas_config = _load_arenas_config(query_design_id)
-    extra_feed_urls: list[str] | None = None
-    rss_config = arenas_config.get("rss") or {}
-    if isinstance(rss_config, dict):
-        raw_custom = rss_config.get("custom_feeds")
-        if isinstance(raw_custom, list) and raw_custom:
-            extra_feed_urls = [str(u) for u in raw_custom if u]
-
     try:
-        tier_enum = Tier(tier)
-    except ValueError:
-        msg = f"rss_feeds: invalid tier '{tier}'. Only 'free' is supported."
-        logger.error(msg)
-        update_collection_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
-        raise ArenaCollectionError(msg, arena=_ARENA, platform="rss_feeds")
-
-    collector = RSSFeedsCollector()
-
-    # NOTE: RSS feeds are FORWARD_ONLY — they only return current/recent
-    # entries and cannot backfill historical data.  Coverage pre-check is
-    # intentionally skipped because it would prevent re-fetching feeds
-    # whose content changes with every poll.
-
-    try:
-        records = asyncio.run(
-            collector.collect_by_terms(
-                terms=terms,
-                tier=tier_enum,
-                date_from=date_from,
-                date_to=date_to,
-                max_results=max_results,
-                language_filter=language_filter,
-                extra_feed_urls=extra_feed_urls,
-            )
-        )
-    except ArenaRateLimitError:
-        logger.warning(
-            "rss_feeds: rate limited on collect_by_terms for run=%s — will retry.",
+        logger.info(
+            "rss_feeds: collect_by_terms started — run=%s terms=%d tier=%s",
             collection_run_id,
+            len(terms),
+            tier,
         )
-        raise
-    except ArenaCollectionError as exc:
-        msg = str(exc)
-        logger.error("rss_feeds: collection error for run=%s: %s", collection_run_id, msg)
-        update_collection_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+            update_collection_task_status,
+        )
+
+        update_collection_task_status(collection_run_id, _ARENA, "running")
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena=_ARENA,
             platform="rss_feeds",
-            status="failed",
+            status="running",
             records_collected=0,
-            error_message=msg,
+            error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        raise
 
-    count = len(records)
+        # GR-01: read researcher-configured extra feed URLs from arenas_config.
+        arenas_config = _load_arenas_config(query_design_id)
+        extra_feed_urls: list[str] | None = None
+        rss_config = arenas_config.get("rss") or {}
+        if isinstance(rss_config, dict):
+            raw_custom = rss_config.get("custom_feeds")
+            if isinstance(raw_custom, list) and raw_custom:
+                extra_feed_urls = [str(u) for u in raw_custom if u]
 
-    # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+        try:
+            tier_enum = Tier(tier)
+        except ValueError:
+            msg = f"rss_feeds: invalid tier '{tier}'. Only 'free' is supported."
+            logger.error(msg)
+            update_collection_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+            raise ArenaCollectionError(msg, arena=_ARENA, platform="rss_feeds")
 
-    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+        collector = RSSFeedsCollector()
 
-    logger.info(
-        "rss_feeds: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
-        collection_run_id,
-        count,
-        inserted,
-        skipped,
-    )
-    update_collection_task_status(
-        collection_run_id,
-        _ARENA,
-        "completed",
-        records_collected=inserted,
-        duplicates_skipped=skipped,
-    )
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena=_ARENA,
-        platform="rss_feeds",
-        status="completed",
-        records_collected=inserted,
-        duplicates_skipped=skipped,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
+        # NOTE: RSS feeds are FORWARD_ONLY — they only return current/recent
+        # entries and cannot backfill historical data.  Coverage pre-check is
+        # intentionally skipped because it would prevent re-fetching feeds
+        # whose content changes with every poll.
 
-    return {
-        "records_collected": inserted,
-        "status": "completed",
-        "arena": _ARENA,
-        "tier": tier,
-    }
+        try:
+            records = asyncio.run(
+                collector.collect_by_terms(
+                    terms=terms,
+                    tier=tier_enum,
+                    date_from=date_from,
+                    date_to=date_to,
+                    max_results=max_results,
+                    language_filter=language_filter,
+                    extra_feed_urls=extra_feed_urls,
+                )
+            )
+        except ArenaRateLimitError:
+            logger.warning(
+                "rss_feeds: rate limited on collect_by_terms for run=%s — will retry.",
+                collection_run_id,
+            )
+            raise
+        except ArenaCollectionError as exc:
+            msg = str(exc)
+            logger.error("rss_feeds: collection error for run=%s: %s", collection_run_id, msg)
+            update_collection_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena=_ARENA,
+                platform="rss_feeds",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
+
+        count = len(records)
+
+        # Persist collected records to the database.
+        from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+
+        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
+        logger.info(
+            "rss_feeds: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
+            collection_run_id,
+            count,
+            inserted,
+            skipped,
+        )
+        update_collection_task_status(
+            collection_run_id,
+            _ARENA,
+            "completed",
+            records_collected=inserted,
+            duplicates_skipped=skipped,
+        )
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena=_ARENA,
+            platform="rss_feeds",
+            status="completed",
+            records_collected=inserted,
+            duplicates_skipped=skipped,
+            error_message=None,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
+
+        return {
+            "records_collected": inserted,
+            "status": "completed",
+            "arena": _ARENA,
+            "tier": tier,
+        }
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "rss_feeds: collect_by_terms timed out after 10 minutes — run=%s",
+            collection_run_id,
+        )
+        from issue_observatory.workers._task_helpers import update_collection_task_status  # noqa: PLC0415
+
+        update_collection_task_status(
+            collection_run_id,
+            _ARENA,
+            "failed",
+            error_message="Collection timed out after 10 minutes",
+        )
+        return {"status": "failed", "error": "timeout", "arena": _ARENA}
 
 
 @celery_app.task(
@@ -262,6 +281,8 @@ def rss_feeds_collect_terms(
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
+    soft_time_limit=600,
+    time_limit=720,
 )
 def rss_feeds_collect_actors(
     self: Any,
@@ -307,118 +328,133 @@ def rss_feeds_collect_actors(
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    logger.info(
-        "rss_feeds: collect_by_actors started — run=%s actors=%d tier=%s",
-        collection_run_id,
-        len(actor_ids),
-        tier,
-    )
-    update_collection_task_status(collection_run_id, _ARENA, "running")
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena=_ARENA,
-        platform="rss_feeds",
-        status="running",
-        records_collected=0,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-
     try:
-        tier_enum = Tier(tier)
-    except ValueError:
-        msg = f"rss_feeds: invalid tier '{tier}'. Only 'free' is supported."
-        logger.error(msg)
-        update_collection_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
-        raise ArenaCollectionError(msg, arena=_ARENA, platform="rss_feeds")
-
-    # GR-01: read researcher-configured extra feed URLs from arenas_config.
-    arenas_config = _load_arenas_config(query_design_id)
-    extra_feed_urls: list[str] | None = None
-    rss_config = arenas_config.get("rss") or {}
-    if isinstance(rss_config, dict):
-        raw_custom = rss_config.get("custom_feeds")
-        if isinstance(raw_custom, list) and raw_custom:
-            extra_feed_urls = [str(u) for u in raw_custom if u]
-
-    collector = RSSFeedsCollector()
-
-    # NOTE: RSS feeds are FORWARD_ONLY — coverage pre-check skipped.
-    # See collect_by_terms for explanation.
-
-    try:
-        records = asyncio.run(
-            collector.collect_by_actors(
-                actor_ids=actor_ids,
-                tier=tier_enum,
-                date_from=date_from,
-                date_to=date_to,
-                max_results=max_results,
-                extra_feed_urls=extra_feed_urls,
-            )
-        )
-    except ArenaRateLimitError:
-        logger.warning(
-            "rss_feeds: rate limited on collect_by_actors for run=%s — will retry.",
+        logger.info(
+            "rss_feeds: collect_by_actors started — run=%s actors=%d tier=%s",
             collection_run_id,
+            len(actor_ids),
+            tier,
         )
-        raise
-    except ArenaCollectionError as exc:
-        msg = str(exc)
-        logger.error("rss_feeds: collection error for run=%s: %s", collection_run_id, msg)
-        update_collection_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        update_collection_task_status(collection_run_id, _ARENA, "running")
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena=_ARENA,
             platform="rss_feeds",
-            status="failed",
+            status="running",
             records_collected=0,
-            error_message=msg,
+            error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        raise
 
-    count = len(records)
+        try:
+            tier_enum = Tier(tier)
+        except ValueError:
+            msg = f"rss_feeds: invalid tier '{tier}'. Only 'free' is supported."
+            logger.error(msg)
+            update_collection_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+            raise ArenaCollectionError(msg, arena=_ARENA, platform="rss_feeds")
 
-    # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+        # GR-01: read researcher-configured extra feed URLs from arenas_config.
+        arenas_config = _load_arenas_config(query_design_id)
+        extra_feed_urls: list[str] | None = None
+        rss_config = arenas_config.get("rss") or {}
+        if isinstance(rss_config, dict):
+            raw_custom = rss_config.get("custom_feeds")
+            if isinstance(raw_custom, list) and raw_custom:
+                extra_feed_urls = [str(u) for u in raw_custom if u]
 
-    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+        collector = RSSFeedsCollector()
 
-    logger.info(
-        "rss_feeds: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
-        collection_run_id,
-        count,
-        inserted,
-        skipped,
-    )
-    update_collection_task_status(
-        collection_run_id,
-        _ARENA,
-        "completed",
-        records_collected=inserted,
-        duplicates_skipped=skipped,
-    )
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena=_ARENA,
-        platform="rss_feeds",
-        status="completed",
-        records_collected=inserted,
-        duplicates_skipped=skipped,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
+        # NOTE: RSS feeds are FORWARD_ONLY — coverage pre-check skipped.
+        # See collect_by_terms for explanation.
 
-    return {
-        "records_collected": inserted,
-        "status": "completed",
-        "arena": _ARENA,
-        "tier": tier,
-    }
+        try:
+            records = asyncio.run(
+                collector.collect_by_actors(
+                    actor_ids=actor_ids,
+                    tier=tier_enum,
+                    date_from=date_from,
+                    date_to=date_to,
+                    max_results=max_results,
+                    extra_feed_urls=extra_feed_urls,
+                )
+            )
+        except ArenaRateLimitError:
+            logger.warning(
+                "rss_feeds: rate limited on collect_by_actors for run=%s — will retry.",
+                collection_run_id,
+            )
+            raise
+        except ArenaCollectionError as exc:
+            msg = str(exc)
+            logger.error("rss_feeds: collection error for run=%s: %s", collection_run_id, msg)
+            update_collection_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena=_ARENA,
+                platform="rss_feeds",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
+
+        count = len(records)
+
+        # Persist collected records to the database.
+        from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+
+        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
+        logger.info(
+            "rss_feeds: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
+            collection_run_id,
+            count,
+            inserted,
+            skipped,
+        )
+        update_collection_task_status(
+            collection_run_id,
+            _ARENA,
+            "completed",
+            records_collected=inserted,
+            duplicates_skipped=skipped,
+        )
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena=_ARENA,
+            platform="rss_feeds",
+            status="completed",
+            records_collected=inserted,
+            duplicates_skipped=skipped,
+            error_message=None,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
+
+        return {
+            "records_collected": inserted,
+            "status": "completed",
+            "arena": _ARENA,
+            "tier": tier,
+        }
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "rss_feeds: collect_by_actors timed out after 10 minutes — run=%s",
+            collection_run_id,
+        )
+        from issue_observatory.workers._task_helpers import update_collection_task_status  # noqa: PLC0415
+
+        update_collection_task_status(
+            collection_run_id,
+            _ARENA,
+            "failed",
+            error_message="Collection timed out after 10 minutes",
+        )
+        return {"status": "failed", "error": "timeout", "arena": _ARENA}
 
 
 @celery_app.task(

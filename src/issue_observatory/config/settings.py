@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     secret_key: str
     """Random secret used to sign JWT tokens.  Generate with ``openssl rand -hex 32``."""
 
-    access_token_expire_minutes: int = 30
+    access_token_expire_minutes: int = 120
     """Lifetime of short-lived JWT access tokens in minutes."""
 
     refresh_token_expire_days: int = 30

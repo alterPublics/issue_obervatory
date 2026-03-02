@@ -31,6 +31,8 @@ import logging
 import time
 from typing import Any
 
+from celery.exceptions import SoftTimeLimitExceeded
+
 from issue_observatory.arenas.ai_chat_search.collector import AiChatSearchCollector
 from issue_observatory.core.credential_pool import CredentialPool
 from issue_observatory.core.exceptions import (
@@ -119,6 +121,8 @@ def _update_task_status(
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
+    soft_time_limit=600,
+    time_limit=720,
 )
 def ai_chat_search_collect_terms(
     self: Any,
@@ -162,134 +166,147 @@ def ai_chat_search_collect_terms(
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    logger.info(
-        "ai_chat_search: collect_by_terms started — run=%s terms=%d tier=%s",
-        collection_run_id,
-        len(terms),
-        tier,
-    )
-    _update_task_status(collection_run_id, _ARENA, "running")
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="ai_chat_search",
-        platform="openrouter",
-        status="running",
-        records_collected=0,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-
-    if tier not in ("medium", "premium"):
-        msg = (
-            f"ai_chat_search: invalid tier '{tier}'. "
-            "Valid tiers: 'medium', 'premium'."
+    try:
+        logger.info(
+            "ai_chat_search: collect_by_terms started — run=%s terms=%d tier=%s",
+            collection_run_id,
+            len(terms),
+            tier,
         )
-        logger.error(msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _ARENA, "running")
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="ai_chat_search",
             platform="openrouter",
-            status="failed",
+            status="running",
             records_collected=0,
-            error_message=msg,
+            error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
-    try:
-        tier_enum = Tier(tier)
-    except ValueError:
-        msg = f"ai_chat_search: invalid tier '{tier}'. Valid: 'medium', 'premium'."
-        logger.error(msg)
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="ai_chat_search",
-            platform="openrouter",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
-            elapsed_seconds=elapsed_since(_task_start),
-        )
-        raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
-
-    credential_pool = CredentialPool()
-    collector = AiChatSearchCollector(credential_pool=credential_pool)
-
-    try:
-        records = asyncio.run(
-            collector.collect_by_terms(
-                terms=terms,
-                tier=tier_enum,
-                date_from=date_from,
-                date_to=date_to,
-                max_results=max_results,
-                language_filter=language_filter,
+        if tier not in ("medium", "premium"):
+            msg = (
+                f"ai_chat_search: invalid tier '{tier}'. "
+                "Valid tiers: 'medium', 'premium'."
             )
-        )
-    except ArenaRateLimitError:
-        logger.warning(
-            "ai_chat_search: rate limited on collect_by_terms for run=%s — will retry.",
+            logger.error(msg)
+            _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="ai_chat_search",
+                platform="openrouter",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
+
+        try:
+            tier_enum = Tier(tier)
+        except ValueError:
+            msg = f"ai_chat_search: invalid tier '{tier}'. Valid: 'medium', 'premium'."
+            logger.error(msg)
+            _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="ai_chat_search",
+                platform="openrouter",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
+
+        credential_pool = CredentialPool()
+        collector = AiChatSearchCollector(credential_pool=credential_pool)
+
+        try:
+            records = asyncio.run(
+                collector.collect_by_terms(
+                    terms=terms,
+                    tier=tier_enum,
+                    date_from=date_from,
+                    date_to=date_to,
+                    max_results=max_results,
+                    language_filter=language_filter,
+                )
+            )
+        except ArenaRateLimitError:
+            logger.warning(
+                "ai_chat_search: rate limited on collect_by_terms for run=%s — will retry.",
+                collection_run_id,
+            )
+            raise
+        except (ArenaCollectionError, NoCredentialAvailableError) as exc:
+            msg = str(exc)
+            logger.error(
+                "ai_chat_search: collection error for run=%s: %s",
+                collection_run_id,
+                msg,
+            )
+            _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="ai_chat_search",
+                platform="openrouter",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
+
+        count = len(records)
+
+        # Persist collected records to the database.
+        from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+
+        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id, terms=terms)
+        logger.info(
+            "ai_chat_search: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
             collection_run_id,
+            count,
+            inserted,
+            skipped,
         )
-        raise
-    except (ArenaCollectionError, NoCredentialAvailableError) as exc:
-        msg = str(exc)
-        logger.error(
-            "ai_chat_search: collection error for run=%s: %s",
-            collection_run_id,
-            msg,
+        _update_task_status(
+            collection_run_id, _ARENA, "completed", records_collected=inserted
         )
-        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="ai_chat_search",
             platform="openrouter",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
+            status="completed",
+            records_collected=inserted,
+            error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        raise
 
-    count = len(records)
-
-    # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
-
-    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
-    logger.info(
-        "ai_chat_search: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
-        collection_run_id,
-        count,
-        inserted,
-        skipped,
-    )
-    _update_task_status(
-        collection_run_id, _ARENA, "completed", records_collected=inserted
-    )
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="ai_chat_search",
-        platform="openrouter",
-        status="completed",
-        records_collected=inserted,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-
-    return {
-        "records_collected": inserted,
-        "status": "completed",
-        "arena": _ARENA,
-        "tier": tier,
-    }
+        return {
+            "records_collected": inserted,
+            "status": "completed",
+            "arena": _ARENA,
+            "tier": tier,
+        }
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "ai_chat_search: collect_by_terms timed out after 10 minutes — run=%s",
+            collection_run_id,
+        )
+        _update_task_status(
+            collection_run_id,
+            _ARENA,
+            "failed",
+            error_message="Collection timed out after 10 minutes",
+        )
+        return {"status": "failed", "error": "timeout", "arena": _ARENA}
 
 
 @celery_app.task(

@@ -35,6 +35,8 @@ import logging
 import time
 from typing import Any
 
+from celery.exceptions import SoftTimeLimitExceeded
+
 from issue_observatory.arenas.reddit.collector import RedditCollector
 from issue_observatory.config.settings import get_settings
 from issue_observatory.core.credential_pool import CredentialPool
@@ -172,6 +174,8 @@ def _load_arenas_config(query_design_id: str) -> dict:
     retry_backoff=True,
     retry_backoff_max=300,  # cap backoff at 5 minutes
     acks_late=True,
+    soft_time_limit=600,
+    time_limit=720,
 )
 def reddit_collect_terms(
     self: Any,
@@ -215,154 +219,167 @@ def reddit_collect_terms(
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    logger.info(
-        "reddit: collect_by_terms started — run=%s terms=%d tier=%s include_comments=%s",
-        collection_run_id,
-        len(terms),
-        tier,
-        include_comments,
-    )
-    _update_task_status(collection_run_id, "reddit", "running")
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="social_media",
-        platform="reddit",
-        status="running",
-        records_collected=0,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-
-    # GR-03: read researcher-configured extra subreddits from arenas_config.
-    arenas_config = _load_arenas_config(query_design_id)
-    extra_subreddits: list[str] | None = None
-    reddit_config = arenas_config.get("reddit") or {}
-    if isinstance(reddit_config, dict):
-        raw_subreddits = reddit_config.get("custom_subreddits")
-        if isinstance(raw_subreddits, list) and raw_subreddits:
-            extra_subreddits = [str(s) for s in raw_subreddits if s]
-
     try:
-        tier_enum = Tier(tier)
-    except ValueError:
-        msg = f"reddit: invalid tier '{tier}'. Only 'free' is valid for Reddit."
-        logger.error(msg)
-        _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
+        logger.info(
+            "reddit: collect_by_terms started — run=%s terms=%d tier=%s include_comments=%s",
+            collection_run_id,
+            len(terms),
+            tier,
+            include_comments,
+        )
+        _update_task_status(collection_run_id, "reddit", "running")
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="social_media",
             platform="reddit",
-            status="failed",
+            status="running",
             records_collected=0,
-            error_message=msg,
+            error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        raise ArenaCollectionError(msg, arena="social_media", platform="reddit")
 
-    credential_pool = CredentialPool()
-    collector = RedditCollector(
-        credential_pool=credential_pool,
-        include_comments=include_comments,
-    )
+        # GR-03: read researcher-configured extra subreddits from arenas_config.
+        arenas_config = _load_arenas_config(query_design_id)
+        extra_subreddits: list[str] | None = None
+        reddit_config = arenas_config.get("reddit") or {}
+        if isinstance(reddit_config, dict):
+            raw_subreddits = reddit_config.get("custom_subreddits")
+            if isinstance(raw_subreddits, list) and raw_subreddits:
+                extra_subreddits = [str(s) for s in raw_subreddits if s]
 
-    try:
-        records = asyncio.run(
-            collector.collect_by_terms(
-                terms=terms,
-                tier=tier_enum,
-                max_results=None,
-                language_filter=language_filter,
-                extra_subreddits=extra_subreddits,
+        try:
+            tier_enum = Tier(tier)
+        except ValueError:
+            msg = f"reddit: invalid tier '{tier}'. Only 'free' is valid for Reddit."
+            logger.error(msg)
+            _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="reddit",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
             )
+            raise ArenaCollectionError(msg, arena="social_media", platform="reddit")
+
+        credential_pool = CredentialPool()
+        collector = RedditCollector(
+            credential_pool=credential_pool,
+            include_comments=include_comments,
         )
-    except NoCredentialAvailableError as exc:
-        msg = f"reddit: no credential available for tier={tier}: {exc}"
-        logger.error(msg)
-        _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
+
+        try:
+            records = asyncio.run(
+                collector.collect_by_terms(
+                    terms=terms,
+                    tier=tier_enum,
+                    max_results=None,
+                    language_filter=language_filter,
+                    extra_subreddits=extra_subreddits,
+                )
+            )
+        except NoCredentialAvailableError as exc:
+            msg = f"reddit: no credential available for tier={tier}: {exc}"
+            logger.error(msg)
+            _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="reddit",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
+        except ArenaRateLimitError:
+            logger.warning(
+                "reddit: rate limited on collect_by_terms for run=%s — will retry.",
+                collection_run_id,
+            )
+            raise
+        except ArenaCollectionError as exc:
+            msg = str(exc)
+            logger.error("reddit: collection error for run=%s: %s", collection_run_id, msg)
+            _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="reddit",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
+
+        count = len(records)
+
+        # Persist collected records to the database.
+        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+            persist_collected_records,
+            reindex_existing_records,
+        )
+
+        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id, terms=terms)
+
+        # Link existing records from other runs that match these terms/dates.
+        linked = reindex_existing_records(
+            platform="reddit",
+            collection_run_id=collection_run_id,
+            query_design_id=query_design_id,
+            terms=terms,
+            date_from=None,
+            date_to=None,
+        )
+        logger.info(
+            "reddit: collect_by_terms completed — run=%s records=%d inserted=%d "
+            "skipped=%d linked=%d",
+            collection_run_id,
+            count,
+            inserted,
+            skipped,
+            linked,
+        )
+        _update_task_status(
+            collection_run_id, "reddit", "completed", records_collected=inserted
+        )
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="social_media",
             platform="reddit",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
+            status="completed",
+            records_collected=inserted,
+            error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        raise
-    except ArenaRateLimitError:
-        logger.warning(
-            "reddit: rate limited on collect_by_terms for run=%s — will retry.",
+
+        return {
+            "records_collected": inserted,
+            "status": "completed",
+            "arena": "social_media",
+            "platform": "reddit",
+            "tier": tier,
+        }
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "reddit: collect_by_terms timed out after 10 minutes — run=%s",
             collection_run_id,
         )
-        raise
-    except ArenaCollectionError as exc:
-        msg = str(exc)
-        logger.error("reddit: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="social_media",
-            platform="reddit",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
-            elapsed_seconds=elapsed_since(_task_start),
+        _update_task_status(
+            collection_run_id,
+            "reddit",
+            "failed",
+            error_message="Collection timed out after 10 minutes",
         )
-        raise
-
-    count = len(records)
-
-    # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-        persist_collected_records,
-        reindex_existing_records,
-    )
-
-    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
-
-    # Link existing records from other runs that match these terms/dates.
-    linked = reindex_existing_records(
-        platform="reddit",
-        collection_run_id=collection_run_id,
-        query_design_id=query_design_id,
-        terms=terms,
-        date_from=None,
-        date_to=None,
-    )
-    logger.info(
-        "reddit: collect_by_terms completed — run=%s records=%d inserted=%d "
-        "skipped=%d linked=%d",
-        collection_run_id,
-        count,
-        inserted,
-        skipped,
-        linked,
-    )
-    _update_task_status(
-        collection_run_id, "reddit", "completed", records_collected=inserted
-    )
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="social_media",
-        platform="reddit",
-        status="completed",
-        records_collected=inserted,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-
-    return {
-        "records_collected": inserted,
-        "status": "completed",
-        "arena": "social_media",
-        "platform": "reddit",
-        "tier": tier,
-    }
+        return {"status": "failed", "error": "timeout", "arena": "social_media"}
 
 
 @celery_app.task(
@@ -373,6 +390,8 @@ def reddit_collect_terms(
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
+    soft_time_limit=600,
+    time_limit=720,
 )
 def reddit_collect_actors(
     self: Any,
@@ -407,147 +426,160 @@ def reddit_collect_actors(
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    logger.info(
-        "reddit: collect_by_actors started — run=%s actors=%d tier=%s",
-        collection_run_id,
-        len(actor_ids),
-        tier,
-    )
-    _update_task_status(collection_run_id, "reddit", "running")
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="social_media",
-        platform="reddit",
-        status="running",
-        records_collected=0,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-
     try:
-        tier_enum = Tier(tier)
-    except ValueError:
-        msg = f"reddit: invalid tier '{tier}'. Only 'free' is valid for Reddit."
-        logger.error(msg)
-        _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
+        logger.info(
+            "reddit: collect_by_actors started — run=%s actors=%d tier=%s",
+            collection_run_id,
+            len(actor_ids),
+            tier,
+        )
+        _update_task_status(collection_run_id, "reddit", "running")
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="social_media",
             platform="reddit",
-            status="failed",
+            status="running",
             records_collected=0,
-            error_message=msg,
+            error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        raise ArenaCollectionError(msg, arena="social_media", platform="reddit")
 
-    credential_pool = CredentialPool()
-    collector = RedditCollector(credential_pool=credential_pool)
-
-    try:
-        records = asyncio.run(
-            collector.collect_by_actors(
-                actor_ids=actor_ids,
-                tier=tier_enum,
-                max_results=None,
+        try:
+            tier_enum = Tier(tier)
+        except ValueError:
+            msg = f"reddit: invalid tier '{tier}'. Only 'free' is valid for Reddit."
+            logger.error(msg)
+            _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="reddit",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
             )
+            raise ArenaCollectionError(msg, arena="social_media", platform="reddit")
+
+        credential_pool = CredentialPool()
+        collector = RedditCollector(credential_pool=credential_pool)
+
+        try:
+            records = asyncio.run(
+                collector.collect_by_actors(
+                    actor_ids=actor_ids,
+                    tier=tier_enum,
+                    max_results=None,
+                )
+            )
+        except NoCredentialAvailableError as exc:
+            msg = f"reddit: no credential available for tier={tier}: {exc}"
+            logger.error(msg)
+            _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="reddit",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
+        except ArenaRateLimitError:
+            logger.warning(
+                "reddit: rate limited on collect_by_actors for run=%s — will retry.",
+                collection_run_id,
+            )
+            raise
+        except ArenaCollectionError as exc:
+            msg = str(exc)
+            logger.error("reddit: collection error for run=%s: %s", collection_run_id, msg)
+            _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="reddit",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
+
+        count = len(records)
+
+        # Persist collected records to the database.
+        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+            persist_collected_records,
+            reindex_existing_records,
         )
-    except NoCredentialAvailableError as exc:
-        msg = f"reddit: no credential available for tier={tier}: {exc}"
-        logger.error(msg)
-        _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
+
+        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
+        # Link existing records from other runs that match these actors/dates.
+        linked = reindex_existing_records(
+            platform="reddit",
+            collection_run_id=collection_run_id,
+            query_design_id=query_design_id,
+            actor_ids=actor_ids,
+            date_from=None,
+            date_to=None,
+        )
+        skipped_actors = collector.skipped_actors
+        logger.info(
+            "reddit: collect_by_actors completed — run=%s records=%d inserted=%d "
+            "dupes_skipped=%d actors_skipped=%d linked=%d",
+            collection_run_id,
+            count,
+            inserted,
+            skipped,
+            len(skipped_actors),
+            linked,
+        )
+        _update_task_status(
+            collection_run_id,
+            "reddit",
+            "completed",
+            records_collected=inserted,
+            actors_skipped=len(skipped_actors),
+            skipped_actor_detail=skipped_actors or None,
+        )
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="social_media",
             platform="reddit",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
+            status="completed",
+            records_collected=inserted,
+            error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        raise
-    except ArenaRateLimitError:
-        logger.warning(
-            "reddit: rate limited on collect_by_actors for run=%s — will retry.",
+
+        return {
+            "records_collected": inserted,
+            "status": "completed",
+            "arena": "social_media",
+            "platform": "reddit",
+            "tier": tier,
+            "actors_skipped": len(skipped_actors),
+        }
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "reddit: collect_by_actors timed out after 10 minutes — run=%s",
             collection_run_id,
         )
-        raise
-    except ArenaCollectionError as exc:
-        msg = str(exc)
-        logger.error("reddit: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, "reddit", "failed", error_message=msg)
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="social_media",
-            platform="reddit",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
-            elapsed_seconds=elapsed_since(_task_start),
+        _update_task_status(
+            collection_run_id,
+            "reddit",
+            "failed",
+            error_message="Collection timed out after 10 minutes",
         )
-        raise
-
-    count = len(records)
-
-    # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-        persist_collected_records,
-        reindex_existing_records,
-    )
-
-    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
-
-    # Link existing records from other runs that match these actors/dates.
-    linked = reindex_existing_records(
-        platform="reddit",
-        collection_run_id=collection_run_id,
-        query_design_id=query_design_id,
-        actor_ids=actor_ids,
-        date_from=None,
-        date_to=None,
-    )
-    skipped_actors = collector.skipped_actors
-    logger.info(
-        "reddit: collect_by_actors completed — run=%s records=%d inserted=%d "
-        "dupes_skipped=%d actors_skipped=%d linked=%d",
-        collection_run_id,
-        count,
-        inserted,
-        skipped,
-        len(skipped_actors),
-        linked,
-    )
-    _update_task_status(
-        collection_run_id,
-        "reddit",
-        "completed",
-        records_collected=inserted,
-        actors_skipped=len(skipped_actors),
-        skipped_actor_detail=skipped_actors or None,
-    )
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="social_media",
-        platform="reddit",
-        status="completed",
-        records_collected=inserted,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-
-    return {
-        "records_collected": inserted,
-        "status": "completed",
-        "arena": "social_media",
-        "platform": "reddit",
-        "tier": tier,
-        "actors_skipped": len(skipped_actors),
-    }
+        return {"status": "failed", "error": "timeout", "arena": "social_media"}
 
 
 @celery_app.task(

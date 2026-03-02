@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from issue_observatory.core.models.actors import ActorType
 
@@ -52,6 +52,14 @@ class ActorPresenceCreate(BaseModel):
     platform_user_id: Optional[str] = Field(default=None, max_length=500)
     platform_username: Optional[str] = Field(default=None, max_length=500)
     profile_url: Optional[str] = Field(default=None, max_length=2000)
+
+    @field_validator("platform_user_id", "platform_username", mode="before")
+    @classmethod
+    def empty_to_none(cls, v: str | None) -> str | None:
+        """Coerce empty or whitespace-only strings to None."""
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
 
 class PresenceResponse(BaseModel):
@@ -172,7 +180,7 @@ class ActorResponse(BaseModel):
         presences: All linked platform presences.
     """
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     id: uuid.UUID
     canonical_name: str
@@ -182,4 +190,7 @@ class ActorResponse(BaseModel):
     is_shared: bool
     public_figure: bool = False
     created_at: datetime
-    presences: list[PresenceResponse] = Field(default_factory=list)
+    presences: list[PresenceResponse] = Field(
+        default_factory=list,
+        validation_alias="platform_presences",
+    )

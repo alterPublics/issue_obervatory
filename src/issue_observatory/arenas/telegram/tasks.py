@@ -36,6 +36,8 @@ import logging
 import time
 from typing import Any
 
+from celery.exceptions import SoftTimeLimitExceeded
+
 from issue_observatory.arenas.telegram.collector import TelegramCollector
 from issue_observatory.config.settings import get_settings
 from issue_observatory.core.event_bus import elapsed_since, publish_task_update
@@ -159,6 +161,8 @@ def _load_arenas_config(query_design_id: str) -> dict:
     retry_backoff=True,
     retry_backoff_max=600,
     acks_late=True,
+    soft_time_limit=600,
+    time_limit=720,
 )
 def telegram_collect_terms(
     self: Any,
@@ -215,204 +219,217 @@ def telegram_collect_terms(
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    logger.info(
-        "telegram: collect_by_terms started — run=%s terms=%d",
-        collection_run_id,
-        len(terms),
-    )
-    _update_task_status(collection_run_id, "telegram", "running")
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="social_media",
-        platform="telegram",
-        status="running",
-        records_collected=0,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-
-    # GR-02: read researcher-configured extra channels from arenas_config.
-    arenas_config = _load_arenas_config(query_design_id)
-    extra_channel_ids: list[str] | None = None
-    telegram_config = arenas_config.get("telegram") or {}
-    if isinstance(telegram_config, dict):
-        raw_channels = telegram_config.get("custom_channels")
-        if isinstance(raw_channels, list) and raw_channels:
-            extra_channel_ids = [str(c) for c in raw_channels if c]
-
-    credential_pool = get_credential_pool()
-    collector = TelegramCollector(credential_pool=credential_pool)
-
-    # Check if force_recollect is set (opt-out from coverage check)
-    force_recollect = _extra.get("force_recollect", False)
-
-    # Pre-collection coverage check: narrow date range to uncovered gaps
-    effective_date_from = date_from
-    effective_date_to = date_to
-    if not force_recollect and date_from and date_to:
-        from datetime import datetime as _dt  # noqa: PLC0415
-
-        from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
-            check_existing_coverage,
+    try:
+        logger.info(
+            "telegram: collect_by_terms started — run=%s terms=%d",
+            collection_run_id,
+            len(terms),
         )
-
-        gaps = check_existing_coverage(
+        _update_task_status(collection_run_id, "telegram", "running")
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
             platform="telegram",
-            date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
-            date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
-            terms=terms,
+            status="running",
+            records_collected=0,
+            error_message=None,
+            elapsed_seconds=elapsed_since(_task_start),
         )
-        if not gaps:
+
+        # GR-02: read researcher-configured extra channels from arenas_config.
+        arenas_config = _load_arenas_config(query_design_id)
+        extra_channel_ids: list[str] | None = None
+        telegram_config = arenas_config.get("telegram") or {}
+        if isinstance(telegram_config, dict):
+            raw_channels = telegram_config.get("custom_channels")
+            if isinstance(raw_channels, list) and raw_channels:
+                extra_channel_ids = [str(c) for c in raw_channels if c]
+
+        credential_pool = get_credential_pool()
+        collector = TelegramCollector(credential_pool=credential_pool)
+
+        # Check if force_recollect is set (opt-out from coverage check)
+        force_recollect = _extra.get("force_recollect", False)
+
+        # Pre-collection coverage check: narrow date range to uncovered gaps
+        effective_date_from = date_from
+        effective_date_to = date_to
+        if not force_recollect and date_from and date_to:
+            from datetime import datetime as _dt  # noqa: PLC0415
+
+            from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
+                check_existing_coverage,
+            )
+
+            gaps = check_existing_coverage(
+                platform="telegram",
+                date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
+                date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
+                terms=terms,
+            )
+            if not gaps:
+                logger.info(
+                    "telegram: full coverage exists for run=%s — skipping API call, "
+                    "will reindex existing records only.",
+                    collection_run_id,
+                )
+                from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+                    reindex_existing_records,
+                )
+
+                linked = reindex_existing_records(
+                    platform="telegram",
+                    collection_run_id=collection_run_id,
+                    query_design_id=query_design_id,
+                    terms=terms,
+                    date_from=date_from,
+                    date_to=date_to,
+                )
+                _update_task_status(
+                    collection_run_id, "telegram", "completed", records_collected=0
+                )
+                publish_task_update(
+                    redis_url=_redis_url,
+                    run_id=collection_run_id,
+                    arena="social_media",
+                    platform="telegram",
+                    status="completed",
+                    records_collected=0,
+                    error_message=None,
+                    elapsed_seconds=elapsed_since(_task_start),
+                )
+                return {
+                    "records_collected": 0,
+                    "records_linked": linked,
+                    "status": "completed",
+                    "arena": "social_media",
+                    "tier": "free",
+                    "coverage_skip": True,
+                }
+            effective_date_from = gaps[0][0].isoformat()
+            effective_date_to = gaps[-1][1].isoformat()
             logger.info(
-                "telegram: full coverage exists for run=%s — skipping API call, "
-                "will reindex existing records only.",
+                "telegram: narrowing collection to uncovered range %s — %s (run=%s)",
+                effective_date_from,
+                effective_date_to,
                 collection_run_id,
             )
-            from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-                reindex_existing_records,
-            )
 
-            linked = reindex_existing_records(
-                platform="telegram",
-                collection_run_id=collection_run_id,
-                query_design_id=query_design_id,
-                terms=terms,
-                date_from=date_from,
-                date_to=date_to,
+        try:
+            records = asyncio.run(
+                collector.collect_by_terms(
+                    terms=terms,
+                    tier=Tier.FREE,
+                    date_from=effective_date_from,
+                    date_to=effective_date_to,
+                    max_results=max_results,
+                    actor_ids=channel_ids,
+                    language_filter=language_filter,
+                    extra_channel_ids=extra_channel_ids,
+                )
             )
-            _update_task_status(
-                collection_run_id, "telegram", "completed", records_collected=0
-            )
+        except NoCredentialAvailableError as exc:
+            msg = f"telegram: no credential available: {exc}"
+            logger.error(msg)
+            _update_task_status(collection_run_id, "telegram", "failed", error_message=msg)
             publish_task_update(
                 redis_url=_redis_url,
                 run_id=collection_run_id,
                 arena="social_media",
                 platform="telegram",
-                status="completed",
+                status="failed",
                 records_collected=0,
-                error_message=None,
+                error_message=msg,
                 elapsed_seconds=elapsed_since(_task_start),
             )
-            return {
-                "records_collected": 0,
-                "records_linked": linked,
-                "status": "completed",
-                "arena": "social_media",
-                "tier": "free",
-                "coverage_skip": True,
-            }
-        effective_date_from = gaps[0][0].isoformat()
-        effective_date_to = gaps[-1][1].isoformat()
-        logger.info(
-            "telegram: narrowing collection to uncovered range %s — %s (run=%s)",
-            effective_date_from,
-            effective_date_to,
-            collection_run_id,
-        )
-
-    try:
-        records = asyncio.run(
-            collector.collect_by_terms(
-                terms=terms,
-                tier=Tier.FREE,
-                date_from=effective_date_from,
-                date_to=effective_date_to,
-                max_results=max_results,
-                actor_ids=channel_ids,
-                language_filter=language_filter,
-                extra_channel_ids=extra_channel_ids,
+            raise ArenaCollectionError(
+                msg, arena="social_media", platform="telegram"
+            ) from exc
+        except ArenaRateLimitError:
+            logger.warning(
+                "telegram: FloodWaitError on collect_by_terms for run=%s — will retry.",
+                collection_run_id,
             )
+            raise
+        except ArenaCollectionError as exc:
+            msg = str(exc)
+            logger.error("telegram: collection error for run=%s: %s", collection_run_id, msg)
+            _update_task_status(collection_run_id, "telegram", "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="telegram",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
+
+        count = len(records)
+
+        # Persist collected records to the database.
+        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+            persist_collected_records,
+            record_collection_attempts_batch,
         )
-    except NoCredentialAvailableError as exc:
-        msg = f"telegram: no credential available: {exc}"
-        logger.error(msg)
-        _update_task_status(collection_run_id, "telegram", "failed", error_message=msg)
+
+        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id, terms=terms)
+
+        # Record successful collection attempts for future pre-checks.
+        if date_from and date_to:
+            record_collection_attempts_batch(
+                platform="telegram",
+                collection_run_id=collection_run_id,
+                query_design_id=query_design_id,
+                inputs=terms,
+                input_type="term",
+                date_from=date_from,
+                date_to=date_to,
+                records_returned=inserted,
+            )
+
+        logger.info(
+            "telegram: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
+            collection_run_id,
+            count,
+            inserted,
+            skipped,
+        )
+        _update_task_status(
+            collection_run_id, "telegram", "completed", records_collected=inserted
+        )
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="social_media",
             platform="telegram",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
+            status="completed",
+            records_collected=inserted,
+            error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        raise ArenaCollectionError(
-            msg, arena="social_media", platform="telegram"
-        ) from exc
-    except ArenaRateLimitError:
-        logger.warning(
-            "telegram: FloodWaitError on collect_by_terms for run=%s — will retry.",
+        return {
+            "records_collected": inserted,
+            "status": "completed",
+            "arena": "social_media",
+            "platform": "telegram",
+            "tier": "free",
+        }
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "telegram: collect_by_terms timed out after 10 minutes — run=%s",
             collection_run_id,
         )
-        raise
-    except ArenaCollectionError as exc:
-        msg = str(exc)
-        logger.error("telegram: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, "telegram", "failed", error_message=msg)
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="social_media",
-            platform="telegram",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
-            elapsed_seconds=elapsed_since(_task_start),
+        _update_task_status(
+            collection_run_id,
+            "telegram",
+            "failed",
+            error_message="Collection timed out after 10 minutes",
         )
-        raise
-
-    count = len(records)
-
-    # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-        persist_collected_records,
-        record_collection_attempts_batch,
-    )
-
-    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
-
-    # Record successful collection attempts for future pre-checks.
-    if date_from and date_to:
-        record_collection_attempts_batch(
-            platform="telegram",
-            collection_run_id=collection_run_id,
-            query_design_id=query_design_id,
-            inputs=terms,
-            input_type="term",
-            date_from=date_from,
-            date_to=date_to,
-            records_returned=inserted,
-        )
-
-    logger.info(
-        "telegram: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
-        collection_run_id,
-        count,
-        inserted,
-        skipped,
-    )
-    _update_task_status(
-        collection_run_id, "telegram", "completed", records_collected=inserted
-    )
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="social_media",
-        platform="telegram",
-        status="completed",
-        records_collected=inserted,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-    return {
-        "records_collected": inserted,
-        "status": "completed",
-        "arena": "social_media",
-        "platform": "telegram",
-        "tier": "free",
-    }
+        return {"status": "failed", "error": "timeout", "arena": "social_media"}
 
 
 @celery_app.task(
@@ -423,6 +440,8 @@ def telegram_collect_terms(
     retry_backoff=True,
     retry_backoff_max=600,
     acks_late=True,
+    soft_time_limit=600,
+    time_limit=720,
 )
 def telegram_collect_actors(
     self: Any,
@@ -465,194 +484,207 @@ def telegram_collect_actors(
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    logger.info(
-        "telegram: collect_by_actors started — run=%s actors=%d",
-        collection_run_id,
-        len(actor_ids),
-    )
-    _update_task_status(collection_run_id, "telegram", "running")
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="social_media",
-        platform="telegram",
-        status="running",
-        records_collected=0,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-
-    credential_pool = get_credential_pool()
-    collector = TelegramCollector(credential_pool=credential_pool)
-
-    # Check if force_recollect is set (opt-out from coverage check)
-    force_recollect = _extra.get("force_recollect", False)
-
-    # Pre-collection coverage check: narrow date range to uncovered gaps
-    effective_date_from = date_from
-    effective_date_to = date_to
-    if not force_recollect and date_from and date_to:
-        from datetime import datetime as _dt  # noqa: PLC0415
-
-        from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
-            check_existing_coverage,
+    try:
+        logger.info(
+            "telegram: collect_by_actors started — run=%s actors=%d",
+            collection_run_id,
+            len(actor_ids),
         )
-
-        gaps = check_existing_coverage(
+        _update_task_status(collection_run_id, "telegram", "running")
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
             platform="telegram",
-            date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
-            date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
-            actor_ids=actor_ids,
+            status="running",
+            records_collected=0,
+            error_message=None,
+            elapsed_seconds=elapsed_since(_task_start),
         )
-        if not gaps:
+
+        credential_pool = get_credential_pool()
+        collector = TelegramCollector(credential_pool=credential_pool)
+
+        # Check if force_recollect is set (opt-out from coverage check)
+        force_recollect = _extra.get("force_recollect", False)
+
+        # Pre-collection coverage check: narrow date range to uncovered gaps
+        effective_date_from = date_from
+        effective_date_to = date_to
+        if not force_recollect and date_from and date_to:
+            from datetime import datetime as _dt  # noqa: PLC0415
+
+            from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
+                check_existing_coverage,
+            )
+
+            gaps = check_existing_coverage(
+                platform="telegram",
+                date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
+                date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
+                actor_ids=actor_ids,
+            )
+            if not gaps:
+                logger.info(
+                    "telegram: full coverage exists for run=%s — skipping API call, "
+                    "will reindex existing records only.",
+                    collection_run_id,
+                )
+                from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+                    reindex_existing_records,
+                )
+
+                linked = reindex_existing_records(
+                    platform="telegram",
+                    collection_run_id=collection_run_id,
+                    query_design_id=query_design_id,
+                    actor_ids=actor_ids,
+                    date_from=date_from,
+                    date_to=date_to,
+                )
+                _update_task_status(
+                    collection_run_id, "telegram", "completed", records_collected=0
+                )
+                publish_task_update(
+                    redis_url=_redis_url,
+                    run_id=collection_run_id,
+                    arena="social_media",
+                    platform="telegram",
+                    status="completed",
+                    records_collected=0,
+                    error_message=None,
+                    elapsed_seconds=elapsed_since(_task_start),
+                )
+                return {
+                    "records_collected": 0,
+                    "records_linked": linked,
+                    "status": "completed",
+                    "arena": "social_media",
+                    "tier": "free",
+                    "coverage_skip": True,
+                }
+            effective_date_from = gaps[0][0].isoformat()
+            effective_date_to = gaps[-1][1].isoformat()
             logger.info(
-                "telegram: full coverage exists for run=%s — skipping API call, "
-                "will reindex existing records only.",
+                "telegram: narrowing collection to uncovered range %s — %s (run=%s)",
+                effective_date_from,
+                effective_date_to,
                 collection_run_id,
             )
-            from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-                reindex_existing_records,
-            )
 
-            linked = reindex_existing_records(
-                platform="telegram",
-                collection_run_id=collection_run_id,
-                query_design_id=query_design_id,
-                actor_ids=actor_ids,
-                date_from=date_from,
-                date_to=date_to,
+        try:
+            records = asyncio.run(
+                collector.collect_by_actors(
+                    actor_ids=actor_ids,
+                    tier=Tier.FREE,
+                    date_from=effective_date_from,
+                    date_to=effective_date_to,
+                    max_results=max_results,
+                )
             )
-            _update_task_status(
-                collection_run_id, "telegram", "completed", records_collected=0
-            )
+        except NoCredentialAvailableError as exc:
+            msg = f"telegram: no credential available: {exc}"
+            logger.error(msg)
+            _update_task_status(collection_run_id, "telegram", "failed", error_message=msg)
             publish_task_update(
                 redis_url=_redis_url,
                 run_id=collection_run_id,
                 arena="social_media",
                 platform="telegram",
-                status="completed",
+                status="failed",
                 records_collected=0,
-                error_message=None,
+                error_message=msg,
                 elapsed_seconds=elapsed_since(_task_start),
             )
-            return {
-                "records_collected": 0,
-                "records_linked": linked,
-                "status": "completed",
-                "arena": "social_media",
-                "tier": "free",
-                "coverage_skip": True,
-            }
-        effective_date_from = gaps[0][0].isoformat()
-        effective_date_to = gaps[-1][1].isoformat()
-        logger.info(
-            "telegram: narrowing collection to uncovered range %s — %s (run=%s)",
-            effective_date_from,
-            effective_date_to,
-            collection_run_id,
-        )
-
-    try:
-        records = asyncio.run(
-            collector.collect_by_actors(
-                actor_ids=actor_ids,
-                tier=Tier.FREE,
-                date_from=effective_date_from,
-                date_to=effective_date_to,
-                max_results=max_results,
+            raise ArenaCollectionError(
+                msg, arena="social_media", platform="telegram"
+            ) from exc
+        except ArenaRateLimitError:
+            logger.warning(
+                "telegram: FloodWaitError on collect_by_actors for run=%s — will retry.",
+                collection_run_id,
             )
+            raise
+        except ArenaCollectionError as exc:
+            msg = str(exc)
+            logger.error(
+                "telegram: actor collection error for run=%s: %s", collection_run_id, msg
+            )
+            _update_task_status(collection_run_id, "telegram", "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="telegram",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
+
+        count = len(records)
+
+        # Persist collected records to the database.
+        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+            persist_collected_records,
+            record_collection_attempts_batch,
         )
-    except NoCredentialAvailableError as exc:
-        msg = f"telegram: no credential available: {exc}"
-        logger.error(msg)
-        _update_task_status(collection_run_id, "telegram", "failed", error_message=msg)
+
+        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
+        # Record successful collection attempts for future pre-checks.
+        if date_from and date_to:
+            record_collection_attempts_batch(
+                platform="telegram",
+                collection_run_id=collection_run_id,
+                query_design_id=query_design_id,
+                inputs=actor_ids,
+                input_type="actor",
+                date_from=date_from,
+                date_to=date_to,
+                records_returned=inserted,
+            )
+
+        logger.info(
+            "telegram: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
+            collection_run_id,
+            count,
+            inserted,
+            skipped,
+        )
+        _update_task_status(
+            collection_run_id, "telegram", "completed", records_collected=inserted
+        )
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="social_media",
             platform="telegram",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
+            status="completed",
+            records_collected=inserted,
+            error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        raise ArenaCollectionError(
-            msg, arena="social_media", platform="telegram"
-        ) from exc
-    except ArenaRateLimitError:
-        logger.warning(
-            "telegram: FloodWaitError on collect_by_actors for run=%s — will retry.",
+        return {
+            "records_collected": inserted,
+            "status": "completed",
+            "arena": "social_media",
+            "platform": "telegram",
+            "tier": "free",
+        }
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "telegram: collect_by_actors timed out after 10 minutes — run=%s",
             collection_run_id,
         )
-        raise
-    except ArenaCollectionError as exc:
-        msg = str(exc)
-        logger.error(
-            "telegram: actor collection error for run=%s: %s", collection_run_id, msg
+        _update_task_status(
+            collection_run_id,
+            "telegram",
+            "failed",
+            error_message="Collection timed out after 10 minutes",
         )
-        _update_task_status(collection_run_id, "telegram", "failed", error_message=msg)
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="social_media",
-            platform="telegram",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
-            elapsed_seconds=elapsed_since(_task_start),
-        )
-        raise
-
-    count = len(records)
-
-    # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-        persist_collected_records,
-        record_collection_attempts_batch,
-    )
-
-    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
-
-    # Record successful collection attempts for future pre-checks.
-    if date_from and date_to:
-        record_collection_attempts_batch(
-            platform="telegram",
-            collection_run_id=collection_run_id,
-            query_design_id=query_design_id,
-            inputs=actor_ids,
-            input_type="actor",
-            date_from=date_from,
-            date_to=date_to,
-            records_returned=inserted,
-        )
-
-    logger.info(
-        "telegram: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
-        collection_run_id,
-        count,
-        inserted,
-        skipped,
-    )
-    _update_task_status(
-        collection_run_id, "telegram", "completed", records_collected=inserted
-    )
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="social_media",
-        platform="telegram",
-        status="completed",
-        records_collected=inserted,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-    return {
-        "records_collected": inserted,
-        "status": "completed",
-        "arena": "social_media",
-        "platform": "telegram",
-        "tier": "free",
-    }
+        return {"status": "failed", "error": "timeout", "arena": "social_media"}
 
 
 @celery_app.task(

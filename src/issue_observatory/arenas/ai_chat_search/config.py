@@ -37,17 +37,16 @@ CHAT_MODEL_MEDIUM: str = "openai/gpt-5-nano:online"
 
 The ``:online`` suffix activates OpenRouter's web search plugin, which
 incorporates real-time search results into the response and returns citations
-as ``annotations`` objects in the message.  This is equivalent to passing
-``{"plugins": {"web": {}}}`` in the request body.
+as ``annotations`` objects in the message.
 
 Cost: pay-per-token via OpenRouter; GPT-5 Nano is among the cheapest options.
 """
 
-CHAT_MODEL_PREMIUM: str = "perplexity/sonar-pro"
-"""Perplexity Sonar Pro model used at the PREMIUM tier.
+CHAT_MODEL_PREMIUM: str = "openai/gpt-5-nano:online"
+"""Default model for the PREMIUM tier — GPT-5 Nano with OpenRouter web search.
 
-More thorough web search with higher source coverage; higher per-token cost.
-Cost: approximately $3/1M input tokens and $15/1M output tokens via OpenRouter.
+Same model as MEDIUM; PREMIUM tier generates more phrasings per term
+for broader coverage.
 """
 
 EXPANSION_MODEL: str = "google/gemma-3-27b-it:free"
@@ -83,10 +82,10 @@ this arena (no ``lang=da`` parameter exists for Perplexity's web search).
 """
 
 EXPANSION_SYSTEM_PROMPT_TEMPLATE: str = (
-    "Du er en dansk bruger der soeger information via en AI-chatbot.\n"
-    "Generer praecis {N} realistiske spoergsmaal som en dansker ville stille\n"
-    "om dette emne. Varier mellem faktuelle, holdningsoegende og praktiske\n"
-    "spoergsmaal. Svar kun med spoergsmaalene, et per linje."
+    "Du er en dansk bruger der søger information via en AI-chatbot.\n"
+    "Generer præcis {N} realistiske spørgsmål som en dansker ville stille\n"
+    "om dette emne. Varier mellem faktuelle, holdningssøgende og praktiske\n"
+    "spørgsmål. Svar kun med spørgsmålene, et per linje."
 )
 """System prompt template for the query expansion calls.
 

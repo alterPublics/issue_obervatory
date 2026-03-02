@@ -64,6 +64,8 @@
                             <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">Completed</span>
                         {% elif status == 'partial' %}
                             <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">Partial</span>
+                        {% elif status == 'cancelled' %}
+                            <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">Cancelled</span>
                         {% elif status == 'failed' %}
                             <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">Failed</span>
                         {% else %}

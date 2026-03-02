@@ -1020,6 +1020,9 @@ async def discovered_links_page(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     query_design_id: Optional[uuid.UUID] = None,
+    platform: Optional[str] = None,
+    min_count: int = 1,
+    limit: int = 100,
 ) -> HTMLResponse:
     """Render the discovered sources page (GR-22, YF-13).
 
@@ -1027,17 +1030,20 @@ async def discovered_links_page(
     ``query_design_id`` is provided, scopes to that single design. When
     omitted, shows links across all of the user's query designs.
 
+    On initial page load AND on HTMX filter-change requests, runs the
+    link miner and populates the template with actual discovered links.
+
     Args:
         request: The current HTTP request.
         db: Injected async database session.
         current_user: The authenticated, active user.
         query_design_id: Optional UUID to scope to a single query design.
-
-    Returns:
-        Rendered ``content/discovered_links.html`` template with initial
-        context: empty links list (populated via HTMX on page load), user's
-        query designs for the dropdown, and active filter state.
+        platform: Optional platform slug to filter results.
+        min_count: Minimum source-record count threshold (default: 1).
+        limit: Maximum links to return (default: 100).
     """
+    from issue_observatory.analysis.link_miner import LinkMiner  # noqa: PLC0415
+
     tpl = _templates(request)
 
     # Fetch user's query designs for the dropdown selector.
@@ -1054,23 +1060,64 @@ async def discovered_links_page(
         for qd in query_designs
     ]
 
+    # Run the link miner to populate results.
+    miner = LinkMiner()
+    discovered = await miner.mine(
+        db=db,
+        query_design_id=query_design_id,
+        user_id=current_user.id if query_design_id is None else None,
+        platform_filter=platform if platform else None,
+        min_source_count=max(min_count, 1),
+        limit=limit,
+    )
+
+    # Convert DiscoveredLink dataclass objects to template-friendly dicts,
+    # grouped by platform for the Jinja2 template.
+    links_for_template: list[dict] = []
+    by_platform: dict[str, list[dict]] = {}
+    for i, link in enumerate(discovered):
+        link_dict = {
+            "id": f"{link.platform}_{link.target_identifier}_{i}",
+            "platform": link.platform,
+            "target_identifier": link.target_identifier,
+            "url": link.url,
+            "source_count": link.source_count,
+            "first_seen": link.first_seen_at.isoformat(),
+            "last_seen": link.last_seen_at.isoformat(),
+            "example_source_urls": link.example_source_urls,
+        }
+        links_for_template.append(link_dict)
+        by_platform.setdefault(link.platform, []).append(link_dict)
+
+    is_htmx = request.headers.get("hx-request") is not None
+
+    context = {
+        "request": request,
+        "user": current_user,
+        "links": links_for_template,
+        "by_platform": by_platform,
+        "total": len(links_for_template),
+        "has_more": False,
+        "next_offset": 0,
+        "filter": {
+            "platform": platform or "",
+            "min_count": min_count,
+            "query_design_id": str(query_design_id) if query_design_id else "",
+        },
+        "query_designs": query_designs_list,
+        "active_query_design_id": str(query_design_id) if query_design_id else "",
+    }
+
+    if is_htmx:
+        # Return only the results container partial for HTMX swaps.
+        return tpl.TemplateResponse(
+            "content/_discovered_links_results.html",
+            context,
+        )
+
     return tpl.TemplateResponse(
         "content/discovered_links.html",
-        {
-            "request": request,
-            "user": current_user,
-            "links": [],  # Populated by HTMX
-            "total": 0,
-            "has_more": False,
-            "next_offset": 0,
-            "filter": {
-                "platform": "",
-                "min_count": 2,
-                "query_design_id": str(query_design_id) if query_design_id else "",
-            },
-            "query_designs": query_designs_list,
-            "active_query_design_id": str(query_design_id) if query_design_id else "",
-        },
+        context,
     )
 
 

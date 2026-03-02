@@ -44,7 +44,7 @@ beat_schedule: dict[str, dict] = {  # type: ignore[type-arg]
     # ------------------------------------------------------------------
     "daily_collection": {
         "task": "issue_observatory.workers.tasks.trigger_daily_collection",
-        "schedule": crontab(hour=0, minute=0),
+        "schedule": crontab(hour=5, minute=16),  # TEMP: testing trigger (was hour=0, minute=0)
         "options": {
             "queue": "celery",
             "expires": 3_600,  # discard if not started within 1 hour

@@ -123,6 +123,84 @@ async def suspend_run(run_id: Any) -> None:
         await db.commit()
 
 
+async def fetch_designs_with_prep() -> list[dict[str, Any]]:
+    """Fetch all live-tracking designs AND gather dispatch data in one async context.
+
+    Combines ``fetch_live_tracking_designs`` with per-design credit balance,
+    user email, public figure IDs, search terms, and actor IDs — all in a
+    single event loop invocation.  This avoids the "Future attached to a
+    different loop" error that occurs when multiple ``asyncio.run()`` calls
+    share a SQLAlchemy async connection pool.
+
+    Returns:
+        List of design dicts, each augmented with ``credit_balance``,
+        ``user_email``, ``public_figure_ids``, ``arena_terms``, and
+        ``arena_actor_ids``.
+    """
+    designs = await fetch_live_tracking_designs()
+
+    from issue_observatory.api.routes.collections import _normalize_arenas_config  # noqa: PLC0415
+    from issue_observatory.arenas.registry import get_arena as _get_arena  # noqa: PLC0415
+
+    for design in designs:
+        owner_id = design["owner_id"]
+        design_id = design["query_design_id"]
+
+        # Credit balance
+        async with AsyncSessionLocal() as db:
+            svc = CreditService(session=db)
+            design["credit_balance"] = await svc.get_available_credits(owner_id)
+
+        # User email
+        async with AsyncSessionLocal() as db:
+            email_result = await db.execute(select(User.email).where(User.id == owner_id))
+            design["user_email"] = email_result.scalar_one_or_none()
+
+        # Public figure IDs
+        try:
+            design["public_figure_ids"] = list(
+                await fetch_public_figure_ids_for_design(design_id)
+            )
+        except Exception:
+            design["public_figure_ids"] = []
+
+        # Per-arena terms and actor IDs
+        raw_arenas_config: dict = design.get("arenas_config") or {}
+        default_tier: str = design.get("default_tier") or "free"
+        flat_arenas = _normalize_arenas_config(raw_arenas_config, default_tier)
+        design["_flat_arenas"] = flat_arenas
+
+        arena_terms: dict[str, list] = {}
+        arena_actor_ids: dict[str, list] = {}
+
+        for arena_name in flat_arenas:
+            try:
+                _collector_cls = _get_arena(arena_name)
+                is_actor_only = not getattr(_collector_cls, "supports_term_search", True)
+            except KeyError:
+                is_actor_only = False
+
+            if is_actor_only:
+                try:
+                    arena_actor_ids[arena_name] = await fetch_actor_ids_for_design_and_platform(
+                        design_id, arena_name
+                    )
+                except Exception:
+                    arena_actor_ids[arena_name] = []
+            else:
+                try:
+                    arena_terms[arena_name] = await fetch_resolved_terms_for_arena(
+                        design_id, arena_name
+                    )
+                except Exception:
+                    arena_terms[arena_name] = []
+
+        design["arena_terms"] = arena_terms
+        design["arena_actor_ids"] = arena_actor_ids
+
+    return designs
+
+
 # ---------------------------------------------------------------------------
 # settle_pending_credits helpers
 # ---------------------------------------------------------------------------
@@ -485,16 +563,17 @@ async def fetch_resolved_terms_for_arena(
     query_design_id: Any,
     arena_platform_name: str,
 ) -> list[str]:
-    """Return resolved search term strings for an arena using the override mechanism.
+    """Return resolved search term strings for an arena, merging overrides with defaults.
 
-    Implements the all-or-nothing arena override logic:
+    Combines default terms (from YF-01 ``target_arenas`` logic) with any
+    arena-specific override terms:
 
-    1. Check if any override terms exist for ``arena_platform_name`` in this
-       query design (rows where ``override_arena == arena_platform_name`` and
+    1. Load default terms via :func:`fetch_search_terms_for_arena` (terms
+       with ``target_arenas IS NULL`` or containing this arena).
+    2. Load override terms for ``arena_platform_name`` (rows where
+       ``override_arena == arena_platform_name`` and
        ``parent_term_id IS NOT NULL``).
-    2. If YES: use ONLY those override terms (all defaults excluded).
-    3. If NO: fall back to :func:`fetch_search_terms_for_arena` which returns
-       default terms filtered by the legacy YF-01 ``target_arenas`` mechanism.
+    3. Return the merged (deduplicated) union of both sets, preserving order.
 
     Args:
         query_design_id: UUID of the ``QueryDesign`` whose search terms to load.
@@ -507,8 +586,11 @@ async def fetch_resolved_terms_for_arena(
     """
     from issue_observatory.core.models.query_design import SearchTerm  # noqa: PLC0415
 
+    # Step 1: load default terms (YF-01 target_arenas filtering)
+    default_terms = await fetch_search_terms_for_arena(query_design_id, arena_platform_name)
+
+    # Step 2: load arena-specific override terms
     async with AsyncSessionLocal() as db:
-        # Step 1: check for override terms
         override_stmt = (
             select(SearchTerm.term)
             .where(SearchTerm.query_design_id == query_design_id)
@@ -518,14 +600,20 @@ async def fetch_resolved_terms_for_arena(
             .order_by(SearchTerm.added_at)
         )
         result = await db.execute(override_stmt)
-        override_terms = result.scalars().all()
+        override_terms = [str(t) for t in result.scalars().all()]
 
-        if override_terms:
-            # Arena has overrides -> use ONLY those
-            return [str(t) for t in override_terms]
+    # Step 3: merge, deduplicating while preserving order
+    if not override_terms:
+        return default_terms
 
-    # Step 2: no overrides -> fall back to default term resolution (YF-01)
-    return await fetch_search_terms_for_arena(query_design_id, arena_platform_name)
+    seen: set[str] = set()
+    merged: list[str] = []
+    for term in default_terms + override_terms:
+        lower = term.lower()
+        if lower not in seen:
+            seen.add(lower)
+            merged.append(term)
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -846,7 +934,7 @@ async def check_all_tasks_terminal(run_id: Any) -> dict[str, Any] | None:
             ).label("completed"),
             func.sum(
                 case(
-                    (CollectionTask.status == "failed", 1),
+                    (CollectionTask.status.in_(["failed", "cancelled"]), 1),
                     else_=0,
                 )
             ).label("failed"),
@@ -885,10 +973,31 @@ async def check_all_tasks_terminal(run_id: Any) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
+def _match_terms_in_text(
+    text_content: str | None,
+    title: str | None,
+    terms: list[str],
+) -> list[str]:
+    """Return which search terms appear in the record's text or title.
+
+    Simple case-insensitive substring matching.  Used as a fallback when
+    a collector does not populate ``search_terms_matched`` itself.
+    """
+    if not terms:
+        return []
+    haystack = (
+        (title or "").lower() + " " + (text_content or "").lower()
+    )
+    if not haystack.strip():
+        return []
+    return [t for t in terms if t.lower() in haystack]
+
+
 def persist_collected_records(
     records: list[dict[str, Any]],
     collection_run_id: str,
     query_design_id: str | None = None,
+    terms: list[str] | None = None,
 ) -> tuple[int, int]:
     """Bulk-insert normalized content records into the database.
 
@@ -903,6 +1012,9 @@ def persist_collected_records(
             used to update ``collection_runs.records_collected``.
         query_design_id: Optional UUID string of the owning query design.
             Injected into each record if not already set.
+        terms: Optional list of search terms used for collection. When
+            provided, records with empty ``search_terms_matched`` will be
+            backfilled via client-side text matching on title + text_content.
 
     Returns:
         Tuple of ``(inserted_count, skipped_count)``.
@@ -920,8 +1032,17 @@ def persist_collected_records(
         return 0, 0
 
     # Set term_matched based on search_terms_matched presence.
+    # Backfill search_terms_matched via text matching when terms are provided.
     for record in records:
         matched_terms = record.get("search_terms_matched")
+        if (not matched_terms or len(matched_terms) == 0) and terms:
+            matched_terms = _match_terms_in_text(
+                record.get("text_content"),
+                record.get("title"),
+                terms,
+            )
+            if matched_terms:
+                record["search_terms_matched"] = matched_terms
         if matched_terms and len(matched_terms) > 0:
             record.setdefault("term_matched", True)
         else:
@@ -1074,7 +1195,7 @@ def update_collection_task_status(
                         records_collected = :records_collected,
                         duplicates_skipped = :duplicates_skipped,
                         error_message = :error_message,
-                        completed_at = CASE WHEN :status IN ('completed', 'failed')
+                        completed_at = CASE WHEN :status IN ('completed', 'failed', 'cancelled')
                                             THEN NOW() ELSE completed_at END,
                         started_at   = CASE WHEN :status = 'running' AND started_at IS NULL
                                             THEN NOW() ELSE started_at END

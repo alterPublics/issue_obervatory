@@ -46,8 +46,12 @@
               hx-target="#records-tbody"
               hx-swap="innerHTML"
               hx-trigger="change, keyup changed delay:400ms"
-              hx-push-url="true"
+              hx-push-url="/content"
               hx-indicator="#table-spinner">
+
+            {# Sort state (hidden — set by clickable column headers) #}
+            <input type="hidden" name="sort_by" id="sort_by" value="{{ filter.sort_by | default('published_at') }}">
+            <input type="hidden" name="sort_dir" id="sort_dir" value="{{ filter.sort_dir | default('desc') }}">
 
             {# Full-text search #}
             <div>
@@ -296,8 +300,10 @@
             <div class="flex items-center gap-3">
                 <h1 class="text-sm font-semibold text-gray-900">Content</h1>
                 <span class="text-xs text-gray-400" id="record-count">
-                    {% if total_count > 0 %}
-                        {{ total_count | int }} record{% if total_count != 1 %}s{% endif %}
+                    {% if total_count > 2000 %}
+                        2,000+ records
+                    {% elif total_count > 0 %}
+                        {{ '{:,}'.format(total_count | int) }} record{% if total_count != 1 %}s{% endif %}
                     {% endif %}
                 </span>
                 <span id="table-spinner" class="htmx-indicator">
@@ -345,14 +351,19 @@
                 <table class="min-w-full divide-y divide-gray-200 text-sm">
                     <thead class="bg-gray-50 sticky top-0 z-10">
                         <tr>
-                            <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Platform</th>
+                            <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:text-gray-800"
+                                data-sort-col="platform" onclick="setSort('platform')">Platform<span class="sort-arrow"></span></th>
                             <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Content</th>
-                            <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden lg:table-cell">Sender</th>
-                            <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden md:table-cell">Published</th>
-                            <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Arena</th>
-                            <th class="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden md:table-cell">
+                            <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden lg:table-cell cursor-pointer select-none hover:text-gray-800"
+                                data-sort-col="author" onclick="setSort('author')">Sender<span class="sort-arrow"></span></th>
+                            <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden md:table-cell cursor-pointer select-none hover:text-gray-800"
+                                data-sort-col="published_at" onclick="setSort('published_at')">Published<span class="sort-arrow"></span></th>
+                            <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:text-gray-800"
+                                data-sort-col="arena" onclick="setSort('arena')">Arena<span class="sort-arrow"></span></th>
+                            <th class="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden md:table-cell cursor-pointer select-none hover:text-gray-800"
+                                data-sort-col="engagement_score" onclick="setSort('engagement_score')">
                                 <span title="Composite engagement score (likes + shares + comments). Not comparable across platforms — each platform weights metrics differently."
-                                      class="cursor-help border-b border-dashed border-gray-400">Engagement</span>
+                                      class="cursor-pointer border-b border-dashed border-gray-400">Engagement</span><span class="sort-arrow"></span>
                             </th>
                         </tr>
                     </thead>
@@ -690,6 +701,45 @@
 </div>
 
 <script>
+/**
+ * Toggle sort column/direction and trigger a filter form reload.
+ * Called from clickable <th> headers.  Resets pagination on sort change.
+ */
+function setSort(col) {
+    const byEl = document.getElementById('sort_by');
+    const dirEl = document.getElementById('sort_dir');
+    if (byEl.value === col) {
+        dirEl.value = dirEl.value === 'desc' ? 'asc' : 'desc';
+    } else {
+        byEl.value = col;
+        dirEl.value = 'desc';
+    }
+    _updateSortArrows();
+    htmx.trigger('#filter-form', 'change');
+}
+
+const _ARROW_UP = '<svg class="inline w-3 h-3 ml-0.5" viewBox="0 0 12 12" fill="currentColor"><path d="M6 2l4 5H2z"/></svg>';
+const _ARROW_DN = '<svg class="inline w-3 h-3 ml-0.5" viewBox="0 0 12 12" fill="currentColor"><path d="M6 10l4-5H2z"/></svg>';
+
+function _updateSortArrows() {
+    const col = document.getElementById('sort_by').value;
+    const dir = document.getElementById('sort_dir').value;
+    document.querySelectorAll('th[data-sort-col]').forEach(function(th) {
+        const arrow = th.querySelector('.sort-arrow');
+        if (!arrow) return;
+        if (th.dataset.sortCol === col) {
+            arrow.innerHTML = dir === 'asc' ? _ARROW_UP : _ARROW_DN;
+            th.classList.add('text-gray-800');
+        } else {
+            arrow.innerHTML = '';
+            th.classList.remove('text-gray-800');
+        }
+    });
+}
+
+/* Initialize arrows on page load. */
+document.addEventListener('DOMContentLoaded', _updateSortArrows);
+
 /**
  * Alpine component for the arena filter sidebar section.
  * Fetches the live arena list from GET /api/arenas/ and populates checkboxes dynamically.

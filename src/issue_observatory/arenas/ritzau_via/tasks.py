@@ -18,6 +18,8 @@ import logging
 import time
 from typing import Any
 
+from celery.exceptions import SoftTimeLimitExceeded
+
 from issue_observatory.arenas.ritzau_via.collector import RitzauViaCollector
 from issue_observatory.config.settings import get_settings
 from issue_observatory.core.event_bus import elapsed_since, publish_task_update
@@ -101,6 +103,8 @@ def _update_task_status(
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
+    soft_time_limit=600,
+    time_limit=720,
 )
 def ritzau_via_collect_terms(
     self: Any,
@@ -140,93 +144,106 @@ def ritzau_via_collect_terms(
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    logger.info(
-        "ritzau_via: collect_by_terms started — run=%s terms=%d",
-        collection_run_id,
-        len(terms),
-    )
-    _update_task_status(collection_run_id, "ritzau_via", "running")
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="news_media",
-        platform="ritzau_via",
-        status="running",
-        records_collected=0,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-
-    collector = RitzauViaCollector()
-
-    # NOTE: Via Ritzau is FORWARD_ONLY — it serves live press releases and
-    # does not support date-range filtering.  Coverage pre-check is
-    # intentionally skipped because the API always returns current content.
-
     try:
-        records = asyncio.run(
-            collector.collect_by_terms(
-                terms=terms,
-                tier=Tier.FREE,
-                date_from=date_from,
-                date_to=date_to,
-                max_results=max_results,
-                language_filter=language_filter,
-            )
-        )
-    except ArenaRateLimitError:
-        logger.warning(
-            "ritzau_via: rate limited on collect_by_terms for run=%s — will retry.",
+        logger.info(
+            "ritzau_via: collect_by_terms started — run=%s terms=%d",
             collection_run_id,
+            len(terms),
         )
-        raise
-    except ArenaCollectionError as exc:
-        msg = str(exc)
-        logger.error("ritzau_via: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, "ritzau_via", "failed", error_message=msg)
+        _update_task_status(collection_run_id, "ritzau_via", "running")
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="news_media",
             platform="ritzau_via",
-            status="failed",
+            status="running",
             records_collected=0,
-            error_message=msg,
+            error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        raise
 
-    count = len(records)
+        collector = RitzauViaCollector()
 
-    # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+        # NOTE: Via Ritzau is FORWARD_ONLY — it serves live press releases and
+        # does not support date-range filtering.  Coverage pre-check is
+        # intentionally skipped because the API always returns current content.
 
-    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+        try:
+            records = asyncio.run(
+                collector.collect_by_terms(
+                    terms=terms,
+                    tier=Tier.FREE,
+                    date_from=date_from,
+                    date_to=date_to,
+                    max_results=max_results,
+                    language_filter=language_filter,
+                )
+            )
+        except ArenaRateLimitError:
+            logger.warning(
+                "ritzau_via: rate limited on collect_by_terms for run=%s — will retry.",
+                collection_run_id,
+            )
+            raise
+        except ArenaCollectionError as exc:
+            msg = str(exc)
+            logger.error("ritzau_via: collection error for run=%s: %s", collection_run_id, msg)
+            _update_task_status(collection_run_id, "ritzau_via", "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="news_media",
+                platform="ritzau_via",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
 
-    logger.info(
-        "ritzau_via: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
-        collection_run_id,
-        count,
-        inserted,
-        skipped,
-    )
-    _update_task_status(collection_run_id, "ritzau_via", "completed", records_collected=inserted)
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="news_media",
-        platform="ritzau_via",
-        status="completed",
-        records_collected=inserted,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-    return {
-        "records_collected": inserted,
-        "status": "completed",
-        "arena": "news_media",
-        "tier": "free",
-    }
+        count = len(records)
+
+        # Persist collected records to the database.
+        from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+
+        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
+        logger.info(
+            "ritzau_via: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
+            collection_run_id,
+            count,
+            inserted,
+            skipped,
+        )
+        _update_task_status(collection_run_id, "ritzau_via", "completed", records_collected=inserted)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="news_media",
+            platform="ritzau_via",
+            status="completed",
+            records_collected=inserted,
+            error_message=None,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
+        return {
+            "records_collected": inserted,
+            "status": "completed",
+            "arena": "news_media",
+            "tier": "free",
+        }
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "ritzau_via: collect_by_terms timed out after 10 minutes — run=%s",
+            collection_run_id,
+        )
+        _update_task_status(
+            collection_run_id,
+            "ritzau_via",
+            "failed",
+            error_message="Collection timed out after 10 minutes",
+        )
+        return {"status": "failed", "error": "timeout", "arena": "news_media"}
 
 
 @celery_app.task(
@@ -237,6 +254,8 @@ def ritzau_via_collect_terms(
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
+    soft_time_limit=600,
+    time_limit=720,
 )
 def ritzau_via_collect_actors(
     self: Any,
@@ -275,95 +294,108 @@ def ritzau_via_collect_actors(
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    logger.info(
-        "ritzau_via: collect_by_actors started — run=%s publishers=%d",
-        collection_run_id,
-        len(actor_ids),
-    )
-    _update_task_status(collection_run_id, "ritzau_via", "running")
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="news_media",
-        platform="ritzau_via",
-        status="running",
-        records_collected=0,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-
-    collector = RitzauViaCollector()
-
-    # NOTE: Via Ritzau is FORWARD_ONLY — coverage pre-check skipped.
-    # See collect_by_terms for explanation.
-
     try:
-        records = asyncio.run(
-            collector.collect_by_actors(
-                actor_ids=actor_ids,
-                tier=Tier.FREE,
-                date_from=date_from,
-                date_to=date_to,
-                max_results=max_results,
-            )
-        )
-    except ArenaRateLimitError:
-        logger.warning(
-            "ritzau_via: rate limited on collect_by_actors for run=%s — will retry.",
+        logger.info(
+            "ritzau_via: collect_by_actors started — run=%s publishers=%d",
             collection_run_id,
+            len(actor_ids),
         )
-        raise
-    except ArenaCollectionError as exc:
-        msg = str(exc)
-        logger.error(
-            "ritzau_via: actor collection error for run=%s: %s", collection_run_id, msg
-        )
-        _update_task_status(collection_run_id, "ritzau_via", "failed", error_message=msg)
+        _update_task_status(collection_run_id, "ritzau_via", "running")
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="news_media",
             platform="ritzau_via",
-            status="failed",
+            status="running",
             records_collected=0,
-            error_message=msg,
+            error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        raise
 
-    count = len(records)
+        collector = RitzauViaCollector()
 
-    # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+        # NOTE: Via Ritzau is FORWARD_ONLY — coverage pre-check skipped.
+        # See collect_by_terms for explanation.
 
-    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+        try:
+            records = asyncio.run(
+                collector.collect_by_actors(
+                    actor_ids=actor_ids,
+                    tier=Tier.FREE,
+                    date_from=date_from,
+                    date_to=date_to,
+                    max_results=max_results,
+                )
+            )
+        except ArenaRateLimitError:
+            logger.warning(
+                "ritzau_via: rate limited on collect_by_actors for run=%s — will retry.",
+                collection_run_id,
+            )
+            raise
+        except ArenaCollectionError as exc:
+            msg = str(exc)
+            logger.error(
+                "ritzau_via: actor collection error for run=%s: %s", collection_run_id, msg
+            )
+            _update_task_status(collection_run_id, "ritzau_via", "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="news_media",
+                platform="ritzau_via",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
 
-    logger.info(
-        "ritzau_via: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
-        collection_run_id,
-        count,
-        inserted,
-        skipped,
-    )
-    _update_task_status(
-        collection_run_id, "ritzau_via", "completed", records_collected=inserted
-    )
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="news_media",
-        platform="ritzau_via",
-        status="completed",
-        records_collected=inserted,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-    return {
-        "records_collected": inserted,
-        "status": "completed",
-        "arena": "news_media",
-        "tier": "free",
-    }
+        count = len(records)
+
+        # Persist collected records to the database.
+        from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+
+        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
+        logger.info(
+            "ritzau_via: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
+            collection_run_id,
+            count,
+            inserted,
+            skipped,
+        )
+        _update_task_status(
+            collection_run_id, "ritzau_via", "completed", records_collected=inserted
+        )
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="news_media",
+            platform="ritzau_via",
+            status="completed",
+            records_collected=inserted,
+            error_message=None,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
+        return {
+            "records_collected": inserted,
+            "status": "completed",
+            "arena": "news_media",
+            "tier": "free",
+        }
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "ritzau_via: collect_by_actors timed out after 10 minutes — run=%s",
+            collection_run_id,
+        )
+        _update_task_status(
+            collection_run_id,
+            "ritzau_via",
+            "failed",
+            error_message="Collection timed out after 10 minutes",
+        )
+        return {"status": "failed", "error": "timeout", "arena": "news_media"}
 
 
 @celery_app.task(

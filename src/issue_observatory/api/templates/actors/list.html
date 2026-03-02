@@ -398,342 +398,548 @@
                 <p class="text-sm text-red-700" x-text="error"></p>
             </div>
 
-            <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            {# ================================================================ #}
+            {# STEP 1: Choose seed actors and configure expansion                #}
+            {# ================================================================ #}
+            <div class="space-y-5" :class="results ? 'opacity-60' : ''">
 
-                {# Left column: seed actors + platforms #}
-                <div class="space-y-5">
-
-                    {# Seed actor selection #}
+                {# Step 1 header #}
+                <div class="flex items-center gap-3">
+                    <span class="flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold"
+                          :class="results ? 'bg-green-100 text-green-700' : 'bg-blue-600 text-white'">
+                        <span x-show="!results">1</span>
+                        <svg x-show="results" x-cloak class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none"
+                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                        </svg>
+                    </span>
                     <div>
-                        <label class="block text-xs font-medium text-gray-700 mb-2">
-                            Seed actors
-                            <span class="text-gray-400 font-normal ml-1">— select actors to start from</span>
-                        </label>
-                        {% if actors %}
-                        <div class="space-y-1 max-h-48 overflow-y-auto border border-gray-200 rounded-md p-2">
-                            {% for actor in actors %}
-                            <label class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-50 cursor-pointer">
-                                <input type="checkbox"
-                                       value="{{ actor.id }}"
-                                       @change="toggleSeed('{{ actor.id }}')"
-                                       :checked="seedActorIds.includes('{{ actor.id }}')"
-                                       class="text-blue-600 rounded focus:ring-blue-500">
-                                <span class="text-sm text-gray-800">{{ actor.name | default('(unnamed)') }}</span>
-                                <div class="flex flex-wrap gap-0.5 ml-auto">
-                                    {% for platform in actor.platforms | default([]) %}
-                                    <span class="inline-flex px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-600">
-                                        {{ platform }}
-                                    </span>
-                                    {% endfor %}
-                                </div>
-                            </label>
-                            {% endfor %}
-                        </div>
-                        <p class="mt-1.5 text-xs text-gray-400">
-                            <span x-text="seedActorIds.length"></span> actor<span x-show="seedActorIds.length !== 1">s</span> selected
-                        </p>
-                        {% else %}
-                        <p class="text-sm text-gray-400 italic">No actors in this list yet. Add actors above first.</p>
-                        {% endif %}
+                        <p class="text-sm font-semibold text-gray-900">Choose seed actors</p>
+                        <p class="text-xs text-gray-500">Select the starting actors whose networks will be explored</p>
                     </div>
+                </div>
 
-                    {# Platform selection #}
-                    <div>
-                        <label class="block text-xs font-medium text-gray-700 mb-2">
-                            Platforms to search
-                        </label>
-                        <div x-show="availablePlatforms.length === 0"
-                             class="text-xs text-gray-400 italic">Loading platforms...</div>
-                        <div class="flex flex-wrap gap-3">
-                            <template x-for="platform in availablePlatforms" :key="platform">
-                                <label class="flex items-center gap-1.5 cursor-pointer">
-                                    <input type="checkbox"
-                                           :value="platform"
-                                           @change="togglePlatform(platform)"
-                                           :checked="platforms.includes(platform)"
-                                           class="text-blue-600 rounded focus:ring-blue-500">
-                                    <span class="text-sm text-gray-700 capitalize" x-text="platform"></span>
-                                </label>
-                            </template>
+                <div class="grid grid-cols-1 gap-6 lg:grid-cols-2 ml-10">
+
+                    {# Left column: seed actors + platforms #}
+                    <div class="space-y-5">
+
+                        {# Seed mode tabs #}
+                        <div>
+                            <div class="flex border-b border-gray-200 mb-3">
+                                <button type="button"
+                                        @click="seedMode = 'actors'"
+                                        :class="seedMode === 'actors'
+                                            ? 'border-blue-500 text-blue-600'
+                                            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+                                        class="px-3 py-2 text-xs font-medium border-b-2 transition-colors">
+                                    Seed from actor list
+                                </button>
+                                <button type="button"
+                                        @click="seedMode = 'collection'; loadAvailableRuns()"
+                                        :class="seedMode === 'collection'
+                                            ? 'border-blue-500 text-blue-600'
+                                            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+                                        class="px-3 py-2 text-xs font-medium border-b-2 transition-colors">
+                                    Seed from collection run
+                                </button>
+                            </div>
                         </div>
-                        {# YF-11: Platform transparency info box #}
-                        <div class="mt-3 rounded-md bg-blue-50 border border-blue-200 px-3 py-2">
-                            <div class="flex gap-2">
-                                <svg class="w-4 h-4 text-blue-600 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                                     stroke="currentColor" stroke-width="2" aria-hidden="true">
-                                    <path stroke-linecap="round" stroke-linejoin="round"
-                                          d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                                </svg>
-                                <div class="text-xs text-blue-800">
-                                    <p class="font-medium">Network expansion is available for Bluesky, Reddit, YouTube, Telegram, TikTok, Gab, and X/Twitter</p>
-                                    <p class="mt-1 text-blue-700">
-                                        For other platforms, use Discovered Sources to find connected actors through cross-platform links.
+
+                        {# Seed actor selection (original mode) #}
+                        <div x-show="seedMode === 'actors'">
+                            <label class="block text-xs font-medium text-gray-700 mb-2">
+                                Select actors to use as starting points
+                            </label>
+                            {% if actors %}
+                            <div class="space-y-1 max-h-48 overflow-y-auto border border-gray-200 rounded-md p-2">
+                                {% for actor in actors %}
+                                <label class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-50 cursor-pointer">
+                                    <input type="checkbox"
+                                           value="{{ actor.id }}"
+                                           @change="toggleSeed('{{ actor.id }}')"
+                                           :checked="seedActorIds.includes('{{ actor.id }}')"
+                                           class="text-blue-600 rounded focus:ring-blue-500">
+                                    <span class="text-sm text-gray-800">{{ actor.name | default('(unnamed)') }}</span>
+                                    <div class="flex flex-wrap gap-0.5 ml-auto">
+                                        {% for platform in actor.platforms | default([]) %}
+                                        <span class="inline-flex px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-600">
+                                            {{ platform }}
+                                        </span>
+                                        {% endfor %}
+                                    </div>
+                                </label>
+                                {% endfor %}
+                            </div>
+                            <p class="mt-1.5 text-xs text-gray-400">
+                                <span x-text="seedActorIds.length"></span> actor<span x-show="seedActorIds.length !== 1">s</span> selected
+                            </p>
+                            {% else %}
+                            <p class="text-sm text-gray-400 italic">No actors in this list yet. Add actors above first.</p>
+                            {% endif %}
+                        </div>
+
+                        {# Seed from collection run (new mode) #}
+                        <div x-show="seedMode === 'collection'" x-cloak class="space-y-3">
+                            <p class="text-xs text-gray-500 mb-2">
+                                Pick a completed collection run and choose which of its authors to expand from.
+                                Authors not yet in the Actor Directory will be created automatically.
+                            </p>
+
+                            <div x-show="availableRunsLoading" class="text-xs text-gray-400 italic">Loading runs...</div>
+
+                            <select x-show="availableRuns.length > 0"
+                                    x-model="selectedRunId"
+                                    @change="loadCollectionAuthors()"
+                                    class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                                <option value="">Select a collection run...</option>
+                                <template x-for="run in availableRuns" :key="run.id">
+                                    <option :value="run.id"
+                                            x-text="`${run.query_design_name} — ${run.records_collected} records, ${run.unique_authors} authors (${run.started_at ? new Date(run.started_at).toLocaleDateString() : 'unknown date'})`">
+                                    </option>
+                                </template>
+                            </select>
+
+                            <p x-show="!availableRunsLoading && availableRuns.length === 0"
+                               class="text-sm text-gray-400 italic">
+                                No collection runs with data found. Run a collection first.
+                            </p>
+
+                            {# Authors from selected run #}
+                            <div x-show="collectionAuthors.length > 0" class="space-y-2">
+                                <div class="flex items-center justify-between">
+                                    <p class="text-xs font-medium text-gray-700">
+                                        <span x-text="collectionAuthors.length"></span> authors found in this run
                                     </p>
+                                    <div class="flex gap-2 text-xs">
+                                        <button type="button"
+                                                @click="selectAllCollectionAuthors()"
+                                                class="text-blue-600 hover:underline">Select all</button>
+                                        <span class="text-gray-300">|</span>
+                                        <button type="button"
+                                                @click="deselectAllCollectionAuthors()"
+                                                class="text-gray-500 hover:underline">Clear</button>
+                                    </div>
+                                </div>
+
+                                <div class="max-h-56 overflow-y-auto border border-gray-200 rounded-md bg-white">
+                                    <table class="min-w-full divide-y divide-gray-200 text-xs">
+                                        <thead class="bg-gray-50 sticky top-0">
+                                            <tr>
+                                                <th class="w-8 px-2 py-1.5"></th>
+                                                <th class="text-left px-2 py-1.5 font-medium text-gray-500">Author</th>
+                                                <th class="text-left px-2 py-1.5 font-medium text-gray-500">Platform</th>
+                                                <th class="text-right px-2 py-1.5 font-medium text-gray-500">Records</th>
+                                                <th class="text-center px-2 py-1.5 font-medium text-gray-500"
+                                                    title="Already registered in the Actor Directory">In directory</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y divide-gray-100">
+                                            <template x-for="(author, idx) in collectionAuthors" :key="`${author.platform}:${author.platform_user_id}`">
+                                                <tr class="hover:bg-gray-50">
+                                                    <td class="px-2 py-1.5">
+                                                        <input type="checkbox"
+                                                               @change="toggleCollectionAuthor(idx)"
+                                                               :checked="selectedCollectionAuthors.includes(idx)"
+                                                               class="text-blue-600 rounded focus:ring-blue-500">
+                                                    </td>
+                                                    <td class="px-2 py-1.5 text-gray-900" x-text="author.author_display_name"></td>
+                                                    <td class="px-2 py-1.5">
+                                                        <span class="inline-flex px-1.5 py-0.5 rounded bg-gray-100 text-gray-600"
+                                                              x-text="author.platform"></span>
+                                                    </td>
+                                                    <td class="px-2 py-1.5 text-right text-gray-600 font-mono" x-text="author.record_count"></td>
+                                                    <td class="px-2 py-1.5 text-center">
+                                                        <span x-show="author.actor_id" class="text-green-600" title="Already in Actor Directory">&#10003;</span>
+                                                        <span x-show="!author.actor_id" class="text-gray-300" title="Will be created automatically">new</span>
+                                                    </td>
+                                                </tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <p class="text-xs text-gray-400">
+                                    <span x-text="selectedCollectionAuthors.length"></span> author<span x-show="selectedCollectionAuthors.length !== 1">s</span> selected as seeds
+                                </p>
+                            </div>
+
+                            <div x-show="collectionAuthorsLoading" class="text-xs text-gray-400 italic">Loading authors...</div>
+                        </div>
+
+                        {# Platform selection #}
+                        <div>
+                            <label class="block text-xs font-medium text-gray-700 mb-2">
+                                Platforms to search
+                            </label>
+                            <div x-show="availablePlatforms.length === 0"
+                                 class="text-xs text-gray-400 italic">Loading platforms...</div>
+                            <div class="flex flex-wrap gap-3">
+                                <template x-for="platform in availablePlatforms" :key="platform">
+                                    <label class="flex items-center gap-1.5 cursor-pointer">
+                                        <input type="checkbox"
+                                               :value="platform"
+                                               @change="togglePlatform(platform)"
+                                               :checked="platforms.includes(platform)"
+                                               class="text-blue-600 rounded focus:ring-blue-500">
+                                        <span class="text-sm text-gray-700 capitalize" x-text="platform"></span>
+                                    </label>
+                                </template>
+                            </div>
+                            {# YF-11: Platform transparency info box #}
+                            <div class="mt-3 rounded-md bg-blue-50 border border-blue-200 px-3 py-2">
+                                <div class="flex gap-2">
+                                    <svg class="w-4 h-4 text-blue-600 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                         stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                              d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                    </svg>
+                                    <div class="text-xs text-blue-800">
+                                        <p class="font-medium">Network expansion is available for Bluesky, Reddit, YouTube, Telegram, TikTok, Gab, X/Twitter, Facebook, Instagram, and Threads</p>
+                                        <p class="mt-1 text-blue-700">
+                                            Facebook, Instagram, and Threads use co-mention detection from stored content.
+                                            Cross-platform link mining also discovers actors linked in content across all platforms.
+                                        </p>
+                                    </div>
                                 </div>
                             </div>
                         </div>
+
                     </div>
 
-                </div>
+                    {# Right column: depth + per-step limit + list option #}
+                    <div class="space-y-5">
 
-                {# Right column: depth + per-step limit + list option #}
-                <div class="space-y-5">
-
-                    {# Depth slider #}
-                    <div>
-                        <label class="block text-xs font-medium text-gray-700 mb-1">
-                            How many hops from seed actors:
-                            <span class="font-semibold text-gray-900 ml-1" x-text="maxDepth"></span>
-                        </label>
-                        <input type="range"
-                               min="1" max="3" step="1"
-                               x-model.number="maxDepth"
-                               class="w-full accent-blue-600">
-                        <div class="flex justify-between text-xs text-gray-400 mt-0.5">
-                            <span>1 hop</span>
-                            <span>2 hops</span>
-                            <span>3 hops</span>
+                        {# Depth slider #}
+                        <div>
+                            <label class="block text-xs font-medium text-gray-700 mb-1">
+                                How many hops from seed actors:
+                                <span class="font-semibold text-gray-900 ml-1" x-text="maxDepth"></span>
+                            </label>
+                            <input type="range"
+                                   min="1" max="3" step="1"
+                                   x-model.number="maxDepth"
+                                   class="w-full accent-blue-600">
+                            <div class="flex justify-between text-xs text-gray-400 mt-0.5">
+                                <span>1 hop</span>
+                                <span>2 hops</span>
+                                <span>3 hops</span>
+                            </div>
+                            <p class="text-xs text-gray-400 mt-1">
+                                More hops discovers more actors but takes longer and may reduce relevance.
+                            </p>
                         </div>
-                        <p class="text-xs text-gray-400 mt-1">
-                            More hops discovers more actors but takes longer and may reduce relevance.
-                        </p>
-                    </div>
 
-                    {# Max actors per step #}
-                    <div>
-                        <label class="block text-xs font-medium text-gray-700 mb-1"
-                               for="snow-max-per-step">
-                            Max actors discovered per hop
-                        </label>
-                        <input type="number"
-                               id="snow-max-per-step"
-                               min="1" max="200"
-                               x-model.number="maxActorsPerStep"
-                               class="w-28 border border-gray-300 rounded px-3 py-1.5 text-sm
-                                      focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <p class="text-xs text-gray-400 mt-1">
-                            Lower values keep results focused; higher values are more exhaustive.
-                        </p>
-                    </div>
+                        {# Max actors per step #}
+                        <div>
+                            <label class="block text-xs font-medium text-gray-700 mb-1"
+                                   for="snow-max-per-step">
+                                Max actors discovered per hop
+                            </label>
+                            <input type="number"
+                                   id="snow-max-per-step"
+                                   min="1" max="200"
+                                   x-model.number="maxActorsPerStep"
+                                   class="w-28 border border-gray-300 rounded px-3 py-1.5 text-sm
+                                          focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <p class="text-xs text-gray-400 mt-1">
+                                Lower values keep results focused; higher values are more exhaustive.
+                            </p>
+                        </div>
 
-                    {# Min co-mention records threshold #}
-                    <div>
-                        <label class="block text-xs font-medium text-gray-700 mb-1"
-                               for="snow-min-comention">
-                            Min. records for co-mention detection
-                        </label>
-                        <input type="number"
-                               id="snow-min-comention"
-                               min="1" max="50"
-                               x-model.number="minComentionRecords"
-                               class="w-28 border border-gray-300 rounded px-3 py-1.5 text-sm
-                                      focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <p class="text-xs text-gray-400 mt-1"
-                           title="A co-mentioned username must appear in at least this many distinct content records alongside the seed actor to be included. Higher values yield fewer but more significant results.">
-                            Minimum distinct records in which a username must co-occur with the seed actor.
-                        </p>
-                    </div>
+                        {# Min co-mention records threshold #}
+                        <div>
+                            <label class="block text-xs font-medium text-gray-700 mb-1"
+                                   for="snow-min-comention">
+                                Min. records for co-mention detection
+                            </label>
+                            <input type="number"
+                                   id="snow-min-comention"
+                                   min="1" max="50"
+                                   x-model.number="minComentionRecords"
+                                   class="w-28 border border-gray-300 rounded px-3 py-1.5 text-sm
+                                          focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <p class="text-xs text-gray-400 mt-1"
+                               title="A co-mentioned username must appear in at least this many distinct content records alongside the seed actor to be included. Higher values yield fewer but more significant results.">
+                                Minimum distinct records in which a username must co-occur with the seed actor.
+                            </p>
+                        </div>
 
-                    {# Add-to-list toggle #}
-                    <div class="flex items-center gap-3">
-                        <button type="button"
-                                @click="addToList = !addToList"
-                                :class="addToList
-                                    ? 'bg-blue-600'
-                                    : 'bg-gray-200'"
-                                class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer
-                                       rounded-full border-2 border-transparent transition-colors
-                                       duration-200 ease-in-out focus:outline-none focus:ring-2
-                                       focus:ring-blue-500 focus:ring-offset-1"
-                                role="switch"
-                                :aria-checked="addToList.toString()">
-                            <span :class="addToList ? 'translate-x-4' : 'translate-x-0'"
-                                  class="pointer-events-none inline-block h-4 w-4 transform
-                                         rounded-full bg-white shadow transition duration-200 ease-in-out">
+                        {# Add-to-list toggle #}
+                        <div class="flex items-center gap-3">
+                            <button type="button"
+                                    @click="addToList = !addToList"
+                                    :class="addToList
+                                        ? 'bg-blue-600'
+                                        : 'bg-gray-200'"
+                                    class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer
+                                           rounded-full border-2 border-transparent transition-colors
+                                           duration-200 ease-in-out focus:outline-none focus:ring-2
+                                           focus:ring-blue-500 focus:ring-offset-1"
+                                    role="switch"
+                                    :aria-checked="addToList.toString()">
+                                <span :class="addToList ? 'translate-x-4' : 'translate-x-0'"
+                                      class="pointer-events-none inline-block h-4 w-4 transform
+                                             rounded-full bg-white shadow transition duration-200 ease-in-out">
+                                </span>
+                            </button>
+                            <span class="text-sm text-gray-700">
+                                Automatically add all discovered actors to this list
                             </span>
-                        </button>
-                        <span class="text-sm text-gray-700">
-                            Automatically add all discovered actors to this list
-                        </span>
-                    </div>
-
-                </div>
-
-            </div>
-
-            {# Run button #}
-            <div class="pt-2 flex items-center gap-3">
-                <p x-show="seedActorIds.length > 0" class="text-xs text-gray-600 mb-2">
-                    <span class="font-medium" x-text="seedActorIds.length"></span> seed actor<span x-show="seedActorIds.length !== 1">s</span> selected
-                </p>
-                <button type="button"
-                        @click="runSnowball()"
-                        :disabled="loading || seedActorIds.length === 0 || platforms.length === 0"
-                        class="inline-flex items-center gap-2 px-5 py-2 bg-blue-600 text-white
-                               text-sm font-medium rounded-md hover:bg-blue-700 transition-colors
-                               disabled:opacity-50 disabled:cursor-not-allowed">
-                    <svg x-show="loading"
-                         class="animate-spin w-4 h-4 text-white"
-                         xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                        <path class="opacity-75" fill="currentColor"
-                              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                    </svg>
-                    <svg x-show="!loading"
-                         class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none"
-                         viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round"
-                              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
-                    </svg>
-                    <span x-text="loading ? 'Searching...' : 'Run Snowball Sampling'"></span>
-                </button>
-                <p x-show="seedActorIds.length === 0" class="text-xs text-amber-600">
-                    Select at least one seed actor above.
-                </p>
-                <p x-show="seedActorIds.length > 0 && platforms.length === 0" class="text-xs text-amber-600">
-                    Select at least one platform.
-                </p>
-            </div>
-
-            {# Results section #}
-            <div x-show="results" x-cloak class="border-t border-gray-200 pt-5 space-y-4">
-
-                {# R-14: Filter bar #}
-                <div x-show="results && results.discovered_actors && results.discovered_actors.length > 0"
-                     class="flex flex-wrap items-center gap-3 bg-gray-50 rounded-md px-4 py-2.5">
-                    <div class="flex items-center gap-2">
-                        <label class="text-xs font-medium text-gray-500">Platform:</label>
-                        <select x-model="filterPlatform"
-                                class="border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
-                            <option value="all">All platforms</option>
-                            <template x-for="p in resultPlatforms" :key="p">
-                                <option :value="p" x-text="p"></option>
-                            </template>
-                        </select>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <label class="text-xs font-medium text-gray-500">Method:</label>
-                        <select x-model="filterMethod"
-                                class="border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
-                            <option value="all">All methods</option>
-                            <template x-for="m in discoveryMethods" :key="m">
-                                <option :value="m" x-text="formatMethod(m)"></option>
-                            </template>
-                        </select>
-                    </div>
-                    <span class="text-xs text-gray-400 ml-auto"
-                          x-text="`Showing ${filteredResults.length} of ${results.discovered_actors.length} actors`"></span>
-                </div>
-
-                {# Summary cards #}
-                <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                    <div class="bg-gray-50 rounded-md px-4 py-3">
-                        <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Actors found</p>
-                        <p class="mt-1 text-xl font-semibold text-gray-900"
-                           x-text="results ? results.total_found : '—'"></p>
-                    </div>
-                    <div class="bg-gray-50 rounded-md px-4 py-3">
-                        <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Depth reached</p>
-                        <p class="mt-1 text-xl font-semibold text-gray-900"
-                           x-text="results ? results.max_depth_reached : '—'"></p>
-                    </div>
-                    <div class="bg-gray-50 rounded-md px-4 py-3">
-                        <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Selected</p>
-                        <p class="mt-1 text-xl font-semibold text-gray-900"
-                           x-text="selectedActors.length"></p>
-                    </div>
-                </div>
-
-                {# Discovered actors table #}
-                <div x-show="results && results.discovered_actors && results.discovered_actors.length > 0">
-                    <div class="flex items-center justify-between mb-2">
-                        <p class="text-xs font-medium text-gray-700">Discovered actors — review and select which to add</p>
-                        <div class="flex gap-2 text-xs">
-                            <button type="button"
-                                    @click="selectAll()"
-                                    class="text-blue-600 hover:underline">Select all</button>
-                            <span class="text-gray-300">|</span>
-                            <button type="button"
-                                    @click="selectNone()"
-                                    class="text-gray-500 hover:underline">Clear</button>
                         </div>
+
                     </div>
-                    <div class="overflow-x-auto border border-gray-200 rounded-md">
-                        <table class="min-w-full divide-y divide-gray-200 text-sm">
-                            <thead class="bg-gray-50">
-                                <tr>
-                                    <th class="w-10 px-3 py-2"></th>
-                                    <th class="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
-                                    <th class="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Platforms</th>
-                                    <th class="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Method</th>
-                                    <th class="text-right px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Discovery depth (wave)</th>
-                                </tr>
-                            </thead>
-                            <tbody class="bg-white divide-y divide-gray-100">
-                                <template x-for="actor in filteredResults" :key="actor.id">
-                                    <tr class="hover:bg-gray-50">
-                                        <td class="px-3 py-2">
-                                            <input type="checkbox"
-                                                   :value="actor.id"
-                                                   @change="toggleSelected(actor.id)"
-                                                   :checked="selectedActors.includes(actor.id)"
-                                                   class="text-blue-600 rounded focus:ring-blue-500">
-                                        </td>
-                                        <td class="px-4 py-2 font-medium text-gray-900"
-                                            x-text="actor.name || '(unnamed)'"></td>
-                                        <td class="px-4 py-2">
-                                            <div class="flex flex-wrap gap-1">
-                                                <template x-for="p in (actor.platforms || [])" :key="p">
-                                                    <span class="inline-flex px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-600"
-                                                          x-text="p"></span>
-                                                </template>
-                                            </div>
-                                        </td>
-                                        <td class="px-4 py-2 text-xs text-gray-600">
-                                            <span x-text="formatMethod(actor.discovery_method)"
-                                                  :title="getMethodDescription(actor.discovery_method)"
-                                                  :class="getMethodDescription(actor.discovery_method) ? 'cursor-help border-b border-dotted border-gray-400' : ''"></span>
-                                        </td>
-                                        <td class="px-4 py-2 text-right text-gray-600"
-                                            x-text="actor.discovery_depth"></td>
-                                    </tr>
-                                </template>
-                            </tbody>
-                        </table>
-                    </div>
+
                 </div>
 
-                <p x-show="results && results.discovered_actors && results.discovered_actors.length === 0"
-                   class="text-sm text-gray-500 italic">
-                    No new actors were discovered with the current settings. Try increasing the depth or broadening the platform selection.
-                </p>
-
-                {# Add selected to list button #}
-                <div x-show="results && results.discovered_actors && results.discovered_actors.length > 0"
-                     class="flex items-center gap-3">
+                {# Run button #}
+                <div class="ml-10 pt-2 flex items-center gap-3">
                     <button type="button"
-                            @click="addSelected()"
-                            :disabled="selectedActors.length === 0 || bulkLoading"
-                            class="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white
-                                   text-sm font-medium rounded-md hover:bg-green-700 transition-colors
+                            @click="seedMode === 'collection' ? runSnowballFromRun() : runSnowball()"
+                            :disabled="loading || (seedMode === 'actors' && seedActorIds.length === 0) || (seedMode === 'collection' && selectedCollectionAuthors.length === 0) || platforms.length === 0"
+                            class="inline-flex items-center gap-2 px-5 py-2 bg-blue-600 text-white
+                                   text-sm font-medium rounded-md hover:bg-blue-700 transition-colors
                                    disabled:opacity-50 disabled:cursor-not-allowed">
-                        <svg x-show="bulkLoading"
+                        <svg x-show="loading"
                              class="animate-spin w-4 h-4 text-white"
                              xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
                             <path class="opacity-75" fill="currentColor"
                                   d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
                         </svg>
-                        <span x-text="bulkLoading
-                            ? 'Adding...'
-                            : `Add ${selectedActors.length} selected actor${selectedActors.length !== 1 ? 's' : ''} to this list`">
-                        </span>
+                        <svg x-show="!loading"
+                             class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none"
+                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
+                        </svg>
+                        <span x-text="loading ? 'Searching...' : 'Discover connected actors'"></span>
                     </button>
-                    <p x-show="bulkSuccess" class="text-sm text-green-700 font-medium" x-text="bulkSuccess"></p>
-                    <p x-show="bulkError" class="text-sm text-red-600" x-text="bulkError"></p>
+                    <span class="text-xs text-gray-500" x-show="!loading && !results">
+                        <span x-show="seedMode === 'actors'" x-text="seedActorIds.length + ' seed' + (seedActorIds.length !== 1 ? 's' : '') + ', ' + platforms.length + ' platform' + (platforms.length !== 1 ? 's' : '')"></span>
+                        <span x-show="seedMode === 'collection'" x-text="selectedCollectionAuthors.length + ' seed' + (selectedCollectionAuthors.length !== 1 ? 's' : '') + ', ' + platforms.length + ' platform' + (platforms.length !== 1 ? 's' : '')"></span>
+                    </span>
+                    <p x-show="seedMode === 'actors' && seedActorIds.length === 0 && !results" class="text-xs text-amber-600">
+                        Select at least one seed actor above.
+                    </p>
+                    <p x-show="seedMode === 'collection' && selectedCollectionAuthors.length === 0 && selectedRunId && !results" class="text-xs text-amber-600">
+                        Select at least one author from the collection.
+                    </p>
+                    <p x-show="platforms.length === 0 && !results" class="text-xs text-amber-600">
+                        Select at least one platform.
+                    </p>
                 </div>
 
-            </div>
+            </div>{# /Step 1 #}
+
+            {# ================================================================ #}
+            {# STEP 2: Review results and add to actor directory                 #}
+            {# ================================================================ #}
+            <div x-show="results" x-cloak class="space-y-4">
+
+                {# Visual divider between steps #}
+                <div class="border-t-2 border-blue-200 pt-5"></div>
+
+                {# Step 2 header #}
+                <div class="flex items-center gap-3 mb-4">
+                    <span class="flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold"
+                          :class="bulkSuccess ? 'bg-green-100 text-green-700' : 'bg-blue-600 text-white'">
+                        <span x-show="!bulkSuccess">2</span>
+                        <svg x-show="bulkSuccess" x-cloak class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none"
+                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                        </svg>
+                    </span>
+                    <div>
+                        <p class="text-sm font-semibold text-gray-900">Review discovered actors</p>
+                        <p class="text-xs text-gray-500">Select which actors to add to the Actor Directory for future collection</p>
+                    </div>
+                    {# Reset / run again link #}
+                    <button type="button"
+                            @click="results = null; selectedActors = []; bulkSuccess = null; bulkError = null;"
+                            class="ml-auto text-xs text-blue-600 hover:underline">
+                        Start over
+                    </button>
+                </div>
+
+                <div class="ml-10 space-y-4">
+
+                    {# Summary cards #}
+                    <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                        <div class="bg-gray-50 rounded-md px-4 py-3">
+                            <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Actors found</p>
+                            <p class="mt-1 text-xl font-semibold text-gray-900"
+                               x-text="results ? results.total_found : '—'"></p>
+                        </div>
+                        <div class="bg-gray-50 rounded-md px-4 py-3">
+                            <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Depth reached</p>
+                            <p class="mt-1 text-xl font-semibold text-gray-900"
+                               x-text="results ? results.max_depth_reached : '—'"></p>
+                        </div>
+                        <div class="bg-gray-50 rounded-md px-4 py-3">
+                            <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Selected to add</p>
+                            <p class="mt-1 text-xl font-semibold text-gray-900"
+                               x-text="selectedActors.length"></p>
+                        </div>
+                    </div>
+
+                    {# Filter bar #}
+                    <div x-show="results && results.discovered_actors && results.discovered_actors.length > 0"
+                         class="flex flex-wrap items-center gap-3 bg-gray-50 rounded-md px-4 py-2.5">
+                        <div class="flex items-center gap-2">
+                            <label class="text-xs font-medium text-gray-500">Platform:</label>
+                            <select x-model="filterPlatform"
+                                    class="border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                                <option value="all">All platforms</option>
+                                <template x-for="p in resultPlatforms" :key="p">
+                                    <option :value="p" x-text="p"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <label class="text-xs font-medium text-gray-500">Method:</label>
+                            <select x-model="filterMethod"
+                                    class="border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                                <option value="all">All methods</option>
+                                <template x-for="m in discoveryMethods" :key="m">
+                                    <option :value="m" x-text="formatMethod(m)"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <span class="text-xs text-gray-400 ml-auto"
+                              x-text="`Showing ${filteredResults.length} of ${results.discovered_actors.length} actors`"></span>
+                    </div>
+
+                    {# Discovered actors table #}
+                    <div x-show="results && results.discovered_actors && results.discovered_actors.length > 0">
+                        <div class="flex items-center justify-between mb-2">
+                            <p class="text-xs text-gray-500">Check the actors you want to add to the Actor Directory.</p>
+                            <div class="flex gap-2 text-xs">
+                                <button type="button"
+                                        @click="selectAll()"
+                                        class="text-blue-600 hover:underline">Select all</button>
+                                <span class="text-gray-300">|</span>
+                                <button type="button"
+                                        @click="selectNone()"
+                                        class="text-gray-500 hover:underline">Clear</button>
+                            </div>
+                        </div>
+                        <div class="overflow-x-auto border border-gray-200 rounded-md">
+                            <table class="min-w-full divide-y divide-gray-200 text-sm">
+                                <thead class="bg-gray-50">
+                                    <tr>
+                                        <th class="w-10 px-3 py-2"></th>
+                                        <th class="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                                        <th class="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Platforms</th>
+                                        <th class="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Method</th>
+                                        <th class="text-right px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Depth</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="bg-white divide-y divide-gray-100">
+                                    <template x-for="actor in filteredResults" :key="actor.id">
+                                        <tr class="hover:bg-gray-50">
+                                            <td class="px-3 py-2">
+                                                <input type="checkbox"
+                                                       :value="actor.id"
+                                                       @change="toggleSelected(actor.id)"
+                                                       :checked="selectedActors.includes(actor.id)"
+                                                       class="text-blue-600 rounded focus:ring-blue-500">
+                                            </td>
+                                            <td class="px-4 py-2 font-medium text-gray-900"
+                                                x-text="actor.name || '(unnamed)'"></td>
+                                            <td class="px-4 py-2">
+                                                <div class="flex flex-wrap gap-1">
+                                                    <template x-for="p in (actor.platforms || [])" :key="p">
+                                                        <span class="inline-flex px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-600"
+                                                              x-text="p"></span>
+                                                    </template>
+                                                </div>
+                                            </td>
+                                            <td class="px-4 py-2 text-xs text-gray-600">
+                                                <span x-text="formatMethod(actor.discovery_method)"
+                                                      :title="getMethodDescription(actor.discovery_method)"
+                                                      :class="getMethodDescription(actor.discovery_method) ? 'cursor-help border-b border-dotted border-gray-400' : ''"></span>
+                                            </td>
+                                            <td class="px-4 py-2 text-right text-gray-600"
+                                                x-text="actor.discovery_depth"></td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <p x-show="results && results.discovered_actors && results.discovered_actors.length === 0"
+                       class="text-sm text-gray-500 italic">
+                        No new actors were discovered with the current settings. Try increasing the depth or broadening the platform selection.
+                    </p>
+
+                    {# Add selected / add all to list buttons #}
+                    <div x-show="results && results.discovered_actors && results.discovered_actors.length > 0"
+                         class="space-y-3">
+                        <div class="flex flex-wrap items-center gap-3">
+                            <button type="button"
+                                    @click="addSelected()"
+                                    :disabled="selectedActors.length === 0 || bulkLoading || !hasListContext"
+                                    class="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white
+                                           text-sm font-medium rounded-md hover:bg-green-700 transition-colors
+                                           disabled:opacity-50 disabled:cursor-not-allowed">
+                                <svg x-show="bulkLoading"
+                                     class="animate-spin w-4 h-4 text-white"
+                                     xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                    <path class="opacity-75" fill="currentColor"
+                                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                </svg>
+                                <span x-text="bulkLoading
+                                    ? 'Adding...'
+                                    : `Add ${selectedActors.length} selected actor${selectedActors.length !== 1 ? 's' : ''} to this list`">
+                                </span>
+                            </button>
+                            <button type="button"
+                                    @click="addAllToList()"
+                                    :disabled="bulkLoading || !hasListContext || !filteredResults.length"
+                                    class="inline-flex items-center gap-2 px-4 py-2 bg-green-100 text-green-800
+                                           text-sm font-medium rounded-md border border-green-300
+                                           hover:bg-green-200 transition-colors
+                                           disabled:opacity-50 disabled:cursor-not-allowed">
+                                <span x-text="`Add all ${filteredResults.length} to this list`"></span>
+                            </button>
+                            <p x-show="bulkError" class="text-sm text-red-600" x-text="bulkError"></p>
+                        </div>
+
+                        {# Warning when not in a list context #}
+                        <p x-show="!hasListContext"
+                           class="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                            You are viewing the general Actor Directory. To add actors to a specific list,
+                            open snowball sampling from within a Query Design's actor list.
+                            The discovered actors have already been saved to the Actor Directory automatically.
+                        </p>
+                    </div>
+
+                    {# Success + next steps callout #}
+                    <div x-show="bulkSuccess" x-cloak
+                         class="bg-green-50 border border-green-200 rounded-lg px-4 py-3 space-y-2">
+                        <div class="flex items-start gap-2">
+                            <svg class="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                                 viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            <div>
+                                <p class="text-sm font-medium text-green-800" x-text="bulkSuccess"></p>
+                                <p class="text-xs text-green-700 mt-1.5 font-medium">What to do next:</p>
+                                <ul class="text-xs text-green-700 mt-1 space-y-1 list-disc list-inside">
+                                    <li>Go to your <a href="/query-designs/" class="underline font-medium">Query Design</a> and add these actors to a collection's actor list</li>
+                                    <li>Launch a new <a href="/collections/" class="underline font-medium">collection run</a> to collect posts from these actors</li>
+                                    <li>Or run snowball sampling again with these actors as new seeds for deeper exploration</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>{# /ml-10 #}
+
+            </div>{# /Step 2 #}
 
         </div>
     </div>{# /snowball panel #}
@@ -898,6 +1104,18 @@ function snowballSampler() {
         bulkError: null,
         filterPlatform: 'all',
         filterMethod: 'all',
+        // Collection-seeded snowball state
+        seedMode: 'actors',
+        availableRuns: [],
+        availableRunsLoading: false,
+        selectedRunId: '',
+        collectionAuthors: [],
+        collectionAuthorsLoading: false,
+        selectedCollectionAuthors: [],
+
+        get hasListContext() {
+            return LIST_ID !== '';
+        },
 
         async init() {
             // Fetch the list of platforms that support snowball sampling.
@@ -1059,6 +1277,7 @@ function snowballSampler() {
                 x_twitter_following: 'X/Twitter Following',
                 comention_fallback: 'Co-mention',
                 url_comention: 'URL Co-mention',
+                content_link_mining: 'Content Links',
             };
             return labels[method] || method || '—';
         },
@@ -1079,12 +1298,140 @@ function snowballSampler() {
                 x_twitter_following: 'Accounts this actor follows on X/Twitter',
                 comention_fallback: 'Actors frequently mentioned in the same content',
                 url_comention: 'Actors whose URLs appear in the same content',
+                content_link_mining: 'Actors discovered from URLs in content authored by the seed actor across all platforms',
             };
             return descriptions[method] || '';
         },
 
+        // ---- Collection-seeded snowball methods ----
+
+        async loadAvailableRuns() {
+            if (this.availableRuns.length > 0) return;  // already loaded
+            this.availableRunsLoading = true;
+            try {
+                const res = await fetch('/actors/sampling/available-runs', {
+                    credentials: 'include',
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                this.availableRuns = await res.json();
+            } catch (e) {
+                this.error = `Failed to load collection runs: ${e.message}`;
+            } finally {
+                this.availableRunsLoading = false;
+            }
+        },
+
+        async loadCollectionAuthors() {
+            if (!this.selectedRunId) {
+                this.collectionAuthors = [];
+                this.selectedCollectionAuthors = [];
+                return;
+            }
+            this.collectionAuthorsLoading = true;
+            this.collectionAuthors = [];
+            this.selectedCollectionAuthors = [];
+            try {
+                const res = await fetch(`/actors/sampling/collection-authors?run_id=${this.selectedRunId}&limit=100`, {
+                    credentials: 'include',
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                this.collectionAuthors = await res.json();
+                // Pre-select all authors.
+                this.selectedCollectionAuthors = this.collectionAuthors.map((_, i) => i);
+            } catch (e) {
+                this.error = `Failed to load authors: ${e.message}`;
+            } finally {
+                this.collectionAuthorsLoading = false;
+            }
+        },
+
+        toggleCollectionAuthor(idx) {
+            const pos = this.selectedCollectionAuthors.indexOf(idx);
+            if (pos === -1) {
+                this.selectedCollectionAuthors.push(idx);
+            } else {
+                this.selectedCollectionAuthors.splice(pos, 1);
+            }
+        },
+
+        selectAllCollectionAuthors() {
+            this.selectedCollectionAuthors = this.collectionAuthors.map((_, i) => i);
+        },
+
+        deselectAllCollectionAuthors() {
+            this.selectedCollectionAuthors = [];
+        },
+
+        async runSnowballFromRun() {
+            if (this.selectedCollectionAuthors.length === 0 || !this.selectedRunId) return;
+
+            this.loading = true;
+            this.error = null;
+            this.results = null;
+            this.selectedActors = [];
+            this.bulkSuccess = null;
+            this.bulkError = null;
+            this.filterPlatform = 'all';
+            this.filterMethod = 'all';
+
+            try {
+                const authorKeys = this.selectedCollectionAuthors.map(idx => {
+                    const a = this.collectionAuthors[idx];
+                    return { platform: a.platform, platform_user_id: a.platform_user_id };
+                });
+
+                const body = {
+                    collection_run_id: this.selectedRunId,
+                    author_keys: authorKeys,
+                    platforms: this.platforms,
+                    max_depth: this.maxDepth,
+                    max_actors_per_step: this.maxActorsPerStep,
+                    auto_create_actors: true,
+                };
+                if (LIST_ID && this.addToList) {
+                    body.add_to_actor_list_id = LIST_ID;
+                }
+
+                const res = await fetch('/actors/sampling/snowball-from-run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify(body),
+                });
+
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    throw new Error(data.detail || `HTTP ${res.status}: ${res.statusText}`);
+                }
+
+                const raw = await res.json();
+                this.results = {
+                    total_found: raw.total_actors,
+                    max_depth_reached: raw.max_depth_reached,
+                    discovered_actors: (raw.actors || []).map(a => ({
+                        id: a.actor_id,
+                        name: a.canonical_name,
+                        platforms: a.platforms || [],
+                        discovery_depth: a.discovery_depth,
+                        discovery_method: a.discovery_method || '',
+                    })),
+                };
+                if (this.results.discovered_actors) {
+                    this.selectedActors = this.results.discovered_actors.map(a => a.id);
+                }
+            } catch (e) {
+                this.error = e.message;
+            } finally {
+                this.loading = false;
+            }
+        },
+
         async addSelected() {
-            if (this.selectedActors.length === 0 || !LIST_ID) return;
+            if (this.selectedActors.length === 0) return;
+            if (!LIST_ID) {
+                this.bulkError = 'No actor list context. Open snowball sampling from within a Query Design to add actors to a list.';
+                return;
+            }
 
             this.bulkLoading = true;
             this.bulkError = null;
@@ -1105,13 +1452,18 @@ function snowballSampler() {
 
                 const data = await res.json();
                 const added = data.added ?? this.selectedActors.length;
-                this.bulkSuccess = `${added} actor${added !== 1 ? 's' : ''} added to this list. Reload the page to see them.`;
+                this.bulkSuccess = `${added} actor${added !== 1 ? 's' : ''} added to this list.`;
                 this.selectedActors = [];
             } catch (e) {
                 this.bulkError = e.message;
             } finally {
                 this.bulkLoading = false;
             }
+        },
+
+        async addAllToList() {
+            this.selectAll();
+            await this.addSelected();
         },
     };
 }

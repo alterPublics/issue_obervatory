@@ -45,6 +45,11 @@ logger = structlog.get_logger(__name__)
 
 _VALID_GRANULARITIES = frozenset({"hour", "day", "week", "month"})
 
+# Arenas that collect full snapshots on each run — the same URLs/suggestions
+# reappear every time, so raw COUNT(*) is misleading for timeline charts.
+# Delta mode computes new-item-only counts between consecutive time periods.
+_SNAPSHOT_ARENAS = frozenset({"google_search", "google_autocomplete", "ai_chat_search"})
+
 
 def _dt_iso(value: Any) -> Any:
     """Convert a datetime to an ISO 8601 string; pass everything else through."""
@@ -61,6 +66,7 @@ def _build_content_filters(
     date_from: datetime | None,
     date_to: datetime | None,
     params: dict,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> str:
     """Build a SQL WHERE clause fragment for content_records filters.
 
@@ -76,7 +82,8 @@ def _build_content_filters(
         because the duplicate exclusion predicate is always present.
     """
     return build_content_where(
-        query_design_id, run_id, arena, platform, date_from, date_to, params
+        query_design_id, run_id, arena, platform, date_from, date_to, params,
+        query_design_ids=query_design_ids,
     )
 
 
@@ -94,6 +101,8 @@ async def get_volume_over_time(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     granularity: str = "day",
+    query_design_ids: list[uuid.UUID] | None = None,
+    exclude_arenas: set[str] | None = None,
 ) -> list[dict]:
     """Content volume over time, optionally broken down by arena.
 
@@ -107,6 +116,8 @@ async def get_volume_over_time(
         date_to: Inclusive upper bound on ``published_at``.
         granularity: Time bucket size — one of ``"hour"``, ``"day"``,
             ``"week"``, ``"month"``.
+        query_design_ids: Restrict to records belonging to any of these
+            query designs.  Takes precedence over *query_design_id*.
 
     Returns:
         A list of dicts, one per time-period/arena combination, sorted by
@@ -132,7 +143,8 @@ async def get_volume_over_time(
 
     params: dict[str, Any] = {}
     where = _build_content_filters(
-        query_design_id, run_id, arena, platform, date_from, date_to, params
+        query_design_id, run_id, arena, platform, date_from, date_to, params,
+        query_design_ids=query_design_ids,
     )
 
     # The granularity value is interpolated directly into the SQL string, not
@@ -142,6 +154,12 @@ async def get_volume_over_time(
     # _build_content_filters always returns a WHERE clause (at minimum the
     # duplicate exclusion predicate), so additional conditions always use AND.
     extra = "AND published_at IS NOT NULL"
+
+    if exclude_arenas:
+        placeholders = ", ".join(f":_excl_{i}" for i in range(len(exclude_arenas)))
+        extra += f" AND arena NOT IN ({placeholders})"
+        for i, ea in enumerate(sorted(exclude_arenas)):
+            params[f"_excl_{i}"] = ea
 
     sql = text(
         f"""
@@ -171,6 +189,205 @@ async def get_volume_over_time(
         aggregated[period_key]["arenas"][row.arena] = row.cnt
 
     return list(aggregated.values())
+
+
+async def get_snapshot_delta_volume(
+    db: AsyncSession,
+    query_design_id: uuid.UUID | None = None,
+    run_id: uuid.UUID | None = None,
+    arena: str | None = None,
+    platform: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    granularity: str = "day",
+    query_design_ids: list[uuid.UUID] | None = None,
+) -> dict[str, dict[str, int]]:
+    """Compute delta volume for snapshot arenas.
+
+    Snapshot arenas (Google Search, Google Autocomplete, AI Chat Search) capture
+    the full current state each run, so raw counts are misleading.  This function
+    returns the number of *new* unique identifiers per time period compared to
+    the previous period.
+
+    The identifier used depends on the arena:
+    - ``google_search``: ``url``
+    - ``google_autocomplete``: ``text_content``
+    - ``ai_chat_search``: ``url`` (citations only, ``content_type='ai_chat_citation'``)
+
+    The first period always returns 0 (no previous period to compare against).
+
+    Args:
+        db: Active async database session.
+        query_design_id: Restrict to a single query design.
+        run_id: Restrict to a single collection run.
+        arena: If a specific snapshot arena is requested, only compute for that
+            one.  If a non-snapshot arena is specified, returns empty.
+        platform: Restrict to a single platform.
+        date_from: Inclusive lower bound on ``collected_at``.
+        date_to: Inclusive upper bound on ``collected_at``.
+        granularity: Time bucket size (``day``, ``week``, ``month``).
+        query_design_ids: Restrict to multiple query designs.
+
+    Returns:
+        ``{period_iso: {arena_name: delta_count}}`` for each snapshot arena
+        that has data.
+    """
+    if granularity not in _VALID_GRANULARITIES:
+        raise ValueError(
+            f"Invalid granularity {granularity!r}. "
+            f"Must be one of: {sorted(_VALID_GRANULARITIES)}"
+        )
+
+    # If a specific arena filter was given and it's not a snapshot arena,
+    # there's nothing to compute.
+    if arena and arena not in _SNAPSHOT_ARENAS:
+        return {}
+
+    # Determine which snapshot arenas to process.
+    target_arenas = {arena} if arena else _SNAPSHOT_ARENAS
+
+    # Arena-specific config: (identifier_column, extra_where_clause)
+    arena_configs: dict[str, tuple[str, str]] = {
+        "google_search": ("url", "AND url IS NOT NULL"),
+        "google_autocomplete": ("text_content", "AND text_content IS NOT NULL"),
+        "ai_chat_search": (
+            "url",
+            "AND content_type = 'ai_chat_citation' AND url IS NOT NULL",
+        ),
+    }
+
+    result: dict[str, dict[str, int]] = {}
+
+    for arena_name in sorted(target_arenas):
+        if arena_name not in arena_configs:
+            continue
+
+        id_col, extra_clause = arena_configs[arena_name]
+
+        params: dict[str, Any] = {}
+        where = _build_content_filters(
+            query_design_id, run_id, arena_name, platform,
+            date_from, date_to, params,
+            query_design_ids=query_design_ids,
+        )
+
+        sql = text(
+            f"""
+            SELECT
+                date_trunc('{granularity}', collected_at) AS period,
+                {id_col} AS ident
+            FROM content_records
+            {where}
+            AND collected_at IS NOT NULL
+            {extra_clause}
+            ORDER BY period
+            """
+        )
+
+        rows = (await db.execute(sql, params)).fetchall()
+
+        # Group identifiers by period.
+        period_sets: OrderedDict[str, set[str]] = OrderedDict()
+        for row in rows:
+            pk = _dt_iso(row.period)
+            if pk not in period_sets:
+                period_sets[pk] = set()
+            period_sets[pk].add(row.ident)
+
+        # Compute deltas between consecutive periods.
+        prev_set: set[str] = set()
+        for i, (pk, current_set) in enumerate(period_sets.items()):
+            if i == 0:
+                delta = 0
+            else:
+                delta = len(current_set - prev_set)
+            if pk not in result:
+                result[pk] = {}
+            result[pk][arena_name] = delta
+            prev_set = current_set
+
+    return result
+
+
+async def get_volume_with_deltas(
+    db: AsyncSession,
+    query_design_id: uuid.UUID | None = None,
+    run_id: uuid.UUID | None = None,
+    arena: str | None = None,
+    platform: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    granularity: str = "day",
+    query_design_ids: list[uuid.UUID] | None = None,
+) -> list[dict]:
+    """Volume over time with delta computation for snapshot arenas.
+
+    Combines normal ``COUNT(*)`` volume for non-snapshot arenas with delta-only
+    new-item counts for snapshot arenas (Google Search, Google Autocomplete,
+    AI Chat Search).  Produces the same output format as
+    :func:`get_volume_over_time`.
+
+    Args:
+        db: Active async database session.
+        query_design_id: Restrict to a single query design.
+        run_id: Restrict to a single collection run.
+        arena: Restrict to a single arena.
+        platform: Restrict to a single platform.
+        date_from: Inclusive lower bound on ``published_at`` / ``collected_at``.
+        date_to: Inclusive upper bound.
+        granularity: Time bucket size.
+        query_design_ids: Restrict to multiple query designs.
+
+    Returns:
+        Same format as :func:`get_volume_over_time` — list of dicts with
+        ``period``, ``count``, and ``arenas`` keys.
+    """
+    # If a specific arena filter is given, route to the right path only.
+    if arena and arena in _SNAPSHOT_ARENAS:
+        # Only snapshot delta needed.
+        deltas = await get_snapshot_delta_volume(
+            db, query_design_id, run_id, arena, platform,
+            date_from, date_to, granularity, query_design_ids,
+        )
+        result: list[dict] = []
+        for period_key in sorted(deltas):
+            arena_counts = deltas[period_key]
+            total = sum(arena_counts.values())
+            result.append({"period": period_key, "count": total, "arenas": arena_counts})
+        return result
+
+    if arena and arena not in _SNAPSHOT_ARENAS:
+        # Specific non-snapshot arena — no delta processing needed.
+        return await get_volume_over_time(
+            db, query_design_id, run_id, arena, platform,
+            date_from, date_to, granularity, query_design_ids,
+        )
+
+    # Both normal and snapshot arenas in play.
+    normal = await get_volume_over_time(
+        db, query_design_id, run_id, arena, platform,
+        date_from, date_to, granularity, query_design_ids,
+        exclude_arenas=_SNAPSHOT_ARENAS,
+    )
+    deltas = await get_snapshot_delta_volume(
+        db, query_design_id, run_id, None, platform,
+        date_from, date_to, granularity, query_design_ids,
+    )
+
+    # Merge delta counts into the normal volume data.
+    merged: OrderedDict[str, dict] = OrderedDict()
+    for entry in normal:
+        pk = entry["period"]
+        merged[pk] = {"period": pk, "count": entry["count"], "arenas": dict(entry["arenas"])}
+
+    for pk, arena_counts in deltas.items():
+        if pk not in merged:
+            merged[pk] = {"period": pk, "count": 0, "arenas": {}}
+        for a_name, delta_count in arena_counts.items():
+            merged[pk]["arenas"][a_name] = delta_count
+            merged[pk]["count"] += delta_count
+
+    return [merged[k] for k in sorted(merged)]
 
 
 async def get_top_actors(
@@ -235,6 +452,7 @@ async def get_top_actors(
     sql = text(
         f"""
         SELECT
+            COALESCE(c.pseudonymized_author_id, c.author_display_name) AS author_key,
             c.pseudonymized_author_id,
             c.author_display_name,
             c.platform,
@@ -249,8 +467,9 @@ async def get_top_actors(
         FROM content_records c
         LEFT JOIN actors a ON a.id = c.author_id
         {where}
-        AND c.pseudonymized_author_id IS NOT NULL
-        GROUP BY c.pseudonymized_author_id, c.author_display_name, c.platform, c.author_id
+        AND (c.pseudonymized_author_id IS NOT NULL OR c.author_display_name IS NOT NULL)
+        GROUP BY COALESCE(c.pseudonymized_author_id, c.author_display_name),
+                 c.pseudonymized_author_id, c.author_display_name, c.platform, c.author_id
         ORDER BY cnt DESC
         LIMIT :limit
         """

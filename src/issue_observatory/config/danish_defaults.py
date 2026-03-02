@@ -57,16 +57,16 @@ DANISH_RSS_FEEDS: dict[str, str] = {
     "dr_politik": "https://www.dr.dk/nyheder/service/feeds/politik",
     "dr_viden": "https://www.dr.dk/nyheder/service/feeds/viden",
     "dr_kultur": "https://www.dr.dk/nyheder/service/feeds/kultur",
-    "dr_seneste": "https://www.dr.dk/nyheder/service/feeds/seneste",
-    "dr_sport": "https://www.dr.dk/nyheder/service/feeds/sport",
+    "dr_seneste": "https://www.dr.dk/nyheder/service/feeds/senestenyt",
+    "dr_sport": "https://www.dr.dk/nyheder/service/feeds/sporten",
     # DR regional feeds
     "dr_bornholm": "https://www.dr.dk/nyheder/service/feeds/regionale/bornholm",
     "dr_fyn": "https://www.dr.dk/nyheder/service/feeds/regionale/fyn",
-    "dr_koebenhavn": "https://www.dr.dk/nyheder/service/feeds/regionale/koebenhavn",
-    "dr_midtvest": "https://www.dr.dk/nyheder/service/feeds/regionale/midtvest",
-    "dr_nordjylland": "https://www.dr.dk/nyheder/service/feeds/regionale/nordjylland",
+    "dr_koebenhavn": "https://www.dr.dk/nyheder/service/feeds/regionale/kbh",
+    "dr_midtvest": "https://www.dr.dk/nyheder/service/feeds/regionale/vest",
+    "dr_nordjylland": "https://www.dr.dk/nyheder/service/feeds/regionale/nord",
     "dr_sjaelland": "https://www.dr.dk/nyheder/service/feeds/regionale/sjaelland",
-    "dr_sonderjylland": "https://www.dr.dk/nyheder/service/feeds/regionale/sonderjylland",
+    "dr_sonderjylland": "https://www.dr.dk/nyheder/service/feeds/regionale/syd",
     "dr_trekanten": "https://www.dr.dk/nyheder/service/feeds/regionale/trekanten",
     "dr_oestjylland": "https://www.dr.dk/nyheder/service/feeds/regionale/oestjylland",
     # ------------------------------------------------------------------
@@ -90,34 +90,34 @@ DANISH_RSS_FEEDS: dict[str, str] = {
     # Ekstra Bladet — tabloid daily (JP/Politikens Hus group)
     # Feed directory: https://ekstrabladet.dk/services/rss-feeds-fra-ekstra-bladet/4576561
     # ------------------------------------------------------------------
-    "ekstrabladet_nyheder": "https://ekstrabladet.dk/nyheder/rss",
+    "ekstrabladet_nyheder": "https://ekstrabladet.dk/rssfeed/all/",
     # ------------------------------------------------------------------
     # Information — independent broadsheet (subscriber-funded)
     # ------------------------------------------------------------------
     "information_nyheder": "http://www.information.dk/feed",
     # ------------------------------------------------------------------
     # Jyllands-Posten — broadsheet daily (JP/Politikens Hus group)
-    # NOTE: JP's RSS availability is uncertain as of 2026 (shifting to app-first
-    # delivery).  This URL may return 404 — the RSS arena health check will flag it.
+    # Newsletter proxy RSS — returns latest 20 items (server-capped).
     # ------------------------------------------------------------------
-    "jyllandsposten_nyheder": "https://jyllands-posten.dk/rss/topnyheder.jsp",
+    "jyllandsposten_nyheder": "https://newsletter-proxy.aws.jyllands-posten.dk/v1/latestNewsRss/jyllands-posten.dk?count=100",
     # ------------------------------------------------------------------
     # Nordjyske — regional daily (Nordjyske Medier group)
     # ------------------------------------------------------------------
     "nordjyske_nyheder": "https://nordjyske.dk/rss/nyheder",
     # ------------------------------------------------------------------
     # Fyens Stiftstidende — regional daily (Jysk Fynske Medier group)
-    # Shares the /feed/{category} pattern across the JFM group outlets.
+    # UNRELIABLE as of March 2026: consistent connection timeouts on all
+    # fyens.dk/feed/* paths.  Kept commented out in case it returns.
     # ------------------------------------------------------------------
-    "fyens_stiftstidende_danmark": "https://fyens.dk/feed/danmark",
+    # "fyens_stiftstidende_danmark": "https://fyens.dk/feed/danmark",
     # ------------------------------------------------------------------
     # Børsen — financial daily (Berlingske Media group)
     # ------------------------------------------------------------------
     "boersen_nyheder": "https://borsen.dk/rss",
     # ------------------------------------------------------------------
     # Kristeligt Dagblad — Christian/ethical broadsheet (independent)
+    # DISCONTINUED as of 2026: server returns 405 on all known feed paths.
     # ------------------------------------------------------------------
-    "kristeligt_dagblad_nyheder": "https://www.kristeligt-dagblad.dk/feed/rss.xml",
     # ------------------------------------------------------------------
     # Altinget — policy and political journalism (independent, subscription-supported)
     # Altinget is the most important Danish policy-specific news outlet, covering
@@ -125,7 +125,7 @@ DANISH_RSS_FEEDS: dict[str, str] = {
     # energi).  Critical for issue tracking in any Danish policy domain.
     # URL verified pattern: altinget.dk/feed/rss.xml
     # ------------------------------------------------------------------
-    "altinget_nyheder": "https://www.altinget.dk/feed/rss.xml",
+    "altinget_nyheder": "https://www.altinget.dk/rss",
     # Added: IP2-009 (Altinget section feeds)
     # Section-specific feeds follow the pattern altinget.dk/{section}/rss.
     # These are critical for targeted issue tracking (education, climate).
@@ -147,9 +147,9 @@ DANISH_RSS_FEEDS: dict[str, str] = {
     "gymnasieskolen_nyheder": "https://gymnasieskolen.dk/feed",
     # University news feeds — Danish universities typically publish news RSS.
     # Unverified — needs manual check: all university feed URLs below.
-    "ku_nyheder": "https://nyheder.ku.dk/feed/",
-    "dtu_nyheder": "https://www.dtu.dk/nyheder/rss",
-    "cbs_nyheder": "https://www.cbs.dk/rss",
+    "ku_nyheder": "https://nyheder.ku.dk/alle_nyheder/?get_rss=1",
+    # DTU — DISCONTINUED as of 2026: rebuilt site on Next.js, no RSS support.
+    # CBS — DISCONTINUED as of 2026: 404 on all feed paths. CBS WIRE shut down late 2023.
     # Tænketanken DEA — education and research policy think tank.
     # Unverified — needs manual check: DEA may not offer RSS.
     # dea_nyheder: https://dea.nu/feed  # Commented out: DEA RSS availability is uncertain

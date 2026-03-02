@@ -81,7 +81,7 @@ class BlueskyCollector(ArenaCollector):
         http_client: Optional injected :class:`httpx.AsyncClient` for testing.
     """
 
-    arena_name: str = "bluesky"
+    arena_name: str = "social_media"
     platform_name: str = "bluesky"
     supported_tiers: list[Tier] = [Tier.FREE]
     temporal_mode: TemporalMode = TemporalMode.RECENT

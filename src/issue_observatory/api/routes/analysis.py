@@ -64,6 +64,7 @@ from issue_observatory.analysis.descriptive import (
     get_top_named_entities,
     get_top_terms,
     get_volume_over_time,
+    get_volume_with_deltas,
 )
 from issue_observatory.analysis.propagation import get_propagation_flows
 from issue_observatory.analysis.export import ContentExporter
@@ -79,6 +80,7 @@ from issue_observatory.api.dependencies import get_current_active_user, ownershi
 from issue_observatory.core.database import get_db
 from issue_observatory.core.models.collection import CollectionRun
 from issue_observatory.core.models.content import UniversalContentRecord
+from issue_observatory.core.models.project import Project
 from issue_observatory.core.models.query_design import QueryDesign, SearchTerm
 from issue_observatory.core.models.users import User
 
@@ -151,7 +153,8 @@ async def analysis_landing(
         .options(selectinload(CollectionRun.query_design))
         .where(
             CollectionRun.initiated_by == current_user.id,
-            CollectionRun.status == "completed",
+            CollectionRun.status.in_(["completed", "cancelled", "failed"]),
+            CollectionRun.records_collected > 0,
         )
         .order_by(CollectionRun.started_at.desc().nulls_last())
     )
@@ -1774,12 +1777,13 @@ async def analysis_dashboard_design(
             detail="Template engine not initialised.",
         )
 
-    # Fetch all completed runs for this design to show context.
+    # Fetch all runs with data for this design to show context.
     runs_stmt = (
         select(CollectionRun)
         .where(
             CollectionRun.query_design_id == design_id,
-            CollectionRun.status == "completed",
+            CollectionRun.status.in_(["completed", "cancelled", "failed"]),
+            CollectionRun.records_collected > 0,
         )
         .order_by(CollectionRun.started_at.desc())
     )
@@ -1883,6 +1887,11 @@ async def design_volume_over_time(
     date_from: Optional[datetime] = Query(default=None, description="Lower bound on published_at."),
     date_to: Optional[datetime] = Query(default=None, description="Upper bound on published_at."),
     granularity: str = Query(default="day", description="Time bucket: hour, day, week, month."),
+    delta_mode: bool = Query(
+        default=False,
+        description="Use delta counting for snapshot arenas (google_search, "
+        "google_autocomplete, ai_chat_search).",
+    ),
 ) -> list[dict[str, Any]]:
     """Return content volume over time across all runs in a query design.
 
@@ -1895,6 +1904,7 @@ async def design_volume_over_time(
         date_from: Optional lower bound on ``published_at``.
         date_to: Optional upper bound on ``published_at``.
         granularity: Time bucket size — one of ``hour``, ``day``, ``week``, ``month``.
+        delta_mode: When True, snapshot arenas show only new items per period.
 
     Returns:
         List of dicts with ``period``, ``count``, and ``arenas`` breakdown.
@@ -1905,8 +1915,9 @@ async def design_volume_over_time(
         HTTPException 422: If ``granularity`` is invalid.
     """
     await _get_design_or_raise(design_id, db, current_user)
+    volume_fn = get_volume_with_deltas if delta_mode else get_volume_over_time
     try:
-        return await get_volume_over_time(
+        return await volume_fn(
             db,
             query_design_id=design_id,
             run_id=None,
@@ -2436,3 +2447,108 @@ async def coordination_events(
         min_score=min_score,
         limit=limit,
     )
+
+
+# ---------------------------------------------------------------------------
+# Project-level and user-level volume endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get("/project/{project_id:uuid}/volume")
+async def project_volume_over_time(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    platform: Optional[str] = Query(default=None, description="Filter by platform."),
+    arena: Optional[str] = Query(default=None, description="Filter by arena."),
+    date_from: Optional[datetime] = Query(default=None, description="Lower bound on published_at."),
+    date_to: Optional[datetime] = Query(default=None, description="Upper bound on published_at."),
+    granularity: str = Query(default="day", description="Time bucket: hour, day, week, month."),
+    delta_mode: bool = Query(
+        default=False,
+        description="Use delta counting for snapshot arenas.",
+    ),
+) -> list[dict[str, Any]]:
+    """Return content volume over time across all designs in a project.
+
+    Fetches all query_design_ids belonging to the project, verifies ownership,
+    and returns aggregated volume data.
+    """
+    proj_result = await db.execute(
+        select(Project).where(Project.id == project_id)
+    )
+    project = proj_result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project '{project_id}' not found.",
+        )
+    ownership_guard(project.owner_id, current_user)
+
+    qd_result = await db.execute(
+        select(QueryDesign.id).where(QueryDesign.project_id == project_id)
+    )
+    qd_ids = [row[0] for row in qd_result.all()]
+    if not qd_ids:
+        return []
+
+    volume_fn = get_volume_with_deltas if delta_mode else get_volume_over_time
+    try:
+        return await volume_fn(
+            db,
+            query_design_ids=qd_ids,
+            arena=arena,
+            platform=platform,
+            date_from=date_from,
+            date_to=date_to,
+            granularity=granularity,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get("/volume")
+async def user_volume_over_time(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    platform: Optional[str] = Query(default=None, description="Filter by platform."),
+    arena: Optional[str] = Query(default=None, description="Filter by arena."),
+    date_from: Optional[datetime] = Query(default=None, description="Lower bound on published_at."),
+    date_to: Optional[datetime] = Query(default=None, description="Upper bound on published_at."),
+    granularity: str = Query(default="day", description="Time bucket: hour, day, week, month."),
+    delta_mode: bool = Query(
+        default=False,
+        description="Use delta counting for snapshot arenas.",
+    ),
+) -> list[dict[str, Any]]:
+    """Return content volume over time across all of the current user's designs.
+
+    Aggregates volume data from every query design owned by the authenticated
+    user.
+    """
+    qd_result = await db.execute(
+        select(QueryDesign.id).where(QueryDesign.owner_id == current_user.id)
+    )
+    qd_ids = [row[0] for row in qd_result.all()]
+    if not qd_ids:
+        return []
+
+    volume_fn = get_volume_with_deltas if delta_mode else get_volume_over_time
+    try:
+        return await volume_fn(
+            db,
+            query_design_ids=qd_ids,
+            arena=arena,
+            platform=platform,
+            date_from=date_from,
+            date_to=date_to,
+            granularity=granularity,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc

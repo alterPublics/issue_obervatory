@@ -135,6 +135,11 @@ ARENA_DEFAULTS: dict[str, RateLimitConfig] = {
         requests_per_hour=None,
         requests_per_day=None,
     ),
+    "ai_chat_search": RateLimitConfig(
+        requests_per_minute=20,
+        requests_per_hour=None,
+        requests_per_day=None,
+    ),
 }
 
 _DEFAULT_CONFIG = RateLimitConfig()

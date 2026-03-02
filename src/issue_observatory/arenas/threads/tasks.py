@@ -31,6 +31,8 @@ import logging
 import time
 from typing import Any
 
+from celery.exceptions import SoftTimeLimitExceeded
+
 from issue_observatory.arenas.threads.collector import ThreadsCollector
 from issue_observatory.core.exceptions import (
     ArenaAuthError,
@@ -121,6 +123,8 @@ def _update_task_status(
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
+    soft_time_limit=600,
+    time_limit=720,
 )
 def threads_collect_terms(
     self: Any,
@@ -165,221 +169,234 @@ def threads_collect_terms(
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    logger.info(
-        "threads: collect_by_terms started — run=%s terms=%d tier=%s",
-        collection_run_id,
-        len(terms),
-        tier,
-    )
-    _update_task_status(collection_run_id, _PLATFORM, "running")
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="social_media",
-        platform="threads",
-        status="running",
-        records_collected=0,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-
-    tier_enum = Tier.FREE if tier == "free" else Tier.MEDIUM
-    credential_pool = get_credential_pool()
-
     try:
-        redis_client = asyncio.run(get_redis_client())
-    except Exception:
-        redis_client = None
-
-    from issue_observatory.workers.rate_limiter import RateLimiter  # noqa: PLC0415
-
-    rate_limiter = RateLimiter(redis_client=redis_client) if redis_client else None
-    collector = ThreadsCollector(
-        credential_pool=credential_pool,
-        rate_limiter=rate_limiter,
-    )
-
-    # Check if force_recollect is set (opt-out from coverage check)
-    force_recollect = _extra.get("force_recollect", False)
-
-    # Pre-collection coverage check: narrow date range to uncovered gaps
-    effective_date_from = date_from
-    effective_date_to = date_to
-    if not force_recollect and date_from and date_to:
-        from datetime import datetime as _dt  # noqa: PLC0415
-
-        from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
-            check_existing_coverage,
+        logger.info(
+            "threads: collect_by_terms started — run=%s terms=%d tier=%s",
+            collection_run_id,
+            len(terms),
+            tier,
+        )
+        _update_task_status(collection_run_id, _PLATFORM, "running")
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="threads",
+            status="running",
+            records_collected=0,
+            error_message=None,
+            elapsed_seconds=elapsed_since(_task_start),
         )
 
-        gaps = check_existing_coverage(
-            platform=_PLATFORM,
-            date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
-            date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
-            terms=terms,
+        tier_enum = Tier.FREE if tier == "free" else Tier.MEDIUM
+        credential_pool = get_credential_pool()
+
+        try:
+            redis_client = asyncio.run(get_redis_client())
+        except Exception:
+            redis_client = None
+
+        from issue_observatory.workers.rate_limiter import RateLimiter  # noqa: PLC0415
+
+        rate_limiter = RateLimiter(redis_client=redis_client) if redis_client else None
+        collector = ThreadsCollector(
+            credential_pool=credential_pool,
+            rate_limiter=rate_limiter,
         )
-        if not gaps:
+
+        # Check if force_recollect is set (opt-out from coverage check)
+        force_recollect = _extra.get("force_recollect", False)
+
+        # Pre-collection coverage check: narrow date range to uncovered gaps
+        effective_date_from = date_from
+        effective_date_to = date_to
+        if not force_recollect and date_from and date_to:
+            from datetime import datetime as _dt  # noqa: PLC0415
+
+            from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
+                check_existing_coverage,
+            )
+
+            gaps = check_existing_coverage(
+                platform=_PLATFORM,
+                date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
+                date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
+                terms=terms,
+            )
+            if not gaps:
+                logger.info(
+                    "threads: full coverage exists for run=%s — skipping API call, "
+                    "will reindex existing records only.",
+                    collection_run_id,
+                )
+                from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+                    reindex_existing_records,
+                )
+
+                linked = reindex_existing_records(
+                    platform=_PLATFORM,
+                    collection_run_id=collection_run_id,
+                    query_design_id=query_design_id,
+                    terms=terms,
+                    date_from=date_from,
+                    date_to=date_to,
+                )
+                _update_task_status(
+                    collection_run_id, _PLATFORM, "completed", records_collected=0
+                )
+                publish_task_update(
+                    redis_url=_redis_url,
+                    run_id=collection_run_id,
+                    arena=_ARENA,
+                    platform=_PLATFORM,
+                    status="completed",
+                    records_collected=0,
+                    error_message=None,
+                    elapsed_seconds=elapsed_since(_task_start),
+                )
+                return {
+                    "records_collected": 0,
+                    "records_linked": linked,
+                    "status": "completed",
+                    "arena": _ARENA,
+                    "tier": tier,
+                    "coverage_skip": True,
+                }
+            effective_date_from = gaps[0][0].isoformat()
+            effective_date_to = gaps[-1][1].isoformat()
             logger.info(
-                "threads: full coverage exists for run=%s — skipping API call, "
-                "will reindex existing records only.",
+                "threads: narrowing collection to uncovered range %s — %s (run=%s)",
+                effective_date_from,
+                effective_date_to,
                 collection_run_id,
             )
-            from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-                reindex_existing_records,
-            )
 
-            linked = reindex_existing_records(
-                platform=_PLATFORM,
-                collection_run_id=collection_run_id,
-                query_design_id=query_design_id,
-                terms=terms,
-                date_from=date_from,
-                date_to=date_to,
+        try:
+            records = asyncio.run(
+                collector.collect_by_terms(
+                    terms=terms,
+                    tier=tier_enum,
+                    date_from=effective_date_from,
+                    date_to=effective_date_to,
+                    max_results=max_results,
+                    language_filter=language_filter,
+                )
             )
-            _update_task_status(
-                collection_run_id, _PLATFORM, "completed", records_collected=0
-            )
+        except NoCredentialAvailableError as exc:
+            msg = f"threads: no credential available: {exc}"
+            logger.error(msg)
+            _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
             publish_task_update(
                 redis_url=_redis_url,
                 run_id=collection_run_id,
-                arena=_ARENA,
-                platform=_PLATFORM,
-                status="completed",
+                arena="social_media",
+                platform="threads",
+                status="failed",
                 records_collected=0,
-                error_message=None,
+                error_message=msg,
                 elapsed_seconds=elapsed_since(_task_start),
             )
-            return {
-                "records_collected": 0,
-                "records_linked": linked,
-                "status": "completed",
-                "arena": _ARENA,
-                "tier": tier,
-                "coverage_skip": True,
-            }
-        effective_date_from = gaps[0][0].isoformat()
-        effective_date_to = gaps[-1][1].isoformat()
-        logger.info(
-            "threads: narrowing collection to uncovered range %s — %s (run=%s)",
-            effective_date_from,
-            effective_date_to,
-            collection_run_id,
-        )
-
-    try:
-        records = asyncio.run(
-            collector.collect_by_terms(
-                terms=terms,
-                tier=tier_enum,
-                date_from=effective_date_from,
-                date_to=effective_date_to,
-                max_results=max_results,
-                language_filter=language_filter,
+            raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM) from exc
+        except ArenaAuthError as exc:
+            msg = f"threads: auth error (token may have expired): {exc}"
+            logger.error(msg)
+            _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="threads",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
             )
+            raise
+        except ArenaRateLimitError:
+            logger.warning(
+                "threads: rate limited on collect_by_terms for run=%s — will retry.",
+                collection_run_id,
+            )
+            raise
+        except ArenaCollectionError as exc:
+            msg = str(exc)
+            logger.error(
+                "threads: collection error for run=%s: %s", collection_run_id, msg
+            )
+            _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="threads",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
+
+        count = len(records)
+
+        # Persist collected records to the database.
+        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+            persist_collected_records,
+            record_collection_attempts_batch,
         )
-    except NoCredentialAvailableError as exc:
-        msg = f"threads: no credential available: {exc}"
-        logger.error(msg)
-        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+
+        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id, terms=terms)
+
+        # Record successful collection attempts for future pre-checks.
+        if date_from and date_to:
+            record_collection_attempts_batch(
+                platform=_PLATFORM,
+                collection_run_id=collection_run_id,
+                query_design_id=query_design_id,
+                inputs=terms,
+                input_type="term",
+                date_from=date_from,
+                date_to=date_to,
+                records_returned=inserted,
+            )
+
+        logger.info(
+            "threads: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
+            collection_run_id,
+            count,
+            inserted,
+            skipped,
+        )
+        _update_task_status(
+            collection_run_id, _PLATFORM, "completed", records_collected=inserted
+        )
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
-            arena="social_media",
-            platform="threads",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
+            arena=_ARENA,
+            platform=_PLATFORM,
+            status="completed",
+            records_collected=inserted,
+            error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM) from exc
-    except ArenaAuthError as exc:
-        msg = f"threads: auth error (token may have expired): {exc}"
-        logger.error(msg)
-        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="social_media",
-            platform="threads",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
-            elapsed_seconds=elapsed_since(_task_start),
-        )
-        raise
-    except ArenaRateLimitError:
-        logger.warning(
-            "threads: rate limited on collect_by_terms for run=%s — will retry.",
+        return {
+            "records_collected": inserted,
+            "status": "completed",
+            "arena": _ARENA,
+            "tier": tier,
+        }
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "threads: collect_by_terms timed out after 10 minutes — run=%s",
             collection_run_id,
         )
-        raise
-    except ArenaCollectionError as exc:
-        msg = str(exc)
-        logger.error(
-            "threads: collection error for run=%s: %s", collection_run_id, msg
+        _update_task_status(
+            collection_run_id,
+            _PLATFORM,
+            "failed",
+            error_message="Collection timed out after 10 minutes",
         )
-        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="social_media",
-            platform="threads",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
-            elapsed_seconds=elapsed_since(_task_start),
-        )
-        raise
-
-    count = len(records)
-
-    # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-        persist_collected_records,
-        record_collection_attempts_batch,
-    )
-
-    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
-
-    # Record successful collection attempts for future pre-checks.
-    if date_from and date_to:
-        record_collection_attempts_batch(
-            platform=_PLATFORM,
-            collection_run_id=collection_run_id,
-            query_design_id=query_design_id,
-            inputs=terms,
-            input_type="term",
-            date_from=date_from,
-            date_to=date_to,
-            records_returned=inserted,
-        )
-
-    logger.info(
-        "threads: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
-        collection_run_id,
-        count,
-        inserted,
-        skipped,
-    )
-    _update_task_status(
-        collection_run_id, _PLATFORM, "completed", records_collected=inserted
-    )
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena=_ARENA,
-        platform=_PLATFORM,
-        status="completed",
-        records_collected=inserted,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-    return {
-        "records_collected": inserted,
-        "status": "completed",
-        "arena": _ARENA,
-        "tier": tier,
-    }
+        return {"status": "failed", "error": "timeout", "arena": _ARENA}
 
 
 @celery_app.task(
@@ -390,6 +407,8 @@ def threads_collect_terms(
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
+    soft_time_limit=600,
+    time_limit=720,
 )
 def threads_collect_actors(
     self: Any,
@@ -432,220 +451,233 @@ def threads_collect_actors(
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    logger.info(
-        "threads: collect_by_actors started — run=%s actors=%d tier=%s",
-        collection_run_id,
-        len(actor_ids),
-        tier,
-    )
-    _update_task_status(collection_run_id, _PLATFORM, "running")
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="social_media",
-        platform="threads",
-        status="running",
-        records_collected=0,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-
-    tier_enum = Tier.FREE if tier == "free" else Tier.MEDIUM
-    credential_pool = get_credential_pool()
-
     try:
-        redis_client = asyncio.run(get_redis_client())
-    except Exception:
-        redis_client = None
-
-    from issue_observatory.workers.rate_limiter import RateLimiter  # noqa: PLC0415
-
-    rate_limiter = RateLimiter(redis_client=redis_client) if redis_client else None
-    collector = ThreadsCollector(
-        credential_pool=credential_pool,
-        rate_limiter=rate_limiter,
-    )
-
-    # Check if force_recollect is set (opt-out from coverage check)
-    force_recollect = _extra.get("force_recollect", False)
-
-    # Pre-collection coverage check: narrow date range to uncovered gaps
-    effective_date_from = date_from
-    effective_date_to = date_to
-    if not force_recollect and date_from and date_to:
-        from datetime import datetime as _dt  # noqa: PLC0415
-
-        from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
-            check_existing_coverage,
+        logger.info(
+            "threads: collect_by_actors started — run=%s actors=%d tier=%s",
+            collection_run_id,
+            len(actor_ids),
+            tier,
+        )
+        _update_task_status(collection_run_id, _PLATFORM, "running")
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="threads",
+            status="running",
+            records_collected=0,
+            error_message=None,
+            elapsed_seconds=elapsed_since(_task_start),
         )
 
-        gaps = check_existing_coverage(
-            platform=_PLATFORM,
-            date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
-            date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
-            actor_ids=actor_ids,
+        tier_enum = Tier.FREE if tier == "free" else Tier.MEDIUM
+        credential_pool = get_credential_pool()
+
+        try:
+            redis_client = asyncio.run(get_redis_client())
+        except Exception:
+            redis_client = None
+
+        from issue_observatory.workers.rate_limiter import RateLimiter  # noqa: PLC0415
+
+        rate_limiter = RateLimiter(redis_client=redis_client) if redis_client else None
+        collector = ThreadsCollector(
+            credential_pool=credential_pool,
+            rate_limiter=rate_limiter,
         )
-        if not gaps:
+
+        # Check if force_recollect is set (opt-out from coverage check)
+        force_recollect = _extra.get("force_recollect", False)
+
+        # Pre-collection coverage check: narrow date range to uncovered gaps
+        effective_date_from = date_from
+        effective_date_to = date_to
+        if not force_recollect and date_from and date_to:
+            from datetime import datetime as _dt  # noqa: PLC0415
+
+            from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
+                check_existing_coverage,
+            )
+
+            gaps = check_existing_coverage(
+                platform=_PLATFORM,
+                date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
+                date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
+                actor_ids=actor_ids,
+            )
+            if not gaps:
+                logger.info(
+                    "threads: full coverage exists for run=%s — skipping API call, "
+                    "will reindex existing records only.",
+                    collection_run_id,
+                )
+                from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+                    reindex_existing_records,
+                )
+
+                linked = reindex_existing_records(
+                    platform=_PLATFORM,
+                    collection_run_id=collection_run_id,
+                    query_design_id=query_design_id,
+                    actor_ids=actor_ids,
+                    date_from=date_from,
+                    date_to=date_to,
+                )
+                _update_task_status(
+                    collection_run_id, _PLATFORM, "completed", records_collected=0
+                )
+                publish_task_update(
+                    redis_url=_redis_url,
+                    run_id=collection_run_id,
+                    arena=_ARENA,
+                    platform=_PLATFORM,
+                    status="completed",
+                    records_collected=0,
+                    error_message=None,
+                    elapsed_seconds=elapsed_since(_task_start),
+                )
+                return {
+                    "records_collected": 0,
+                    "records_linked": linked,
+                    "status": "completed",
+                    "arena": _ARENA,
+                    "tier": tier,
+                    "coverage_skip": True,
+                }
+            effective_date_from = gaps[0][0].isoformat()
+            effective_date_to = gaps[-1][1].isoformat()
             logger.info(
-                "threads: full coverage exists for run=%s — skipping API call, "
-                "will reindex existing records only.",
+                "threads: narrowing collection to uncovered range %s — %s (run=%s)",
+                effective_date_from,
+                effective_date_to,
                 collection_run_id,
             )
-            from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-                reindex_existing_records,
-            )
 
-            linked = reindex_existing_records(
-                platform=_PLATFORM,
-                collection_run_id=collection_run_id,
-                query_design_id=query_design_id,
-                actor_ids=actor_ids,
-                date_from=date_from,
-                date_to=date_to,
+        try:
+            records = asyncio.run(
+                collector.collect_by_actors(
+                    actor_ids=actor_ids,
+                    tier=tier_enum,
+                    date_from=effective_date_from,
+                    date_to=effective_date_to,
+                    max_results=max_results,
+                )
             )
-            _update_task_status(
-                collection_run_id, _PLATFORM, "completed", records_collected=0
-            )
+        except NoCredentialAvailableError as exc:
+            msg = f"threads: no credential available: {exc}"
+            logger.error(msg)
+            _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
             publish_task_update(
                 redis_url=_redis_url,
                 run_id=collection_run_id,
-                arena=_ARENA,
-                platform=_PLATFORM,
-                status="completed",
+                arena="social_media",
+                platform="threads",
+                status="failed",
                 records_collected=0,
-                error_message=None,
+                error_message=msg,
                 elapsed_seconds=elapsed_since(_task_start),
             )
-            return {
-                "records_collected": 0,
-                "records_linked": linked,
-                "status": "completed",
-                "arena": _ARENA,
-                "tier": tier,
-                "coverage_skip": True,
-            }
-        effective_date_from = gaps[0][0].isoformat()
-        effective_date_to = gaps[-1][1].isoformat()
-        logger.info(
-            "threads: narrowing collection to uncovered range %s — %s (run=%s)",
-            effective_date_from,
-            effective_date_to,
-            collection_run_id,
-        )
-
-    try:
-        records = asyncio.run(
-            collector.collect_by_actors(
-                actor_ids=actor_ids,
-                tier=tier_enum,
-                date_from=effective_date_from,
-                date_to=effective_date_to,
-                max_results=max_results,
+            raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM) from exc
+        except ArenaAuthError as exc:
+            msg = f"threads: auth error (token may have expired): {exc}"
+            logger.error(msg)
+            _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="threads",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
             )
+            raise
+        except ArenaRateLimitError:
+            logger.warning(
+                "threads: rate limited on collect_by_actors for run=%s — will retry.",
+                collection_run_id,
+            )
+            raise
+        except ArenaCollectionError as exc:
+            msg = str(exc)
+            logger.error(
+                "threads: actor collection error for run=%s: %s", collection_run_id, msg
+            )
+            _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="threads",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
+
+        count = len(records)
+
+        # Persist collected records to the database.
+        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+            persist_collected_records,
+            record_collection_attempts_batch,
         )
-    except NoCredentialAvailableError as exc:
-        msg = f"threads: no credential available: {exc}"
-        logger.error(msg)
-        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+
+        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
+        # Record successful collection attempts for future pre-checks.
+        if date_from and date_to:
+            record_collection_attempts_batch(
+                platform=_PLATFORM,
+                collection_run_id=collection_run_id,
+                query_design_id=query_design_id,
+                inputs=actor_ids,
+                input_type="actor",
+                date_from=date_from,
+                date_to=date_to,
+                records_returned=inserted,
+            )
+
+        logger.info(
+            "threads: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
+            collection_run_id,
+            count,
+            inserted,
+            skipped,
+        )
+        _update_task_status(
+            collection_run_id, _PLATFORM, "completed", records_collected=inserted
+        )
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
-            arena="social_media",
-            platform="threads",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
+            arena=_ARENA,
+            platform=_PLATFORM,
+            status="completed",
+            records_collected=inserted,
+            error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM) from exc
-    except ArenaAuthError as exc:
-        msg = f"threads: auth error (token may have expired): {exc}"
-        logger.error(msg)
-        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="social_media",
-            platform="threads",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
-            elapsed_seconds=elapsed_since(_task_start),
-        )
-        raise
-    except ArenaRateLimitError:
-        logger.warning(
-            "threads: rate limited on collect_by_actors for run=%s — will retry.",
+        return {
+            "records_collected": inserted,
+            "status": "completed",
+            "arena": _ARENA,
+            "tier": tier,
+        }
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "threads: collect_by_actors timed out after 10 minutes — run=%s",
             collection_run_id,
         )
-        raise
-    except ArenaCollectionError as exc:
-        msg = str(exc)
-        logger.error(
-            "threads: actor collection error for run=%s: %s", collection_run_id, msg
+        _update_task_status(
+            collection_run_id,
+            _PLATFORM,
+            "failed",
+            error_message="Collection timed out after 10 minutes",
         )
-        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="social_media",
-            platform="threads",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
-            elapsed_seconds=elapsed_since(_task_start),
-        )
-        raise
-
-    count = len(records)
-
-    # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-        persist_collected_records,
-        record_collection_attempts_batch,
-    )
-
-    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
-
-    # Record successful collection attempts for future pre-checks.
-    if date_from and date_to:
-        record_collection_attempts_batch(
-            platform=_PLATFORM,
-            collection_run_id=collection_run_id,
-            query_design_id=query_design_id,
-            inputs=actor_ids,
-            input_type="actor",
-            date_from=date_from,
-            date_to=date_to,
-            records_returned=inserted,
-        )
-
-    logger.info(
-        "threads: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
-        collection_run_id,
-        count,
-        inserted,
-        skipped,
-    )
-    _update_task_status(
-        collection_run_id, _PLATFORM, "completed", records_collected=inserted
-    )
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena=_ARENA,
-        platform=_PLATFORM,
-        status="completed",
-        records_collected=inserted,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-    return {
-        "records_collected": inserted,
-        "status": "completed",
-        "arena": _ARENA,
-        "tier": tier,
-    }
+        return {"status": "failed", "error": "timeout", "arena": _ARENA}
 
 
 # ---------------------------------------------------------------------------

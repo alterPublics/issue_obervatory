@@ -353,6 +353,7 @@ class XTwitterCollector(ArenaCollector):
         api_key: str = cred.get("api_key", "")
         records: list[dict[str, Any]] = []
         cursor: str | None = None
+        seen_cursors: set[str] = set()
 
         try:
             while len(records) < max_results:
@@ -377,8 +378,9 @@ class XTwitterCollector(ArenaCollector):
                     records.append(self.normalize(tweet, tier_source="medium"))
 
                 cursor = data.get("next_cursor")
-                if not cursor:
+                if not cursor or cursor in seen_cursors:
                     break
+                seen_cursors.add(cursor)
 
         finally:
             if self.credential_pool:
@@ -418,6 +420,7 @@ class XTwitterCollector(ArenaCollector):
         handle = _normalize_handle(actor_id)
         records: list[dict[str, Any]] = []
         cursor: str | None = None
+        seen_cursors: set[str] = set()
 
         try:
             while len(records) < max_results:
@@ -443,8 +446,9 @@ class XTwitterCollector(ArenaCollector):
                     records.append(self.normalize(tweet, tier_source="medium"))
 
                 cursor = data.get("next_cursor")
-                if not cursor:
+                if not cursor or cursor in seen_cursors:
                     break
+                seen_cursors.add(cursor)
 
         finally:
             if self.credential_pool:
@@ -482,6 +486,7 @@ class XTwitterCollector(ArenaCollector):
         bearer_token: str = cred.get("bearer_token", "")
         records: list[dict[str, Any]] = []
         next_token: str | None = None
+        seen_cursors: set[str] = set()
 
         try:
             while len(records) < max_results:
@@ -518,8 +523,9 @@ class XTwitterCollector(ArenaCollector):
 
                 meta = data.get("meta", {})
                 next_token = meta.get("next_token")
-                if not next_token:
+                if not next_token or next_token in seen_cursors:
                     break
+                seen_cursors.add(next_token)
 
         finally:
             if self.credential_pool:
@@ -558,6 +564,7 @@ class XTwitterCollector(ArenaCollector):
         bearer_token: str = cred.get("bearer_token", "")
         records: list[dict[str, Any]] = []
         next_token: str | None = None
+        seen_cursors: set[str] = set()
 
         # Determine endpoint based on whether actor_id is numeric.
         is_numeric = actor_id.lstrip("@").isdigit()
@@ -620,8 +627,9 @@ class XTwitterCollector(ArenaCollector):
 
                 meta = data.get("meta", {})
                 next_token = meta.get("next_token") or meta.get("pagination_token")
-                if not next_token:
+                if not next_token or next_token in seen_cursors:
                     break
+                seen_cursors.add(next_token)
 
         finally:
             if self.credential_pool:

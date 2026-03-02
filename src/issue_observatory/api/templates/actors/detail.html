@@ -2,7 +2,7 @@
 {% block title %}{{ actor.name | default('Actor') }}{% endblock %}
 
 {% block extra_head %}
-{% if actor.content_count | default(0) > 0 %}
+{% if actor.content_count is not none and actor.content_count > 0 %}
 {# Sigma.js + graphology for actor co-occurrence network preview #}
 <script src="https://cdn.jsdelivr.net/npm/graphology@0.25.4/dist/graphology.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sigma@3.0.0-beta.35/build/sigma.min.js"></script>
@@ -345,7 +345,7 @@
                         {% endif %}
                     </td>
                     <td class="px-6 py-3 text-right text-xs font-mono text-gray-500">
-                        {% if pres.follower_count | default(0) > 0 %}
+                        {% if pres.follower_count is not none and pres.follower_count > 0 %}
                             {{ pres.follower_count | int }}
                         {% else %}
                             —
@@ -440,7 +440,7 @@
     </div>
 
     {# Co-occurrence Network — A4 #}
-    {% if actor.content_count | default(0) > 0 %}
+    {% if actor.content_count is not none and actor.content_count > 0 %}
     <div class="bg-white rounded-lg shadow overflow-hidden"
          x-data="actorNetwork('{{ actor_id }}')">
 

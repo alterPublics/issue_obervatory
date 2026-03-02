@@ -725,7 +725,16 @@ async def create_collection_run_form(
     )
 
     # Delegate to the main create function (reuses all validation and credit logic)
-    run = await create_collection_run(request, payload, db, current_user)
+    try:
+        run = await create_collection_run(request, payload, db, current_user)
+    except HTTPException as exc:
+        from urllib.parse import quote  # noqa: PLC0415
+
+        flash_msg = quote(str(exc.detail))
+        return RedirectResponse(
+            url=f"/collections?flash={flash_msg}&flash_level=error",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
 
     logger.info(
         "collection_run_created_via_form",
@@ -883,7 +892,16 @@ async def create_project_collection_form(
         date_to=parsed_date_to,
     )
 
-    await create_project_collection(request, payload, db, current_user)
+    try:
+        await create_project_collection(request, payload, db, current_user)
+    except HTTPException as exc:
+        from urllib.parse import quote  # noqa: PLC0415
+
+        flash_msg = quote(str(exc.detail))
+        return RedirectResponse(
+            url=f"/collections?flash={flash_msg}&flash_level=error",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
 
     logger.info(
         "project_collection_created_via_form",
@@ -1207,7 +1225,7 @@ async def cancel_collection_run(
     run = await _get_run_or_404(run_id, db)
     ownership_guard(run.initiated_by, current_user)
 
-    if run.status in ("completed", "failed"):
+    if run.status in ("completed", "failed", "cancelled"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
@@ -1216,7 +1234,8 @@ async def cancel_collection_run(
             ),
         )
 
-    run.status = "failed"
+    run.status = "cancelled"
+    run.completed_at = datetime.now(tz=timezone.utc)
     run.error_log = "Cancelled by user."
     await db.commit()
     await db.refresh(run)
