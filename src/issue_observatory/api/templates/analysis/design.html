@@ -77,47 +77,44 @@
         x-data="designSummaryCards('{{ design_id }}')"
         x-init="load()"
     >
-        <template x-if="loading">
-            <template x-for="i in [0,1,2,3]" :key="i">
-                <div class="bg-white rounded-lg shadow px-5 py-4 animate-pulse">
-                    <div class="h-3 bg-gray-200 rounded w-2/3 mb-2"></div>
-                    <div class="h-7 bg-gray-200 rounded w-1/2"></div>
-                </div>
-            </template>
-        </template>
-
-        <template x-if="!loading && error">
-            <div class="col-span-4 bg-red-50 border border-red-200 rounded-lg px-5 py-4 text-sm text-red-700"
-                 x-text="'Could not load summary: ' + error"></div>
-        </template>
-
-        <template x-if="!loading && !error && summary">
-            <div class="contents">
-                <div class="bg-white rounded-lg shadow px-5 py-4">
-                    <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Total records</p>
-                    <p class="mt-1 text-2xl font-semibold text-gray-900"
-                       x-text="summary.total_records !== undefined ? summary.total_records.toLocaleString() : '—'"></p>
-                </div>
-                <div class="bg-white rounded-lg shadow px-5 py-4">
-                    <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Completed runs</p>
-                    <p class="mt-1 text-2xl font-semibold text-gray-900"
-                       x-text="summary.completed_runs !== undefined ? summary.completed_runs : '—'"></p>
-                </div>
-                <div class="bg-white rounded-lg shadow px-5 py-4">
-                    <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Date range</p>
-                    <p class="mt-1 text-sm font-medium text-gray-700 leading-snug">
-                        <span x-text="summary.first_run_at ? summary.first_run_at.slice(0,10) : '—'"></span>
-                        <span class="text-gray-400"> – </span>
-                        <span x-text="summary.last_completed_at ? summary.last_completed_at.slice(0,10) : '—'"></span>
-                    </p>
-                </div>
-                <div class="bg-white rounded-lg shadow px-5 py-4">
-                    <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Total credits</p>
-                    <p class="mt-1 text-2xl font-semibold text-gray-900"
-                       x-text="summary.total_credits !== undefined ? summary.total_credits.toLocaleString() : '—'"></p>
-                </div>
+        {# Skeleton loaders — use x-show so all 4 divs are always in the DOM #}
+        <template x-for="i in 4">
+            <div x-show="loading" class="bg-white rounded-lg shadow px-5 py-4 animate-pulse">
+                <div class="h-3 bg-gray-200 rounded w-2/3 mb-2"></div>
+                <div class="h-7 bg-gray-200 rounded w-1/2"></div>
             </div>
         </template>
+
+        <div x-show="!loading && error" x-cloak
+             class="col-span-4 bg-red-50 border border-red-200 rounded-lg px-5 py-4 text-sm text-red-700"
+             x-text="'Could not load summary: ' + error"></div>
+
+        {# Data cards — x-show instead of x-if, with optional chaining for safety #}
+        <div x-show="!loading && !error && summary" x-cloak class="contents">
+            <div class="bg-white rounded-lg shadow px-5 py-4">
+                <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Total records</p>
+                <p class="mt-1 text-2xl font-semibold text-gray-900"
+                   x-text="summary?.total_records != null ? summary.total_records.toLocaleString() : '—'"></p>
+            </div>
+            <div class="bg-white rounded-lg shadow px-5 py-4">
+                <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Completed runs</p>
+                <p class="mt-1 text-2xl font-semibold text-gray-900"
+                   x-text="summary?.completed_runs != null ? summary.completed_runs : '—'"></p>
+            </div>
+            <div class="bg-white rounded-lg shadow px-5 py-4">
+                <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Date range</p>
+                <p class="mt-1 text-sm font-medium text-gray-700 leading-snug">
+                    <span x-text="summary?.first_run_at ? summary.first_run_at.slice(0,10) : '—'"></span>
+                    <span class="text-gray-400"> – </span>
+                    <span x-text="summary?.last_completed_at ? summary.last_completed_at.slice(0,10) : '—'"></span>
+                </p>
+            </div>
+            <div class="bg-white rounded-lg shadow px-5 py-4">
+                <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Total credits</p>
+                <p class="mt-1 text-2xl font-semibold text-gray-900"
+                   x-text="summary?.total_credits != null ? summary.total_credits.toLocaleString() : '—'"></p>
+            </div>
+        </div>
     </div>
 
     {# ---- Filter bar ------------------------------------------------- #}
@@ -192,20 +189,14 @@
             x-init="load()"
             @filter-applied.window="load()"
         >
-            <template x-if="loading">
-                <div class="h-64 flex items-center justify-center text-sm text-gray-400 animate-pulse">
-                    Loading volume data...
-                </div>
-            </template>
-            <template x-if="!loading && error">
-                <div class="h-64 flex items-center justify-center">
-                    <div class="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700"
-                         x-text="'Error: ' + error"></div>
-                </div>
-            </template>
-            <template x-if="!loading && !error">
-                <canvas id="volumeChart" class="max-h-80"></canvas>
-            </template>
+            <div x-show="loading" class="h-64 flex items-center justify-center text-sm text-gray-400 animate-pulse">
+                Loading volume data...
+            </div>
+            <div x-show="!loading && error" x-cloak class="h-64 flex items-center justify-center">
+                <div class="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700"
+                     x-text="'Error: ' + error"></div>
+            </div>
+            <canvas x-show="!loading && !error" x-cloak id="volumeChart" class="max-h-80"></canvas>
         </div>
     </div>
 
@@ -217,20 +208,14 @@
             x-init="load()"
             @filter-applied.window="load()"
         >
-            <template x-if="loading">
-                <div class="h-64 flex items-center justify-center text-sm text-gray-400 animate-pulse">
-                    Loading top actors...
-                </div>
-            </template>
-            <template x-if="!loading && error">
-                <div class="h-64 flex items-center justify-center">
-                    <div class="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700"
-                         x-text="'Error: ' + error"></div>
-                </div>
-            </template>
-            <template x-if="!loading && !error">
-                <canvas id="actorsChart" class="max-h-80"></canvas>
-            </template>
+            <div x-show="loading" class="h-64 flex items-center justify-center text-sm text-gray-400 animate-pulse">
+                Loading top actors...
+            </div>
+            <div x-show="!loading && error" x-cloak class="h-64 flex items-center justify-center">
+                <div class="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700"
+                     x-text="'Error: ' + error"></div>
+            </div>
+            <canvas x-show="!loading && !error" x-cloak id="actorsChart" class="max-h-80"></canvas>
         </div>
     </div>
 
@@ -285,6 +270,19 @@
  * endpoints instead of the per-run /analysis/{run_id}/* endpoints.
  */
 
+// Shared filter state readable by child chart components without DOM traversal.
+window.__designAnalysisFilters = { platform: '', arena: '', date_from: '', date_to: '' };
+
+function _designFilterQs() {
+    const f = window.__designAnalysisFilters;
+    const p = new URLSearchParams();
+    if (f.platform)  p.set('platform', f.platform);
+    if (f.arena)     p.set('arena', f.arena);
+    if (f.date_from) p.set('date_from', f.date_from);
+    if (f.date_to)   p.set('date_to', f.date_to);
+    return p.toString() ? '?' + p.toString() : '';
+}
+
 function designAnalysisDashboard(designId) {
     return {
         filters: {
@@ -294,32 +292,17 @@ function designAnalysisDashboard(designId) {
             date_to: '',
         },
 
-        init() {
-            // No filter options endpoint for design-level yet (optional Phase 2).
-        },
+        init() {},
 
         applyFilters() {
-            // Broadcast filter change to child components.
+            // Copy local Alpine state to the global so child components can read it.
+            window.__designAnalysisFilters = { ...this.filters };
             window.dispatchEvent(new CustomEvent('filter-applied'));
         },
 
         resetFilters() {
-            this.filters = {
-                platform: '',
-                arena: '',
-                date_from: '',
-                date_to: '',
-            };
+            this.filters = { platform: '', arena: '', date_from: '', date_to: '' };
             this.applyFilters();
-        },
-
-        getFilterParams() {
-            const params = new URLSearchParams();
-            if (this.filters.platform) params.set('platform', this.filters.platform);
-            if (this.filters.arena) params.set('arena', this.filters.arena);
-            if (this.filters.date_from) params.set('date_from', this.filters.date_from);
-            if (this.filters.date_to) params.set('date_to', this.filters.date_to);
-            return params.toString();
         },
     };
 }
@@ -359,34 +342,44 @@ function volumeChart(designId) {
             this.error = null;
 
             try {
-                const dashboard = this.$el.closest('[x-data*="designAnalysisDashboard"]').__x.$data;
-                const params = dashboard.getFilterParams();
-
+                const qs = _designFilterQs();
                 const resp = await fetch(
-                    `/analysis/design/${designId}/volume?${params}`,
+                    `/analysis/design/${designId}/volume${qs}`,
                     { credentials: 'include' }
                 );
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
-                const data = await resp.json();
+                const rows = await resp.json();
 
+                // Transform API response into the format expected by initMultiArenaVolumeChart.
+                const labels = rows.map(r => r.period);
+                const arenaSet = new Set();
+                rows.forEach(r => {
+                    if (r.arenas) Object.keys(r.arenas).forEach(a => arenaSet.add(a));
+                });
+                const arenaNames = Array.from(arenaSet).sort();
+
+                const chartData = {
+                    labels: labels,
+                    rows: rows,
+                    arenaNames: arenaNames,
+                    xLabel: 'Date',
+                    yLabel: 'Records',
+                };
+
+                // Reveal canvas before chart init (x-show needs a tick to update the DOM).
+                this.loading = false;
                 await this.$nextTick();
 
-                // Destroy existing chart if present.
                 if (this.chart) {
                     this.chart.destroy();
                     this.chart = null;
                 }
-
-                // Use the multi-arena volume chart helper from charts.js.
                 if (typeof window.initMultiArenaVolumeChart === 'function') {
-                    this.chart = window.initMultiArenaVolumeChart('volumeChart', data);
-                } else {
-                    console.warn('initMultiArenaVolumeChart not found; chart will not render');
+                    this.chart = window.initMultiArenaVolumeChart('volumeChart', chartData);
                 }
             } catch (err) {
                 this.error = err.message;
-            } finally {
                 this.loading = false;
             }
         },
@@ -404,35 +397,44 @@ function actorsChart(designId) {
             this.error = null;
 
             try {
-                const dashboard = this.$el.closest('[x-data*="designAnalysisDashboard"]').__x.$data;
-                const params = dashboard.getFilterParams();
-
+                const qs = _designFilterQs();
+                const sep = qs ? '&' : '?';
                 const resp = await fetch(
-                    `/analysis/design/${designId}/actors?${params}&limit=20`,
+                    `/analysis/design/${designId}/actors${qs}${sep}limit=20`,
                     { credentials: 'include' }
                 );
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
-                const data = await resp.json();
+                const rows = await resp.json();
 
+                // Transform API response into the format expected by initActorsChart.
+                const labels = rows.map(r => {
+                    const base = r.resolved_name
+                        || r.author_display_name
+                        || (r.pseudonymized_author_id
+                            ? r.pseudonymized_author_id.substring(0, 8) + '...'
+                            : '?');
+                    return r.resolved_name ? base + ' \u2713' : base;
+                });
+
+                // Reveal canvas before chart init.
+                this.loading = false;
                 await this.$nextTick();
 
                 if (this.chart) {
                     this.chart.destroy();
                     this.chart = null;
                 }
-
                 if (typeof window.initActorsChart === 'function') {
-                    // Ensure axis labels are present for consistency
-                    if (!data.xLabel) data.xLabel = 'Record count';
-                    if (!data.yLabel) data.yLabel = 'Actor';
-                    this.chart = window.initActorsChart('actorsChart', data);
-                } else {
-                    console.warn('initActorsChart not found; chart will not render');
+                    this.chart = window.initActorsChart('actorsChart', {
+                        labels: labels,
+                        values: rows.map(r => r.count),
+                        xLabel: 'Record count',
+                        yLabel: 'Actor',
+                    });
                 }
             } catch (err) {
                 this.error = err.message;
-            } finally {
                 this.loading = false;
             }
         },
