@@ -82,6 +82,10 @@ celery_app = Celery(
         "issue_observatory.arenas.instagram.tasks",
         # Phase 2 — not yet implemented
         # "issue_observatory.arenas.linkedin.tasks",
+        # Phase 2 — URL Scraper (researcher-provided URLs, free/medium)
+        "issue_observatory.arenas.web.url_scraper.tasks",
+        # Phase 2 — Domain Crawler (front-page link extraction, free)
+        "issue_observatory.arenas.web.domain_crawler.tasks",
         # Phase 2.5 — Wikipedia (editorial attention signals, free, no auth)
         "issue_observatory.arenas.wikipedia.tasks",
         # Phase 3+ — Discord (bot-based, requires server invitations)

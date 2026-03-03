@@ -25,7 +25,7 @@ Danish defaults: ``lang:da`` operator is unconditionally appended.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -335,15 +335,78 @@ class XTwitterCollector(ArenaCollector):
     ) -> list[dict[str, Any]]:
         """Paginate TwitterAPI.io results for a single search term.
 
+        When both ``date_from`` and ``date_to`` are provided and span more
+        than one calendar day, the date range is automatically split into
+        daily windows.  Each window is paginated independently, which
+        prevents high-volume queries from exhausting the ``max_results``
+        cap on just the most recent day.  The global ``max_results`` cap
+        still applies across all windows.
+
         Args:
             client: Shared HTTP client.
             term: Search term (operators allowed).
-            max_results: Maximum records to retrieve.
+            max_results: Maximum records to retrieve (across all windows).
             date_from: ISO date lower bound (``YYYY-MM-DD``), optional.
             date_to: ISO date upper bound (``YYYY-MM-DD``), optional.
 
         Returns:
             List of normalized tweet records.
+        """
+        # When both dates are provided and span >1 day, use daily windowing.
+        if date_from and date_to and date_from[:10] != date_to[:10]:
+            windows = _generate_daily_windows(date_from, date_to)
+            logger.info(
+                "x_twitter: windowed collection for term=%r — %d daily windows (%s to %s)",
+                term[:50],
+                len(windows),
+                date_from[:10],
+                date_to[:10],
+            )
+        else:
+            # Single window: use the original date params as-is.
+            windows = [(date_from, date_to)]
+
+        all_records: list[dict[str, Any]] = []
+
+        for window_from, window_to in windows:
+            if len(all_records) >= max_results:
+                break
+
+            window_records = await self._paginate_medium(
+                client, term, max_results - len(all_records), window_from, window_to
+            )
+            all_records.extend(window_records)
+
+            if window_records:
+                logger.debug(
+                    "x_twitter: window %s–%s yielded %d records (total so far: %d)",
+                    window_from,
+                    window_to,
+                    len(window_records),
+                    len(all_records),
+                )
+
+        return all_records
+
+    async def _paginate_medium(
+        self,
+        client: httpx.AsyncClient,
+        term: str,
+        max_results: int,
+        date_from: str | None,
+        date_to: str | None,
+    ) -> list[dict[str, Any]]:
+        """Paginate a single TwitterAPI.io search window.
+
+        Args:
+            client: Shared HTTP client.
+            term: Search term (operators allowed).
+            max_results: Maximum records for this window.
+            date_from: Window start date (``YYYY-MM-DD``), optional.
+            date_to: Window end date (``YYYY-MM-DD``), optional.
+
+        Returns:
+            List of normalized tweet records for this window.
         """
         cred = await self._acquire_medium_credential()
         if cred is None:
@@ -399,62 +462,40 @@ class XTwitterCollector(ArenaCollector):
         """Collect tweets from a single actor using TwitterAPI.io search.
 
         Constructs a ``from:{handle}`` search query and paginates with the
-        advanced_search endpoint.
+        advanced_search endpoint.  Uses daily windowing when both dates are
+        provided and span more than one calendar day.
 
         Args:
             client: Shared HTTP client.
             actor_id: Twitter user ID or ``@handle``.
-            max_results: Maximum records to retrieve.
+            max_results: Maximum records to retrieve (across all windows).
             date_from: ISO date lower bound, optional.
             date_to: ISO date upper bound, optional.
 
         Returns:
             List of normalized tweet records.
         """
-        cred = await self._acquire_medium_credential()
-        if cred is None:
-            raise NoCredentialAvailableError(platform="twitterapi_io", tier="medium")
-
-        cred_id: str = cred["id"]
-        api_key: str = cred.get("api_key", "")
         handle = _normalize_handle(actor_id)
-        records: list[dict[str, Any]] = []
-        cursor: str | None = None
-        seen_cursors: set[str] = set()
+        term = f"from:{handle}"
 
-        try:
-            while len(records) < max_results:
-                term = f"from:{handle}"
-                query = _build_query(term, date_from, date_to)
-                await self._wait_rate_limit_medium(cred_id)
+        # Reuse the same windowed collection logic as term search.
+        if date_from and date_to and date_from[:10] != date_to[:10]:
+            windows = _generate_daily_windows(date_from, date_to)
+        else:
+            windows = [(date_from, date_to)]
 
-                payload: dict[str, Any] = {
-                    "query": query,
-                    "queryType": TWITTERAPIIO_QUERY_TYPE,
-                }
-                if cursor:
-                    payload["cursor"] = cursor
+        all_records: list[dict[str, Any]] = []
 
-                data = await self._get_twitterapiio(client, api_key, payload)
-                tweets = data.get("tweets") or []
-                if not tweets:
-                    break
+        for window_from, window_to in windows:
+            if len(all_records) >= max_results:
+                break
 
-                for tweet in tweets:
-                    if len(records) >= max_results:
-                        break
-                    records.append(self.normalize(tweet, tier_source="medium"))
+            window_records = await self._paginate_medium(
+                client, term, max_results - len(all_records), window_from, window_to
+            )
+            all_records.extend(window_records)
 
-                cursor = data.get("next_cursor")
-                if not cursor or cursor in seen_cursors:
-                    break
-                seen_cursors.add(cursor)
-
-        finally:
-            if self.credential_pool:
-                await self.credential_pool.release(credential_id=cred_id)
-
-        return records
+        return all_records
 
     async def _collect_premium_term(
         self,
@@ -1202,6 +1243,35 @@ def _to_date_str(value: datetime | str | None) -> str | None:
     if isinstance(value, str):
         return value[:10] if len(value) >= 10 else value
     return None
+
+
+def _generate_daily_windows(
+    date_from: str,
+    date_to: str,
+) -> list[tuple[str, str]]:
+    """Split a date range into daily ``(since, until)`` window pairs.
+
+    Twitter's ``since:`` operator is inclusive and ``until:`` is exclusive,
+    so each window covers exactly one calendar day.
+
+    Args:
+        date_from: Start date as ``YYYY-MM-DD``.
+        date_to: End date as ``YYYY-MM-DD`` (inclusive — the final window's
+            ``until`` will be the day *after* this date).
+
+    Returns:
+        List of ``(since_str, until_str)`` tuples in chronological order.
+        Returns a single-element list when ``date_from == date_to``.
+    """
+    start = datetime.strptime(date_from[:10], "%Y-%m-%d")
+    end = datetime.strptime(date_to[:10], "%Y-%m-%d")
+    windows: list[tuple[str, str]] = []
+    current = start
+    while current <= end:
+        next_day = current + timedelta(days=1)
+        windows.append((current.strftime("%Y-%m-%d"), next_day.strftime("%Y-%m-%d")))
+        current = next_day
+    return windows
 
 
 def _detect_tweet_type_twitterapiio(raw: dict[str, Any]) -> str:

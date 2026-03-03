@@ -130,6 +130,9 @@ ARENA_DESCRIPTIONS: dict[str, str] = {
     "url_scraper": (
         "URL Scraper — live web page content extraction from a researcher-provided URL list (free/medium)"
     ),
+    "domain_crawler": (
+        "Domain Crawler — crawls front pages of web domains and extracts linked articles (free)"
+    ),
     "wayback": (
         "Wayback Machine (Internet Archive) — historical web snapshots (free)"
     ),
@@ -241,6 +244,16 @@ ARENA_CUSTOM_CONFIG: dict[str, list[dict[str, str]]] = {
             "placeholder": "https://example.com/feed.xml",
             "help": "Additional RSS/Atom feeds beyond the 30+ Danish defaults (DR, TV2, Politiken, etc.). Enter full feed URLs including https://",
             "example": "https://sermitsiaq.ag/rss",
+        }
+    ],
+    "domain_crawler": [
+        {
+            "field": "target_domains",
+            "label": "Target Domains",
+            "type": "list",
+            "placeholder": "example.dk",
+            "help": "Web domains to crawl for articles. Defaults include 13 major Danish news sites (DR, TV2, Politiken, etc.). Enter bare domain names without https://",
+            "example": "sermitsiaq.ag",
         }
     ],
     "discord": [

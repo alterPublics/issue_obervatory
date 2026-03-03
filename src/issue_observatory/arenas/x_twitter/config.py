@@ -99,7 +99,7 @@ TWITTERAPIIO_QUERY_TYPE: str = "Latest"
 XTWITTER_TIERS: dict[Tier, TierConfig] = {
     Tier.MEDIUM: TierConfig(
         tier=Tier.MEDIUM,
-        max_results_per_run=10_000,
+        max_results_per_run=100_000,
         rate_limit_per_minute=MEDIUM_RATE_LIMIT_MAX_CALLS * 60,
         requires_credential=True,
         estimated_credits_per_1k=1,

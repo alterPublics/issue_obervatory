@@ -119,6 +119,12 @@ def build_content_filters(
     # maps to a JSON null — both mean "not a duplicate".
     clauses.append(f"({prefix}raw_metadata->>'duplicate_of') IS NULL")
 
+    # By default, only include records that matched a search term.  Records
+    # collected via actor-based collection without term matching have
+    # term_matched = FALSE and are excluded to keep analysis consistent with
+    # the content browser.
+    clauses.append(f"{prefix}term_matched = TRUE")
+
     return clauses
 
 

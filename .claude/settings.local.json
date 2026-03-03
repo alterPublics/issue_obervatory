@@ -230,7 +230,10 @@
       "WebFetch(domain:cbswire.dk)",
       "WebFetch(domain:jp.dk)",
       "WebFetch(domain:rss.feedspot.com)",
-      "WebFetch(domain:forlag.kristeligt-dagblad.dk)"
+      "WebFetch(domain:forlag.kristeligt-dagblad.dk)",
+      "Bash(date:*)",
+      "Bash(pgrep:*)",
+      "Bash(.venv/bin/celery:*)"
     ]
   }
 }

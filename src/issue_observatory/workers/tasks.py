@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import redis
@@ -85,6 +86,49 @@ email_service = get_email_service()
 # ---------------------------------------------------------------------------
 # Task 1: trigger_daily_collection
 # ---------------------------------------------------------------------------
+
+
+_INDEXING_LAG_HOURS: dict[str, int] = {
+    # TikTok Research API: "New videos take up to 48 hours to be added to the
+    # search engine."  Extend date_from back by this amount so that recently
+    # indexed content is captured even when collected_at is recent.
+    "tiktok": 48,
+}
+
+
+def _compute_live_date_bounds(
+    last_collected_by_platform: dict[str, datetime],
+    arena_name: str,
+) -> tuple[str, str]:
+    """Compute date_from/date_to ISO strings for a live collection dispatch.
+
+    Uses the most recent collected_at timestamp for the arena's platform to
+    avoid re-fetching already-collected content.  Falls back to 24 hours ago
+    when no prior data exists.
+
+    For platforms with a known indexing lag (e.g. TikTok's 48-hour delay),
+    ``date_from`` is extended further back so that content published before
+    the lag window but only recently indexed is still captured.  ``date_to``
+    remains at now so that anything indexed earlier than the maximum lag is
+    not missed.
+
+    Args:
+        last_collected_by_platform: Mapping of platform name to last collected datetime.
+        arena_name: The platform name being dispatched.
+
+    Returns:
+        Tuple of (date_from_iso, date_to_iso).
+    """
+    lag_hours = _INDEXING_LAG_HOURS.get(arena_name, 0)
+    now = datetime.now(timezone.utc)
+
+    last_collected = last_collected_by_platform.get(arena_name)
+    if last_collected is not None:
+        date_from_dt = last_collected - timedelta(hours=lag_hours)
+    else:
+        date_from_dt = now - timedelta(days=1) - timedelta(hours=lag_hours)
+
+    return date_from_dt.isoformat(), now.isoformat()
 
 
 @celery_app.task(
@@ -232,6 +276,8 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                     continue
 
                 _task_name = f"{_task_module}.collect_by_actors"
+                last_collected_map = design.get("last_collected_by_platform", {})
+                date_from, date_to = _compute_live_date_bounds(last_collected_map, arena_name)
                 try:
                     celery_app.send_task(
                         _task_name,
@@ -241,6 +287,8 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                             "actor_ids": actor_ids,
                             "tier": tier,
                             "public_figure_ids": public_figure_ids,
+                            "date_from": date_from,
+                            "date_to": date_to,
                         },
                         queue="celery",
                     )
@@ -250,6 +298,8 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                         tier=tier,
                         task_name=_task_name,
                         actors_count=len(actor_ids),
+                        date_from=date_from,
+                        date_to=date_to,
                     )
                 except Exception as dispatch_exc:
                     task_log.error(
@@ -270,6 +320,8 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                     continue
 
                 _task_name = f"{_task_module}.collect_by_terms"
+                last_collected_map = design.get("last_collected_by_platform", {})
+                date_from, date_to = _compute_live_date_bounds(last_collected_map, arena_name)
                 try:
                     celery_app.send_task(
                         _task_name,
@@ -280,6 +332,8 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                             "tier": tier,
                             "language_filter": language_filter,
                             "public_figure_ids": public_figure_ids,
+                            "date_from": date_from,
+                            "date_to": date_to,
                         },
                         queue="celery",
                     )
@@ -289,6 +343,8 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                         tier=tier,
                         task_name=_task_name,
                         terms_count=len(arena_terms),
+                        date_from=date_from,
+                        date_to=date_to,
                     )
                 except Exception as dispatch_exc:
                     task_log.error(

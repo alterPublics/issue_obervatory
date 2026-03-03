@@ -80,6 +80,28 @@ async def fetch_live_tracking_designs() -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
+async def _fetch_last_collected_per_platform(run_id: Any) -> dict[str, datetime]:
+    """Return the latest collected_at timestamp per platform for a collection run.
+
+    Args:
+        run_id: UUID of the CollectionRun to query.
+
+    Returns:
+        Dict mapping platform name to the most recent collected_at datetime.
+    """
+    async with AsyncSessionLocal() as db:
+        stmt = (
+            select(
+                UniversalContentRecord.platform,
+                func.max(UniversalContentRecord.collected_at).label("last_collected"),
+            )
+            .where(UniversalContentRecord.collection_run_id == run_id)
+            .group_by(UniversalContentRecord.platform)
+        )
+        result = await db.execute(stmt)
+        return {row.platform: row.last_collected for row in result.all()}
+
+
 async def get_user_email(user_id: Any) -> str | None:
     """Return the email address for a user ID, or None if not found.
 
@@ -197,6 +219,14 @@ async def fetch_designs_with_prep() -> list[dict[str, Any]]:
 
         design["arena_terms"] = arena_terms
         design["arena_actor_ids"] = arena_actor_ids
+
+        # Last-collected timestamps for date-bound computation in live dispatch
+        try:
+            design["last_collected_by_platform"] = await _fetch_last_collected_per_platform(
+                design["run_id"]
+            )
+        except Exception:
+            design["last_collected_by_platform"] = {}
 
     return designs
 

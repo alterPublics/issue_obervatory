@@ -2135,3 +2135,181 @@ async def get_content_record_html(
             "standalone": not is_panel,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Content Fetch Enrichment
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{record_id:uuid}/fetch-content")
+async def fetch_content_for_record(
+    record_id: uuid.UUID,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> Response:
+    """Fetch full page content for a thin content record.
+
+    Retrieves the URL from the record, fetches the page, extracts text via
+    trafilatura, and updates the record in place.  The original ``text_content``
+    (if any) is preserved in ``raw_metadata.original_snippet``.
+
+    Requires ``published_at`` in the JSON body for partition-pruned lookup.
+
+    Returns:
+        JSON with updated record summary on success, or error details on failure.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    published_at_str = body.get("published_at")
+    if not published_at_str:
+        return JSONResponse(
+            {"ok": False, "error": "published_at is required"},
+            status_code=400,
+        )
+
+    # Parse published_at for partition pruning
+    try:
+        published_at_dt = datetime.fromisoformat(published_at_str.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return JSONResponse(
+            {"ok": False, "error": "Invalid published_at format"},
+            status_code=400,
+        )
+
+    # Fetch the record with ownership check
+    if current_user.role == "admin":
+        stmt = select(UniversalContentRecord).where(
+            UniversalContentRecord.id == record_id,
+            UniversalContentRecord.published_at == published_at_dt,
+        )
+    else:
+        user_run_ids_subq = (
+            select(CollectionRun.id)
+            .where(CollectionRun.initiated_by == current_user.id)
+            .scalar_subquery()
+        )
+        stmt = select(UniversalContentRecord).where(
+            UniversalContentRecord.id == record_id,
+            UniversalContentRecord.published_at == published_at_dt,
+            UniversalContentRecord.collection_run_id.in_(user_run_ids_subq),
+        )
+
+    db_result = await db.execute(stmt)
+    record = db_result.scalar_one_or_none()
+
+    if record is None:
+        return JSONResponse(
+            {"ok": False, "error": "Record not found"},
+            status_code=404,
+        )
+
+    if not record.url:
+        return JSONResponse(
+            {"ok": False, "error": "Record has no URL to fetch"},
+            status_code=400,
+        )
+
+    # Lazy imports for scraper modules
+    from issue_observatory.scraper.http_fetcher import fetch_url as scraper_fetch  # noqa: PLC0415
+    from issue_observatory.scraper.content_extractor import extract_from_html as scraper_extract  # noqa: PLC0415
+    import httpx as _httpx  # noqa: PLC0415
+
+    # Fetch the page content
+    try:
+        async with _httpx.AsyncClient(
+            timeout=30.0,
+            follow_redirects=True,
+            headers={"User-Agent": "IssueObservatory/1.0"},
+        ) as client:
+            robots_cache: dict[str, bool] = {}
+            fetch_result = await scraper_fetch(
+                record.url,
+                client=client,
+                timeout=30.0,
+                respect_robots=True,
+                robots_cache=robots_cache,
+            )
+    except Exception as exc:
+        logger.error(
+            "fetch_content: HTTP fetch failed for record %s: %s", record_id, exc
+        )
+        return JSONResponse(
+            {"ok": False, "error": f"Fetch failed: {exc}"},
+            status_code=502,
+        )
+
+    if fetch_result.error or fetch_result.html is None:
+        return JSONResponse(
+            {"ok": False, "error": f"Fetch error: {fetch_result.error or 'No HTML returned'}"},
+            status_code=502,
+        )
+
+    # Extract content
+    try:
+        extracted = scraper_extract(fetch_result.html, fetch_result.final_url or record.url)
+    except Exception as exc:
+        logger.error(
+            "fetch_content: extraction failed for record %s: %s", record_id, exc
+        )
+        return JSONResponse(
+            {"ok": False, "error": f"Content extraction failed: {exc}"},
+            status_code=502,
+        )
+
+    if not extracted.text:
+        return JSONResponse(
+            {"ok": False, "error": "No text content could be extracted from the page"},
+            status_code=422,
+        )
+
+    # Preserve original snippet in raw_metadata
+    metadata = dict(record.raw_metadata) if record.raw_metadata else {}
+    if record.text_content and "original_snippet" not in metadata:
+        metadata["original_snippet"] = record.text_content
+
+    # Update the record
+    metadata["content_fetched"] = True
+    metadata["content_fetched_at"] = datetime.now(tz=timezone.utc).isoformat()
+
+    # Use raw SQL for partition-pruned update
+    update_stmt = text("""
+        UPDATE content_records
+        SET text_content = :text_content,
+            title = COALESCE(:title, title),
+            language = COALESCE(:language, language),
+            scrape_status = 'scraped',
+            raw_metadata = :raw_metadata
+        WHERE id = :id AND published_at = :published_at
+    """)
+
+    await db.execute(
+        update_stmt,
+        {
+            "text_content": extracted.text,
+            "title": extracted.title,
+            "language": extracted.language,
+            "raw_metadata": json.dumps(metadata),
+            "id": str(record_id),
+            "published_at": published_at_dt,
+        },
+    )
+    await db.commit()
+
+    logger.info(
+        "fetch_content: updated record %s with %d chars of content",
+        record_id,
+        len(extracted.text),
+    )
+
+    return JSONResponse({
+        "ok": True,
+        "record_id": str(record_id),
+        "title": extracted.title or record.title or "",
+        "text_length": len(extracted.text),
+        "language": extracted.language,
+    })

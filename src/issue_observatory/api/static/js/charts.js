@@ -18,6 +18,10 @@ const _CHART_DEFAULTS = {
   responsive: true,
   maintainAspectRatio: true,
   plugins: {
+    // Disable the annotation plugin by default — it runs its beforeDraw hook
+    // on every chart and crashes with null ctx after HTMX boost navigation.
+    // Only the volume chart functions explicitly enable it when events are passed.
+    annotation: false,
     legend: {
       labels: {
         font: { size: 12, family: 'system-ui, sans-serif' },
@@ -66,6 +70,18 @@ function _getCanvas(canvasId) {
     console.warn(`[charts.js] Canvas element #${canvasId} not found — skipping chart init.`);
     return null;
   }
+  // Verify the canvas can provide a 2D rendering context.  This can fail
+  // if another library (e.g. Sigma.js/WebGL) previously acquired a different
+  // context type, or after HTMX boost navigation leaves stale canvases.
+  try {
+    if (!el.getContext('2d')) {
+      console.warn(`[charts.js] Canvas #${canvasId} has no 2D context — skipping chart init.`);
+      return null;
+    }
+  } catch (e) {
+    console.warn(`[charts.js] Canvas #${canvasId} context error — skipping chart init.`);
+    return null;
+  }
   return el;
 }
 
@@ -78,6 +94,24 @@ function _getCanvas(canvasId) {
 function _destroyExisting(canvas) {
   const existing = Chart.getChart(canvas);
   if (existing) existing.destroy();
+}
+
+/**
+ * Safely create a new Chart.js instance, catching any constructor errors
+ * (e.g. null canvas context after HTMX boost navigation, annotation plugin
+ * errors on stale canvases, etc.).
+ *
+ * @param {HTMLCanvasElement} canvas
+ * @param {Object} config - Chart.js configuration object.
+ * @returns {Chart|null}
+ */
+function _safeNewChart(canvas, config) {
+  try {
+    return new Chart(canvas, config);
+  } catch (e) {
+    console.warn('[charts.js] Chart creation failed:', e.message);
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +215,7 @@ window.initVolumeChart = function initVolumeChart(canvasId, data, events = [], o
     ? _buildAnnotations(events, labels)
     : {};
 
-  return new Chart(canvas, {
+  return _safeNewChart(canvas, {
     type: chartType,
     data: {
       labels,
@@ -245,7 +279,7 @@ window.initEngagementChart = function initEngagementChart(canvasId, data, option
   if (!canvas) return null;
   _destroyExisting(canvas);
 
-  return new Chart(canvas, {
+  return _safeNewChart(canvas, {
     type: 'bar',
     data: {
       labels: data.labels || [],
@@ -305,7 +339,7 @@ window.initActorsChart = function initActorsChart(canvasId, data, options = {}) 
   if (!canvas) return null;
   _destroyExisting(canvas);
 
-  return new Chart(canvas, {
+  return _safeNewChart(canvas, {
     type: 'bar',
     data: {
       labels: data.labels || [],
@@ -362,7 +396,7 @@ window.initTermsChart = function initTermsChart(canvasId, data, options = {}) {
   if (!canvas) return null;
   _destroyExisting(canvas);
 
-  return new Chart(canvas, {
+  return _safeNewChart(canvas, {
     type: 'bar',
     data: {
       labels: data.labels || [],
@@ -429,7 +463,7 @@ window.initEngagementStatsChart = function initEngagementStatsChart(canvasId, da
   // Chart.js options (xLabel/yLabel are not native Chart.js keys).
   const { xLabel, yLabel, ...remainingOptions } = options;
 
-  return new Chart(canvas, {
+  return _safeNewChart(canvas, {
     type: 'bar',
     data: {
       labels: metrics,
@@ -538,7 +572,7 @@ window.initMultiArenaVolumeChart = function initMultiArenaVolumeChart(canvasId, 
     ? _buildAnnotations(events, labels || [])
     : {};
 
-  return new Chart(canvas, {
+  return _safeNewChart(canvas, {
     type: 'line',
     data: { labels: labels || [], datasets },
     options: {
@@ -596,7 +630,7 @@ window.initEmergentTermsChart = function initEmergentTermsChart(canvasId, data, 
   if (!canvas) return null;
   _destroyExisting(canvas);
 
-  return new Chart(canvas, {
+  return _safeNewChart(canvas, {
     type: 'bar',
     data: {
       labels: data.labels || [],
@@ -649,7 +683,7 @@ window.initArenaBreakdownChart = function initArenaBreakdownChart(canvasId, data
   if (!canvas) return null;
   _destroyExisting(canvas);
 
-  return new Chart(canvas, {
+  return _safeNewChart(canvas, {
     type: 'doughnut',
     data: {
       labels: data.labels || [],

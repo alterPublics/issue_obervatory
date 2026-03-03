@@ -128,8 +128,8 @@ def _update_task_status(
     retry_backoff=True,
     retry_backoff_max=600,
     acks_late=True,
-    soft_time_limit=600,
-    time_limit=720,
+    soft_time_limit=3600,
+    time_limit=3720,
 )
 def x_twitter_collect_terms(
     self: Any,
@@ -379,14 +379,14 @@ def x_twitter_collect_terms(
         }
     except SoftTimeLimitExceeded:
         logger.error(
-            "x_twitter: collect_by_terms timed out after 10 minutes — run=%s",
+            "x_twitter: collect_by_terms timed out after 60 minutes — run=%s",
             collection_run_id,
         )
         _update_task_status(
             collection_run_id,
             _PLATFORM,
             "failed",
-            error_message="Collection timed out after 10 minutes",
+            error_message="Collection timed out after 60 minutes",
         )
         return {"status": "failed", "error": "timeout", "arena": _ARENA}
 
@@ -399,8 +399,8 @@ def x_twitter_collect_terms(
     retry_backoff=True,
     retry_backoff_max=600,
     acks_late=True,
-    soft_time_limit=600,
-    time_limit=720,
+    soft_time_limit=3600,
+    time_limit=3720,
 )
 def x_twitter_collect_actors(
     self: Any,
@@ -655,14 +655,14 @@ def x_twitter_collect_actors(
         }
     except SoftTimeLimitExceeded:
         logger.error(
-            "x_twitter: collect_by_actors timed out after 10 minutes — run=%s",
+            "x_twitter: collect_by_actors timed out after 60 minutes — run=%s",
             collection_run_id,
         )
         _update_task_status(
             collection_run_id,
             _PLATFORM,
             "failed",
-            error_message="Collection timed out after 10 minutes",
+            error_message="Collection timed out after 60 minutes",
         )
         return {"status": "failed", "error": "timeout", "arena": _ARENA}
 

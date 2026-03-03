@@ -158,6 +158,7 @@ async def detect_volume_spikes(
         FROM content_records
         WHERE collection_run_id = :run_id
           AND (raw_metadata->>'duplicate_of') IS NULL
+          AND term_matched = TRUE
         GROUP BY arena, platform
         """
     )
@@ -221,6 +222,7 @@ async def detect_volume_spikes(
             FROM content_records
             WHERE collection_run_id IN ({id_placeholders})
               AND (raw_metadata->>'duplicate_of') IS NULL
+              AND term_matched = TRUE
             GROUP BY arena, platform, collection_run_id
         ) sub
         GROUP BY arena, platform
@@ -316,6 +318,7 @@ async def _fetch_top_terms(
           AND platform = :platform
           AND search_terms_matched IS NOT NULL
           AND (raw_metadata->>'duplicate_of') IS NULL
+          AND term_matched = TRUE
         GROUP BY term
         ORDER BY cnt DESC
         LIMIT :limit

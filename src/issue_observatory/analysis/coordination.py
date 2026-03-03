@@ -128,6 +128,7 @@ async def get_coordination_events(
                 AND (
                     raw_metadata -> 'enrichments' -> 'coordination' ->> 'coordination_score'
                 )::float >= :min_score
+                AND term_matched = TRUE
                 {extra_sql}
             ORDER BY
                 raw_metadata -> 'enrichments' -> 'coordination' ->> 'cluster_id',

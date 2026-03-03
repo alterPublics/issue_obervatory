@@ -18,7 +18,7 @@
                 <path stroke-linecap="round" stroke-linejoin="round"
                       d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
             </svg>
-            <p class="text-xs text-blue-700">Click any run below to open its full analysis dashboard with volume charts, network graphs, and export tools.</p>
+            <p class="text-xs text-blue-700">Click "View analysis" to open the full dashboard for a query design. You can narrow to a single run from within the dashboard.</p>
         </div>
 
         {% for design in design_entries %}
@@ -31,13 +31,13 @@
                 {% if design.id != 'none' %}
                 <a href="/analysis/design/{{ design.id }}"
                    class="text-xs text-blue-600 hover:text-blue-800 font-medium">
-                    Cross-run analysis
+                    View analysis
                 </a>
                 {% endif %}
             </div>
             <div class="divide-y divide-gray-100">
                 {% for run in design.runs %}
-                <a href="/analysis/{{ run.id }}"
+                <a href="{% if design.id != 'none' %}/analysis/design/{{ design.id }}?run_id={{ run.id }}{% else %}/analysis/{{ run.id }}{% endif %}"
                    class="block px-6 py-4 hover:bg-gray-50 transition-colors group">
                     <div class="flex items-center justify-between mb-2">
                         <div class="flex items-center gap-3">
