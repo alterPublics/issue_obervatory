@@ -31,9 +31,20 @@
         </div>
 
         <div>
-            <label class="block text-sm font-medium text-gray-700 mb-2">
-                Select arena
-            </label>
+            <div class="flex items-center justify-between mb-2">
+                <label class="block text-sm font-medium text-gray-700">
+                    Select arenas
+                </label>
+                <div class="flex gap-2">
+                    <button type="button" @click="selectAllArenas()" class="text-xs text-blue-600 hover:text-blue-800">
+                        Select All
+                    </button>
+                    <span class="text-gray-300">|</span>
+                    <button type="button" @click="clearArenas()" class="text-xs text-blue-600 hover:text-blue-800">
+                        Clear
+                    </button>
+                </div>
+            </div>
             <div x-show="availableArenas.length === 0" class="text-sm text-gray-400 py-4 text-center animate-pulse">
                 Loading arenas...
             </div>
@@ -41,15 +52,22 @@
                 <template x-for="arena in availableArenas" :key="arena.platform_name">
                     <label class="relative flex cursor-pointer">
                         <input
-                            type="radio"
+                            type="checkbox"
                             name="arena"
                             :value="arena.platform_name"
-                            x-model="selectedArena"
+                            x-model="selectedArenas"
                             class="peer sr-only"
                         >
                         <div class="w-full px-4 py-3 border-2 border-gray-200 rounded-lg hover:border-gray-300 peer-checked:border-blue-600 peer-checked:bg-blue-50 transition-all">
-                            <div class="font-medium text-sm text-gray-900" x-text="arena.label"></div>
-                            <div class="text-xs text-gray-500 mt-1" x-text="arena.description"></div>
+                            <div class="flex items-center justify-between mb-1">
+                                <div class="font-medium text-sm text-gray-900" x-text="arena.label"></div>
+                                <span
+                                    class="inline-flex w-2 h-2 rounded-full"
+                                    :class="arena.hasCredentials ? 'bg-green-500' : 'bg-amber-500'"
+                                    :title="arena.hasCredentials ? 'Credentials configured' : 'Credentials may be required'"
+                                ></span>
+                            </div>
+                            <div class="text-xs text-gray-500" x-text="arena.description"></div>
                         </div>
                     </label>
                 </template>
@@ -62,7 +80,7 @@
             </p>
             <button
                 @click="runExploration"
-                :disabled="!searchTerm.trim() || isLoading"
+                :disabled="!searchTerm.trim() || selectedArenas.length === 0 || isLoading"
                 class="inline-flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
             >
                 <svg x-show="!isLoading" class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -75,9 +93,31 @@
                 <span x-text="isLoading ? 'Exploring...' : 'Run Exploration'"></span>
             </button>
         </div>
+
+        {# Search progress indicators #}
+        <div x-show="isLoading && Object.keys(searchProgress).length > 0" x-cloak class="pt-3 border-t border-gray-200 mt-3">
+            <p class="text-xs font-medium text-gray-600 mb-2">Search Progress:</p>
+            <div class="space-y-1">
+                <template x-for="(status, platform) in searchProgress" :key="platform">
+                    <div class="flex items-center gap-2 text-xs">
+                        <svg x-show="status === 'searching'" class="animate-spin w-3 h-3 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                        <svg x-show="status === 'complete'" class="w-3 h-3 text-green-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                        </svg>
+                        <svg x-show="status === 'failed'" class="w-3 h-3 text-red-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                        <span class="text-gray-700" x-text="_formatArenaLabel(platform)"></span>
+                    </div>
+                </template>
+            </div>
+        </div>
     </div>
 
-    {# Error display #}
+    {# Error displays #}
     <div x-show="error" x-cloak class="bg-red-50 border border-red-200 rounded-lg p-4">
         <div class="flex items-start gap-3">
             <svg class="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -95,8 +135,25 @@
         </div>
     </div>
 
+    {# Per-arena errors (if some arenas failed but others succeeded) #}
+    <div x-show="Object.keys(errors).length > 0 && results.length > 0" x-cloak class="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+        <div class="flex items-start gap-3">
+            <svg class="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <div class="flex-1">
+                <h3 class="text-sm font-medium text-yellow-800">Some arenas failed</h3>
+                <ul class="text-sm text-yellow-700 mt-1 space-y-0.5">
+                    <template x-for="(errorMsg, platform) in errors" :key="platform">
+                        <li><span class="font-medium" x-text="_formatArenaLabel(platform)"></span>: <span x-text="errorMsg"></span></li>
+                    </template>
+                </ul>
+            </div>
+        </div>
+    </div>
+
     {# Google Autocomplete suggestions (special card) #}
-    <div x-show="selectedArena === 'google_autocomplete' && suggestions.length > 0" x-cloak class="bg-white rounded-lg shadow">
+    <div x-show="selectedArenas.includes('google_autocomplete') && suggestions.length > 0" x-cloak class="bg-white rounded-lg shadow">
         <div class="px-6 py-4 border-b border-gray-200">
             <h2 class="text-sm font-semibold text-gray-900">Related Terms and Suggestions</h2>
             <p class="text-xs text-gray-500 mt-0.5">Based on Google Autocomplete</p>
@@ -115,22 +172,59 @@
     {# Results table #}
     <div x-show="results.length > 0" x-cloak class="bg-white rounded-lg shadow">
         <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-            <div>
-                <h2 class="text-sm font-semibold text-gray-900">Results</h2>
-                <p class="text-xs text-gray-500 mt-0.5">
-                    Found <span x-text="results.length" class="font-medium"></span>
-                    <span x-text="selectedArena === 'google_autocomplete' ? 'suggestions' : 'items'"></span>
-                </p>
+            <div class="flex items-center gap-4">
+                <div>
+                    <h2 class="text-sm font-semibold text-gray-900">Results</h2>
+                    <p class="text-xs text-gray-500 mt-0.5">
+                        Total: <span x-text="results.length" class="font-medium"></span> items
+                    </p>
+                </div>
+                {# Per-platform counts #}
+                <div class="flex items-center gap-2">
+                    <template x-for="(count, platform) in getResultCountsByPlatform()" :key="platform">
+                        <span class="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-700 text-xs rounded-md">
+                            <span x-text="_formatArenaLabel(platform)"></span>: <span class="font-medium" x-text="count"></span>
+                        </span>
+                    </template>
+                </div>
             </div>
-            <button
-                @click="createQueryDesign"
-                class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-sm font-medium text-gray-700 rounded-md hover:bg-gray-50 transition-colors"
-            >
-                <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-                </svg>
-                Create Query Design from This Term
-            </button>
+            <div class="flex items-center gap-3">
+                <button
+                    @click="clearResults"
+                    class="inline-flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 text-sm font-medium text-gray-700 rounded-md hover:bg-gray-50 transition-colors"
+                >
+                    <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                    Clear Results
+                </button>
+                <button
+                    @click="createQueryDesign"
+                    class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-sm font-medium text-gray-700 rounded-md hover:bg-gray-50 transition-colors"
+                >
+                    <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+                    </svg>
+                    Create Query Design from This Term
+                </button>
+            </div>
+        </div>
+
+        {# Query design selector for adding terms #}
+        <div class="px-6 py-3 bg-gray-50 border-b border-gray-200">
+            <div class="flex items-center gap-3">
+                <label for="design-selector" class="text-xs font-medium text-gray-700">Add terms to:</label>
+                <select
+                    id="design-selector"
+                    x-model="selectedDesignId"
+                    class="flex-1 border border-gray-300 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                >
+                    <option value="">— Select a query design —</option>
+                    <template x-for="design in queryDesigns" :key="design.id">
+                        <option :value="design.id" x-text="design.name"></option>
+                    </template>
+                </select>
+            </div>
         </div>
 
         <div class="overflow-x-auto">
@@ -152,20 +246,48 @@
                         <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Engagement
                         </th>
+                        <th scope="col" class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Actions
+                        </th>
                     </tr>
                 </thead>
                 <tbody class="bg-white divide-y divide-gray-200">
-                    <template x-for="record in results.slice(0, 50)" :key="record.external_id">
-                        <tr class="hover:bg-gray-50 cursor-pointer" @click="expandRecord(record)">
+                    <template x-for="record in results.slice(0, 50)" :key="record.external_id || record.platform_id || Math.random()">
+                        <tr class="hover:bg-gray-50"
+                            :class="record._platform === 'google_autocomplete' ? 'bg-blue-50/20' : ''">
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800" x-text="record.platform"></span>
+                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium"
+                                      :class="{
+                                          'bg-blue-100 text-blue-800': record._platform === 'bluesky',
+                                          'bg-orange-100 text-orange-800': record._platform === 'reddit',
+                                          'bg-red-100 text-red-800': record._platform === 'youtube',
+                                          'bg-sky-100 text-sky-800': record._platform === 'telegram',
+                                          'bg-purple-100 text-purple-800': record._platform === 'google_autocomplete',
+                                          'bg-green-100 text-green-800': record._platform === 'gab',
+                                          'bg-gray-100 text-gray-800': !['bluesky', 'reddit', 'youtube', 'telegram', 'google_autocomplete', 'gab'].includes(record._platform)
+                                      }"
+                                      x-text="record._arena || _formatArenaLabel(record._platform)"></span>
                             </td>
-                            <td class="px-6 py-4 text-sm text-gray-900">
-                                <div class="max-w-md truncate" x-text="record.title || record.text_content || '(no title)'"></div>
+                            <td class="px-6 py-4 text-sm text-gray-900 cursor-pointer" @click="expandRecord(record)">
+                                <div class="max-w-md truncate" x-text="record.title || (record.text_content && record.text_content.substring(0, 80)) || '(no title)'"></div>
                             </td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="record.author_display_name || '—'"></td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="formatDate(record.published_at)"></td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="record.engagement_score || 0"></td>
+                            <td class="px-6 py-4 whitespace-nowrap text-center">
+                                <button
+                                    type="button"
+                                    @click="addTermToDesign(record.title || record.text_content)"
+                                    :disabled="!selectedDesignId"
+                                    class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                    title="Add this term to selected query design"
+                                >
+                                    <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+                                    </svg>
+                                    Add term
+                                </button>
+                            </td>
                         </tr>
                     </template>
                 </tbody>
@@ -177,6 +299,85 @@
                 Showing first 50 of <span x-text="results.length"></span> results
             </div>
         </template>
+
+        {# Terms added this session panel #}
+        <div x-show="addedTermsThisSession.length > 0" x-cloak class="px-6 py-3 bg-green-50 border-t border-green-200">
+            <h3 class="text-xs font-semibold text-green-800 mb-2">Terms Added This Session:</h3>
+            <div class="flex flex-wrap gap-2">
+                <template x-for="term in addedTermsThisSession" :key="term">
+                    <span class="inline-flex items-center px-2 py-1 bg-green-100 text-green-800 text-xs rounded-md">
+                        <svg class="w-3 h-3 mr-1 text-green-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                        </svg>
+                        <span x-text="term"></span>
+                    </span>
+                </template>
+            </div>
+        </div>
+    </div>
+
+    {# Record detail modal #}
+    <div x-show="selectedRecord" x-cloak
+         class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40"
+         @keydown.escape.window="selectedRecord = null"
+         @click.self="selectedRecord = null">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl mx-4 max-h-[80vh] flex flex-col" @click.stop>
+            <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+                <h2 class="text-base font-semibold text-gray-900">Record Details</h2>
+                <button @click="selectedRecord = null" class="text-gray-400 hover:text-gray-600">
+                    <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="px-6 py-4 overflow-y-auto space-y-4" x-show="selectedRecord">
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <p class="text-xs font-medium text-gray-500 uppercase">Platform</p>
+                        <p class="text-sm text-gray-900 mt-1" x-text="selectedRecord?.platform || '—'"></p>
+                    </div>
+                    <div>
+                        <p class="text-xs font-medium text-gray-500 uppercase">Published</p>
+                        <p class="text-sm text-gray-900 mt-1" x-text="formatDate(selectedRecord?.published_at)"></p>
+                    </div>
+                    <div>
+                        <p class="text-xs font-medium text-gray-500 uppercase">Author</p>
+                        <p class="text-sm text-gray-900 mt-1" x-text="selectedRecord?.author_display_name || '—'"></p>
+                    </div>
+                    <div>
+                        <p class="text-xs font-medium text-gray-500 uppercase">Engagement</p>
+                        <p class="text-sm text-gray-900 mt-1" x-text="selectedRecord?.engagement_score || 0"></p>
+                    </div>
+                </div>
+                <div>
+                    <p class="text-xs font-medium text-gray-500 uppercase">Title</p>
+                    <p class="text-sm text-gray-900 mt-1" x-text="selectedRecord?.title || '(no title)'"></p>
+                </div>
+                <div>
+                    <p class="text-xs font-medium text-gray-500 uppercase">Content</p>
+                    <p class="text-sm text-gray-900 mt-1 whitespace-pre-wrap max-h-48 overflow-y-auto" x-text="selectedRecord?.text_content || '(no content)'"></p>
+                </div>
+                <template x-if="selectedRecord?.url">
+                    <div>
+                        <p class="text-xs font-medium text-gray-500 uppercase">URL</p>
+                        <a :href="selectedRecord.url" target="_blank" rel="noopener noreferrer"
+                           class="text-sm text-blue-600 hover:underline break-all mt-1 block" x-text="selectedRecord.url"></a>
+                    </div>
+                </template>
+                <template x-if="selectedRecord?.language">
+                    <div>
+                        <p class="text-xs font-medium text-gray-500 uppercase">Language</p>
+                        <p class="text-sm text-gray-900 mt-1" x-text="selectedRecord.language"></p>
+                    </div>
+                </template>
+            </div>
+            <div class="px-6 py-3 border-t border-gray-200 flex justify-end">
+                <button @click="selectedRecord = null"
+                        class="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
+                    Close
+                </button>
+            </div>
+        </div>
     </div>
 
     {# Empty state (no results yet) #}
@@ -185,7 +386,10 @@
             <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
         </svg>
         <h3 class="text-sm font-medium text-gray-900 mb-1">No results found</h3>
-        <p class="text-sm text-gray-500">Try a different search term or select another arena</p>
+        <p class="text-sm text-gray-500">Try a different search term or select different arenas</p>
+        <div x-show="Object.keys(errors).length > 0" class="mt-3 text-xs text-yellow-700">
+            Some arenas failed to search — check error messages above
+        </div>
     </div>
 
 </div>
@@ -198,16 +402,23 @@
 function explorerApp() {
     return {
         searchTerm: '',
-        selectedArena: '',
+        selectedArenas: [],  // Changed from single to array
         isLoading: false,
         hasSearched: false,
         error: null,
+        errors: {},  // Per-arena errors
         results: [],
         suggestions: [],
         availableArenas: [],
+        selectedRecord: null,
+        queryDesigns: [],  // For term addition dropdown
+        selectedDesignId: '',  // Selected query design for adding terms
+        addedTermsThisSession: [],  // Running list of added terms
+        searchProgress: {},  // Per-arena search progress
 
         async init() {
             await this.loadArenas();
+            await this.loadQueryDesigns();
         },
 
         async loadArenas() {
@@ -218,18 +429,22 @@ function explorerApp() {
                 if (!response.ok) throw new Error('Failed to load arenas');
                 const data = await response.json();
 
-                // Filter to FREE tier arenas only (exploration is meant to be no-cost)
+                // Filter to arenas with supported tiers (exclude deferred stubs),
+                // prefer FREE tier arenas (exploration is meant to be no-cost)
                 this.availableArenas = data
-                    .filter(arena => arena.supported_tiers.includes('free'))
+                    .filter(arena => arena.supported_tiers && arena.supported_tiers.length > 0 && arena.supported_tiers.includes('free'))
+                    .filter(arena => !['url_scraper', 'majestic', 'twitch', 'vkontakte', 'discord'].includes(arena.platform_name))
                     .map(arena => ({
                         platform_name: arena.platform_name,
                         label: this._formatArenaLabel(arena.platform_name),
-                        description: arena.description || this._getDefaultDescription(arena.platform_name)
+                        description: arena.description || this._getDefaultDescription(arena.platform_name),
+                        hasCredentials: arena.has_credentials,
+                        hasEndpoint: !!this._buildEndpoint(arena.platform_name),
                     }));
 
-                // Set default selection to first arena
+                // Set default selection to first arena (for backwards compatibility)
                 if (this.availableArenas.length > 0) {
-                    this.selectedArena = this.availableArenas[0].platform_name;
+                    this.selectedArenas = [this.availableArenas[0].platform_name];
                 }
             } catch (err) {
                 console.error('Failed to load arenas:', err);
@@ -240,6 +455,7 @@ function explorerApp() {
         _formatArenaLabel(platformName) {
             const labels = {
                 'google_autocomplete': 'Google Autocomplete',
+                'google_search': 'Google Search',
                 'bluesky': 'Bluesky',
                 'reddit': 'Reddit',
                 'rss_feeds': 'RSS Feeds',
@@ -251,6 +467,10 @@ function explorerApp() {
                 'threads': 'Threads',
                 'wikipedia': 'Wikipedia',
                 'discord': 'Discord',
+                'tiktok': 'TikTok',
+                'common_crawl': 'Common Crawl',
+                'wayback': 'Wayback Machine',
+                'url_scraper': 'URL Scraper',
             };
             return labels[platformName] || platformName.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
         },
@@ -258,6 +478,7 @@ function explorerApp() {
         _getDefaultDescription(platformName) {
             const descriptions = {
                 'google_autocomplete': 'Get search suggestions and related terms',
+                'google_search': 'Google web search results',
                 'bluesky': 'Danish social media posts',
                 'reddit': 'Danish subreddit discussions',
                 'rss_feeds': 'Danish news media articles',
@@ -269,6 +490,10 @@ function explorerApp() {
                 'threads': 'Meta social platform',
                 'wikipedia': 'Encyclopedia articles',
                 'discord': 'Chat platform channels',
+                'tiktok': 'Short-form video platform',
+                'common_crawl': 'Web archive index search',
+                'wayback': 'Internet Archive snapshots',
+                'url_scraper': 'Scrape researcher-provided URLs',
             };
             return descriptions[platformName] || 'Explore this arena';
         },
@@ -277,6 +502,7 @@ function explorerApp() {
             // Map platform name to collection endpoint
             const endpointMap = {
                 'google_autocomplete': '/arenas/google-autocomplete/collect',
+                'google_search': '/arenas/google-search/collect',
                 'bluesky': '/arenas/bluesky/collect/terms',
                 'reddit': '/arenas/reddit/collect/terms',
                 'rss_feeds': '/arenas/rss-feeds/collect/terms',
@@ -288,49 +514,123 @@ function explorerApp() {
                 'threads': '/arenas/threads/collect/terms',
                 'wikipedia': '/arenas/wikipedia/collect/terms',
                 'discord': '/arenas/discord/collect/terms',
+                'tiktok': '/arenas/tiktok/collect/terms',
+                'common_crawl': '/arenas/common-crawl/collect/terms',
+                'wayback': '/arenas/wayback/collect/terms',
+                'url_scraper': '/arenas/url-scraper/collect/terms',
             };
             return endpointMap[platformName];
         },
 
+        async loadQueryDesigns() {
+            try {
+                const response = await fetch('/query-designs/', {
+                    credentials: 'include',
+                    headers: { 'Accept': 'application/json' },
+                });
+                if (!response.ok) throw new Error('Failed to load query designs');
+                const data = await response.json();
+                this.queryDesigns = data.filter(d => d.is_active !== false);
+            } catch (err) {
+                console.error('Failed to load query designs:', err);
+                this.queryDesigns = [];
+            }
+        },
+
         async runExploration() {
-            if (!this.searchTerm.trim()) return;
+            if (!this.searchTerm.trim() || this.selectedArenas.length === 0) return;
 
             this.isLoading = true;
             this.error = null;
+            this.errors = {};
             this.results = [];
             this.suggestions = [];
             this.hasSearched = true;
+            this.searchProgress = {};
+
+            const searchPromises = this.selectedArenas.map(async (platformName) => {
+                this.searchProgress[platformName] = 'searching';
+                try {
+                    const endpoint = this._buildEndpoint(platformName);
+                    if (!endpoint) {
+                        this.errors[platformName] = 'Not supported yet';
+                        this.searchProgress[platformName] = 'failed';
+                        return { platformName, records: [], error: 'Not supported yet' };
+                    }
+
+                    const body = {
+                        terms: [this.searchTerm.trim()],
+                        max_results: 100,
+                    };
+
+                    const response = await fetch(endpoint, {
+                        credentials: 'include',
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(body),
+                    });
+
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({}));
+                        const status = response.status;
+                        let errorMsg = errorData.detail || `HTTP ${status}`;
+                        
+                        // Add helpful messages
+                        if (status === 402) {
+                            errorMsg = 'Credentials not configured';
+                        } else if (status === 429) {
+                            errorMsg = 'Rate limit exceeded';
+                        } else if (status === 503) {
+                            errorMsg = 'Service unavailable';
+                        }
+                        this.errors[platformName] = errorMsg;
+                        this.searchProgress[platformName] = 'failed';
+                        return { platformName, records: [], error: errorMsg };
+                    }
+
+                    const data = await response.json();
+                    const records = (data.records || []).map(r => ({
+                        ...r,
+                        _platform: platformName,
+                        _arena: this.availableArenas.find(a => a.platform_name === platformName)?.label || platformName,
+                    }));
+
+                    this.searchProgress[platformName] = 'complete';
+                    return { platformName, records, error: null };
+
+                } catch (err) {
+                    const errorMsg = err.message || 'Unexpected error';
+                    this.errors[platformName] = errorMsg;
+                    this.searchProgress[platformName] = 'failed';
+                    console.error(`Exploration error for ${platformName}:`, err);
+                    return { platformName, records: [], error: errorMsg };
+                }
+            });
 
             try {
-                const endpoint = this._buildEndpoint(this.selectedArena);
-                if (!endpoint) {
-                    throw new Error('This arena does not support exploration yet');
+                const allResults = await Promise.all(searchPromises);
+
+                // Merge all successful results
+                const allRecords = [];
+                for (const result of allResults) {
+                    allRecords.push(...result.records);
                 }
 
-                const body = {
-                    terms: [this.searchTerm.trim()],
-                    max_results: 100,
-                };
-
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(body),
+                // Sort by published_at descending
+                allRecords.sort((a, b) => {
+                    const dateA = a.published_at ? new Date(a.published_at) : new Date(0);
+                    const dateB = b.published_at ? new Date(b.published_at) : new Date(0);
+                    return dateB - dateA;
                 });
 
-                if (!response.ok) {
-                    const errorData = await response.json().catch(() => ({}));
-                    throw new Error(errorData.detail || `Request failed with status ${response.status}`);
-                }
-
-                const data = await response.json();
-                this.results = data.records || [];
+                this.results = allRecords;
 
                 // For Google Autocomplete, extract suggestions into a separate list
-                if (this.selectedArena === 'google_autocomplete') {
+                if (this.selectedArenas.includes('google_autocomplete')) {
                     this.suggestions = this.results
+                        .filter(r => r._platform === 'google_autocomplete')
                         .map(r => r.title || r.text_content)
                         .filter(Boolean);
                 }
@@ -343,6 +643,65 @@ function explorerApp() {
             }
         },
 
+        async addTermToDesign(term) {
+            if (!this.selectedDesignId) {
+                alert('Please select a query design first');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/query-designs/${this.selectedDesignId}/terms`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: new URLSearchParams({
+                        term: term,
+                        term_type: 'keyword',
+                    }),
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.detail || `Failed to add term: ${response.status}`);
+                }
+
+                // Track added term
+                if (!this.addedTermsThisSession.includes(term)) {
+                    this.addedTermsThisSession.push(term);
+                }
+
+            } catch (err) {
+                console.error('Failed to add term:', err);
+                alert(`Failed to add term: ${err.message}`);
+            }
+        },
+
+        getResultCountsByPlatform() {
+            const counts = {};
+            for (const record of this.results) {
+                const platform = record._platform || 'unknown';
+                counts[platform] = (counts[platform] || 0) + 1;
+            }
+            return counts;
+        },
+
+        selectAllArenas() {
+            this.selectedArenas = this.availableArenas.map(a => a.platform_name);
+        },
+
+        clearArenas() {
+            this.selectedArenas = [];
+        },
+
+        clearResults() {
+            this.results = [];
+            this.suggestions = [];
+            this.error = null;
+            this.errors = {};
+            this.hasSearched = false;
+        },
+
         createQueryDesign() {
             // Navigate to query design creation page
             // Future enhancement: could pass query params to pre-populate the term
@@ -350,8 +709,7 @@ function explorerApp() {
         },
 
         expandRecord(record) {
-            // Future enhancement: could open a modal with full record details
-            console.log('Record clicked:', record);
+            this.selectedRecord = record;
         },
 
         formatDate(dateStr) {

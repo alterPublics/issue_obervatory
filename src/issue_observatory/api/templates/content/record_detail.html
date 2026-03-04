@@ -31,17 +31,9 @@
 {% block content %}
 {% if standalone %}
 <div class="max-w-3xl mx-auto space-y-6">
-    <div class="flex items-center gap-3">
-        <a href="/content"
-           class="text-gray-400 hover:text-gray-600 transition-colors"
-           aria-label="Back to content browser">
-            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                 stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
-            </svg>
-        </a>
-        <h1 class="text-xl font-bold text-gray-900">Content Record</h1>
-    </div>
+    {% set breadcrumbs = [('Content', '/content'), ('Record Detail', '')] %}
+    {% include '_partials/breadcrumbs.html' %}
+    <h1 class="text-xl font-bold text-gray-900">Content Record</h1>
 {% endif %}
 
 <div class="space-y-4" x-data="{ showRaw: false }">
@@ -89,11 +81,93 @@
     </div>
     {% endif %}
 
+    {# Google Search snippet preview — shown when full content is pending and a snippet is available #}
+    {% set ss = record.scrape_status | default('') %}
+    {% set snippet = record.metadata.search_snippet | default('') if record.metadata | default({}) else '' %}
+    {% if ss == 'pending' and snippet %}
+    <div class="bg-gray-50 rounded-md p-3 border border-gray-200 space-y-1">
+        <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Search snippet</p>
+        <p class="text-sm text-gray-600 italic leading-relaxed">{{ snippet }}</p>
+        <p class="text-xs text-gray-400">Search snippet (full content not yet scraped)</p>
+    </div>
+    {% endif %}
+
+    {# Scrape status — shown as a notice when not yet scraped or failed #}
+    {% if ss == 'pending' %}
+    <div class="flex items-center gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+        <span class="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" aria-hidden="true"></span>
+        Full page content has not been scraped yet.
+    </div>
+    {% elif ss == 'failed' %}
+    <div class="flex items-center gap-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+        <span class="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" aria-hidden="true"></span>
+        Scrape attempt failed — only metadata collected.
+    </div>
+    {% endif %}
+
+    {# Fetch full content button — shown when record has a URL and content is thin or not yet fetched #}
+    {% set content_fetched = record.metadata.content_fetched | default(false) if record.metadata | default({}) else false %}
+    {% set text_len = (record.text | default('') | length) %}
+    {% if record.url | default('') and not content_fetched and (text_len < 500 or ss in ('pending', 'failed', '')) %}
+    <div x-data="{ fetching: false, fetchDone: false, fetchError: null }"
+         x-show="!fetchDone">
+        <button type="button"
+                :disabled="fetching"
+                @click="
+                    fetching = true;
+                    fetchError = null;
+                    fetch('/content/{{ record.id }}/fetch-content', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ published_at: '{{ record.published_at }}' })
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        fetching = false;
+                        if (data.ok) {
+                            fetchDone = true;
+                            // Refresh the detail panel
+                            const panel = document.getElementById('detail-panel-inner');
+                            if (panel) {
+                                htmx.ajax('GET', '/content/{{ record.id }}', { target: '#detail-panel-inner', swap: 'innerHTML' });
+                            }
+                        } else {
+                            fetchError = data.error || 'Fetch failed';
+                        }
+                    })
+                    .catch(err => { fetching = false; fetchError = 'Network error'; })
+                "
+                class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded
+                       bg-blue-50 text-blue-700 border border-blue-200
+                       hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+            <svg x-show="!fetching" class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                 viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+            </svg>
+            <svg x-show="fetching" x-cloak class="w-3.5 h-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg"
+                 fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+            <span x-text="fetching ? 'Fetching...' : 'Fetch full content'"></span>
+        </button>
+        <p x-show="fetchError" x-cloak class="text-xs text-red-600 mt-1" x-text="fetchError"></p>
+    </div>
+    {% elif content_fetched %}
+    <div class="flex items-center gap-1.5 text-xs text-green-700">
+        <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+        </svg>
+        Full content fetched
+    </div>
+    {% endif %}
+
     {# Metadata grid #}
     <dl class="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
         {% if record.author | default('') %}
         <div>
-            <dt class="text-gray-500 font-medium">Author</dt>
+            <dt class="text-gray-500 font-medium">Sender</dt>
             <dd class="text-gray-900 mt-0.5">
                 {% if record.author_id | default('') %}
                 <a href="/actors?q={{ record.author }}"
@@ -102,6 +176,13 @@
                 {{ record.author }}
                 {% endif %}
             </dd>
+        </div>
+        {% endif %}
+
+        {% if record.actual_poster_name | default('') %}
+        <div>
+            <dt class="text-gray-500 font-medium">Posted by</dt>
+            <dd class="text-gray-900 mt-0.5">{{ record.actual_poster_name }}</dd>
         </div>
         {% endif %}
 

@@ -53,7 +53,7 @@ cookie_secure = not settings.debug  # Only set Secure flag in production
 
 cookie_transport = CookieTransport(
     cookie_name="access_token",
-    cookie_max_age=1800,  # 30 minutes
+    cookie_max_age=7200,  # 2 hours
     cookie_httponly=True,
     cookie_samesite="lax",
     cookie_secure=cookie_secure,

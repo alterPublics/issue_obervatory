@@ -52,6 +52,9 @@ from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.telegram.config import (
     DANISH_TELEGRAM_CHANNELS,
     MAX_MESSAGES_PER_REQUEST,
+    TELEGRAM_CHANNEL_RESOLUTION_DELAY,
+    TELEGRAM_INTER_REQUEST_DELAY_MAX,
+    TELEGRAM_INTER_REQUEST_DELAY_MIN,
     TELEGRAM_TIERS,
 )
 from issue_observatory.config.tiers import TierConfig
@@ -413,7 +416,11 @@ class TelegramCollector(ArenaCollector):
             client = TelegramClient(
                 StringSession(session_string), api_id, api_hash
             )
-            async with client:
+            # IMPORTANT: Do NOT use ``async with client:`` — see the comment
+            # in ``_collect_terms_with_credential`` for details on why start()
+            # hangs in non-interactive contexts.
+            try:
+                await client.connect()
                 me = await client.get_me()
                 if me is None:
                     return {
@@ -426,6 +433,8 @@ class TelegramCollector(ArenaCollector):
                     "status": "ok",
                     "detail": f"Authenticated as user_id={me.id}",
                 }
+            finally:
+                await client.disconnect()
         except Exception as exc:
             return {**base, "status": "down", "detail": f"Connection error: {exc}"}
         finally:
@@ -534,7 +543,21 @@ class TelegramCollector(ArenaCollector):
 
         client = TelegramClient(StringSession(session_string), api_id, api_hash)
         try:
-            async with client:
+            # IMPORTANT: Do NOT use ``async with client:`` here.  The context
+            # manager calls ``client.start()`` which falls back to interactive
+            # ``input()`` when the session is invalid/expired.  In a Celery
+            # worker ``input()`` blocks the thread forever with no way to
+            # recover.  Instead, connect explicitly and verify the session.
+            await client.connect()
+            me = await client.get_me()
+            if me is None:
+                raise ArenaCollectionError(
+                    "telegram: session is invalid or expired — get_me() returned None. "
+                    "Re-generate the Telethon StringSession and update the credential.",
+                    arena=self.arena_name,
+                    platform=self.platform_name,
+                )
+            try:
                 for term in terms:
                     if len(records) >= max_results:
                         break
@@ -553,6 +576,10 @@ class TelegramCollector(ArenaCollector):
                             seen=seen,
                         )
                         records.extend(channel_records)
+            finally:
+                await client.disconnect()
+        except ArenaCollectionError:
+            raise
         except FloodWaitError as exc:
             await self._set_flood_wait_cooldown(cred_id, exc.seconds)
             raise ArenaRateLimitError(
@@ -612,7 +639,18 @@ class TelegramCollector(ArenaCollector):
 
         client = TelegramClient(StringSession(session_string), api_id, api_hash)
         try:
-            async with client:
+            # IMPORTANT: Do NOT use ``async with client:`` here.  See the
+            # comment in ``_collect_terms_with_credential`` for details.
+            await client.connect()
+            me = await client.get_me()
+            if me is None:
+                raise ArenaCollectionError(
+                    "telegram: session is invalid or expired — get_me() returned None. "
+                    "Re-generate the Telethon StringSession and update the credential.",
+                    arena=self.arena_name,
+                    platform=self.platform_name,
+                )
+            try:
                 for channel_id in actor_ids:
                     if len(records) >= max_results:
                         break
@@ -627,6 +665,10 @@ class TelegramCollector(ArenaCollector):
                         seen=seen,
                     )
                     records.extend(channel_records)
+            finally:
+                await client.disconnect()
+        except ArenaCollectionError:
+            raise
         except FloodWaitError as exc:
             await self._set_flood_wait_cooldown(cred_id, exc.seconds)
             raise ArenaRateLimitError(
@@ -679,10 +721,14 @@ class TelegramCollector(ArenaCollector):
         """
         from telethon.errors import ChannelPrivateError, PeerIdInvalidError  # noqa: PLC0415
 
+        import asyncio  # noqa: PLC0415
+        import random  # noqa: PLC0415
+
         records: list[dict[str, Any]] = []
         offset_id = 0
 
         try:
+            await asyncio.sleep(TELEGRAM_CHANNEL_RESOLUTION_DELAY)
             entity = await client.get_entity(channel)
         except ChannelPrivateError:
             logger.warning("telegram: channel %r is private — skipping.", channel)
@@ -696,6 +742,9 @@ class TelegramCollector(ArenaCollector):
 
         while len(records) < max_results:
             await self._wait_for_rate_limit(cred_id)
+            await asyncio.sleep(
+                random.uniform(TELEGRAM_INTER_REQUEST_DELAY_MIN, TELEGRAM_INTER_REQUEST_DELAY_MAX)
+            )
             batch_limit = min(MAX_MESSAGES_PER_REQUEST, max_results - len(records))
 
             messages = await client.get_messages(
@@ -768,10 +817,14 @@ class TelegramCollector(ArenaCollector):
         """
         from telethon.errors import ChannelPrivateError, PeerIdInvalidError  # noqa: PLC0415
 
+        import asyncio  # noqa: PLC0415
+        import random  # noqa: PLC0415
+
         records: list[dict[str, Any]] = []
         offset_id = 0
 
         try:
+            await asyncio.sleep(TELEGRAM_CHANNEL_RESOLUTION_DELAY)
             entity = await client.get_entity(channel)
         except ChannelPrivateError:
             logger.warning("telegram: channel %r is private — skipping.", channel)
@@ -785,6 +838,9 @@ class TelegramCollector(ArenaCollector):
 
         while len(records) < max_results:
             await self._wait_for_rate_limit(cred_id)
+            await asyncio.sleep(
+                random.uniform(TELEGRAM_INTER_REQUEST_DELAY_MIN, TELEGRAM_INTER_REQUEST_DELAY_MAX)
+            )
             batch_limit = min(MAX_MESSAGES_PER_REQUEST, max_results - len(records))
 
             messages = await client.get_messages(

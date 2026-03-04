@@ -47,6 +47,14 @@ TIKTOK_DATE_FORMAT: str = "%Y%m%d"
 TIKTOK_MAX_DATE_RANGE_DAYS: int = 30
 """Maximum date range per single video query request (API limit)."""
 
+TIKTOK_INDEXING_LAG_HOURS: int = 48
+"""New videos take up to 48 hours to appear in the Research API search index.
+
+Per TikTok docs: 'New videos take up to 48 hours to be added to the search
+engine.' Live collection dispatches should shift date_to back by this amount
+to avoid querying a window where content hasn't been indexed yet.
+"""
+
 TIKTOK_TOKEN_EXPIRY_SECONDS: int = 7200
 """Access token lifetime in seconds (2 hours)."""
 

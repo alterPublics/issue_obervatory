@@ -420,7 +420,16 @@ class DiscordCollector(ArenaCollector):
             "referenced_message_id": referenced_id,
             "reactions": msg.get("reactions") or [],
             "thread_id": thread_info.get("id"),
+            "actual_poster_name": author_display,
+            "actual_poster_id": author_id,
         }
+
+        # Compose a source-level display name: "Server / #channel"
+        composed_display = (
+            f"{guild_name} / {channel_name}"
+            if guild_name and channel_name
+            else guild_name or channel_name or author_display
+        )
 
         normalized_raw: dict[str, Any] = {
             "id": message_id,
@@ -432,7 +441,7 @@ class DiscordCollector(ArenaCollector):
             "language": None,
             "published_at": msg.get("timestamp"),
             "author_platform_id": author_id,
-            "author_display_name": author_display,
+            "author_display_name": composed_display,
             "views_count": None,
             "likes_count": likes_count if likes_count > 0 else None,
             "shares_count": None,

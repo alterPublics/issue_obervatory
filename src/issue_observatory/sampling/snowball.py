@@ -361,7 +361,8 @@ class SnowballSampler:
                 actor_dict["actor_uuid"] = str(existing_actor_id)
                 continue
 
-            # Create a new Actor record.
+            # Create a new Actor record inside a SAVEPOINT so that a
+            # failure for one actor does not poison the whole session.
             display_name = canonical_name or username or user_id
             new_actor = Actor(
                 canonical_name=display_name,
@@ -375,32 +376,29 @@ class SnowballSampler:
             )
 
             try:
-                db.add(new_actor)
-                # Flush to obtain the generated UUID without committing the
-                # whole transaction yet.
-                await db.flush()
-                new_actor_id: uuid.UUID = new_actor.id
+                async with db.begin_nested():
+                    db.add(new_actor)
+                    await db.flush()
+                    new_actor_id: uuid.UUID = new_actor.id
 
-                # Create the associated platform presence.
-                new_presence = ActorPlatformPresence(
-                    actor_id=new_actor_id,
-                    platform=platform,
-                    platform_user_id=user_id,
-                    platform_username=username or user_id,
-                    profile_url=profile_url or None,
-                    verified=False,
-                )
-                db.add(new_presence)
-                await db.flush()
+                    new_presence = ActorPlatformPresence(
+                        actor_id=new_actor_id,
+                        platform=platform,
+                        platform_user_id=user_id,
+                        platform_username=username or user_id,
+                        profile_url=profile_url or None,
+                        verified=False,
+                    )
+                    db.add(new_presence)
+                    await db.flush()
 
             except Exception:
                 logger.exception(
                     "auto_create_actor_records: failed to create Actor for "
-                    "%s@%s — rolling back this record",
+                    "%s@%s — rolling back this savepoint only",
                     user_id,
                     platform,
                 )
-                await db.rollback()
                 continue
 
             # Annotate the actor dict with its new UUID.

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Codebook Manager — Issue Observatory{% endblock %}
+{% block title %}Codebook Manager{% endblock %}
 
 {% block content %}
 {#
@@ -24,26 +24,9 @@
      x-data="codebookManager('{{ design_id }}')"
      x-init="loadCodebook()">
 
-    {# Header with breadcrumb navigation #}
-    <div class="flex items-center gap-3">
-        <a href="/query-designs/{{ design_id }}"
-           class="text-gray-400 hover:text-gray-600 transition-colors"
-           aria-label="Back to query design">
-            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                 stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
-            </svg>
-        </a>
-        <nav class="flex items-center gap-2 text-sm">
-            <a href="/query-designs/{{ design_id }}"
-               class="text-gray-500 hover:text-gray-700">{{ design_name }}</a>
-            <svg class="w-4 h-4 text-gray-300" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                 stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
-            </svg>
-            <span class="text-gray-900 font-medium">Codebook</span>
-        </nav>
-    </div>
+    {# Breadcrumb navigation #}
+    {% set breadcrumbs = [(design_name, '/query-designs/' + design_id), ('Codebook', '')] %}
+    {% include '_partials/breadcrumbs.html' %}
 
     {# Page header #}
     <div class="flex items-center justify-between">

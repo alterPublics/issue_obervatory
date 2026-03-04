@@ -225,6 +225,27 @@ class UniversalContentRecord(Base):
     )
 
     # ------------------------------------------------------------------
+    # Scrape & match status
+    # ------------------------------------------------------------------
+    scrape_status: Mapped[Optional[str]] = mapped_column(
+        sa.String(20),
+        nullable=True,
+        comment=(
+            "NULL = scraping N/A; 'pending' = URL exists, not scraped; "
+            "'scraped' = full text in text_content; 'failed' = scrape failed."
+        ),
+    )
+    term_matched: Mapped[bool] = mapped_column(
+        sa.Boolean,
+        nullable=False,
+        server_default=sa.text("true"),
+        comment=(
+            "true = matched search term (shown by default); "
+            "false = collected via actor-based collection, no term match."
+        ),
+    )
+
+    # ------------------------------------------------------------------
     # Deduplication
     # ------------------------------------------------------------------
     content_hash: Mapped[Optional[str]] = mapped_column(

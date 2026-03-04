@@ -26,16 +26,16 @@
 
 <div class="max-w-4xl mx-auto space-y-6" x-data="queryEditor()">
 
+    {# Breadcrumb navigation — include project when associated #}
+    {% if project_name | default('') %}
+    {% set breadcrumbs = [('Projects', '/projects'), (project_name, '/projects/' + project_id), ('Edit' if is_edit else 'New Query Design', '')] %}
+    {% else %}
+    {% set breadcrumbs = [('Query Designs', '/query-designs'), ('Edit' if is_edit else 'New', '')] %}
+    {% endif %}
+    {% include '_partials/breadcrumbs.html' %}
+
     {# Page header #}
     <div class="flex items-center gap-3">
-        <a href="/query-designs"
-           class="text-gray-400 hover:text-gray-600 transition-colors"
-           aria-label="Back to list">
-            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                 stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
-            </svg>
-        </a>
         <div class="flex-1">
             <h1 class="text-xl font-bold text-gray-900">
                 {% if is_edit %}Edit Query Design{% else %}New Query Design{% endif %}
@@ -56,6 +56,17 @@
                 {% endif %}
             </p>
             {% endif %}
+            {% if project_name | default('') %}
+            <p class="text-xs text-gray-500 mt-1 flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                </svg>
+                Part of project:
+                <a href="/projects/{{ project_id }}"
+                   class="text-blue-600 hover:text-blue-800 hover:underline font-medium">{{ project_name }}</a>
+            </p>
+            {% endif %}
         </div>
         {# Clone action — only shown when editing an existing design (IP2-051) #}
         {% if is_edit %}
@@ -74,6 +85,34 @@
         {% endif %}
     </div>
 
+    {# Two-step creation guidance — shown only when creating a new design #}
+    {% if not is_edit %}
+    <div x-data="{ dismissed: false }"
+         x-show="!dismissed"
+         x-cloak
+         class="bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-start gap-3">
+        <svg class="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" fill="none"
+             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round"
+                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <div class="flex-1">
+            <p class="text-sm text-blue-800">
+                Start by giving your query design a name and description. After saving, you can add
+                search terms, actors, and configure arenas on the edit page.
+            </p>
+        </div>
+        <button type="button" @click="dismissed = true"
+                class="text-blue-400 hover:text-blue-600 flex-shrink-0"
+                aria-label="Dismiss">
+            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+        </button>
+    </div>
+    {% endif %}
+
     {# Metadata form #}
     <div class="bg-white rounded-lg shadow p-6 space-y-5">
         <h2 class="text-sm font-semibold text-gray-900 border-b border-gray-200 pb-3">Basic Information</h2>
@@ -85,6 +124,11 @@
               action="/query-designs/form"
               {% endif %}
               id="design-form">
+
+            {# Hidden project_id for auto-attaching to a project #}
+            {% if project_id | default('') %}
+            <input type="hidden" name="project_id" value="{{ project_id }}">
+            {% endif %}
 
             <div class="grid grid-cols-2 gap-5">
                 {# Name #}
@@ -169,7 +213,7 @@
             {# Save button for metadata #}
             {% if not is_edit %}
             <div class="pt-4 border-t border-gray-200 mt-5 flex items-center justify-between">
-                <a href="/query-designs"
+                <a href="{% if project_id | default('') %}/projects/{{ project_id }}{% else %}/query-designs{% endif %}"
                    class="text-sm text-gray-500 hover:text-gray-700">Cancel</a>
                 <button type="submit"
                         class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50">
@@ -292,7 +336,7 @@
                                        :value="arena.platform_name"
                                        x-model="selectedArenas"
                                        class="rounded border-gray-300 text-blue-600 focus:ring-blue-500 focus:ring-offset-0">
-                                <span x-text="arena.platform_name"></span>
+                                <span x-text="arena.displayLabel || arena.platform_name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())"></span>
                             </label>
                         </template>
                     </div>
@@ -443,11 +487,11 @@
         #}
         {% if terms %}
         <ul class="space-y-1.5" id="terms-list">
-            {# Grouped terms first, ungrouped last #}
-            {% for term in terms if term.group_label %}
+            {# Grouped terms first, ungrouped last — exclude overrides (parent_term_id set) #}
+            {% for term in terms if term.group_label and not term.parent_term_id %}
                 {% include '_fragments/term_row.html' %}
             {% endfor %}
-            {% for term in terms if not term.group_label %}
+            {% for term in terms if not term.group_label and not term.parent_term_id %}
                 {% include '_fragments/term_row.html' %}
             {% endfor %}
         </ul>
@@ -459,60 +503,229 @@
         {% endif %}
     </div>
 
-    {# SB-11: AI Chat Search as Discovery Accelerator #}
-    <div class="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-6">
-        <div class="flex items-start gap-4">
-            {# Icon #}
-            <div class="flex-shrink-0 w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center">
-                <svg class="w-5 h-5 text-purple-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+    {# Arena-Specific Term Overrides — allows researchers to specify per-arena variants
+       of existing default search terms. Useful when a term has a different form on a
+       specific platform (e.g., a hashtag on Bluesky vs. a keyword for RSS/news search).
+
+       Backend contract expected:
+           POST /query-designs/{design_id}/terms/override
+           Body (form): {
+               parent_term_id: str,   — UUID of the default term being overridden
+               term: str,             — arena-specific variant text
+               term_type: str,        — keyword | phrase | hashtag | url_pattern
+               arena: str,            — platform_name this override applies to
+           }
+           Returns: HTMX fragment — a new <li> appended to #overrides-list.
+    #}
+    {% if is_edit %}
+    <div class="bg-white rounded-lg shadow p-6"
+         x-data="arenaTermOverrides()"
+         x-init="loadArenas()">
+
+        {# Section header — collapsible #}
+        <button type="button"
+                @click="expanded = !expanded"
+                class="flex items-center justify-between w-full text-left">
+            <div class="flex items-center gap-2">
+                <svg class="w-4 h-4 text-amber-500 flex-shrink-0"
+                     xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
                      stroke="currentColor" stroke-width="2" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round"
-                          d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+                          d="M8 9l4-4 4 4m0 6l-4 4-4-4"/>
                 </svg>
+                <h2 class="text-sm font-semibold text-gray-900">Arena-Specific Term Overrides</h2>
+                <span class="text-xs text-gray-400 font-normal">override defaults for individual arenas</span>
             </div>
+            <svg class="w-4 h-4 text-gray-400 transition-transform flex-shrink-0"
+                 :class="{ 'rotate-180': expanded }"
+                 xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+            </svg>
+        </button>
 
-            {# Content #}
-            <div class="flex-1">
-                <h3 class="text-sm font-semibold text-purple-900 mb-1">AI-Powered Discovery</h3>
-                <p class="text-sm text-purple-800 mb-3">
-                    Use AI Chat Search to discover related terms, actors, and sources for your research.
-                    This arena queries AI models to suggest connections you might have missed.
+        {# Collapsed hint #}
+        <p x-show="!expanded" class="text-xs text-gray-400 mt-1.5">
+            Provide platform-specific variants of your default search terms — e.g., a hashtag form on Bluesky vs. a keyword for RSS feeds.
+        </p>
+
+        {# Expanded content #}
+        <div x-show="expanded"
+             x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0 -translate-y-1"
+             x-transition:enter-end="opacity-100 translate-y-0"
+             x-transition:leave="transition ease-in duration-150"
+             x-transition:leave-start="opacity-100 translate-y-0"
+             x-transition:leave-end="opacity-0 -translate-y-1"
+             class="mt-4 space-y-4">
+
+            {# Explainer #}
+            <div class="rounded-md bg-amber-50 border border-amber-100 px-3 py-2.5 text-xs text-amber-900 space-y-1">
+                <p>
+                    <strong>When to use this:</strong> If a term like "ytringsfrihed" should be collected
+                    as a hashtag (#ytringsfrihed) on Bluesky but as a keyword on news arenas, add an override
+                    here. Overrides apply <em>in addition to</em> the default term — they do not replace it globally.
                 </p>
-
-                <details class="text-sm text-purple-700">
-                    <summary class="cursor-pointer font-medium hover:text-purple-900 inline-flex items-center gap-1">
-                        How to use AI Chat Search for discovery
-                        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                             stroke="currentColor" stroke-width="2">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
-                        </svg>
-                    </summary>
-                    <div class="mt-2 pl-5 space-y-2 text-xs text-purple-600 border-l-2 border-purple-300">
-                        <p><strong>1. Enable AI Chat Search</strong> in the Arena Configuration section below (select MEDIUM tier).</p>
-                        <p><strong>2. Run a collection</strong> with a broad query like "suggest 20 related terms for [your topic]".</p>
-                        <p><strong>3. Review results</strong> in the Content Browser and add relevant suggestions back to your search terms list.</p>
-                        <p><strong>4. Iterate:</strong> Use discovered terms to refine your query design and expand your research scope.</p>
-                    </div>
-                </details>
-
-                <div class="mt-4 flex items-center gap-3">
-                    <a href="#arena-config"
-                       class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 text-white text-xs font-medium rounded-md hover:bg-purple-700 transition-colors">
-                        <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                             stroke="currentColor" stroke-width="2" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round"
-                                  d="M13 10V3L4 14h7v7l9-11h-7z"/>
-                        </svg>
-                        Enable AI Chat Search
-                    </a>
-                    <a href="https://docs.anthropic.com/claude/docs" target="_blank" rel="noopener"
-                       class="text-xs text-purple-600 hover:text-purple-800 underline">
-                        Learn more about AI-powered discovery
-                    </a>
-                </div>
             </div>
-        </div>
+
+            {# Step 1: select the target arena
+               The arena list is loaded once via Alpine's fetch on x-init (same pattern as
+               arenaConfigGrid). We reuse the `availableArenas` data already fetched by the
+               parent `termArenaSelector()` Alpine component bound to the search-terms panel.
+               If arenas haven't loaded yet, we show a loading placeholder option. #}
+            <div>
+                <label for="override-arena-select"
+                       class="block text-xs font-medium text-gray-700 mb-1 uppercase tracking-wider">
+                    Step 1 — Select arena
+                </label>
+                <select id="override-arena-select"
+                        x-model="selectedArena"
+                        class="w-full border border-gray-300 rounded px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white">
+                    <option value="">Choose an arena…</option>
+                    {# Arena options populated from /api/arenas/ by the arenaTermOverrides() Alpine component #}
+                    <template x-for="arena in arenas" :key="arena.platform_name">
+                        <option :value="arena.platform_name"
+                                x-text="arena.displayLabel || arena.platform_name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())">
+                        </option>
+                    </template>
+                </select>
+                <p class="text-xs text-gray-400 mt-0.5">Overrides will only apply when collecting from this arena.</p>
+            </div>
+
+            {# Step 2: define the override — shown once an arena is selected #}
+            <div x-show="selectedArena !== ''"
+                 x-transition:enter="transition ease-out duration-150"
+                 x-transition:enter-start="opacity-0"
+                 x-transition:enter-end="opacity-100">
+
+                <p class="text-xs font-medium text-gray-700 mb-2 uppercase tracking-wider">Step 2 — Define override term</p>
+
+                <form hx-post="/query-designs/{{ design_id }}/terms/override"
+                      hx-target="#overrides-list"
+                      hx-swap="beforeend"
+                      hx-on::after-request="if(event.detail.successful){ this.reset(); selectedArena = ''; }"
+                      class="space-y-3 bg-amber-50 border border-amber-200 rounded-md p-4">
+
+                    {# Hidden: which arena this override targets #}
+                    <input type="hidden" name="override_arena" :value="selectedArena">
+
+                    {# Parent term selector — pulls from #terms-list above #}
+                    <div>
+                        <label for="override-parent-term"
+                               class="block text-xs font-medium text-gray-700 mb-1">
+                            Default term to override <span class="text-red-500">*</span>
+                        </label>
+                        <select id="override-parent-term"
+                                name="parent_term_id"
+                                required
+                                class="w-full border border-gray-300 rounded px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white">
+                            <option value="">Select a default term…</option>
+                            {% for term in terms if not term.parent_term_id %}
+                            <option value="{{ term.id }}">
+                                {{ term.term | default('') }}
+                                {% if term.term_type | default('keyword') != 'keyword' %}
+                                    ({{ term.term_type }})
+                                {% endif %}
+                                {% if term.group_label %}[{{ term.group_label }}]{% endif %}
+                            </option>
+                            {% endfor %}
+                        </select>
+                        <p class="text-xs text-gray-400 mt-0.5">
+                            This links the override to the default term for reporting and deduplication.
+                        </p>
+                    </div>
+
+                    {# Override term text + type #}
+                    <div class="flex gap-2">
+                        <div class="flex-shrink-0">
+                            <label for="override-term-type"
+                                   class="block text-xs font-medium text-gray-700 mb-1">Type</label>
+                            <select id="override-term-type"
+                                    name="term_type"
+                                    class="border border-gray-300 rounded px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white">
+                                <option value="keyword">Keyword</option>
+                                <option value="phrase">Phrase</option>
+                                <option value="hashtag">Hashtag</option>
+                                <option value="url_pattern">URL pattern</option>
+                            </select>
+                        </div>
+                        <div class="flex-1">
+                            <label for="override-term-text"
+                                   class="block text-xs font-medium text-gray-700 mb-1">
+                                Arena-specific term <span class="text-red-500">*</span>
+                            </label>
+                            <input type="text"
+                                   id="override-term-text"
+                                   name="term"
+                                   required
+                                   placeholder="e.g. #ytringsfrihed"
+                                   autocomplete="off"
+                                   class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent">
+                        </div>
+                    </div>
+
+                    {# Submit #}
+                    <div class="flex items-center justify-between pt-1">
+                        <p class="text-xs text-amber-700">
+                            Override will apply only to
+                            <strong x-text="selectedArena"></strong>.
+                        </p>
+                        <button type="submit"
+                                class="inline-flex items-center gap-1.5 px-3 py-2 bg-amber-600 text-white text-sm font-medium rounded hover:bg-amber-700 transition-colors flex-shrink-0">
+                            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+                            </svg>
+                            Add Override
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            {# Existing overrides list #}
+            <div>
+                <p class="text-xs font-medium text-gray-700 mb-2 uppercase tracking-wider">Active overrides</p>
+                <ul class="space-y-1.5" id="overrides-list" aria-live="polite">
+                    {# Override term rows — amber-themed, matches HTMX fragment from add_override_term #}
+                    {% for term in terms if term.parent_term_id | default(None) %}
+                    <li id="term-{{ term.id }}"
+                        class="flex items-center justify-between gap-3 py-1.5 px-3 rounded-md bg-amber-50 border border-amber-200 group text-sm">
+                        <div class="flex items-center gap-2 min-w-0">
+                            {# Arena badge #}
+                            <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700 flex-shrink-0">
+                                {{ term.override_arena | default('?') }}
+                            </span>
+                            <span class="text-gray-900 font-medium truncate">{{ term.term | default('') }}</span>
+                            {# Parent term reference #}
+                            <span class="text-xs text-gray-400">
+                                overrides: {{ term.parent_term.term if term.parent_term else '?' }}
+                            </span>
+                        </div>
+
+                        <button type="button"
+                                hx-delete="/query-designs/{{ design_id }}/terms/{{ term.id }}"
+                                hx-target="#term-{{ term.id }}"
+                                hx-swap="outerHTML"
+                                hx-confirm="Delete override term '{{ term.term | default('') }}'?"
+                                class="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-gray-400 hover:text-red-500 hover:bg-red-50"
+                                aria-label="Delete override">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                      d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </li>
+                    {% else %}
+                    <li id="overrides-empty" class="text-sm text-gray-400 text-center py-4">
+                        No overrides yet. Add one above.
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+
+        </div>{# /expanded #}
     </div>
+    {% endif %}
 
     {# Actor list panel #}
     <div class="bg-white rounded-lg shadow p-6">
@@ -958,9 +1171,8 @@
         </div>
 
         {# Save arena config button with success feedback #}
-        <div class="mt-4 flex items-center justify-end gap-3"
-             x-data="{ saved: false, saveError: false }">
-            <span x-show="saved"
+        <div class="mt-4 flex items-center justify-end gap-3">
+            <span x-show="_saved"
                   x-cloak
                   x-transition:enter="transition ease-out duration-150"
                   x-transition:enter-start="opacity-0"
@@ -971,25 +1183,20 @@
                   class="text-sm text-green-700 font-medium">
                 Saved
             </span>
-            <span x-show="saveError"
+            <span x-show="_saveError"
                   x-cloak
                   class="text-sm text-red-600">
                 Save failed — please try again.
             </span>
             <button type="button"
-                    hx-post="/query-designs/{{ design_id }}/arena-config"
-                    hx-include="#arena-config-form"
-                    hx-swap="none"
-                    hx-indicator="#save-arena-spinner"
-                    hx-on::after-settle="if(event.detail.successful){ saved = true; saveError = false; setTimeout(() => { saved = false; }, 3000); } else { saveError = true; saved = false; }"
-                    class="inline-flex items-center gap-2 px-4 py-2 bg-gray-800 text-white text-sm font-medium rounded-md hover:bg-gray-700 transition-colors">
-                <span id="save-arena-spinner" class="htmx-indicator">
-                    <svg class="animate-spin w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg"
-                         fill="none" viewBox="0 0 24 24" aria-hidden="true">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                    </svg>
-                </span>
+                    @click="saveConfig()"
+                    :disabled="_saving"
+                    class="inline-flex items-center gap-2 px-4 py-2 bg-gray-800 text-white text-sm font-medium rounded-md hover:bg-gray-700 transition-colors disabled:opacity-50">
+                <svg x-show="_saving" class="animate-spin w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg"
+                     fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
                 Save Arena Config
             </button>
         </div>
@@ -1012,6 +1219,8 @@
                             </svg>
                             Config
                         </span> need you to specify which sources to monitor. Configure them in the panels below (Telegram, Reddit, RSS, Discord, Wikipedia).
+                        Facebook and Instagram are actor-only arenas: keyword search is not supported. Add Facebook pages/groups and Instagram profiles
+                        in the <a href="/actors" class="underline">Actor Directory</a> to collect from them.
                     </p>
                 </div>
             </div>
@@ -1729,6 +1938,119 @@
         </div>
     </div>
 
+    {# ------------------------------------------------------------------ #}
+    {# Domain Crawler — custom target domains panel                        #}
+    {# ------------------------------------------------------------------ #}
+    <div id="config-domain-crawler" class="bg-white rounded-lg shadow p-6"
+         x-data="arenaSourcePanel(
+             '{{ design_id }}',
+             'domain_crawler',
+             'target_domains',
+             {{ ((design.arenas_config or {}).get('domain_crawler', {}).get('target_domains', [])) | tojson }}
+         )">
+
+        <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
+             @click="open = !open">
+            <div class="flex-1">
+                <div class="flex items-center gap-2">
+                    <h2 class="text-sm font-semibold text-gray-900">Domain Crawler — Target Domains</h2>
+                    <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600"
+                          title="Source-list arena requiring configuration">
+                        <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                             stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        Optional
+                    </span>
+                </div>
+                <p class="text-xs text-gray-400 mt-0.5">Additional web domains to crawl beyond the 13 default Danish news sites</p>
+            </div>
+            <div class="flex items-center gap-2">
+                <span x-show="items.length > 0"
+                      class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700"
+                      x-text="items.length + ' custom'"></span>
+                <svg class="w-4 h-4 text-gray-400 transition-transform"
+                     :class="open ? 'rotate-180' : ''"
+                     xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+                </svg>
+            </div>
+        </div>
+
+        <div x-show="open"
+             x-transition:enter="transition ease-out duration-150"
+             x-transition:enter-start="opacity-0 -translate-y-1"
+             x-transition:enter-end="opacity-100 translate-y-0"
+             x-transition:leave="transition ease-in duration-100"
+             x-transition:leave-start="opacity-100 translate-y-0"
+             x-transition:leave-end="opacity-0 -translate-y-1">
+            <p class="text-xs text-gray-500 mb-3">
+                Enter bare domain names without <code class="bg-gray-100 px-1 rounded">https://</code> —
+                e.g., <code class="bg-gray-100 px-1 rounded">sermitsiaq.ag</code>,
+                <code class="bg-gray-100 px-1 rounded">knr.gl</code>.
+                The crawler fetches each domain's front page, discovers article links, and extracts full text.
+                Default domains (DR, TV2, Politiken, Berlingske, etc.) are always included.
+            </p>
+
+            <div class="flex gap-2 mb-4">
+                <input type="text"
+                       x-model="newItem"
+                       @keydown.enter.prevent="addItem()"
+                       placeholder="example.dk"
+                       autocomplete="off"
+                       class="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                <button type="button"
+                        @click="addItem()"
+                        :disabled="!newItem.trim() || saving"
+                        class="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded hover:bg-gray-200 transition-colors disabled:opacity-50 flex-shrink-0">
+                    <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                         stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+                    </svg>
+                    Add Domain
+                </button>
+            </div>
+
+            <ul class="space-y-1.5 mb-3" x-show="items.length > 0">
+                <template x-for="(item, idx) in items" :key="idx">
+                    <li class="flex items-center justify-between gap-3 py-2 px-3 rounded-md bg-gray-50 border border-gray-200 group">
+                        <a :href="'https://' + item"
+                           target="_blank"
+                           rel="noopener noreferrer"
+                           class="text-sm text-blue-600 hover:text-blue-800 font-mono truncate"
+                           x-text="item"></a>
+                        <button type="button"
+                                @click="removeItem(idx)"
+                                :disabled="saving"
+                                class="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-30"
+                                aria-label="Remove domain">
+                            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                            </svg>
+                        </button>
+                    </li>
+                </template>
+            </ul>
+            <p x-show="items.length === 0" class="text-sm text-gray-400 text-center py-3">
+                No custom domains added. The 13 default Danish news sites will still be crawled.
+            </p>
+
+            <div class="flex items-center gap-3 pt-2 border-t border-gray-100">
+                <span x-show="savedOk" x-cloak
+                      x-transition:enter="transition ease-out duration-150"
+                      x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+                      x-transition:leave="transition ease-in duration-300"
+                      x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+                      class="text-sm text-green-700 font-medium">Saved</span>
+                <span x-show="saveError" x-cloak class="text-sm text-red-600" x-text="saveError"></span>
+            </div>
+        </div>
+    </div>
+
     {% endif %}{# /is_edit #}
 
 </div>
@@ -1746,20 +2068,23 @@
  *   - has_credentials (boolean): whether API credentials are configured
  *
  * After fetching the arena list, the saved per-design config is loaded from
- * GET /api/query-designs/{id}/arena-config and merged in. If a saved tier
+ * GET /query-designs/{id}/arena-config and merged in. If a saved tier
  * is no longer in supported_tiers, it is auto-corrected to the first
  * supported tier.
  *
  * API contracts:
  *   GET  /api/arenas/                        → ArenaInfo[]
- *   GET  /api/query-designs/{id}/arena-config → { arenas: [{id, enabled, tier}] }
- *   POST /api/query-designs/{id}/arena-config → 200
+ *   GET  /query-designs/{id}/arena-config → { arenas: [{id, enabled, tier}] }
+ *   POST /query-designs/{id}/arena-config → 200
  */
 function arenaConfigGrid(defaultTier) {
     return {
         arenas: [],
         _estimateTimer: null,
         _loadError: null,
+        _saving: false,
+        _saved: false,
+        _saveError: false,
 
         async init() {
             // Step 1: Fetch the live arena list from the backend.
@@ -1803,7 +2128,7 @@ function arenaConfigGrid(defaultTier) {
             const designId = document.querySelector('input[name="design_id"]')?.value;
             if (designId) {
                 try {
-                    const configResp = await fetch('/api/query-designs/' + designId + '/arena-config');
+                    const configResp = await fetch('/query-designs/' + designId + '/arena-config');
                     if (configResp.ok) {
                         const configData = await configResp.json();
                         if (configData && Array.isArray(configData.arenas)) {
@@ -1870,6 +2195,36 @@ function arenaConfigGrid(defaultTier) {
          */
         unsupportedTierTitle(arena) {
             return 'This arena only supports ' + arena.supportedTiers.join(', ') + ' tier(s)';
+        },
+
+        async saveConfig() {
+            this._saving = true;
+            this._saveError = false;
+            const designId = document.querySelector('input[name="design_id"]')?.value;
+            if (!designId) { this._saveError = true; this._saving = false; return; }
+            const payload = {
+                arenas: this.arenas.map(a => ({
+                    id: a.id,
+                    enabled: a.enabled,
+                    tier: a.tier,
+                })),
+            };
+            try {
+                const resp = await fetch('/query-designs/' + designId + '/arena-config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify(payload),
+                });
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                this._saved = true;
+                setTimeout(() => { this._saved = false; }, 3000);
+            } catch (err) {
+                console.warn('saveConfig failed:', err);
+                this._saveError = true;
+            } finally {
+                this._saving = false;
+            }
         },
     };
 }
@@ -2711,10 +3066,17 @@ function termArenaSelector() {
             if (count === 0) {
                 return 'Target arenas: all (default)';
             } else if (count === 1) {
-                return `Target arenas: ${this.selectedArenas[0]}`;
+                const label = this._humanizePlatform(this.selectedArenas[0]);
+                return `Target arenas: ${label}`;
             } else {
                 return `Target arenas: ${count} selected`;
             }
+        },
+
+        _humanizePlatform(name) {
+            const match = this.availableArenas.find(a => a.platform_name === name);
+            if (match && match.displayLabel) return match.displayLabel;
+            return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
         },
 
         // ---------------------------------------------------------------

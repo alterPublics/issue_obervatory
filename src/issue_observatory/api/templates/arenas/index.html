@@ -119,8 +119,20 @@
                             </template>
                         </div>
 
-                        {# Custom configuration indicator #}
-                        <div x-show="arena.custom_config_fields && arena.custom_config_fields.length > 0">
+                        {# Actor-only badge (FB/IG) — shown when the first config field is the actor_only_notice sentinel #}
+                        <div x-show="arena.custom_config_fields && arena.custom_config_fields.length > 0 && arena.custom_config_fields[0].field === 'actor_only_notice'">
+                            <div class="text-xs text-amber-700 flex items-center gap-1.5 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                                <svg class="w-3 h-3 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                          d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                                </svg>
+                                <span>Actor-only — no keyword search</span>
+                            </div>
+                        </div>
+
+                        {# Configurable sources badge — for arenas with custom source lists (but not actor-only) #}
+                        <div x-show="arena.custom_config_fields && arena.custom_config_fields.length > 0 && arena.custom_config_fields[0].field !== 'actor_only_notice'">
                             <div class="text-xs text-blue-600 flex items-center gap-1.5 bg-blue-50 rounded px-2 py-1">
                                 <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
                                      stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -179,8 +191,20 @@
                             </template>
                         </div>
 
-                        {# Custom configuration indicator #}
-                        <div x-show="arena.custom_config_fields && arena.custom_config_fields.length > 0">
+                        {# Actor-only badge (FB/IG) #}
+                        <div x-show="arena.custom_config_fields && arena.custom_config_fields.length > 0 && arena.custom_config_fields[0].field === 'actor_only_notice'">
+                            <div class="text-xs text-amber-700 flex items-center gap-1.5 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                                <svg class="w-3 h-3 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                          d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                                </svg>
+                                <span>Actor-only — no keyword search</span>
+                            </div>
+                        </div>
+
+                        {# Configurable sources badge #}
+                        <div x-show="arena.custom_config_fields && arena.custom_config_fields.length > 0 && arena.custom_config_fields[0].field !== 'actor_only_notice'">
                             <div class="text-xs text-blue-600 flex items-center gap-1.5 bg-blue-50 rounded px-2 py-1">
                                 <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
                                      stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -239,8 +263,20 @@
                             </template>
                         </div>
 
-                        {# Custom configuration indicator #}
-                        <div x-show="arena.custom_config_fields && arena.custom_config_fields.length > 0">
+                        {# Actor-only badge (FB/IG) #}
+                        <div x-show="arena.custom_config_fields && arena.custom_config_fields.length > 0 && arena.custom_config_fields[0].field === 'actor_only_notice'">
+                            <div class="text-xs text-amber-700 flex items-center gap-1.5 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                                <svg class="w-3 h-3 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                          d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                                </svg>
+                                <span>Actor-only — no keyword search</span>
+                            </div>
+                        </div>
+
+                        {# Configurable sources badge #}
+                        <div x-show="arena.custom_config_fields && arena.custom_config_fields.length > 0 && arena.custom_config_fields[0].field !== 'actor_only_notice'">
                             <div class="text-xs text-blue-600 flex items-center gap-1.5 bg-blue-50 rounded px-2 py-1">
                                 <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
                                      stroke="currentColor" stroke-width="2" aria-hidden="true">

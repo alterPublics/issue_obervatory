@@ -110,6 +110,18 @@ class ArenaCollector(ABC):
     platform_name: str
     supported_tiers: list[Tier]
     temporal_mode: TemporalMode
+    supports_term_search: bool = True
+    """Whether this arena supports keyword-based collection via ``collect_by_terms()``.
+
+    Set to ``False`` for actor-only arenas (e.g. Facebook, Instagram) that do not
+    expose a public keyword search API.  When ``False``, the orchestration layer
+    will dispatch ``collect_by_actors()`` instead of ``collect_by_terms()``,
+    fetching actor platform presences from the query design's actor lists.
+
+    Collectors where this is ``False`` should still implement ``collect_by_terms()``
+    as a stub that raises :exc:`~issue_observatory.core.exceptions.ArenaCollectionError`
+    with a clear guidance message (in case it is ever accidentally dispatched).
+    """
 
     def __init__(
         self,
@@ -124,6 +136,40 @@ class ArenaCollector(ABC):
         # Subclass normalize() implementations should pass this set to
         # Normalizer.normalize() as the ``public_figure_ids`` argument.
         self._public_figure_ids: set[str] = set()
+        # Graceful actor skipping: tracks actors that failed during
+        # collect_by_actors() so the remaining actors can still be collected.
+        self._skipped_actors: list[dict[str, str]] = []
+
+    @property
+    def skipped_actors(self) -> list[dict[str, str]]:
+        """Return the list of actors skipped during the last collection run.
+
+        Each entry is a dict with keys ``actor_id``, ``reason``, and ``error``.
+        """
+        return self._skipped_actors
+
+    def _record_skipped_actor(
+        self, actor_id: str, reason: str, error: str
+    ) -> None:
+        """Log and record an actor that was skipped during collection.
+
+        Args:
+            actor_id: Platform-native actor identifier that failed.
+            reason: Short reason category (e.g. ``"http_error"``, ``"not_found"``).
+            error: Detailed error message string.
+        """
+        logger.warning(
+            "%s: skipping actor %r — reason=%s error=%s",
+            self.platform_name,
+            actor_id,
+            reason,
+            error,
+        )
+        self._skipped_actors.append({
+            "actor_id": actor_id,
+            "reason": reason,
+            "error": error,
+        })
 
     # ------------------------------------------------------------------
     # Abstract interface — must be implemented by every arena

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Discovered Sources — Issue Observatory{% endblock %}
+{% block title %}Discovered Sources{% endblock %}
 
 {#
     GR-22: Discovered Sources page.
@@ -745,7 +745,7 @@ function discoveredSources(queryDesignId) {
         async loadConfiguredSources() {
             if (!this.queryDesignId) return;
             try {
-                const res = await fetch(`/api/query-designs/${this.queryDesignId}/arena-config`, {
+                const res = await fetch(`/query-designs/${this.queryDesignId}/arena-config`, {
                     credentials: 'include',
                 });
                 if (!res.ok) return;
@@ -821,7 +821,7 @@ function discoveredSources(queryDesignId) {
 
             try {
                 // Fetch current config to append (not replace)
-                const getRes = await fetch(`/api/query-designs/${this.queryDesignId}/arena-config`, {
+                const getRes = await fetch(`/query-designs/${this.queryDesignId}/arena-config`, {
                     credentials: 'include',
                 });
                 if (!getRes.ok) throw new Error('Could not fetch current arena config');

@@ -442,7 +442,7 @@ class TestCollectByTermsMedium:
         pool = self._mock_medium_pool()
 
         with respx.mock:
-            respx.post(TWITTERAPIIO_BASE_URL).mock(
+            respx.get(TWITTERAPIIO_BASE_URL).mock(
                 return_value=httpx.Response(200, json=fixture)
             )
             collector = XTwitterCollector(credential_pool=pool)
@@ -461,7 +461,7 @@ class TestCollectByTermsMedium:
         pool = self._mock_medium_pool()
 
         with respx.mock:
-            respx.post(TWITTERAPIIO_BASE_URL).mock(
+            respx.get(TWITTERAPIIO_BASE_URL).mock(
                 return_value=httpx.Response(200, json=fixture)
             )
             collector = XTwitterCollector(credential_pool=pool)
@@ -481,7 +481,7 @@ class TestCollectByTermsMedium:
         pool = self._mock_medium_pool()
 
         with respx.mock:
-            respx.post(TWITTERAPIIO_BASE_URL).mock(
+            respx.get(TWITTERAPIIO_BASE_URL).mock(
                 return_value=httpx.Response(200, json={"tweets": [], "next_cursor": None})
             )
             collector = XTwitterCollector(credential_pool=pool)
@@ -497,7 +497,7 @@ class TestCollectByTermsMedium:
         pool = self._mock_medium_pool()
 
         with respx.mock:
-            respx.post(TWITTERAPIIO_BASE_URL).mock(
+            respx.get(TWITTERAPIIO_BASE_URL).mock(
                 return_value=httpx.Response(429, headers={"Retry-After": "60"})
             )
             collector = XTwitterCollector(credential_pool=pool)
@@ -513,7 +513,7 @@ class TestCollectByTermsMedium:
         pool = self._mock_medium_pool()
 
         with respx.mock:
-            respx.post(TWITTERAPIIO_BASE_URL).mock(
+            respx.get(TWITTERAPIIO_BASE_URL).mock(
                 return_value=httpx.Response(200, json=fixture)
             )
             collector = XTwitterCollector(credential_pool=pool)
@@ -658,7 +658,7 @@ class TestHealthCheck:
         )
 
         with respx.mock:
-            respx.post(TWITTERAPIIO_BASE_URL).mock(
+            respx.get(TWITTERAPIIO_BASE_URL).mock(
                 return_value=httpx.Response(200, json={"tweets": []})
             )
             collector = XTwitterCollector(credential_pool=pool)
@@ -676,7 +676,7 @@ class TestHealthCheck:
         )
 
         with respx.mock:
-            respx.post(TWITTERAPIIO_BASE_URL).mock(
+            respx.get(TWITTERAPIIO_BASE_URL).mock(
                 return_value=httpx.Response(429, headers={"Retry-After": "60"})
             )
             collector = XTwitterCollector(credential_pool=pool)
@@ -693,7 +693,7 @@ class TestHealthCheck:
         )
 
         with respx.mock:
-            respx.post(TWITTERAPIIO_BASE_URL).mock(
+            respx.get(TWITTERAPIIO_BASE_URL).mock(
                 side_effect=httpx.ConnectError("connection refused")
             )
             collector = XTwitterCollector(credential_pool=pool)

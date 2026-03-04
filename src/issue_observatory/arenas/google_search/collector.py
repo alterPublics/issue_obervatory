@@ -36,6 +36,7 @@ import logging
 import math
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -281,13 +282,42 @@ class GoogleSearchCollector(ArenaCollector):
         """
         enriched = dict(raw_item)
         enriched.setdefault("content_type", "search_result")
-        return self._normalizer.normalize(
+        # Set language based on Danish locale settings (gl=dk, hl=da)
+        enriched.setdefault("language", "da")
+
+        # author_display_name = domain extracted from the result URL
+        result_url: str = raw_item.get("link", "") or ""
+        try:
+            enriched["author_display_name"] = urlparse(result_url).netloc.removeprefix("www.")
+        except Exception:  # noqa: BLE001
+            enriched["author_display_name"] = ""
+
+        # text_content is set to None — the scraper will populate it later.
+        # The snippet is preserved in raw_metadata instead.
+        snippet: str | None = raw_item.get("snippet")
+        enriched["text_content"] = None
+
+        # Extract search term matched if present
+        search_term = raw_item.get("_search_term")
+        search_terms_matched = [search_term] if search_term else []
+
+        normalized = self._normalizer.normalize(
             raw_item=enriched,
             platform=self.platform_name,
             arena=self.arena_name,
             collection_tier="medium",  # overwritten by Celery tasks with actual tier
             public_figure_ids=self._public_figure_ids or None,
+            search_terms_matched=search_terms_matched,
         )
+
+        # Store the snippet in raw_metadata and signal scrape intent.
+        # The normalizer sets raw_metadata = dict(enriched), so we patch it here
+        # to add the search_snippet key cleanly.
+        if isinstance(normalized.get("raw_metadata"), dict):
+            normalized["raw_metadata"]["search_snippet"] = snippet
+        normalized["scrape_status"] = "pending"
+
+        return normalized
 
     async def health_check(self) -> dict[str, Any]:
         """Verify Serper.dev connectivity with a minimal test query.
@@ -479,6 +509,8 @@ class GoogleSearchCollector(ArenaCollector):
                 break  # No more results — stop paginating.
 
             for raw_item in raw_results[:remaining]:
+                # Mark result with the search term
+                raw_item["_search_term"] = term
                 records.append(self.normalize(raw_item))
 
             if len(raw_results) < MAX_RESULTS_PER_PAGE:

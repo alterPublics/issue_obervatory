@@ -82,6 +82,10 @@ celery_app = Celery(
         "issue_observatory.arenas.instagram.tasks",
         # Phase 2 — not yet implemented
         # "issue_observatory.arenas.linkedin.tasks",
+        # Phase 2 — URL Scraper (researcher-provided URLs, free/medium)
+        "issue_observatory.arenas.web.url_scraper.tasks",
+        # Phase 2 — Domain Crawler (front-page link extraction, free)
+        "issue_observatory.arenas.web.domain_crawler.tasks",
         # Phase 2.5 — Wikipedia (editorial attention signals, free, no auth)
         "issue_observatory.arenas.wikipedia.tasks",
         # Phase 3+ — Discord (bot-based, requires server invitations)
@@ -145,8 +149,6 @@ celery_app.conf.update(
         },
         "issue_observatory.scraper.tasks.scrape_urls_task": {
             "queue": "scraping",
-            "soft_time_limit": 7_200,   # 2 hours
-            "time_limit": 10_800,        # 3 hours
         },
         "issue_observatory.scraper.tasks.cancel_scraping_job_task": {
             "queue": "scraping",
@@ -154,13 +156,9 @@ celery_app.conf.update(
         # Phase 3+ streaming arenas — 24-hour time limits for persistent connections
         "issue_observatory.arenas.discord.tasks.stream*": {
             "queue": "streaming",
-            "soft_time_limit": 86_400,   # 24 hours
-            "time_limit": 90_000,        # 25 hours (safety net before restart)
         },
         "issue_observatory.arenas.twitch.tasks.stream*": {
             "queue": "streaming",
-            "soft_time_limit": 86_400,
-            "time_limit": 90_000,
         },
     },
     # Beat schedule is imported from the dedicated module.

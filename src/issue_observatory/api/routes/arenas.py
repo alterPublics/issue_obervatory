@@ -136,23 +136,36 @@ async def list_available_arenas(
     _ENV_CREDENTIAL_MAP: dict[str, list[str]] = {
         "google_search": ["SERPER_API_KEY", "SERPAPI_API_KEY"],
         "google_autocomplete": ["SERPER_API_KEY", "SERPAPI_API_KEY"],
-        "bluesky": ["BLUESKY_HANDLE"],
+        "bluesky": ["BLUESKY_HANDLE", "BLUESKY_APP_PASSWORD"],
         "reddit": ["REDDIT_CLIENT_ID"],
         "youtube": ["YOUTUBE_API_KEY"],
         "tiktok": ["TIKTOK_CLIENT_KEY"],
         "event_registry": ["EVENT_REGISTRY_API_KEY"],
-        "x_twitter": ["TWITTERAPIIO_API_KEY", "X_API_KEY"],
+        "x_twitter": ["TWITTERAPIIO_API_KEY", "X_API_KEY", "X_BEARER_TOKEN"],
         "openrouter": ["OPENROUTER_API_KEY"],
         "majestic": ["MAJESTIC_API_KEY"],
         "telegram": ["TELEGRAM_API_ID"],
         "discord": ["DISCORD_BOT_TOKEN"],
         "twitch": ["TWITCH_CLIENT_ID"],
+        "facebook": ["BRIGHTDATA_FACEBOOK_API_TOKEN"],
+        "instagram": ["BRIGHTDATA_INSTAGRAM_API_TOKEN"],
+        "gab": ["GAB_ACCESS_TOKEN"],
+        "threads": ["THREADS_ACCESS_TOKEN"],
+    }
+    # Arenas that require no credentials at all — always ready.
+    _NO_CREDENTIALS_NEEDED: set[str] = {
+        "rss_feeds", "gdelt", "ritzau_via", "wikipedia",
+        "common_crawl", "wayback", "url_scraper", "vkontakte",
     }
     for platform, env_keys in _ENV_CREDENTIAL_MAP.items():
         if platform in platforms_with_credentials:
             continue  # already detected via DB
         if any(os.environ.get(key) for key in env_keys):
             platforms_with_credentials.add(platform)
+    # Mark credential-free arenas as ready.
+    platforms_with_credentials.update(
+        _NO_CREDENTIALS_NEEDED & platform_names
+    )
 
     logger.debug(
         "arenas_list_request",

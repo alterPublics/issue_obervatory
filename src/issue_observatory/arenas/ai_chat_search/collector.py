@@ -542,11 +542,11 @@ class AiChatSearchCollector(ArenaCollector):
                 api_key=api_key,
                 rate_limiter=self.rate_limiter,
             )
-        except (ArenaRateLimitError, ArenaAuthError):
+        except (ArenaRateLimitError, ArenaAuthError) as exc:
             if self.credential_pool is not None:
                 await self.credential_pool.report_error(
-                    platform=self.platform_name,
                     credential_id=credential_id,
+                    error=exc,
                 )
             raise
         except ArenaCollectionError:
@@ -576,11 +576,11 @@ class AiChatSearchCollector(ArenaCollector):
                     api_key=api_key,
                     rate_limiter=self.rate_limiter,
                 )
-            except (ArenaRateLimitError, ArenaAuthError):
+            except (ArenaRateLimitError, ArenaAuthError) as exc:
                 if self.credential_pool is not None:
                     await self.credential_pool.report_error(
-                        platform=self.platform_name,
                         credential_id=credential_id,
+                        error=exc,
                     )
                 raise
             except ArenaCollectionError:

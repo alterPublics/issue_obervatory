@@ -307,6 +307,10 @@ class GDELTCollector(ArenaCollector):
         if content_hash:
             normalized["content_hash"] = content_hash
 
+        # Mark records with a URL for downstream scraping
+        if url:
+            normalized["scrape_status"] = "pending"
+
         return normalized
 
     async def health_check(self) -> dict[str, Any]:

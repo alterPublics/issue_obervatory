@@ -28,6 +28,7 @@ from issue_observatory.core.models.base import Base
 if TYPE_CHECKING:
     from issue_observatory.core.models.actors import ActorListMember
     from issue_observatory.core.models.collection import CollectionRun
+    from issue_observatory.core.models.project import Project
     from issue_observatory.core.models.users import User
     from issue_observatory.core.models.zeeschuimer_import import ZeeschuimerImport
 
@@ -117,11 +118,24 @@ class QueryDesign(Base):
         nullable=True,
         index=True,
     )
+    # Optional FK to Project for organizational grouping (R-06).
+    # ON DELETE SET NULL so that deleting a project detaches designs but doesn't delete them.
+    project_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("projects.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Relationships
     owner: Mapped[User] = relationship(
         "User",
         foreign_keys=[owner_id],
+        back_populates="query_designs",
+    )
+    project: Mapped[Optional[Project]] = relationship(
+        "Project",
+        foreign_keys=[project_id],
         back_populates="query_designs",
     )
     search_terms: Mapped[list[SearchTerm]] = relationship(
@@ -222,10 +236,53 @@ class SearchTerm(Base):
         ),
     )
 
+    # Arena override mechanism: when both are set, this term replaces the
+    # parent default term for the specified arena.  When both are NULL, this
+    # is a default term that applies to all arenas (unless overridden).
+    parent_term_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("search_terms.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    override_arena: Mapped[str | None] = mapped_column(
+        sa.String(50),
+        nullable=True,
+        comment=(
+            "Arena platform_name this override applies to. "
+            "NULL = default term (applies to all arenas unless overridden)."
+        ),
+    )
+
     # Relationships
     query_design: Mapped[QueryDesign] = relationship(
         "QueryDesign",
         back_populates="search_terms",
+    )
+    parent_term: Mapped[SearchTerm | None] = relationship(
+        "SearchTerm",
+        remote_side=[id],
+        foreign_keys=[parent_term_id],
+        back_populates="arena_overrides",
+    )
+    arena_overrides: Mapped[list[SearchTerm]] = relationship(
+        "SearchTerm",
+        foreign_keys="SearchTerm.parent_term_id",
+        back_populates="parent_term",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "idx_search_term_parent_override",
+            "parent_term_id",
+            "override_arena",
+        ),
+        sa.CheckConstraint(
+            "(parent_term_id IS NULL AND override_arena IS NULL) "
+            "OR (parent_term_id IS NOT NULL AND override_arena IS NOT NULL)",
+            name="ck_search_term_override_pair",
+        ),
     )
 
     def __repr__(self) -> str:

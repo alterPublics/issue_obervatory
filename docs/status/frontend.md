@@ -149,6 +149,15 @@
     - `GET /content/discovered-links?platform&min_count&query_design_id&offset&limit` — returns HTML (full page) or JSON `{ items, total, has_more, next_offset }` for HTMX partial updates. Each item: `{ id, platform, target_identifier, target_url, source_count, first_seen, last_seen }`.
     - `POST /actors/quick-add-bulk` — body `{ sources: [{platform, platform_username, display_name, actor_type}], actor_list_id }`, returns `{ added, skipped, errors }`.
 
+## Bright Data Web Scraper API Migration — Phase 5 Frontend (2026-02-26)
+
+### Facebook and Instagram actor-only guidance
+- [x] `arenas/registry.py` — Updated `ARENA_DESCRIPTIONS` for `facebook` and `instagram` to state "Actor-only collection — keyword search is not supported." Updated descriptions are shown in the arena cards on the arenas overview page and in the arena config grid description tooltip in the query design editor.
+- [x] `arenas/registry.py` — Added `facebook` and `instagram` to `ARENA_CUSTOM_CONFIG` with a sentinel field type `"notice"` (`field: "actor_only_notice"`). This causes both platforms to display a distinct amber "Actor-only — no keyword search" badge (instead of the blue "Configurable sources" badge) on all three tier sections of the arenas overview page.
+- [x] `templates/arenas/index.html` — All three tier sections (Free, Medium, Premium) updated: arena cards now check whether `custom_config_fields[0].field === 'actor_only_notice'` to render an amber person icon + "Actor-only — no keyword search" badge. Other arenas with configurable source lists continue to show the blue gear icon + "Configurable sources" badge.
+- [x] `templates/collections/launcher.html` — Added `_ACTOR_ONLY_PLATFORMS` constant and two Alpine getters (`actorOnlyArenaNames`, `hasActorOnlyArenas`) to the `collectionLauncher` component. When the selected project has Facebook or Instagram enabled, an amber guidance banner appears below the arena preview list explaining: keyword search is skipped for these arenas, search terms will be ignored, and researchers should add actors in the Actor Directory. The banner handles the single-arena ("Facebook collect via actors only") and both-arenas ("Facebook and Instagram collect via actors only") cases reactively.
+- [x] `templates/query_designs/editor.html` — Updated the source-list arenas info box to mention that Facebook and Instagram are actor-only and link to the Actor Directory.
+
 ## Remaining / Future Work
 - [ ] Tailwind production build (`make css`) to replace CDN dev script
 - [ ] End-to-end tests for login flow and collection launcher

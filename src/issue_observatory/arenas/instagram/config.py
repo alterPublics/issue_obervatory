@@ -1,7 +1,7 @@
 """Instagram arena configuration constants and tier definitions.
 
-Defines Bright Data API endpoints, cost constants, rate limit settings,
-and tier configuration objects.
+Defines Bright Data Web Scraper API endpoints, cost constants, rate limit settings,
+dataset ID mappings, and tier configuration objects.
 
 No secrets are stored here. Credentials are managed exclusively through
 :class:`~issue_observatory.core.credential_pool.CredentialPool`.
@@ -13,11 +13,23 @@ Credential locations:
   JSONB payload: ``{"access_token": "mcl-token-xxx", "app_id": "...", "app_secret": "..."}``.
   NOTE: MCL access is not yet approved — both PREMIUM methods raise NotImplementedError.
 
+Dataset routing (Web Scraper API):
+- Instagram profile URL -> Posts scraper (``gd_lk5ns7kz21pck8jpis``) in discovery mode.
+  This is the primary scraper for actor-based (profile-level) collection.
+  Trigger URL must include ``type=discover_new&discover_by=url`` query parameters.
+  Payload: ``[{"url": "https://www.instagram.com/{username}/", "num_of_posts": N}]``
+  Verified working via curl (2026-02-27). The Reels scraper rejects profile URLs
+  with ``error_code: "dead_page"`` — it only accepts individual reel URLs.
+- Instagram individual reel URL -> Reels scraper (``gd_lyclm20il4r5helnj``).
+  Used for targeted scraping of specific reel URLs (not currently a collection path).
+
+Date format: Web Scraper API requires ``MM-DD-YYYY`` (not ISO 8601).
+
 Danish targeting note:
   Instagram has no native language field. Danish content is identified by:
-  1. Targeting known Danish accounts (collect_by_actors).
-  2. Searching Danish-language hashtags (collect_by_terms maps terms to hashtags).
-  3. Client-side language detection on caption text (applied if ``lang`` field is present).
+  1. Targeting known Danish accounts via ``collect_by_actors()`` (primary method).
+  2. Client-side language detection on caption text applied downstream.
+  Keyword/hashtag search is not supported by the Web Scraper API.
 """
 
 from __future__ import annotations
@@ -26,19 +38,8 @@ from issue_observatory.arenas.base import Tier
 from issue_observatory.config.tiers import TierConfig
 
 # ---------------------------------------------------------------------------
-# Bright Data API endpoints
+# Bright Data Web Scraper API — base URL and endpoints
 # ---------------------------------------------------------------------------
-
-BRIGHTDATA_INSTAGRAM_POSTS_URL: str = (
-    "https://api.brightdata.com/datasets/v3/trigger"
-    "?dataset_id=gd_lyclm20il4r5helnj"
-    "&type=discover_new"
-    "&notify=none"
-)
-"""Full trigger URL for initiating a Bright Data Instagram posts dataset request."""
-
-BRIGHTDATA_INSTAGRAM_DATASET_ID: str = "gd_lyclm20il4r5helnj"
-"""Bright Data dataset ID for the Instagram posts scraper."""
 
 BRIGHTDATA_API_BASE: str = "https://api.brightdata.com/datasets/v3"
 """Base URL for the Bright Data Datasets v3 API (shared with Facebook)."""
@@ -48,6 +49,57 @@ BRIGHTDATA_PROGRESS_URL: str = f"{BRIGHTDATA_API_BASE}/progress/{{snapshot_id}}"
 
 BRIGHTDATA_SNAPSHOT_URL: str = f"{BRIGHTDATA_API_BASE}/snapshot/{{snapshot_id}}?format=json"
 """URL template for downloading a completed snapshot. Format with ``snapshot_id``."""
+
+# ---------------------------------------------------------------------------
+# Web Scraper API — dataset IDs by content type
+# ---------------------------------------------------------------------------
+
+INSTAGRAM_DATASET_ID_POSTS: str = "gd_lk5ns7kz21pck8jpis"
+"""Web Scraper API dataset ID for Instagram Posts (profile URL input, discovery mode).
+
+This is the primary scraper for actor-based (profile-level) collection.
+Must be triggered with ``type=discover_new&discover_by=url`` query parameters.
+Accepts a full profile URL (e.g. ``https://www.instagram.com/enhedslisten/``)
+and returns the most recent posts. Verified working via curl (2026-02-27).
+Use :func:`build_trigger_url` with ``discover_by_url=True`` for this scraper.
+"""
+
+INSTAGRAM_DATASET_ID_REELS: str = "gd_lyclm20il4r5helnj"
+"""Web Scraper API dataset ID for Instagram Reels (individual reel URL input).
+
+Only accepts individual reel URLs — NOT profile URLs. Giving a profile URL
+results in ``error_code: "dead_page"``. Reserved for future targeted reel
+collection; not used in the current profile-level collection path.
+"""
+
+# ---------------------------------------------------------------------------
+# Trigger URL builder helper
+# ---------------------------------------------------------------------------
+
+
+def build_trigger_url(dataset_id: str, *, discover_by_url: bool = False) -> str:
+    """Build the full trigger URL for a given Instagram Web Scraper dataset ID.
+
+    For profile-level collection using the Posts scraper (``INSTAGRAM_DATASET_ID_POSTS``),
+    pass ``discover_by_url=True``. This adds ``type=discover_new&discover_by=url`` to the
+    query string, which is required for the Posts scraper to accept profile URLs.
+
+    Without discovery mode, the Posts scraper expects individual post URLs as input.
+    The Reels scraper (``INSTAGRAM_DATASET_ID_REELS``) does not use discovery mode.
+
+    Args:
+        dataset_id: One of the ``INSTAGRAM_DATASET_ID_*`` constants.
+        discover_by_url: When ``True``, appends ``type=discover_new&discover_by=url``
+            query parameters. Required for profile-based collection via the Posts scraper.
+
+    Returns:
+        Full trigger URL string ready for HTTP POST.
+    """
+    base = f"{BRIGHTDATA_API_BASE}/trigger?dataset_id={dataset_id}&include_errors=true"
+    if discover_by_url:
+        base += "&type=discover_new&discover_by=url"
+    return base
+
 
 # ---------------------------------------------------------------------------
 # Polling parameters
@@ -60,33 +112,43 @@ BRIGHTDATA_MAX_POLL_ATTEMPTS: int = 40
 """Maximum polling attempts before aborting (40 * 30s = 20 minutes)."""
 
 # ---------------------------------------------------------------------------
-# Danish locale targeting
+# Date format helper
 # ---------------------------------------------------------------------------
 
-# Instagram has no native language or country filter.
-# Danish hashtags are used as the primary discovery mechanism.
-DANISH_INSTAGRAM_HASHTAGS: list[str] = [
-    "dkpol",
-    "danmark",
-    "kobenhavn",
-    "dkmedier",
-    "danmarksnatur",
-    "dkkultur",
-    "danskepolitikere",
-]
-"""Default Danish hashtags prepended to search terms for Instagram discovery.
 
-Used in ``collect_by_terms()`` to target Danish-language content when the
-platform provides no native language filter. Terms are converted to hashtags
-by stripping spaces and prepending ``#`` if not already present.
-"""
+def to_brightdata_date(value: object) -> str | None:
+    """Convert a datetime or string to the Web Scraper API date format ``MM-DD-YYYY``.
+
+    The Bright Data Web Scraper API requires ``MM-DD-YYYY`` format, not ISO 8601.
+
+    Args:
+        value: :class:`datetime.datetime` object, ISO 8601 string, or ``None``.
+
+    Returns:
+        Date string in ``MM-DD-YYYY`` format, or ``None`` if *value* is ``None``
+        or cannot be parsed.
+    """
+    from datetime import datetime  # noqa: PLC0415
+
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.strftime("%m-%d-%Y")
+    if isinstance(value, str) and len(value) >= 10:
+        try:
+            dt = datetime.fromisoformat(value[:10])
+            return dt.strftime("%m-%d-%Y")
+        except ValueError:
+            return None
+    return None
+
 
 # ---------------------------------------------------------------------------
-# Cost constants
+# Cost constants (Web Scraper API pricing)
 # ---------------------------------------------------------------------------
 
 INSTAGRAM_COST_PER_1K: float = 1.50
-"""USD cost per 1,000 records via Bright Data Instagram Scraper API."""
+"""USD cost per 1,000 records via Bright Data Web Scraper API (pay-as-you-go)."""
 
 INSTAGRAM_COST_PER_RECORD: float = INSTAGRAM_COST_PER_1K / 1_000
 """USD cost per individual record (0.0015 USD)."""

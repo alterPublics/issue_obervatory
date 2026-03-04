@@ -117,6 +117,33 @@ def _increment_counter(job_id: str, column: str) -> None:
         )
 
 
+def _set_scrape_status_failed(record_id: str, published_at: Any) -> None:
+    """Mark a content_record's scrape_status as 'failed'."""
+    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+    from sqlalchemy import text  # noqa: PLC0415
+
+    try:
+        with get_sync_session() as session:
+            session.execute(
+                text(
+                    """
+                    UPDATE content_records
+                    SET scrape_status = 'failed'
+                    WHERE id = :record_id
+                      AND published_at IS NOT DISTINCT FROM :published_at
+                    """
+                ),
+                {"record_id": record_id, "published_at": published_at},
+            )
+            session.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "scraper: failed to set scrape_status=failed for record %s: %s",
+            record_id,
+            exc,
+        )
+
+
 def _get_thin_records(collection_run_id: str) -> list[tuple[str, Any, str]]:
     """Return (id, published_at, url) tuples for thin records in a collection run.
 
@@ -168,10 +195,20 @@ def _update_content_record_v2(
                 SET text_content = :text_value,
                     title = COALESCE(:title, title),
                     language = COALESCE(:language, language),
+                    scrape_status = 'scraped',
                     raw_metadata = jsonb_set(
-                        COALESCE(raw_metadata, '{}'),
-                        '{scraped_html}',
-                        to_jsonb(:html::text)
+                        jsonb_set(
+                            COALESCE(raw_metadata, '{}'),
+                            '{scraped_html}',
+                            to_jsonb(:html::text)
+                        ),
+                        '{original_summary}',
+                        CASE
+                            WHEN raw_metadata->'original_summary' IS NULL
+                                 AND text_content IS NOT NULL
+                            THEN to_jsonb(text_content)
+                            ELSE COALESCE(raw_metadata->'original_summary', 'null'::jsonb)
+                        END
                     )
                 WHERE id = :record_id
                   AND published_at IS NOT DISTINCT FROM :published_at
@@ -366,6 +403,9 @@ async def _run_scraping(job_id: str, celery_task_id: str) -> None:
                     "scraper: job %s — error processing %s: %s", job_id, url, exc
                 )
                 _increment_counter(job_id, "urls_failed")
+                # Mark scrape_status as 'failed' for collection_run records
+                if record_id is not None:
+                    _set_scrape_status_failed(record_id, published_at)
 
     # ---- Mark completed ---------------------------------------------------
     _update_job(
@@ -386,6 +426,8 @@ async def _run_scraping(job_id: str, celery_task_id: str) -> None:
     bind=True,
     acks_late=True,
     max_retries=0,
+    soft_time_limit=7_200,   # 2 hours
+    time_limit=10_800,       # 3 hours
 )
 def scrape_urls_task(self: Any, job_id: str) -> dict[str, Any]:
     """Fetch and store page text for all URLs in a ScrapingJob.

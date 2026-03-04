@@ -270,6 +270,16 @@ class NetworkExpander:
                     results = await self._expand_x_twitter(
                         presence["platform_username"], credentials
                     )
+                elif platform in ("facebook", "instagram", "threads"):
+                    # No public social graph API exists for these platforms;
+                    # use co-mention detection against stored content records.
+                    results = await self._expand_via_comention(
+                        actor_id=actor_id,
+                        platform=platform,
+                        presence=presence,
+                        db=db,
+                        min_records=min_comention_records,
+                    )
                 else:
                     logger.debug(
                         "expand_from_actor: no platform-specific expander for %s; "
@@ -291,6 +301,30 @@ class NetworkExpander:
                     actor_id,
                     platform,
                 )
+
+        # Cross-platform content link mining: search content authored by this
+        # actor across ALL platforms (not scoped to a single platform) and
+        # extract URLs that point to other actors on known platforms.
+        try:
+            link_results = await self._expand_via_content_links(
+                actor_id=actor_id,
+                presences=presences,
+                db=db,
+            )
+            # Deduplicate against actors already found by platform-specific expanders.
+            existing_keys: set[str] = {
+                f"{d['platform']}:{d['platform_user_id']}" for d in discovered
+            }
+            for actor_dict in link_results:
+                key = f"{actor_dict['platform']}:{actor_dict['platform_user_id']}"
+                if key not in existing_keys:
+                    existing_keys.add(key)
+                    discovered.append(actor_dict)
+        except Exception:
+            logger.exception(
+                "expand_from_actor: content link mining failed for actor %s",
+                actor_id,
+            )
 
         return discovered
 
@@ -785,11 +819,11 @@ class NetworkExpander:
 
             if user_id:
                 author_filter = (
-                    "(author_platform_id = :user_id OR author_id = :actor_id::uuid)"
+                    "(author_platform_id = :user_id OR author_id = CAST(:actor_id AS uuid))"
                 )
             else:
                 # No numeric user_id — match only by actor UUID FK.
-                author_filter = "author_id = :actor_id::uuid"
+                author_filter = "author_id = CAST(:actor_id AS uuid)"
 
             sql = text(
                 f"""
@@ -881,6 +915,9 @@ class NetworkExpander:
     ) -> Optional[str]:
         """Obtain a TikTok Research API bearer token via client credentials.
 
+        The TikTok OAuth endpoint only accepts ``application/x-www-form-urlencoded``
+        requests, so this method sends form data instead of JSON.
+
         Args:
             client_key: TikTok application client key.
             client_secret: TikTok application client secret.
@@ -888,15 +925,24 @@ class NetworkExpander:
         Returns:
             Bearer token string, or ``None`` on failure.
         """
-        data = {
+        form_data = {
             "client_key": client_key,
             "client_secret": client_secret,
             "grant_type": "client_credentials",
         }
-        result = await self._post_json(_TIKTOK_OAUTH_URL, json_body=data)
-        if result is None:
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    _TIKTOK_OAUTH_URL,
+                    data=form_data,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                response.raise_for_status()
+                result = response.json()
+            return result.get("access_token")
+        except Exception:
+            logger.exception("_get_tiktok_token: OAuth token request failed")
             return None
-        return result.get("access_token")
 
     async def _expand_tiktok(
         self,
@@ -953,7 +999,13 @@ class NetworkExpander:
                 if data is None:
                     break
 
-                users: list[dict[str, Any]] = data.get("data", {}).get("users", [])
+                inner = data.get("data", {})
+                users: list[dict[str, Any]] = (
+                    inner.get("user_followers")
+                    or inner.get("user_following")
+                    or inner.get("users")
+                    or []
+                )
                 if not users:
                     break
 
@@ -1123,7 +1175,13 @@ class NetworkExpander:
                 if data is None:
                     break
 
-                users: list[dict[str, Any]] = data.get("users", [])
+                # TwitterAPI.io returns "followers" or "followings" (not "users").
+                users: list[dict[str, Any]] = (
+                    data.get("followers")
+                    or data.get("followings")
+                    or data.get("users")
+                    or []
+                )
                 if not users:
                     break
 
@@ -1149,6 +1207,165 @@ class NetworkExpander:
 
         logger.debug(
             "_expand_x_twitter: found %d actors for @%s", len(results), username
+        )
+        return results
+
+    # ------------------------------------------------------------------
+    # Cross-platform content link mining expander
+    # ------------------------------------------------------------------
+
+    async def _expand_via_content_links(
+        self,
+        actor_id: uuid.UUID,
+        presences: dict[str, dict[str, str]],
+        db: Any,
+        top_n: int = 50,
+        min_records: int = 1,
+    ) -> list[ActorDict]:
+        """Discover actors by mining URLs from content authored by *actor_id*.
+
+        Unlike ``_expand_via_comention()`` which scopes its content query to a
+        single platform, this method searches across **all** platforms the actor
+        has posted on.  It extracts URLs from ``text_content``, classifies them
+        via ``link_miner``, and maps them to platform actors.  This makes
+        cross-platform links visible -- e.g. a YouTube description linking to a
+        Twitter account.
+
+        Args:
+            actor_id: UUID of the seed actor.
+            presences: All platform presences for this actor (keyed by platform).
+            db: An open ``AsyncSession``.
+            top_n: Maximum number of discovered actors to return.
+            min_records: Minimum distinct content records in which a URL target
+                must appear to be included.
+
+        Returns:
+            List of actor dicts with ``discovery_method`` set to
+            ``"content_link_mining"``.
+        """
+        if db is None:
+            return []
+
+        # Collect all user identifiers across platforms for the author filter.
+        user_ids: list[str] = []
+        for presence in presences.values():
+            uid = presence.get("platform_user_id", "").strip()
+            if uid:
+                user_ids.append(uid)
+            uname = presence.get("platform_username", "").strip()
+            if uname and uname != uid:
+                user_ids.append(uname)
+
+        if not user_ids:
+            logger.debug(
+                "_expand_via_content_links: actor %s has no identifiers", actor_id
+            )
+            return []
+
+        try:
+            from sqlalchemy import text
+
+            # Build parameterized IN clause for user identifiers.
+            id_placeholders = ", ".join(f":uid{i}" for i in range(len(user_ids)))
+            params: dict[str, Any] = {"actor_id": str(actor_id)}
+            for i, uid in enumerate(user_ids):
+                params[f"uid{i}"] = uid
+
+            sql = text(
+                f"""
+                SELECT id, text_content
+                FROM content_records
+                WHERE text_content IS NOT NULL
+                  AND (
+                      author_platform_id IN ({id_placeholders})
+                      OR author_id = CAST(:actor_id AS uuid)
+                  )
+                LIMIT 5000
+                """
+            )
+            result = await db.execute(sql, params)
+            rows = result.fetchall()
+        except Exception:
+            logger.exception(
+                "_expand_via_content_links: DB query failed for actor %s", actor_id
+            )
+            return []
+
+        if not rows:
+            logger.debug(
+                "_expand_via_content_links: no content records for actor %s", actor_id
+            )
+            return []
+
+        # Lazy-import link_miner helpers.
+        try:
+            from issue_observatory.analysis.link_miner import (
+                _classify_url,
+                _extract_urls,
+            )
+        except ImportError:
+            logger.debug("_expand_via_content_links: link_miner not available")
+            return []
+
+        # Build a set of the actor's own identifiers to exclude self-links.
+        own_identifiers: set[str] = set()
+        for presence in presences.values():
+            uid = presence.get("platform_user_id", "").strip()
+            if uid:
+                own_identifiers.add(uid.lower())
+            uname = presence.get("platform_username", "").strip()
+            if uname:
+                own_identifiers.add(uname.lower())
+
+        # Extract and classify URLs from all content records.
+        # url_targets[(platform, target)] = set of record IDs
+        url_targets: dict[tuple[str, str], set[str]] = {}
+
+        for row in rows:
+            record_id = str(row.id)
+            text_content: str = row.text_content or ""
+
+            for url in _extract_urls(text_content):
+                url_platform, target = _classify_url(url)
+                actor_platform = _URL_PLATFORM_MAP.get(url_platform)
+                if actor_platform is None:
+                    continue
+                target_lower = target.lower()
+                # Skip self-links.
+                if target_lower in own_identifiers:
+                    continue
+                url_targets.setdefault(
+                    (actor_platform, target_lower), set()
+                ).add(record_id)
+
+        # Filter and sort by record count.
+        qualified: list[tuple[tuple[str, str], int]] = [
+            (key, len(record_set))
+            for key, record_set in url_targets.items()
+            if len(record_set) >= min_records
+        ]
+        qualified.sort(key=lambda x: x[1], reverse=True)
+        qualified = qualified[:top_n]
+
+        results: list[ActorDict] = []
+        for (target_platform, target_id), _count in qualified:
+            results.append(
+                _make_actor_dict(
+                    canonical_name=target_id,
+                    platform=target_platform,
+                    platform_user_id=target_id,
+                    platform_username=target_id,
+                    profile_url="",
+                    discovery_method="content_link_mining",
+                )
+            )
+
+        logger.debug(
+            "_expand_via_content_links: found %d linked actor(s) across %d "
+            "content records for actor %s",
+            len(results),
+            len(rows),
+            actor_id,
         )
         return results
 

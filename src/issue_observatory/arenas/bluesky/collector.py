@@ -81,7 +81,7 @@ class BlueskyCollector(ArenaCollector):
         http_client: Optional injected :class:`httpx.AsyncClient` for testing.
     """
 
-    arena_name: str = "bluesky"
+    arena_name: str = "social_media"
     platform_name: str = "bluesky"
     supported_tiers: list[Tier] = [Tier.FREE]
     temporal_mode: TemporalMode = TemporalMode.RECENT
@@ -111,6 +111,7 @@ class BlueskyCollector(ArenaCollector):
         max_results: int | None = None,
         term_groups: list[list[str]] | None = None,
         language_filter: list[str] | None = None,
+        progress_callback: Any = None,
     ) -> list[dict[str, Any]]:
         """Collect Bluesky posts matching one or more search terms.
 
@@ -138,6 +139,8 @@ class BlueskyCollector(ArenaCollector):
             language_filter: Optional language codes.  Bluesky's ``lang``
                 parameter accepts a single code; the first code in the list
                 is used (default ``"da"`` from DANISH_LANG config).
+            progress_callback: Optional callable(records_count) invoked periodically
+                during collection to report intermediate progress.
 
         Returns:
             List of normalized content record dicts.
@@ -175,6 +178,7 @@ class BlueskyCollector(ArenaCollector):
 
         all_records: list[dict[str, Any]] = []
         seen_hashes: set[str] = set()
+        last_progress_count = 0
 
         try:
             async with self._build_http_client() as client:
@@ -196,6 +200,11 @@ class BlueskyCollector(ArenaCollector):
                         if h:
                             seen_hashes.add(h)
                         all_records.append(rec)
+
+                        # Report progress every 100 records to reduce overhead
+                        if progress_callback and len(all_records) - last_progress_count >= 100:
+                            progress_callback(len(all_records))
+                            last_progress_count = len(all_records)
 
             logger.info(
                 "bluesky: collected %d posts for %d queries",
@@ -253,25 +262,37 @@ class BlueskyCollector(ArenaCollector):
 
         all_records: list[dict[str, Any]] = []
 
+        self._skipped_actors = []
         try:
             async with self._build_http_client() as client:
                 for actor_id in actor_ids:
                     if len(all_records) >= effective_max:
                         break
                     remaining = effective_max - len(all_records)
-                    records = await self._fetch_author_feed(
-                        client=client,
-                        actor=actor_id,
-                        max_results=remaining,
-                        date_from=date_from_dt,
-                        date_to=date_to_dt,
-                    )
+                    try:
+                        records = await self._fetch_author_feed(
+                            client=client,
+                            actor=actor_id,
+                            max_results=remaining,
+                            date_from=date_from_dt,
+                            date_to=date_to_dt,
+                        )
+                    except ArenaRateLimitError:
+                        raise
+                    except ArenaCollectionError as exc:
+                        self._record_skipped_actor(
+                            actor_id=actor_id,
+                            reason="collection_error",
+                            error=str(exc),
+                        )
+                        continue
                     all_records.extend(records)
 
             logger.info(
-                "bluesky: collected %d posts for %d actors",
+                "bluesky: collected %d posts for %d actors (%d skipped)",
                 len(all_records),
                 len(actor_ids),
+                len(self._skipped_actors),
             )
             return all_records
         finally:
@@ -349,11 +370,16 @@ class BlueskyCollector(ArenaCollector):
         if media_urls:
             flat["media_urls"] = media_urls
 
+        # Extract search term matched if present (set by _search_term)
+        search_term = raw_item.get("_search_term")
+        search_terms_matched = [search_term] if search_term else []
+
         normalized = self._normalizer.normalize(
             raw_item=flat,
             platform=self.platform_name,
             arena=self.arena_name,
             collection_tier="free",
+            search_terms_matched=search_terms_matched,
         )
         # Ensure platform_id is the AT URI (Normalizer may pick up 'id' field too).
         normalized["platform_id"] = uri
@@ -666,6 +692,8 @@ class BlueskyCollector(ArenaCollector):
             for post in posts:
                 if len(records) >= max_results:
                     break
+                # Mark post with the search term that retrieved it
+                post["_search_term"] = term
                 records.append(self.normalize(post))
 
             cursor = data.get("cursor")

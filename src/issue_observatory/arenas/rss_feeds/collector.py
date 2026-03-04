@@ -408,10 +408,9 @@ class RSSFeedsCollector(ArenaCollector):
         Returns:
             Dict conforming to the ``content_records`` universal schema.
         """
-        outlet_slug = raw_item.get("outlet_slug", "rss")
         return self._normalizer.normalize(
             raw_item=raw_item,
-            platform=outlet_slug,
+            platform=self.platform_name,
             arena="news_media",
             collection_tier="free",
             search_terms_matched=raw_item.get("_search_terms_matched", []),
@@ -727,7 +726,7 @@ class RSSFeedsCollector(ArenaCollector):
 
         normalized = self._normalizer.normalize(
             raw_item=raw_item,
-            platform=outlet_slug,
+            platform=self.platform_name,
             arena="news_media",
             collection_tier="free",
             search_terms_matched=search_terms_matched,
@@ -736,6 +735,10 @@ class RSSFeedsCollector(ArenaCollector):
         # Ensure content_hash override (title-based) takes precedence
         if content_hash:
             normalized["content_hash"] = content_hash
+
+        # Mark records with a URL for downstream scraping
+        if url:
+            normalized["scrape_status"] = "pending"
 
         return normalized
 

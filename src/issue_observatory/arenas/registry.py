@@ -81,7 +81,9 @@ ARENA_DESCRIPTIONS: dict[str, str] = {
         "Global news aggregator (Event Registry) with strong Danish media coverage"
     ),
     "facebook": (
-        "Facebook public posts via third-party scraping API (paid tiers only)"
+        "Facebook public pages and groups via Bright Data Web Scraper API. "
+        "Actor-only collection — keyword search is not supported. "
+        "Add Facebook pages or groups to the Actor Directory first."
     ),
     "gab": (
         "Far-right social platform; public posts collected via unauthenticated API"
@@ -97,7 +99,9 @@ ARENA_DESCRIPTIONS: dict[str, str] = {
         "No free tier — use Google Autocomplete (free) for search trends."
     ),
     "instagram": (
-        "Instagram public posts via third-party scraping API (paid tiers only)"
+        "Instagram public profiles via Bright Data Web Scraper API. "
+        "Actor-only collection — keyword search is not supported. "
+        "Add Instagram profiles to the Actor Directory first."
     ),
     "majestic": (
         "Majestic backlink index — maps web authority and citation networks (premium)"
@@ -125,6 +129,9 @@ ARENA_DESCRIPTIONS: dict[str, str] = {
     ),
     "url_scraper": (
         "URL Scraper — live web page content extraction from a researcher-provided URL list (free/medium)"
+    ),
+    "domain_crawler": (
+        "Domain Crawler — crawls front pages of web domains and extracts linked articles (free)"
     ),
     "wayback": (
         "Wayback Machine (Internet Archive) — historical web snapshots (free)"
@@ -179,6 +186,36 @@ ARENA_DESCRIPTIONS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 ARENA_CUSTOM_CONFIG: dict[str, list[dict[str, str]]] = {
+    "facebook": [
+        {
+            "field": "actor_only_notice",
+            "label": "Actor-Only Collection",
+            "type": "notice",
+            "placeholder": "",
+            "help": (
+                "Facebook does not support keyword search. "
+                "Collection is based entirely on actors (pages and groups) "
+                "that you have added to the Actor Directory. "
+                "Add Facebook pages or groups there before launching a collection."
+            ),
+            "example": "https://www.facebook.com/drnyheder",
+        }
+    ],
+    "instagram": [
+        {
+            "field": "actor_only_notice",
+            "label": "Actor-Only Collection",
+            "type": "notice",
+            "placeholder": "",
+            "help": (
+                "Instagram does not support keyword search. "
+                "Collection is based entirely on actors (profiles) "
+                "that you have added to the Actor Directory. "
+                "Add Instagram profiles there before launching a collection."
+            ),
+            "example": "https://www.instagram.com/drnyheder",
+        }
+    ],
     "telegram": [
         {
             "field": "custom_channels",
@@ -207,6 +244,16 @@ ARENA_CUSTOM_CONFIG: dict[str, list[dict[str, str]]] = {
             "placeholder": "https://example.com/feed.xml",
             "help": "Additional RSS/Atom feeds beyond the 30+ Danish defaults (DR, TV2, Politiken, etc.). Enter full feed URLs including https://",
             "example": "https://sermitsiaq.ag/rss",
+        }
+    ],
+    "domain_crawler": [
+        {
+            "field": "target_domains",
+            "label": "Target Domains",
+            "type": "list",
+            "placeholder": "example.dk",
+            "help": "Web domains to crawl for articles. Defaults include 13 major Danish news sites (DR, TV2, Politiken, etc.). Enter bare domain names without https://",
+            "example": "sermitsiaq.ag",
         }
     ],
     "discord": [
@@ -334,6 +381,9 @@ def list_arenas() -> list[dict]:  # type: ignore[type-arg]
         - ``supported_tiers`` (list[str]): Tier values the collector supports.
         - ``temporal_mode`` (str): Temporal capability mode (``"historical"``,
           ``"recent"``, ``"forward_only"``, or ``"mixed"``).
+        - ``supports_term_search`` (bool): Whether the arena supports keyword-
+          based collection via ``collect_by_terms()``.  ``False`` for actor-only
+          arenas such as Facebook and Instagram.
         - ``description`` (str): One-line human-readable description from
           :data:`ARENA_DESCRIPTIONS`, looked up first by ``platform_name``
           then by ``arena_name`` (empty string if neither is defined).
@@ -354,6 +404,7 @@ def list_arenas() -> list[dict]:  # type: ignore[type-arg]
                 if hasattr(cls, "temporal_mode")
                 else "recent"  # default fallback for arenas not yet updated
             ),
+            "supports_term_search": getattr(cls, "supports_term_search", True),
             "description": (
                 ARENA_DESCRIPTIONS.get(cls.platform_name)  # type: ignore[attr-defined]
                 or ARENA_DESCRIPTIONS.get(cls.arena_name, "")  # type: ignore[attr-defined]

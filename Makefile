@@ -12,7 +12,7 @@ CELERY_APP := issue_observatory.workers.celery_app
 
 ## run: Start the FastAPI development server with auto-reload
 run:
-	$(UVICORN) $(APP_MODULE) --reload --host 0.0.0.0 --port 8000
+	$(UVICORN) $(APP_MODULE) --reload --host 0.0.0.0 --port 8011
 
 ## worker: Start a Celery worker
 worker:

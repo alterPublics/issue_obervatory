@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         CollectionRun,
         CreditTransaction,
     )
+    from issue_observatory.core.models.project import Project
     from issue_observatory.core.models.query_design import QueryDesign
     from issue_observatory.core.models.zeeschuimer_import import ZeeschuimerImport
 
@@ -103,6 +104,11 @@ class User(Base):
         "RefreshToken",
         back_populates="user",
         cascade="all, delete-orphan",
+    )
+    projects: Mapped[list[Project]] = relationship(
+        "Project",
+        foreign_keys="Project.owner_id",
+        back_populates="owner",
     )
     query_designs: Mapped[list[QueryDesign]] = relationship(
         "QueryDesign",

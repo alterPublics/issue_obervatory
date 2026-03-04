@@ -20,6 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
+import jwt as pyjwt
 import structlog
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
@@ -115,10 +116,13 @@ def create_app() -> FastAPI:
     async def _auth_redirect_handler(
         request: Request, exc: HTTPException
     ) -> Response:
-        if exc.status_code == 401:
-            accept = request.headers.get("accept", "")
-            if "text/html" in accept:
-                return RedirectResponse(url="/auth/login", status_code=302)
+        accept = request.headers.get("accept", "")
+        if exc.status_code == 401 and "text/html" in accept:
+            return RedirectResponse(url="/auth/login", status_code=302)
+        if exc.status_code == 403 and "text/html" in accept:
+            return RedirectResponse(
+                url="/dashboard?error=access_denied", status_code=302
+            )
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": exc.detail},
@@ -226,6 +230,57 @@ def create_app() -> FastAPI:
         status = str(response.status_code)
         http_requests_total.labels(method=method, path=path, status=status).inc()
         http_request_duration_seconds.labels(method=method, path=path).observe(duration)
+
+        return response
+
+    # ---- Session refresh middleware (sliding window) -----------------------
+    # The JWT has a fixed lifetime (default 30 min).  This middleware re-issues
+    # the token when the user is actively making requests, so the session only
+    # expires after 30 minutes of *inactivity* rather than 30 minutes after login.
+
+    @application.middleware("http")
+    async def session_refresh_middleware(
+        request: Request, call_next: Callable
+    ) -> Response:
+        response = await call_next(request)
+
+        token = request.cookies.get("access_token")
+        if not token or response.status_code >= 400:
+            return response
+
+        try:
+            _settings = get_settings()
+            secret = _settings.secret_key
+            lifetime = _settings.access_token_expire_minutes * 60
+
+            payload = pyjwt.decode(
+                token,
+                secret,
+                algorithms=["HS256"],
+                audience=["fastapi-users:auth"],
+            )
+
+            remaining = payload.get("exp", 0) - time.time()
+            # Only re-issue when more than half the lifetime has elapsed,
+            # to avoid re-signing on every single request.
+            if remaining < lifetime / 2:
+                now = int(time.time())
+                payload["exp"] = now + lifetime
+                payload["iat"] = now
+                new_token = pyjwt.encode(payload, secret, algorithm="HS256")
+                response.set_cookie(
+                    key="access_token",
+                    value=new_token,
+                    max_age=lifetime,
+                    httponly=True,
+                    samesite="lax",
+                    secure=not _settings.debug,
+                    path="/",
+                )
+        except pyjwt.ExpiredSignatureError:
+            pass  # Token already expired — let 401 handler deal with it
+        except Exception:
+            pass  # Don't break the response if refresh fails
 
         return response
 
@@ -344,7 +399,7 @@ def create_app() -> FastAPI:
     from issue_observatory.scraper.router import router as scraper_router  # noqa: PLC0415
 
     application.include_router(
-        scraper_router, prefix="/scraping-jobs", tags=["scraping"]
+        scraper_router, prefix="/api/scraping-jobs", tags=["scraping"]
     )
 
     # ---- Application routers ----------------------------------------------
@@ -363,7 +418,9 @@ def create_app() -> FastAPI:
         credits,
         health as health_routes,
         imports,
+        live_tracking,
         pages,
+        projects,
         query_designs,
         users,
     )
@@ -380,8 +437,10 @@ def create_app() -> FastAPI:
     # otherwise capture literal path segments like "new" and fail UUID validation.
     application.include_router(pages.priority_router)
 
+    application.include_router(projects.router, prefix="/projects", tags=["projects"])
     application.include_router(query_designs.router, prefix="/query-designs", tags=["query-designs"])
     application.include_router(collections.router, prefix="/collections", tags=["collections"])
+    application.include_router(live_tracking.router, prefix="/live-tracking", tags=["live-tracking"])
     application.include_router(content.router, prefix="/content", tags=["content"])
     application.include_router(annotations.router, prefix="/annotations", tags=["annotations"])
     application.include_router(codebooks.router, prefix="/codebooks", tags=["codebooks"])

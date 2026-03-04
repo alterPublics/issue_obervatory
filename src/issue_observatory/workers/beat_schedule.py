@@ -16,10 +16,10 @@ Schedule overview:
 | daily_collection          | 00:00 Copenhagen    | Trigger all active live-     |
 |                           |                     | tracking query designs.      |
 +---------------------------+---------------------+-----------------------------+
-| health_check_all_arenas   | Every 5 minutes     | Poll all arena health-check  |
+| health_check_all_arenas   | Every 30 minutes    | Poll all arena health-check  |
 |                           |                     | endpoints, update admin UI.  |
 +---------------------------+---------------------+-----------------------------+
-| credit_settlement         | Every hour          | Settle pending credit        |
+| credit_settlement         | Every 6 hours       | Settle pending credit        |
 |                           |                     | reservations from completed  |
 |                           |                     | collection tasks.            |
 +---------------------------+---------------------+-----------------------------+
@@ -44,36 +44,36 @@ beat_schedule: dict[str, dict] = {  # type: ignore[type-arg]
     # ------------------------------------------------------------------
     "daily_collection": {
         "task": "issue_observatory.workers.tasks.trigger_daily_collection",
-        "schedule": crontab(hour=0, minute=0),
+        "schedule": crontab(hour=5, minute=10),  # TEMP: testing trigger (was hour=0, minute=0)
         "options": {
             "queue": "celery",
             "expires": 3_600,  # discard if not started within 1 hour
         },
     },
     # ------------------------------------------------------------------
-    # Arena health checks — every 5 minutes
+    # Arena health checks — every 30 minutes
     # ------------------------------------------------------------------
     "health_check_all_arenas": {
         "task": "issue_observatory.workers.tasks.health_check_all_arenas",
-        "schedule": crontab(minute="*/5"),
+        "schedule": crontab(minute="*/30"),
         "options": {
             "queue": "celery",
-            "expires": 240,  # discard if not started within 4 minutes
+            "expires": 1_500,  # discard if not started within 25 minutes
         },
     },
     # ------------------------------------------------------------------
-    # Credit settlement — every hour
+    # Credit settlement — every 6 hours
     # ------------------------------------------------------------------
     "credit_settlement": {
         "task": "issue_observatory.workers.tasks.settle_pending_credits",
-        "schedule": crontab(minute=30),  # at :30 past each hour
+        "schedule": crontab(minute=30, hour="*/6"),  # at :30 past every 6th hour
         "options": {
             "queue": "celery",
-            "expires": 1_800,
+            "expires": 3_600,
         },
     },
     # ------------------------------------------------------------------
-    # Stale run cleanup — 03:00 Copenhagen time
+    # Stale run cleanup — 03:00 Copenhagen time (daily)
     # ------------------------------------------------------------------
     "stale_run_cleanup": {
         "task": "issue_observatory.workers.tasks.cleanup_stale_runs",
@@ -104,6 +104,20 @@ beat_schedule: dict[str, dict] = {  # type: ignore[type-arg]
         "options": {
             "queue": "celery",
             "expires": 3_600,  # discard if not started within 1 hour
+        },
+    },
+    # ------------------------------------------------------------------
+    # Collection attempt reconciliation — weekly Sunday 05:00 Copenhagen
+    # Validates that collection_attempts entries still have corresponding
+    # data in content_records.  Invalidates stale entries so coverage
+    # checks don't block re-collection of deleted data.
+    # ------------------------------------------------------------------
+    "reconcile_collection_attempts": {
+        "task": "issue_observatory.workers.tasks.reconcile_collection_attempts",
+        "schedule": crontab(hour=5, minute=0, day_of_week="sunday"),
+        "options": {
+            "queue": "celery",
+            "expires": 7_200,  # discard if not started within 2 hours
         },
     },
 }

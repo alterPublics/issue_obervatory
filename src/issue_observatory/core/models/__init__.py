@@ -27,8 +27,11 @@ from issue_observatory.core.models.collection import (
     CollectionTask,
     CreditTransaction,
 )
+from issue_observatory.core.models.collection_attempts import CollectionAttempt
 from issue_observatory.core.models.content import UniversalContentRecord
+from issue_observatory.core.models.content_links import ContentRecordLink
 from issue_observatory.core.models.credentials import ApiCredential
+from issue_observatory.core.models.project import Project
 from issue_observatory.core.models.scraping import ScrapingJob
 from issue_observatory.core.models.query_design import (
     ActorList,
@@ -57,11 +60,14 @@ __all__ = [
     "RefreshToken",
     # Content
     "UniversalContentRecord",
+    "ContentRecordLink",
     # Actors
     "Actor",
     "ActorAlias",
     "ActorPlatformPresence",
     "ActorListMember",
+    # Projects
+    "Project",
     # Query design
     "QueryDesign",
     "SearchTerm",
@@ -69,6 +75,7 @@ __all__ = [
     # Collection
     "CollectionRun",
     "CollectionTask",
+    "CollectionAttempt",
     "CreditTransaction",
     # Credentials
     "ApiCredential",

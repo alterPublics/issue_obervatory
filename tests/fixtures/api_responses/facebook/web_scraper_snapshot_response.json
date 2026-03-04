@@ -1,0 +1,105 @@
+[
+  {
+    "post_id": "fb_post_001",
+    "user_url": "https://www.facebook.com/drnyheder",
+    "page_name": "DR Nyheder",
+    "content": "Gr\u00f8n omstilling er p\u00e5 dagsordenen i Folketing. Regeringen pr\u00e6senterer ny klimaplan med m\u00e5l for 2030. \u00c5lborg kommune er allerede i gang med at reducere CO2-udledning.",
+    "url": "https://www.facebook.com/drnyheder/posts/fb_post_001",
+    "date_posted": "2026-02-15T10:00:00+0000",
+    "post_type": "status",
+    "num_likes": 628,
+    "num_comments": 134,
+    "video_view_count": null,
+    "post_image": "https://scontent.facebook.com/v/klimaplan_2030.jpg",
+    "attachments": []
+  },
+  {
+    "post_id": "fb_post_002",
+    "user_url": "https://www.facebook.com/tv2nyheder",
+    "page_name": "TV 2 Nyheder",
+    "content": "Velf\u00e6rdsstatens fremtid er omdiskuteret: \u00c6ldre danskere frygter nedsk\u00e6ringer i \u00e6ldrepleje. Statistik viser at 40% er bekymrede for pensions-systemet.",
+    "url": "https://www.facebook.com/tv2nyheder/posts/fb_post_002",
+    "date_posted": "2026-02-15T08:30:00+0000",
+    "post_type": "link",
+    "num_likes": 255,
+    "num_comments": 88,
+    "video_view_count": null,
+    "post_image": null,
+    "attachments": [
+      {"url": "https://scontent.facebook.com/v/velfaerd_link_preview.jpg"}
+    ]
+  },
+  {
+    "post_id": "fb_post_003",
+    "user_url": "https://www.facebook.com/berlingske",
+    "page_name": "Berlingske",
+    "content": "\u00d8resundsbroen fejrer 25 \u00e5r: Forbindelsen har forandret \u00d8resundsregionen fundamentalt.",
+    "url": "https://www.facebook.com/berlingske/posts/fb_post_003",
+    "date_posted": "2026-02-14T12:00:00+0000",
+    "post_type": "photo",
+    "num_likes": 1210,
+    "num_comments": 312,
+    "video_view_count": null,
+    "post_image": "https://scontent.facebook.com/v/oresund25.jpg",
+    "attachments": [
+      {"url": "https://scontent.facebook.com/v/oresund25_alt.jpg"}
+    ]
+  },
+  {
+    "post_id": "fb_post_004",
+    "user_url": "https://www.facebook.com/drnyheder",
+    "page_name": "DR Nyheder",
+    "content": "",
+    "url": null,
+    "date_posted": "2026-02-13T09:00:00+0000",
+    "post_type": "status",
+    "num_likes": null,
+    "num_comments": null,
+    "video_view_count": null,
+    "post_image": null,
+    "attachments": []
+  },
+  {
+    "post_id": "fb_comment_001",
+    "comment_id": "c_001",
+    "user_url": "https://www.facebook.com/drnyheder",
+    "page_name": "DR Nyheder",
+    "content": "Dette er en kommentar om klimaet.",
+    "url": "https://www.facebook.com/drnyheder/posts/fb_post_001?comment_id=c_001",
+    "date_posted": "2026-02-15T11:00:00+0000",
+    "post_type": "comment",
+    "num_likes": 5,
+    "num_comments": 1,
+    "video_view_count": null,
+    "post_image": null,
+    "attachments": []
+  },
+  {
+    "post_id": "fb_post_005",
+    "user_url": "https://www.facebook.com/groups/dkpolitik",
+    "page_name": "Dansk Politik Debat",
+    "content": "Ny debat om \u00e6ndringsforslag til finansloven. V\u00e6lg\u00f8rende organisationer kritiserer nedsk\u00e6ringer.",
+    "url": "https://www.facebook.com/groups/dkpolitik/posts/fb_post_005",
+    "date_posted": "2026-02-16T14:00:00+0000",
+    "post_type": "status",
+    "num_likes": 42,
+    "num_comments": 18,
+    "video_view_count": null,
+    "post_image": null,
+    "attachments": []
+  },
+  {
+    "post_id": "fb_post_006",
+    "user_url": "https://www.facebook.com/drnyheder",
+    "page_name": "DR Nyheder",
+    "content": "Breaking: Ny klimarapport fra FN viser at global opvarmning accelererer.",
+    "url": "https://www.facebook.com/drnyheder/posts/fb_post_006",
+    "date_posted": "2026-02-16T16:00:00+0000",
+    "post_type": "video",
+    "num_likes": 890,
+    "num_comments": 245,
+    "video_view_count": 32000,
+    "post_image": "https://scontent.facebook.com/v/fn_rapport_thumb.jpg",
+    "attachments": []
+  }
+]

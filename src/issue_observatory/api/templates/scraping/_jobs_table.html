@@ -64,13 +64,13 @@
                 {{ job.urls_failed | default(0) }}
             </td>
             <td class="px-6 py-4 text-gray-500 text-xs">
-                {{ job.created_at | default('') | truncate(16, true, '') }}
+                {{ job.created_at | default('') | string | truncate(16, true, '') }}
             </td>
             <td class="px-6 py-4 text-right">
                 <div class="flex items-center justify-end gap-2">
                     {% if job.status in ('running', 'pending') %}
                     <button type="button"
-                            hx-post="/scraping-jobs/{{ job.id }}/cancel"
+                            hx-post="/api/scraping-jobs/{{ job.id }}/cancel"
                             hx-confirm="Cancel this scraping job?"
                             hx-target="#jobs-container"
                             hx-swap="innerHTML"
@@ -80,7 +80,7 @@
                     {% endif %}
                     {% if job.status in ('completed', 'failed', 'cancelled') %}
                     <button type="button"
-                            hx-delete="/scraping-jobs/{{ job.id }}"
+                            hx-delete="/api/scraping-jobs/{{ job.id }}"
                             hx-confirm="Delete this scraping job?"
                             hx-target="#jobs-container"
                             hx-swap="innerHTML"

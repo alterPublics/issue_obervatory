@@ -62,3 +62,6 @@ celerybeat.pid
 
 # Compiled CSS is checked in, but ignore Tailwind intermediate files
 src/issue_observatory/api/static/css/*.map
+
+# Design assets (reference images, mood boards)
+design/

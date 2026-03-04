@@ -128,6 +128,7 @@ async def get_propagation_flows(
             AND (
                 raw_metadata -> 'enrichments' -> 'propagation' ->> 'total_arenas_reached'
             )::int >= :min_arenas
+            AND term_matched = TRUE
         {extra_sql}
         ORDER BY
             (raw_metadata -> 'enrichments' -> 'propagation' ->> 'total_arenas_reached')::int DESC,

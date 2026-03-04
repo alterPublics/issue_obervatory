@@ -45,6 +45,11 @@ logger = structlog.get_logger(__name__)
 
 _VALID_GRANULARITIES = frozenset({"hour", "day", "week", "month"})
 
+# Arenas that collect full snapshots on each run — the same URLs/suggestions
+# reappear every time, so raw COUNT(*) is misleading for timeline charts.
+# Delta mode computes new-item-only counts between consecutive time periods.
+_SNAPSHOT_ARENAS = frozenset({"google_search", "google_autocomplete", "ai_chat_search"})
+
 
 def _dt_iso(value: Any) -> Any:
     """Convert a datetime to an ISO 8601 string; pass everything else through."""
@@ -61,6 +66,7 @@ def _build_content_filters(
     date_from: datetime | None,
     date_to: datetime | None,
     params: dict,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> str:
     """Build a SQL WHERE clause fragment for content_records filters.
 
@@ -76,7 +82,8 @@ def _build_content_filters(
         because the duplicate exclusion predicate is always present.
     """
     return build_content_where(
-        query_design_id, run_id, arena, platform, date_from, date_to, params
+        query_design_id, run_id, arena, platform, date_from, date_to, params,
+        query_design_ids=query_design_ids,
     )
 
 
@@ -94,6 +101,8 @@ async def get_volume_over_time(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     granularity: str = "day",
+    query_design_ids: list[uuid.UUID] | None = None,
+    exclude_arenas: set[str] | None = None,
 ) -> list[dict]:
     """Content volume over time, optionally broken down by arena.
 
@@ -107,6 +116,8 @@ async def get_volume_over_time(
         date_to: Inclusive upper bound on ``published_at``.
         granularity: Time bucket size — one of ``"hour"``, ``"day"``,
             ``"week"``, ``"month"``.
+        query_design_ids: Restrict to records belonging to any of these
+            query designs.  Takes precedence over *query_design_id*.
 
     Returns:
         A list of dicts, one per time-period/arena combination, sorted by
@@ -132,7 +143,8 @@ async def get_volume_over_time(
 
     params: dict[str, Any] = {}
     where = _build_content_filters(
-        query_design_id, run_id, arena, platform, date_from, date_to, params
+        query_design_id, run_id, arena, platform, date_from, date_to, params,
+        query_design_ids=query_design_ids,
     )
 
     # The granularity value is interpolated directly into the SQL string, not
@@ -142,6 +154,12 @@ async def get_volume_over_time(
     # _build_content_filters always returns a WHERE clause (at minimum the
     # duplicate exclusion predicate), so additional conditions always use AND.
     extra = "AND published_at IS NOT NULL"
+
+    if exclude_arenas:
+        placeholders = ", ".join(f":_excl_{i}" for i in range(len(exclude_arenas)))
+        extra += f" AND arena NOT IN ({placeholders})"
+        for i, ea in enumerate(sorted(exclude_arenas)):
+            params[f"_excl_{i}"] = ea
 
     sql = text(
         f"""
@@ -171,6 +189,205 @@ async def get_volume_over_time(
         aggregated[period_key]["arenas"][row.arena] = row.cnt
 
     return list(aggregated.values())
+
+
+async def get_snapshot_delta_volume(
+    db: AsyncSession,
+    query_design_id: uuid.UUID | None = None,
+    run_id: uuid.UUID | None = None,
+    arena: str | None = None,
+    platform: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    granularity: str = "day",
+    query_design_ids: list[uuid.UUID] | None = None,
+) -> dict[str, dict[str, int]]:
+    """Compute delta volume for snapshot arenas.
+
+    Snapshot arenas (Google Search, Google Autocomplete, AI Chat Search) capture
+    the full current state each run, so raw counts are misleading.  This function
+    returns the number of *new* unique identifiers per time period compared to
+    the previous period.
+
+    The identifier used depends on the arena:
+    - ``google_search``: ``url``
+    - ``google_autocomplete``: ``text_content``
+    - ``ai_chat_search``: ``url`` (citations only, ``content_type='ai_chat_citation'``)
+
+    The first period always returns 0 (no previous period to compare against).
+
+    Args:
+        db: Active async database session.
+        query_design_id: Restrict to a single query design.
+        run_id: Restrict to a single collection run.
+        arena: If a specific snapshot arena is requested, only compute for that
+            one.  If a non-snapshot arena is specified, returns empty.
+        platform: Restrict to a single platform.
+        date_from: Inclusive lower bound on ``collected_at``.
+        date_to: Inclusive upper bound on ``collected_at``.
+        granularity: Time bucket size (``day``, ``week``, ``month``).
+        query_design_ids: Restrict to multiple query designs.
+
+    Returns:
+        ``{period_iso: {arena_name: delta_count}}`` for each snapshot arena
+        that has data.
+    """
+    if granularity not in _VALID_GRANULARITIES:
+        raise ValueError(
+            f"Invalid granularity {granularity!r}. "
+            f"Must be one of: {sorted(_VALID_GRANULARITIES)}"
+        )
+
+    # If a specific arena filter was given and it's not a snapshot arena,
+    # there's nothing to compute.
+    if arena and arena not in _SNAPSHOT_ARENAS:
+        return {}
+
+    # Determine which snapshot arenas to process.
+    target_arenas = {arena} if arena else _SNAPSHOT_ARENAS
+
+    # Arena-specific config: (identifier_column, extra_where_clause)
+    arena_configs: dict[str, tuple[str, str]] = {
+        "google_search": ("url", "AND url IS NOT NULL"),
+        "google_autocomplete": ("text_content", "AND text_content IS NOT NULL"),
+        "ai_chat_search": (
+            "url",
+            "AND content_type = 'ai_chat_citation' AND url IS NOT NULL",
+        ),
+    }
+
+    result: dict[str, dict[str, int]] = {}
+
+    for arena_name in sorted(target_arenas):
+        if arena_name not in arena_configs:
+            continue
+
+        id_col, extra_clause = arena_configs[arena_name]
+
+        params: dict[str, Any] = {}
+        where = _build_content_filters(
+            query_design_id, run_id, arena_name, platform,
+            date_from, date_to, params,
+            query_design_ids=query_design_ids,
+        )
+
+        sql = text(
+            f"""
+            SELECT
+                date_trunc('{granularity}', collected_at) AS period,
+                {id_col} AS ident
+            FROM content_records
+            {where}
+            AND collected_at IS NOT NULL
+            {extra_clause}
+            ORDER BY period
+            """
+        )
+
+        rows = (await db.execute(sql, params)).fetchall()
+
+        # Group identifiers by period.
+        period_sets: OrderedDict[str, set[str]] = OrderedDict()
+        for row in rows:
+            pk = _dt_iso(row.period)
+            if pk not in period_sets:
+                period_sets[pk] = set()
+            period_sets[pk].add(row.ident)
+
+        # Compute deltas between consecutive periods.
+        prev_set: set[str] = set()
+        for i, (pk, current_set) in enumerate(period_sets.items()):
+            if i == 0:
+                delta = 0
+            else:
+                delta = len(current_set - prev_set)
+            if pk not in result:
+                result[pk] = {}
+            result[pk][arena_name] = delta
+            prev_set = current_set
+
+    return result
+
+
+async def get_volume_with_deltas(
+    db: AsyncSession,
+    query_design_id: uuid.UUID | None = None,
+    run_id: uuid.UUID | None = None,
+    arena: str | None = None,
+    platform: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    granularity: str = "day",
+    query_design_ids: list[uuid.UUID] | None = None,
+) -> list[dict]:
+    """Volume over time with delta computation for snapshot arenas.
+
+    Combines normal ``COUNT(*)`` volume for non-snapshot arenas with delta-only
+    new-item counts for snapshot arenas (Google Search, Google Autocomplete,
+    AI Chat Search).  Produces the same output format as
+    :func:`get_volume_over_time`.
+
+    Args:
+        db: Active async database session.
+        query_design_id: Restrict to a single query design.
+        run_id: Restrict to a single collection run.
+        arena: Restrict to a single arena.
+        platform: Restrict to a single platform.
+        date_from: Inclusive lower bound on ``published_at`` / ``collected_at``.
+        date_to: Inclusive upper bound.
+        granularity: Time bucket size.
+        query_design_ids: Restrict to multiple query designs.
+
+    Returns:
+        Same format as :func:`get_volume_over_time` — list of dicts with
+        ``period``, ``count``, and ``arenas`` keys.
+    """
+    # If a specific arena filter is given, route to the right path only.
+    if arena and arena in _SNAPSHOT_ARENAS:
+        # Only snapshot delta needed.
+        deltas = await get_snapshot_delta_volume(
+            db, query_design_id, run_id, arena, platform,
+            date_from, date_to, granularity, query_design_ids,
+        )
+        result: list[dict] = []
+        for period_key in sorted(deltas):
+            arena_counts = deltas[period_key]
+            total = sum(arena_counts.values())
+            result.append({"period": period_key, "count": total, "arenas": arena_counts})
+        return result
+
+    if arena and arena not in _SNAPSHOT_ARENAS:
+        # Specific non-snapshot arena — no delta processing needed.
+        return await get_volume_over_time(
+            db, query_design_id, run_id, arena, platform,
+            date_from, date_to, granularity, query_design_ids,
+        )
+
+    # Both normal and snapshot arenas in play.
+    normal = await get_volume_over_time(
+        db, query_design_id, run_id, arena, platform,
+        date_from, date_to, granularity, query_design_ids,
+        exclude_arenas=_SNAPSHOT_ARENAS,
+    )
+    deltas = await get_snapshot_delta_volume(
+        db, query_design_id, run_id, None, platform,
+        date_from, date_to, granularity, query_design_ids,
+    )
+
+    # Merge delta counts into the normal volume data.
+    merged: OrderedDict[str, dict] = OrderedDict()
+    for entry in normal:
+        pk = entry["period"]
+        merged[pk] = {"period": pk, "count": entry["count"], "arenas": dict(entry["arenas"])}
+
+    for pk, arena_counts in deltas.items():
+        if pk not in merged:
+            merged[pk] = {"period": pk, "count": 0, "arenas": {}}
+        for a_name, delta_count in arena_counts.items():
+            merged[pk]["arenas"][a_name] = delta_count
+            merged[pk]["count"] += delta_count
+
+    return [merged[k] for k in sorted(merged)]
 
 
 async def get_top_actors(
@@ -235,6 +452,7 @@ async def get_top_actors(
     sql = text(
         f"""
         SELECT
+            COALESCE(c.pseudonymized_author_id, c.author_display_name) AS author_key,
             c.pseudonymized_author_id,
             c.author_display_name,
             c.platform,
@@ -249,8 +467,9 @@ async def get_top_actors(
         FROM content_records c
         LEFT JOIN actors a ON a.id = c.author_id
         {where}
-        AND c.pseudonymized_author_id IS NOT NULL
-        GROUP BY c.pseudonymized_author_id, c.author_display_name, c.platform, c.author_id
+        AND (c.pseudonymized_author_id IS NOT NULL OR c.author_display_name IS NOT NULL)
+        GROUP BY COALESCE(c.pseudonymized_author_id, c.author_display_name),
+                 c.pseudonymized_author_id, c.author_display_name, c.platform, c.author_id
         ORDER BY cnt DESC
         LIMIT :limit
         """
@@ -962,7 +1181,8 @@ async def compare_runs(
 
 async def get_temporal_comparison(
     db: AsyncSession,
-    run_id: uuid.UUID,
+    run_id: uuid.UUID | None = None,
+    query_design_id: uuid.UUID | None = None,
     period: str = "week",
     date_from: datetime | None = None,
     date_to: datetime | None = None,
@@ -975,7 +1195,9 @@ async def get_temporal_comparison(
 
     Args:
         db: Active async database session.
-        run_id: UUID of the collection run.
+        run_id: Optional UUID of a specific collection run to scope the query.
+        query_design_id: Optional UUID of a query design to aggregate across
+            all its runs. Used when ``run_id`` is ``None``.
         period: Time period — one of ``"week"`` (default), ``"month"``.
         date_from: Optional explicit start of current period. If not provided,
             uses the latest date in the run as the end of the current period.
@@ -1015,23 +1237,37 @@ async def get_temporal_comparison(
     if period not in {"week", "month"}:
         raise ValueError(f"Invalid period {period!r}. Must be 'week' or 'month'.")
 
-    params: dict[str, Any] = {"run_id": str(run_id)}
+    # Build the scope clause dynamically so this function can serve both
+    # per-run and per-design queries without duplicating SQL.
+    params: dict[str, Any] = {}
+    if run_id is not None:
+        scope_clause = "collection_run_id = :run_id"
+        params["run_id"] = str(run_id)
+    elif query_design_id is not None:
+        scope_clause = "query_design_id = :query_design_id"
+        params["query_design_id"] = str(query_design_id)
+    else:
+        scope_clause = "1=1"
 
     # Determine the date range for the current period.
     # If not provided, use the latest published_at as the end.
     if date_to is None:
         latest_sql = text(
-            """
+            f"""
             SELECT MAX(published_at) AS latest
             FROM content_records
-            WHERE collection_run_id = :run_id
+            WHERE {scope_clause}
               AND published_at IS NOT NULL
             """
         )
         latest_result = await db.execute(latest_sql, params)
         latest_row = latest_result.fetchone()
         if latest_row is None or latest_row.latest is None:
-            logger.info("get_temporal_comparison: no data for run", run_id=str(run_id))
+            logger.info(
+                "get_temporal_comparison: no data",
+                run_id=str(run_id) if run_id else None,
+                query_design_id=str(query_design_id) if query_design_id else None,
+            )
             return {
                 "current_period": {"date_from": None, "date_to": None, "count": 0},
                 "previous_period": {"date_from": None, "date_to": None, "count": 0},
@@ -1057,11 +1293,11 @@ async def get_temporal_comparison(
 
     # Aggregate volume for current and previous periods
     volume_sql = text(
-        """
+        f"""
         WITH current_period AS (
             SELECT COUNT(*) AS cnt
             FROM content_records
-            WHERE collection_run_id = :run_id
+            WHERE {scope_clause}
               AND published_at >= :current_from
               AND published_at < :current_to
               AND (raw_metadata->>'duplicate_of') IS NULL
@@ -1069,7 +1305,7 @@ async def get_temporal_comparison(
         previous_period AS (
             SELECT COUNT(*) AS cnt
             FROM content_records
-            WHERE collection_run_id = :run_id
+            WHERE {scope_clause}
               AND published_at >= :previous_from
               AND published_at < :previous_to
               AND (raw_metadata->>'duplicate_of') IS NULL
@@ -1095,7 +1331,7 @@ async def get_temporal_comparison(
 
     # Per-arena breakdown
     arena_sql = text(
-        """
+        f"""
         SELECT
             arena,
             SUM(CASE
@@ -1107,7 +1343,7 @@ async def get_temporal_comparison(
                 THEN 1 ELSE 0
             END) AS previous_count
         FROM content_records
-        WHERE collection_run_id = :run_id
+        WHERE {scope_clause}
           AND published_at >= :previous_from
           AND published_at < :current_to
           AND (raw_metadata->>'duplicate_of') IS NULL
@@ -1138,7 +1374,8 @@ async def get_temporal_comparison(
 
     logger.info(
         "get_temporal_comparison",
-        run_id=str(run_id),
+        run_id=str(run_id) if run_id else None,
+        query_design_id=str(query_design_id) if query_design_id else None,
         period=period,
         current_count=current_count,
         previous_count=previous_count,
@@ -1164,24 +1401,27 @@ async def get_temporal_comparison(
 
 async def get_arena_comparison(
     db: AsyncSession,
-    run_id: uuid.UUID,
+    run_id: uuid.UUID | None = None,
+    query_design_id: uuid.UUID | None = None,
 ) -> dict:
-    """Side-by-side arena metrics for a collection run.
+    """Side-by-side platform metrics for a collection run or query design.
 
-    Returns per-arena breakdown with record count, unique actors, unique terms,
+    Returns per-platform breakdown with record count, unique actors, unique terms,
     average engagement score, and date range. Includes a totals row.
 
     Args:
         db: Active async database session.
-        run_id: UUID of the collection run.
+        run_id: Optional UUID of a specific collection run to scope the query.
+        query_design_id: Optional UUID of a query design to aggregate across
+            all its runs. Used when ``run_id`` is ``None``.
 
     Returns:
-        Dict with per-arena metrics and totals::
+        Dict with per-platform metrics and totals::
 
             {
               "by_arena": [
                 {
-                  "arena": "news_media",
+                  "platform": "tiktok",
                   "record_count": 1234,
                   "unique_actors": 87,
                   "unique_terms": 23,
@@ -1203,32 +1443,50 @@ async def get_arena_comparison(
 
         Returns empty lists and zero counts when no records exist.
     """
-    params: dict[str, Any] = {"run_id": str(run_id)}
+    # Build the scope clause dynamically.  Two variants are needed:
+    # - ``scope_clause`` for unaliased FROM (bare column names)
+    # - ``aliased_scope_clause`` for the outer query that aliases content_records as ``c``
+    # - ``inner_scope_clause`` for subqueries that alias content_records as ``cr``
+    params: dict[str, Any] = {}
+    if run_id is not None:
+        scope_clause = "collection_run_id = :run_id"
+        aliased_scope_clause = "c.collection_run_id = :run_id"
+        inner_scope_clause = "cr.collection_run_id = :run_id"
+        params["run_id"] = str(run_id)
+    elif query_design_id is not None:
+        scope_clause = "query_design_id = :query_design_id"
+        aliased_scope_clause = "c.query_design_id = :query_design_id"
+        inner_scope_clause = "cr.query_design_id = :query_design_id"
+        params["query_design_id"] = str(query_design_id)
+    else:
+        scope_clause = "1=1"
+        aliased_scope_clause = "1=1"
+        inner_scope_clause = "1=1"
 
-    # Per-arena breakdown
+    # Per-platform breakdown (changed from per-arena to show individual platforms)
     # Note: unique_terms requires a subquery because COUNT(DISTINCT unnest(...))
     # is not supported directly in PostgreSQL.
     arena_sql = text(
-        """
+        f"""
         SELECT
-            c.arena,
+            c.platform,
             COUNT(*) AS record_count,
             COUNT(DISTINCT c.pseudonymized_author_id) AS unique_actors,
             (
                 SELECT COUNT(DISTINCT term)
                 FROM content_records cr,
                      unnest(cr.search_terms_matched) AS term
-                WHERE cr.collection_run_id = :run_id
-                  AND cr.arena = c.arena
+                WHERE {inner_scope_clause}
+                  AND cr.platform = c.platform
                   AND (cr.raw_metadata->>'duplicate_of') IS NULL
             ) AS unique_terms,
             AVG(c.engagement_score) AS avg_engagement,
             MIN(c.published_at) AS earliest_record,
             MAX(c.published_at) AS latest_record
         FROM content_records c
-        WHERE c.collection_run_id = :run_id
+        WHERE {aliased_scope_clause}
           AND (c.raw_metadata->>'duplicate_of') IS NULL
-        GROUP BY c.arena
+        GROUP BY c.platform
         ORDER BY record_count DESC
         """
     )
@@ -1237,7 +1495,7 @@ async def get_arena_comparison(
 
     by_arena = [
         {
-            "arena": row.arena,
+            "platform": row.platform,
             "record_count": row.record_count,
             "unique_actors": row.unique_actors or 0,
             "unique_terms": row.unique_terms or 0,
@@ -1250,7 +1508,7 @@ async def get_arena_comparison(
 
     # Aggregate totals across all arenas
     totals_sql = text(
-        """
+        f"""
         SELECT
             COUNT(*) AS record_count,
             COUNT(DISTINCT pseudonymized_author_id) AS unique_actors,
@@ -1258,14 +1516,14 @@ async def get_arena_comparison(
                 SELECT COUNT(DISTINCT term)
                 FROM content_records cr,
                      unnest(cr.search_terms_matched) AS term
-                WHERE cr.collection_run_id = :run_id
+                WHERE {inner_scope_clause}
                   AND (cr.raw_metadata->>'duplicate_of') IS NULL
             ) AS unique_terms,
             AVG(engagement_score) AS avg_engagement,
             MIN(published_at) AS earliest_record,
             MAX(published_at) AS latest_record
         FROM content_records
-        WHERE collection_run_id = :run_id
+        WHERE {scope_clause}
           AND (raw_metadata->>'duplicate_of') IS NULL
         """
     )
@@ -1273,7 +1531,11 @@ async def get_arena_comparison(
     totals_row = totals_result.fetchone()
 
     if totals_row is None or totals_row.record_count == 0:
-        logger.info("get_arena_comparison: no data for run", run_id=str(run_id))
+        logger.info(
+            "get_arena_comparison: no data",
+            run_id=str(run_id) if run_id else None,
+            query_design_id=str(query_design_id) if query_design_id else None,
+        )
         return {
             "by_arena": [],
             "totals": {
@@ -1297,7 +1559,8 @@ async def get_arena_comparison(
 
     logger.info(
         "get_arena_comparison",
-        run_id=str(run_id),
+        run_id=str(run_id) if run_id else None,
+        query_design_id=str(query_design_id) if query_design_id else None,
         arena_count=len(by_arena),
         total_records=totals["record_count"],
     )
@@ -1310,17 +1573,21 @@ async def get_arena_comparison(
 
 async def get_language_distribution(
     db: AsyncSession,
-    run_id: uuid.UUID,
+    run_id: uuid.UUID | None = None,
+    query_design_id: uuid.UUID | None = None,
 ) -> list[dict]:
     """Query language detection enrichment results and return language counts.
 
     Extracts the ``raw_metadata.enrichments.language_detector.language`` field
-    from all records in the specified collection run and aggregates by language
-    code.  Returns an empty list when no language enrichment data exists.
+    from all records in the specified collection run or query design and
+    aggregates by language code.  Returns an empty list when no language
+    enrichment data exists.
 
     Args:
         db: Active async database session.
-        run_id: UUID of the collection run to query.
+        run_id: Optional UUID of a specific collection run to scope the query.
+        query_design_id: Optional UUID of a query design to aggregate across
+            all its runs. Used when ``run_id`` is ``None``.
 
     Returns:
         List of dicts ordered by count descending::
@@ -1333,7 +1600,7 @@ async def get_language_distribution(
     """
     params: dict[str, Any] = {}
     where = _build_content_filters(
-        None, run_id, None, None, None, None, params
+        query_design_id, run_id, None, None, None, None, params
     )
 
     sql = text(
@@ -1369,7 +1636,8 @@ async def get_language_distribution(
 
 async def get_top_named_entities(
     db: AsyncSession,
-    run_id: uuid.UUID,
+    run_id: uuid.UUID | None = None,
+    query_design_id: uuid.UUID | None = None,
     limit: int = 20,
 ) -> list[dict]:
     """Query NER enrichment results and return most frequent entities.
@@ -1380,7 +1648,9 @@ async def get_top_named_entities(
 
     Args:
         db: Active async database session.
-        run_id: UUID of the collection run to query.
+        run_id: Optional UUID of a specific collection run to scope the query.
+        query_design_id: Optional UUID of a query design to aggregate across
+            all its runs. Used when ``run_id`` is ``None``.
         limit: Maximum number of entities to return (default 20).
 
     Returns:
@@ -1396,7 +1666,7 @@ async def get_top_named_entities(
     """
     params: dict[str, Any] = {"limit": limit}
     where = _build_content_filters(
-        None, run_id, None, None, None, None, params
+        query_design_id, run_id, None, None, None, None, params
     )
 
     # Unnest the entities array and aggregate by entity text.
@@ -1434,7 +1704,8 @@ async def get_top_named_entities(
 
 async def get_propagation_patterns(
     db: AsyncSession,
-    run_id: uuid.UUID,
+    run_id: uuid.UUID | None = None,
+    query_design_id: uuid.UUID | None = None,
 ) -> list[dict]:
     """Query propagation enrichment results and return cross-arena clusters.
 
@@ -1443,7 +1714,9 @@ async def get_propagation_patterns(
 
     Args:
         db: Active async database session.
-        run_id: UUID of the collection run to query.
+        run_id: Optional UUID of a specific collection run to scope the query.
+        query_design_id: Optional UUID of a query design to aggregate across
+            all its runs. Used when ``run_id`` is ``None``.
 
     Returns:
         List of dicts ordered by cluster size descending::
@@ -1464,7 +1737,7 @@ async def get_propagation_patterns(
     """
     params: dict[str, Any] = {}
     where = _build_content_filters(
-        None, run_id, None, None, None, None, params
+        query_design_id, run_id, None, None, None, None, params
     )
 
     sql = text(
@@ -1504,17 +1777,21 @@ async def get_propagation_patterns(
 
 async def get_sentiment_distribution(
     db: AsyncSession,
-    run_id: uuid.UUID,
+    run_id: uuid.UUID | None = None,
+    query_design_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Query sentiment enrichment results and return sentiment distribution.
 
     Extracts the ``raw_metadata.enrichments.sentiment_analyzer`` field from
-    all records in the specified collection run and aggregates sentiment scores.
-    Returns empty counts when no sentiment enrichment data exists.
+    all records in the specified collection run or query design and aggregates
+    sentiment scores.  Returns empty counts when no sentiment enrichment data
+    exists.
 
     Args:
         db: Active async database session.
-        run_id: UUID of the collection run to query.
+        run_id: Optional UUID of a specific collection run to scope the query.
+        query_design_id: Optional UUID of a query design to aggregate across
+            all its runs. Used when ``run_id`` is ``None``.
 
     Returns:
         Dict with sentiment distribution and average score::
@@ -1529,19 +1806,27 @@ async def get_sentiment_distribution(
 
         All counts default to 0 when no enrichment data exists.
     """
-    params: dict[str, Any] = {"run_id": str(run_id)}
+    params: dict[str, Any] = {}
+    if run_id is not None:
+        scope_clause = "collection_run_id = :run_id"
+        params["run_id"] = str(run_id)
+    elif query_design_id is not None:
+        scope_clause = "query_design_id = :query_design_id"
+        params["query_design_id"] = str(query_design_id)
+    else:
+        scope_clause = "1=1"
 
     # Count records by sentiment polarity (positive, negative, neutral).
     # The sentiment_analyzer enricher stores a 'label' string field that
     # can be 'positive', 'negative', or 'neutral', plus a 'score' float.
     sql = text(
-        """
+        f"""
         SELECT
             raw_metadata->'enrichments'->'sentiment'->>'label' AS sentiment,
             COUNT(*) AS cnt,
             AVG((raw_metadata->'enrichments'->'sentiment'->>'score')::float) AS avg_score
         FROM content_records
-        WHERE collection_run_id = :run_id
+        WHERE {scope_clause}
           AND raw_metadata->'enrichments'->'sentiment' IS NOT NULL
         GROUP BY 1
         """
@@ -1582,7 +1867,8 @@ async def get_sentiment_distribution(
 
 async def get_coordination_signals(
     db: AsyncSession,
-    run_id: uuid.UUID,
+    run_id: uuid.UUID | None = None,
+    query_design_id: uuid.UUID | None = None,
 ) -> list[dict]:
     """Query coordination enrichment results and return detected patterns.
 
@@ -1592,7 +1878,9 @@ async def get_coordination_signals(
 
     Args:
         db: Active async database session.
-        run_id: UUID of the collection run to query.
+        run_id: Optional UUID of a specific collection run to scope the query.
+        query_design_id: Optional UUID of a query design to aggregate across
+            all its runs. Used when ``run_id`` is ``None``.
 
     Returns:
         List of dicts ordered by signal strength descending::
@@ -1614,7 +1902,7 @@ async def get_coordination_signals(
     """
     params: dict[str, Any] = {}
     where = _build_content_filters(
-        None, run_id, None, None, None, None, params
+        query_design_id, run_id, None, None, None, None, params
     )
 
     # Aggregate coordination signals by content_hash to identify clusters.

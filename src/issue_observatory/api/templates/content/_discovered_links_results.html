@@ -1,0 +1,160 @@
+{#
+    HTMX partial for discovered links results.
+    Rendered when the filter form triggers an hx-get update.
+    Contains the results header + table (swapped into #discovered-links-container).
+#}
+
+{# Update the results count header #}
+<div class="flex items-center justify-between mb-4">
+    <p class="text-xs text-gray-500">
+        {% if total > 0 %}
+            {{ total }} discovered source{% if total != 1 %}s{% endif %}
+        {% else %}
+            No discovered sources match the current filters.
+        {% endif %}
+    </p>
+    <div class="flex items-center gap-3 text-xs">
+        <button type="button"
+                @click="selectAll()"
+                class="text-blue-600 hover:underline">
+            Select all visible
+        </button>
+        <span class="text-gray-300">|</span>
+        <button type="button"
+                @click="clearSelection()"
+                class="text-gray-500 hover:underline">
+            Clear
+        </button>
+    </div>
+</div>
+
+{% if links %}
+<div class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+    <table class="min-w-full divide-y divide-gray-200 text-sm">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="w-10 px-4 py-3">
+                    <input type="checkbox"
+                           @change="$event.target.checked ? selectAll() : clearSelection()"
+                           :checked="selected.size > 0 && selected.size === visibleCount"
+                           class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                </th>
+                <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Platform</th>
+                <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
+                <th class="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Mentions</th>
+                <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden lg:table-cell">First seen</th>
+                <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden lg:table-cell">Last seen</th>
+                <th class="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100" id="discovered-links-tbody">
+            {% for link in links %}
+            {% set p = link.platform | default('') %}
+            <tr class="hover:bg-gray-50 transition-colors"
+                data-link-id="{{ link.id | default(loop.index) }}"
+                data-platform="{{ p }}"
+                data-identifier="{{ link.target_identifier | default('') }}"
+                data-url="{{ link.url | default('') }}"
+                data-source-count="{{ link.source_count | default(0) }}">
+
+                {# Checkbox #}
+                <td class="px-4 py-3">
+                    <input type="checkbox"
+                           value="{{ link.id | default(loop.index) }}"
+                           @change="toggleSelect('{{ link.id | default(loop.index) }}', '{{ p }}', '{{ link.target_identifier | default('') }}', '{{ link.url | default('') }}')"
+                           :checked="selected.has('{{ link.id | default(loop.index) }}')"
+                           class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                </td>
+
+                {# Platform badge #}
+                <td class="px-4 py-3 whitespace-nowrap">
+                    <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium
+                        {% if p == 'telegram' %}bg-blue-100 text-blue-800
+                        {% elif p == 'reddit' %}bg-orange-100 text-orange-800
+                        {% elif p == 'youtube' %}bg-red-100 text-red-800
+                        {% elif p == 'bluesky' %}bg-sky-100 text-sky-800
+                        {% elif p == 'twitter' %}bg-gray-800 text-white
+                        {% elif p == 'instagram' %}bg-pink-100 text-pink-800
+                        {% elif p == 'tiktok' %}bg-gray-100 text-gray-800
+                        {% elif p == 'discord' %}bg-indigo-100 text-indigo-800
+                        {% elif p == 'gab' %}bg-green-100 text-green-800
+                        {% else %}bg-gray-100 text-gray-700{% endif %}">
+                        {{ p | capitalize if p else 'Web' }}
+                    </span>
+                </td>
+
+                {# Target identifier #}
+                <td class="px-4 py-3">
+                    {% if link.url | default('') %}
+                    <a href="{{ link.url }}"
+                       target="_blank"
+                       rel="noopener noreferrer"
+                       class="font-medium text-blue-700 hover:text-blue-900 hover:underline font-mono text-xs"
+                       @click.stop>
+                        {{ link.target_identifier | default('(unknown)') | truncate(50, true, '...') }}
+                    </a>
+                    {% else %}
+                    <span class="font-mono text-xs text-gray-900">
+                        {{ link.target_identifier | default('(unknown)') | truncate(50, true, '...') }}
+                    </span>
+                    {% endif %}
+                </td>
+
+                {# Source count badge #}
+                <td class="px-4 py-3 text-center">
+                    {% set cnt = link.source_count | default(0) | int %}
+                    <span class="inline-flex items-center justify-center min-w-[2rem] px-2 py-0.5 rounded-full text-xs font-medium
+                        {% if cnt >= 50 %}bg-blue-600 text-white
+                        {% elif cnt >= 10 %}bg-blue-100 text-blue-800
+                        {% elif cnt >= 3 %}bg-gray-200 text-gray-700
+                        {% else %}bg-gray-100 text-gray-500{% endif %}">
+                        {{ cnt }}
+                    </span>
+                </td>
+
+                {# First seen #}
+                <td class="px-4 py-3 text-xs text-gray-500 whitespace-nowrap hidden lg:table-cell">
+                    {{ link.first_seen | default('') | truncate(10, true, '') }}
+                </td>
+
+                {# Last seen #}
+                <td class="px-4 py-3 text-xs text-gray-500 whitespace-nowrap hidden lg:table-cell">
+                    {{ link.last_seen | default('') | truncate(10, true, '') }}
+                </td>
+
+                {# Action buttons #}
+                <td class="px-4 py-3 text-right">
+                    <button type="button"
+                            @click.stop="openQuickAdd({
+                                platform: '{{ p }}',
+                                identifier: '{{ link.target_identifier | default('') | replace("'", "\\'") }}'
+                            })"
+                            class="inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 text-blue-700 text-xs font-medium rounded border border-blue-200 hover:bg-blue-100 hover:border-blue-300 transition-colors">
+                        <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                             stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+                        </svg>
+                        Add to actors
+                    </button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% else %}
+{# Empty state #}
+<div class="bg-white rounded-lg shadow-sm border border-gray-200 px-6 py-16 text-center">
+    <svg class="mx-auto w-10 h-10 text-gray-300 mb-3" xmlns="http://www.w3.org/2000/svg"
+         fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round"
+              d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+    </svg>
+    <h3 class="text-sm font-medium text-gray-900">No discovered sources yet</h3>
+    <p class="text-xs text-gray-500 mt-1 max-w-sm mx-auto">
+        Discovered sources appear when collected content contains links or mentions of
+        external platform accounts. Run a collection first, then check back here.
+    </p>
+</div>
+{% endif %}

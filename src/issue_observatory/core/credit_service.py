@@ -33,7 +33,7 @@ import uuid
 from datetime import date, datetime, timezone
 
 from fastapi import Depends
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from issue_observatory.core.database import get_db
@@ -504,6 +504,24 @@ class CreditService:
                     f"settled {actual_credits}, surplus {surplus}"
                 ),
             )
+
+        # Update the parent CollectionRun.credits_spent aggregate
+        from issue_observatory.core.models.collection import CollectionRun  # noqa: PLC0415
+
+        spent_stmt = (
+            select(func.coalesce(func.sum(CreditTransaction.credits_consumed), 0))
+            .where(
+                CreditTransaction.collection_run_id == collection_run_id,
+                CreditTransaction.transaction_type == "settlement",
+            )
+        )
+        total_spent = (await self.session.execute(spent_stmt)).scalar_one()
+        await self.session.execute(
+            update(CollectionRun)
+            .where(CollectionRun.id == collection_run_id)
+            .values(credits_spent=total_spent)
+        )
+        await self.session.commit()
 
         return txn.id
 

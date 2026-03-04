@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import redis
@@ -55,9 +56,12 @@ from issue_observatory.workers._task_helpers import (
     check_all_tasks_terminal,
     create_collection_tasks,
     enforce_retention,
+    fetch_actor_ids_for_design_and_platform,
     fetch_batch_run_details,
+    fetch_designs_with_prep,
     fetch_live_tracking_designs,
     fetch_public_figure_ids_for_design,
+    fetch_resolved_terms_for_arena,
     fetch_search_terms_for_arena,
     fetch_stale_runs,
     fetch_unsettled_reservations,
@@ -82,6 +86,49 @@ email_service = get_email_service()
 # ---------------------------------------------------------------------------
 # Task 1: trigger_daily_collection
 # ---------------------------------------------------------------------------
+
+
+_INDEXING_LAG_HOURS: dict[str, int] = {
+    # TikTok Research API: "New videos take up to 48 hours to be added to the
+    # search engine."  Extend date_from back by this amount so that recently
+    # indexed content is captured even when collected_at is recent.
+    "tiktok": 48,
+}
+
+
+def _compute_live_date_bounds(
+    last_collected_by_platform: dict[str, datetime],
+    arena_name: str,
+) -> tuple[str, str]:
+    """Compute date_from/date_to ISO strings for a live collection dispatch.
+
+    Uses the most recent collected_at timestamp for the arena's platform to
+    avoid re-fetching already-collected content.  Falls back to 24 hours ago
+    when no prior data exists.
+
+    For platforms with a known indexing lag (e.g. TikTok's 48-hour delay),
+    ``date_from`` is extended further back so that content published before
+    the lag window but only recently indexed is still captured.  ``date_to``
+    remains at now so that anything indexed earlier than the maximum lag is
+    not missed.
+
+    Args:
+        last_collected_by_platform: Mapping of platform name to last collected datetime.
+        arena_name: The platform name being dispatched.
+
+    Returns:
+        Tuple of (date_from_iso, date_to_iso).
+    """
+    lag_hours = _INDEXING_LAG_HOURS.get(arena_name, 0)
+    now = datetime.now(timezone.utc)
+
+    last_collected = last_collected_by_platform.get(arena_name)
+    if last_collected is not None:
+        date_from_dt = last_collected - timedelta(hours=lag_hours)
+    else:
+        date_from_dt = now - timedelta(days=1) - timedelta(hours=lag_hours)
+
+    return date_from_dt.isoformat(), now.isoformat()
 
 
 @celery_app.task(
@@ -109,8 +156,11 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
     log = logger.bind(task="trigger_daily_collection")
     log.info("trigger_daily_collection: starting")
 
+    # Single asyncio.run() for ALL async DB queries.  Multiple asyncio.run()
+    # calls cause "Future attached to a different loop" errors because the
+    # SQLAlchemy async connection pool ties connections to the first event loop.
     try:
-        designs = asyncio.run(fetch_live_tracking_designs())
+        designs = asyncio.run(fetch_designs_with_prep())
     except Exception as exc:
         log.error(
             "trigger_daily_collection: DB error fetching designs",
@@ -130,13 +180,13 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
     for design in designs:
         design_id = design["query_design_id"]
         run_id = design["run_id"]
-        owner_id = design["owner_id"]
-        arenas_config: dict[str, str] = design.get("arenas_config") or {}
         default_tier: str = design.get("default_tier") or "free"
+        raw_arenas_config: dict = design.get("arenas_config") or {}
+        arenas_config: dict[str, str] = design.get("_flat_arenas") or {}
+
         # GR-05: arenas_config["languages"] takes priority over the single
-        # query_design.language field.  If the key is missing, fall back to
-        # [query_design.language] (IP2-052 behaviour).
-        config_languages = arenas_config.get("languages") if isinstance(arenas_config, dict) else None
+        # query_design.language field.
+        config_languages = raw_arenas_config.get("languages") if isinstance(raw_arenas_config, dict) else None
         if isinstance(config_languages, list) and config_languages:
             language_filter: list[str] = [str(lc) for lc in config_languages if lc]
         else:
@@ -148,26 +198,18 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
         )
         task_log.info("trigger_daily_collection: processing design")
 
-        # --- Credit gate ---
-        try:
-            balance = asyncio.run(get_user_credit_balance(owner_id))
-        except Exception as exc:
-            task_log.error(
-                "trigger_daily_collection: failed to fetch credit balance",
-                error=str(exc),
-                exc_info=True,
-            )
-            skipped += 1
-            continue
+        balance = design.get("credit_balance", 0)
+        public_figure_ids: list[str] = design.get("public_figure_ids", [])
 
+        # --- Credit gate ---
         if balance <= 0:
             task_log.warning(
                 "trigger_daily_collection: insufficient credits; suspending run",
                 balance=balance,
             )
-            try:
-                user_email = asyncio.run(get_user_email(owner_id))
-                if user_email:
+            user_email = design.get("user_email")
+            if user_email:
+                try:
                     asyncio.run(
                         email_service.send_low_credit_warning(
                             user_email=user_email,
@@ -175,11 +217,11 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                             threshold=settings.low_credit_warning_threshold,
                         )
                     )
-            except Exception as email_exc:
-                task_log.warning(
-                    "trigger_daily_collection: low-credit email failed",
-                    error=str(email_exc),
-                )
+                except Exception as email_exc:
+                    task_log.warning(
+                        "trigger_daily_collection: low-credit email failed",
+                        error=str(email_exc),
+                    )
             try:
                 asyncio.run(suspend_run(run_id))
             except Exception as suspend_exc:
@@ -197,105 +239,119 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
             skipped += 1
             continue
 
-        # --- GR-14: build set of public-figure platform user IDs ---
-        # This is fetched once per design (not per arena) and passed to every
-        # arena task so the normalizer can bypass pseudonymization for known
-        # public officials without a per-record DB lookup at collection time.
-        public_figure_ids: list[str] = []
-        try:
-            pf_set = asyncio.run(fetch_public_figure_ids_for_design(design_id))
-            public_figure_ids = list(pf_set)
-            if public_figure_ids:
-                task_log.info(
-                    "trigger_daily_collection: GR-14 public-figure IDs loaded",
-                    count=len(public_figure_ids),
-                )
-        except Exception as pf_exc:
-            # Non-fatal: log and continue without the bypass.
-            # Arena tasks will still run; all authors will be pseudonymized.
-            task_log.warning(
-                "trigger_daily_collection: failed to fetch public-figure IDs; "
-                "all authors will be pseudonymized (GR-14 bypass unavailable)",
-                error=str(pf_exc),
+        if public_figure_ids:
+            task_log.info(
+                "trigger_daily_collection: GR-14 public-figure IDs loaded",
+                count=len(public_figure_ids),
             )
 
         # --- Dispatch arena tasks ---
-        # YF-01: Load and filter search terms per arena based on target_arenas.
-        # Each arena receives only the terms that are either globally applicable
-        # (target_arenas=NULL) or explicitly targeted to that arena's platform_name.
+        from issue_observatory.arenas.registry import (  # noqa: PLC0415
+            get_arena as _get_arena,
+            get_task_module as _gtm,
+        )
+
         for arena_name, arena_tier in arenas_config.items():
             tier = arena_tier or default_tier
 
-            # YF-01: Fetch search terms scoped to this arena's platform_name.
-            # The arena_name in arenas_config is the platform_name used in the
-            # registry (e.g., "reddit", "bluesky", "google_search").
             try:
-                arena_terms = asyncio.run(
-                    fetch_search_terms_for_arena(design_id, arena_name)
-                )
-            except Exception as terms_exc:
-                task_log.error(
-                    "trigger_daily_collection: failed to fetch search terms for arena",
-                    arena=arena_name,
-                    error=str(terms_exc),
-                    exc_info=True,
-                )
-                # Non-fatal: log and skip this arena rather than failing the
-                # entire daily collection.  The run will continue with the
-                # remaining arenas.
-                skipped += 1
-                continue
-
-            if not arena_terms:
-                task_log.info(
-                    "trigger_daily_collection: no search terms scoped to arena; skipping",
-                    arena=arena_name,
-                )
-                # No terms for this arena — skip dispatch but don't count as an
-                # error.  This is expected when YF-01 per-arena scoping is in use.
-                continue
-
-            # Derive task module from the collector's actual module path
-            # so nested arenas (web.common_crawl, etc.) resolve correctly.
-            from issue_observatory.arenas.registry import get_task_module as _gtm  # noqa: PLC0415
+                _collector_cls = _get_arena(arena_name)
+                _is_actor_only = not getattr(_collector_cls, "supports_term_search", True)
+            except KeyError:
+                _is_actor_only = False
 
             try:
                 _task_module = _gtm(arena_name)
             except KeyError:
                 _task_module = f"issue_observatory.arenas.{arena_name}.tasks"
-            task_name = f"{_task_module}.collect_by_terms"
 
-            try:
-                celery_app.send_task(
-                    task_name,
-                    kwargs={
-                        "query_design_id": str(design_id),
-                        "collection_run_id": str(run_id),
-                        "terms": arena_terms,
-                        "tier": tier,
-                        # IP2-052: pass language filter so arena tasks can
-                        # restrict results to the design's configured language(s).
-                        "language_filter": language_filter,
-                        # GR-14: public-figure platform user IDs; arena tasks
-                        # forward this to the normalizer to bypass
-                        # pseudonymization for known public officials.
-                        "public_figure_ids": public_figure_ids,
-                    },
-                    queue="celery",
-                )
-                task_log.info(
-                    "trigger_daily_collection: dispatched arena task",
-                    arena=arena_name,
-                    tier=tier,
-                    task_name=task_name,
-                    terms_count=len(arena_terms),
-                )
-            except Exception as dispatch_exc:
-                task_log.error(
-                    "trigger_daily_collection: dispatch failed",
-                    arena=arena_name,
-                    error=str(dispatch_exc),
-                )
+            if _is_actor_only:
+                actor_ids = design.get("arena_actor_ids", {}).get(arena_name, [])
+                if not actor_ids:
+                    task_log.warning(
+                        "trigger_daily_collection: actor-only arena has no actors configured; skipping",
+                        arena=arena_name,
+                    )
+                    skipped += 1
+                    continue
+
+                _task_name = f"{_task_module}.collect_by_actors"
+                last_collected_map = design.get("last_collected_by_platform", {})
+                date_from, date_to = _compute_live_date_bounds(last_collected_map, arena_name)
+                try:
+                    celery_app.send_task(
+                        _task_name,
+                        kwargs={
+                            "query_design_id": str(design_id),
+                            "collection_run_id": str(run_id),
+                            "actor_ids": actor_ids,
+                            "tier": tier,
+                            "public_figure_ids": public_figure_ids,
+                            "date_from": date_from,
+                            "date_to": date_to,
+                        },
+                        queue="celery",
+                    )
+                    task_log.info(
+                        "trigger_daily_collection: dispatched actor-only arena task",
+                        arena=arena_name,
+                        tier=tier,
+                        task_name=_task_name,
+                        actors_count=len(actor_ids),
+                        date_from=date_from,
+                        date_to=date_to,
+                    )
+                except Exception as dispatch_exc:
+                    task_log.error(
+                        "trigger_daily_collection: actor-only dispatch failed",
+                        arena=arena_name,
+                        error=str(dispatch_exc),
+                    )
+                    skipped += 1
+                    continue
+
+            else:
+                arena_terms = design.get("arena_terms", {}).get(arena_name, [])
+                if not arena_terms:
+                    task_log.info(
+                        "trigger_daily_collection: no search terms scoped to arena; skipping",
+                        arena=arena_name,
+                    )
+                    continue
+
+                _task_name = f"{_task_module}.collect_by_terms"
+                last_collected_map = design.get("last_collected_by_platform", {})
+                date_from, date_to = _compute_live_date_bounds(last_collected_map, arena_name)
+                try:
+                    celery_app.send_task(
+                        _task_name,
+                        kwargs={
+                            "query_design_id": str(design_id),
+                            "collection_run_id": str(run_id),
+                            "terms": arena_terms,
+                            "tier": tier,
+                            "language_filter": language_filter,
+                            "public_figure_ids": public_figure_ids,
+                            "date_from": date_from,
+                            "date_to": date_to,
+                        },
+                        queue="celery",
+                    )
+                    task_log.info(
+                        "trigger_daily_collection: dispatched arena task",
+                        arena=arena_name,
+                        tier=tier,
+                        task_name=_task_name,
+                        terms_count=len(arena_terms),
+                        date_from=date_from,
+                        date_to=date_to,
+                    )
+                except Exception as dispatch_exc:
+                    task_log.error(
+                        "trigger_daily_collection: dispatch failed",
+                        arena=arena_name,
+                        error=str(dispatch_exc),
+                    )
         dispatched += 1
 
     summary = {
@@ -708,7 +764,64 @@ def enforce_retention_policy() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Task 6: enrich_collection_run
+# Task 6: reconcile_collection_attempts
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(
+    name="issue_observatory.workers.tasks.reconcile_collection_attempts",
+    bind=False,
+)
+def reconcile_collection_attempts_task() -> dict[str, Any]:
+    """Validate collection_attempts against actual content_records data.
+
+    For each valid attempt with ``records_returned > 0``, checks whether
+    at least one matching content record still exists.  If not (e.g. due
+    to manual deletion or retention policy enforcement), marks the attempt
+    as ``is_valid = FALSE`` so the coverage checker stops trusting it and
+    future collection runs can re-fetch the data.
+
+    Runs weekly via Celery Beat (Sunday 05:00 Copenhagen time).
+
+    Returns:
+        Dict with ``attempts_checked`` and ``attempts_invalidated`` counts.
+    """
+    _task_start = time.perf_counter()
+    log = logger.bind(task="reconcile_collection_attempts")
+    log.info("reconcile_collection_attempts: starting")
+
+    from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+        reconcile_collection_attempts,
+    )
+
+    result = reconcile_collection_attempts()
+
+    log.info(
+        "reconcile_collection_attempts: complete",
+        attempts_checked=result["attempts_checked"],
+        attempts_invalidated=result["attempts_invalidated"],
+    )
+    try:
+        from issue_observatory.api.metrics import (  # noqa: PLC0415
+            celery_task_duration_seconds,
+            celery_tasks_total,
+        )
+        celery_tasks_total.labels(
+            task_name="reconcile_collection_attempts", status="success"
+        ).inc()
+        celery_task_duration_seconds.labels(
+            task_name="reconcile_collection_attempts"
+        ).observe(time.perf_counter() - _task_start)
+    except Exception as _metrics_exc:  # noqa: BLE001
+        _stdlib_logger.debug(
+            "reconcile_collection_attempts: metrics recording failed: %s",
+            _metrics_exc,
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Task 7: enrich_collection_run
 # ---------------------------------------------------------------------------
 
 
@@ -1136,13 +1249,16 @@ async def _dispatch_batch_async(
         public_figure_ids = []
 
     # --- Step 5: Filter arenas to those actually registered ---
+    # Also record whether each arena supports term-based or actor-only collection.
     arena_entries: list[dict[str, str]] = []
+    # Maps platform_name -> True if the arena is actor-only (supports_term_search=False).
+    actor_only_arenas: set[str] = set()
     skipped = 0
 
     for platform_name in arenas_config:
         # Verify the arena is registered
         try:
-            get_arena(platform_name)
+            collector_cls = get_arena(platform_name)
         except KeyError:
             log.warning(
                 "dispatch_batch_collection: arena not registered; skipping",
@@ -1156,6 +1272,14 @@ async def _dispatch_batch_async(
             "platform_name": platform_name,
         })
 
+        # Detect actor-only arenas (e.g. Facebook, Instagram).
+        if not getattr(collector_cls, "supports_term_search", True):
+            actor_only_arenas.add(platform_name)
+            log.debug(
+                "dispatch_batch_collection: actor-only arena detected",
+                arena=platform_name,
+            )
+
     # --- Step 6: Create CollectionTask rows ---
     if arena_entries:
         await create_collection_tasks(run_uuid, arena_entries)
@@ -1164,50 +1288,103 @@ async def _dispatch_batch_async(
             count=len(arena_entries),
         )
 
-    # --- Step 7: Fetch search terms for each arena ---
+    # --- Step 7: Fetch search terms (term-based arenas) or actor IDs (actor-only arenas) ---
     arena_terms_map: dict[str, list[str]] = {}
+    arena_actors_map: dict[str, list[str]] = {}
+
     for entry in arena_entries:
         platform_name = entry["platform_name"]
-        try:
-            arena_terms = await fetch_search_terms_for_arena(design_id, platform_name)
-            arena_terms_map[platform_name] = arena_terms
 
-            # If no terms found, mark the task as failed immediately (within async context)
-            if not arena_terms:
-                log.info(
-                    "dispatch_batch_collection: no search terms for arena; marking failed",
-                    arena=platform_name,
-                )
-                await mark_task_failed(
-                    run_uuid,
-                    platform_name,
-                    "No search terms scoped to this arena (YF-01)",
-                )
-        except Exception as terms_exc:
-            log.error(
-                "dispatch_batch_collection: failed to fetch search terms",
-                arena=platform_name,
-                error=str(terms_exc),
-            )
-            # Mark task as failed and set empty terms list
-            arena_terms_map[platform_name] = []
+        if platform_name in actor_only_arenas:
+            # Actor-only arena: fetch actor platform presences instead of search terms.
             try:
-                await mark_task_failed(
-                    run_uuid,
-                    platform_name,
-                    f"Failed to fetch search terms: {terms_exc}",
+                actor_ids = await fetch_actor_ids_for_design_and_platform(
+                    design_id, platform_name
                 )
-            except Exception as mark_exc:
-                log.warning(
-                    "dispatch_batch_collection: failed to mark task as failed",
+                arena_actors_map[platform_name] = actor_ids
+
+                if not actor_ids:
+                    log.warning(
+                        "dispatch_batch_collection: actor-only arena has no actors configured; "
+                        "marking task as failed",
+                        arena=platform_name,
+                    )
+                    await mark_task_failed(
+                        run_uuid,
+                        platform_name,
+                        f"No actors configured for actor-only platform '{platform_name}'. "
+                        "Add actors with platform presences to the Actor Directory and "
+                        "include them in an actor list for this query design.",
+                    )
+            except Exception as actors_exc:
+                log.error(
+                    "dispatch_batch_collection: failed to fetch actor IDs for actor-only arena",
                     arena=platform_name,
-                    error=str(mark_exc),
+                    error=str(actors_exc),
                 )
+                arena_actors_map[platform_name] = []
+                try:
+                    await mark_task_failed(
+                        run_uuid,
+                        platform_name,
+                        f"Failed to fetch actor IDs: {actors_exc}",
+                    )
+                except Exception as mark_exc:
+                    log.warning(
+                        "dispatch_batch_collection: failed to mark task as failed",
+                        arena=platform_name,
+                        error=str(mark_exc),
+                    )
+        else:
+            # Term-based arena: fetch YF-01-scoped search terms.
+            try:
+                arena_terms = await fetch_resolved_terms_for_arena(design_id, platform_name)
+                arena_terms_map[platform_name] = arena_terms
+
+                # If no terms found, mark the task as failed immediately (within async context)
+                if not arena_terms:
+                    log.info(
+                        "dispatch_batch_collection: no search terms for arena; marking failed",
+                        arena=platform_name,
+                    )
+                    await mark_task_failed(
+                        run_uuid,
+                        platform_name,
+                        "No search terms scoped to this arena (YF-01)",
+                    )
+            except Exception as terms_exc:
+                log.error(
+                    "dispatch_batch_collection: failed to fetch search terms",
+                    arena=platform_name,
+                    error=str(terms_exc),
+                )
+                # Mark task as failed and set empty terms list
+                arena_terms_map[platform_name] = []
+                try:
+                    await mark_task_failed(
+                        run_uuid,
+                        platform_name,
+                        f"Failed to fetch search terms: {terms_exc}",
+                    )
+                except Exception as mark_exc:
+                    log.warning(
+                        "dispatch_batch_collection: failed to mark task as failed",
+                        arena=platform_name,
+                        error=str(mark_exc),
+                    )
 
     # --- Step 8: Handle no-arenas case ---
+    # An arena is dispatchable if it has terms (term-based) OR actor IDs (actor-only).
+    has_any_dispatchable = any(
+        (
+            (pn in actor_only_arenas and bool(arena_actors_map.get(pn)))
+            or (pn not in actor_only_arenas and bool(arena_terms_map.get(pn)))
+        )
+        for pn in (e["platform_name"] for e in arena_entries)
+    )
     no_arenas_dispatched = False
-    if not arena_entries or all(not terms for terms in arena_terms_map.values()):
-        # No arenas dispatched — mark run as completed with 0 records
+    if not arena_entries or not has_any_dispatchable:
+        # No arenas have anything to dispatch — mark run as completed with 0 records
         log.warning("dispatch_batch_collection: no arenas to dispatch; completing run")
         await set_run_status(run_uuid, "completed", completed_at=True)
         no_arenas_dispatched = True
@@ -1216,6 +1393,8 @@ async def _dispatch_batch_async(
         "details": details,
         "public_figure_ids": public_figure_ids,
         "arena_terms_map": arena_terms_map,
+        "arena_actors_map": arena_actors_map,
+        "actor_only_arenas": actor_only_arenas,
         "arenas_config": arenas_config,
         "language_filter": language_filter,
         "arena_entries": arena_entries,
@@ -1284,6 +1463,8 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
     # Unpack async results
     public_figure_ids = async_result["public_figure_ids"]
     arena_terms_map = async_result["arena_terms_map"]
+    arena_actors_map: dict[str, list[str]] = async_result["arena_actors_map"]
+    actor_only_arenas: set[str] = async_result["actor_only_arenas"]
     arenas_config = async_result["arenas_config"]
     language_filter = async_result["language_filter"]
     arena_entries = async_result["arena_entries"]
@@ -1305,84 +1486,154 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
         platform_name = entry["platform_name"]
         tier = arenas_config.get(platform_name) or default_tier
 
-        # Get terms from the map populated in the async function
-        arena_terms = arena_terms_map.get(platform_name, [])
-        if not arena_terms:
-            # Task already marked as failed in the async block above
-            log.debug(
-                "dispatch_batch_collection: skipping arena with no terms",
-                arena=platform_name,
-            )
-            continue
-
         # Derive the task module from the collector's actual module path so
         # that nested arenas (e.g. web.common_crawl) resolve correctly.
         try:
             task_module = get_task_module(platform_name)
         except KeyError:
             task_module = f"issue_observatory.arenas.{platform_name}.tasks"
-        task_name = f"{task_module}.collect_by_terms"
 
-        # Bug 2 fix: Always include language_filter and public_figure_ids
-        # since all arena tasks now accept **_extra
-        task_kwargs: dict[str, Any] = {
-            "query_design_id": str(async_result["details"]["query_design_id"]),
-            "collection_run_id": run_id,
-            "terms": arena_terms,
-            "tier": tier,
-            "language_filter": language_filter,
-            "public_figure_ids": public_figure_ids,
-        }
-        if date_from:
-            task_kwargs["date_from"] = (
-                date_from.isoformat() if hasattr(date_from, "isoformat") else str(date_from)
-            )
-        if date_to:
-            task_kwargs["date_to"] = (
-                date_to.isoformat() if hasattr(date_to, "isoformat") else str(date_to)
-            )
-
-        try:
-            # Capture the AsyncResult to get the celery_task_id
-            async_task = celery_app.send_task(
-                task_name,
-                kwargs=task_kwargs,
-                queue="celery",
-            )
-            dispatched_arenas.append(platform_name)
-            task_id_updates.append((platform_name, async_task.id))
-            log.info(
-                "dispatch_batch_collection: dispatched arena task",
-                arena=platform_name,
-                tier=tier,
-                terms_count=len(arena_terms),
-                celery_task_id=async_task.id,
-            )
-        except Exception as dispatch_exc:
-            log.error(
-                "dispatch_batch_collection: dispatch failed",
-                arena=platform_name,
-                error=str(dispatch_exc),
-            )
-            # Mark the task as failed in the DB - use a separate async run
-            # because we're in sync context after the main async block
-            try:
-                from issue_observatory.workers._task_helpers import mark_task_failed  # noqa: PLC0415
-                # Create a new async task to mark as failed
-                async def _mark_failed() -> None:
-                    await mark_task_failed(
-                        run_uuid,
-                        platform_name,
-                        f"Celery dispatch failed: {dispatch_exc}",
-                    )
-                asyncio.run(_mark_failed())
-            except Exception as mark_exc:
-                log.warning(
-                    "dispatch_batch_collection: failed to mark task as failed",
+        if platform_name in actor_only_arenas:
+            # Actor-only arena: dispatch collect_by_actors instead of collect_by_terms.
+            actor_ids = arena_actors_map.get(platform_name, [])
+            if not actor_ids:
+                # Already marked as failed in the async block above.
+                log.debug(
+                    "dispatch_batch_collection: skipping actor-only arena with no actors",
                     arena=platform_name,
-                    error=str(mark_exc),
                 )
-            skipped += 1
+                continue
+
+            task_name = f"{task_module}.collect_by_actors"
+            task_kwargs: dict[str, Any] = {
+                "query_design_id": str(async_result["details"]["query_design_id"]),
+                "collection_run_id": run_id,
+                "actor_ids": actor_ids,
+                "tier": tier,
+                "public_figure_ids": public_figure_ids,
+            }
+            if date_from:
+                task_kwargs["date_from"] = (
+                    date_from.isoformat() if hasattr(date_from, "isoformat") else str(date_from)
+                )
+            if date_to:
+                task_kwargs["date_to"] = (
+                    date_to.isoformat() if hasattr(date_to, "isoformat") else str(date_to)
+                )
+
+            try:
+                async_task = celery_app.send_task(
+                    task_name,
+                    kwargs=task_kwargs,
+                    queue="celery",
+                )
+                dispatched_arenas.append(platform_name)
+                task_id_updates.append((platform_name, async_task.id))
+                log.info(
+                    "dispatch_batch_collection: dispatched actor-only arena task",
+                    arena=platform_name,
+                    tier=tier,
+                    actors_count=len(actor_ids),
+                    task_name=task_name,
+                    celery_task_id=async_task.id,
+                )
+            except Exception as dispatch_exc:
+                log.error(
+                    "dispatch_batch_collection: actor-only dispatch failed",
+                    arena=platform_name,
+                    error=str(dispatch_exc),
+                )
+                try:
+                    async def _mark_failed_actors(
+                        _run_uuid: Any = run_uuid,
+                        _pn: str = platform_name,
+                        _exc: Exception = dispatch_exc,
+                    ) -> None:
+                        await mark_task_failed(
+                            _run_uuid, _pn, f"Celery dispatch failed: {_exc}"
+                        )
+                    asyncio.run(_mark_failed_actors())
+                except Exception as mark_exc:
+                    log.warning(
+                        "dispatch_batch_collection: failed to mark actor-only task as failed",
+                        arena=platform_name,
+                        error=str(mark_exc),
+                    )
+                skipped += 1
+
+        else:
+            # Term-based arena: dispatch collect_by_terms.
+            arena_terms = arena_terms_map.get(platform_name, [])
+            if not arena_terms:
+                # Task already marked as failed in the async block above.
+                log.debug(
+                    "dispatch_batch_collection: skipping arena with no terms",
+                    arena=platform_name,
+                )
+                continue
+
+            task_name = f"{task_module}.collect_by_terms"
+
+            # Always include language_filter and public_figure_ids since all
+            # arena tasks accept **_extra.
+            task_kwargs = {
+                "query_design_id": str(async_result["details"]["query_design_id"]),
+                "collection_run_id": run_id,
+                "terms": arena_terms,
+                "tier": tier,
+                "language_filter": language_filter,
+                "public_figure_ids": public_figure_ids,
+            }
+            if date_from:
+                task_kwargs["date_from"] = (
+                    date_from.isoformat() if hasattr(date_from, "isoformat") else str(date_from)
+                )
+            if date_to:
+                task_kwargs["date_to"] = (
+                    date_to.isoformat() if hasattr(date_to, "isoformat") else str(date_to)
+                )
+
+            try:
+                # Capture the AsyncResult to get the celery_task_id
+                async_task = celery_app.send_task(
+                    task_name,
+                    kwargs=task_kwargs,
+                    queue="celery",
+                )
+                dispatched_arenas.append(platform_name)
+                task_id_updates.append((platform_name, async_task.id))
+                log.info(
+                    "dispatch_batch_collection: dispatched arena task",
+                    arena=platform_name,
+                    tier=tier,
+                    terms_count=len(arena_terms),
+                    celery_task_id=async_task.id,
+                )
+            except Exception as dispatch_exc:
+                log.error(
+                    "dispatch_batch_collection: dispatch failed",
+                    arena=platform_name,
+                    error=str(dispatch_exc),
+                )
+                # Mark the task as failed in the DB - use a separate async run
+                # because we're in sync context after the main async block
+                try:
+                    async def _mark_failed(
+                        _run_uuid: Any = run_uuid,
+                        _pn: str = platform_name,
+                        _exc: Exception = dispatch_exc,
+                    ) -> None:
+                        await mark_task_failed(
+                            _run_uuid, _pn, f"Celery dispatch failed: {_exc}"
+                        )
+                    asyncio.run(_mark_failed())
+                except Exception as mark_exc:
+                    log.warning(
+                        "dispatch_batch_collection: failed to mark task as failed",
+                        arena=platform_name,
+                        error=str(mark_exc),
+                    )
+                skipped += 1
 
     # --- Update CollectionTask rows with celery_task_ids ---
     if task_id_updates:

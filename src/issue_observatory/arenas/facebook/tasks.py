@@ -3,6 +3,11 @@
 Wraps :class:`FacebookCollector` methods as Celery tasks with retry logic,
 collection run status tracking, and error reporting.
 
+**Actor-only arena**: Facebook does not support keyword-based collection via the
+Bright Data Web Scraper API. The ``facebook_collect_terms`` task immediately fails
+with a descriptive :exc:`~issue_observatory.core.exceptions.ArenaCollectionError`
+explaining that actor-based collection must be used instead.
+
 Task naming::
 
     issue_observatory.arenas.facebook.tasks.<action>
@@ -14,7 +19,7 @@ Retry policy:
 - ``NoCredentialAvailableError`` immediately marks the task as FAILED.
 
 Time limits:
-- ``time_limit=1800`` (30 minutes hard limit) because Bright Data dataset
+- ``time_limit=1800`` (30 minutes hard limit) because Bright Data Web Scraper API
   delivery can take 5-20 minutes.
 - ``soft_time_limit=1500`` (25 minutes soft limit sending SIGTERM first).
 
@@ -27,6 +32,8 @@ import asyncio
 import logging
 import time
 from typing import Any
+
+from celery.exceptions import SoftTimeLimitExceeded
 
 from issue_observatory.arenas.facebook.collector import FacebookCollector
 from issue_observatory.config.settings import get_settings
@@ -43,6 +50,14 @@ logger = logging.getLogger(__name__)
 
 _ARENA: str = "social_media"
 _PLATFORM: str = "facebook"
+
+_TERM_COLLECTION_NOT_SUPPORTED: str = (
+    "Facebook does not support keyword-based collection. "
+    "The Bright Data Web Scraper API only supports actor-based collection "
+    "(Facebook page URLs, group URLs, or profile URLs). "
+    "To collect from Facebook: add pages or groups to the Actor Directory "
+    "and use actor-based collection mode."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -113,13 +128,9 @@ def _update_task_status(
 @celery_app.task(
     name="issue_observatory.arenas.facebook.tasks.collect_by_terms",
     bind=True,
-    max_retries=2,
-    autoretry_for=(ArenaRateLimitError,),
-    retry_backoff=True,
-    retry_backoff_max=900,
+    max_retries=0,
     acks_late=True,
-    time_limit=1800,
-    soft_time_limit=1500,
+    time_limit=60,
 )
 def facebook_collect_terms(
     self: Any,
@@ -133,141 +144,55 @@ def facebook_collect_terms(
     language_filter: list[str] | None = None,
     **_extra: Any,
 ) -> dict[str, Any]:
-    """Collect Facebook posts matching a list of search terms.
+    """Immediately fail — Facebook does not support keyword-based collection.
 
-    Wraps :meth:`FacebookCollector.collect_by_terms` as a Celery task.
-    Uses Bright Data asynchronous dataset delivery — allow up to 20 minutes
-    for the dataset to become ready.
+    Facebook and Instagram are actor-only arenas. The Bright Data Web Scraper API
+    does not support keyword-based discovery. This task exists to provide a clear
+    error message if it is mistakenly dispatched, rather than silently doing nothing.
+
+    To collect from Facebook, add Facebook pages or groups to the Actor Directory
+    and use the ``facebook_collect_actors`` task instead.
 
     Args:
         query_design_id: UUID string of the owning query design.
         collection_run_id: UUID string of the owning collection run.
-        terms: Search terms or keywords to query.
-        tier: Tier string — ``"medium"`` (Bright Data, default).
-        date_from: ISO 8601 lower date bound (optional).
-        date_to: ISO 8601 upper date bound (optional).
-        max_results: Optional cap on total records.
-
-    Returns:
-        Dict with:
-        - ``records_collected`` (int): Number of normalized records.
-        - ``status`` (str): ``"completed"``.
-        - ``arena`` (str): ``"social_media"``.
-        - ``platform`` (str): ``"facebook"``.
-        - ``tier`` (str): The tier used.
+        terms: Ignored — keyword search is not supported.
+        tier: Ignored.
+        date_from: Ignored.
+        date_to: Ignored.
+        max_results: Ignored.
+        language_filter: Ignored.
 
     Raises:
-        ArenaRateLimitError: Triggers automatic retry (max 2, backoff ≤ 900s).
-        ArenaCollectionError: Marks the task as FAILED.
-        NoCredentialAvailableError: Marks the task as FAILED immediately.
+        ArenaCollectionError: Always — Facebook does not support keyword search.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
-
     _settings = get_settings()
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    logger.info(
-        "facebook: collect_by_terms started — run=%s tier=%s terms=%d",
+    logger.error(
+        "facebook: collect_by_terms called but Facebook does not support keyword search. "
+        "run=%s — failing immediately.",
         collection_run_id,
-        tier,
-        len(terms),
     )
-    _update_task_status(collection_run_id, _PLATFORM, "running")
+    _update_task_status(
+        collection_run_id, _PLATFORM, "failed", error_message=_TERM_COLLECTION_NOT_SUPPORTED
+    )
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
         arena="social_media",
         platform="facebook",
-        status="running",
+        status="failed",
         records_collected=0,
-        error_message=None,
+        error_message=_TERM_COLLECTION_NOT_SUPPORTED,
         elapsed_seconds=elapsed_since(_task_start),
     )
-
-    credential_pool = CredentialPool()
-    collector = FacebookCollector(credential_pool=credential_pool)
-    tier_enum = Tier(tier)
-
-    try:
-        records = asyncio.run(
-            collector.collect_by_terms(
-                terms=terms,
-                tier=tier_enum,
-                date_from=date_from,
-                date_to=date_to,
-                max_results=max_results,
-                language_filter=language_filter,
-            )
-        )
-    except NoCredentialAvailableError as exc:
-        msg = f"facebook: no credential available for tier={tier}: {exc}"
-        logger.error(msg)
-        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="social_media",
-            platform="facebook",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
-            elapsed_seconds=elapsed_since(_task_start),
-        )
-        raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM) from exc
-    except ArenaRateLimitError:
-        logger.warning(
-            "facebook: rate limited on collect_by_terms for run=%s — will retry.",
-            collection_run_id,
-        )
-        raise
-    except ArenaCollectionError as exc:
-        msg = str(exc)
-        logger.error("facebook: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="social_media",
-            platform="facebook",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
-            elapsed_seconds=elapsed_since(_task_start),
-        )
-        raise
-
-    count = len(records)
-
-    # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
-
-    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
-    logger.info(
-        "facebook: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
-        collection_run_id,
-        count,
-        inserted,
-        skipped,
+    raise ArenaCollectionError(
+        _TERM_COLLECTION_NOT_SUPPORTED,
+        arena=_ARENA,
+        platform=_PLATFORM,
     )
-    _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="social_media",
-        platform="facebook",
-        status="completed",
-        records_collected=inserted,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-    return {
-        "records_collected": inserted,
-        "status": "completed",
-        "arena": _ARENA,
-        "platform": _PLATFORM,
-        "tier": tier,
-    }
 
 
 @celery_app.task(
@@ -290,20 +215,26 @@ def facebook_collect_actors(
     date_from: str | None = None,
     date_to: str | None = None,
     max_results: int | None = None,
+    **_extra: Any,
 ) -> dict[str, Any]:
-    """Collect Facebook posts from specific pages or user profiles.
+    """Collect Facebook posts from specific pages, groups, or profiles.
 
     Wraps :meth:`FacebookCollector.collect_by_actors` as a Celery task.
-    Each entry in *actor_ids* may be a Facebook page URL or a numeric page ID.
+    Each entry in *actor_ids* should be a full Facebook page URL, group URL,
+    or profile URL. Group URLs (containing ``/groups/``) are automatically routed
+    to the Groups scraper; all other URLs use the Posts scraper.
 
     Args:
         query_design_id: UUID string of the owning query design.
         collection_run_id: UUID string of the owning collection run.
-        actor_ids: Facebook page URLs or numeric page IDs.
+        actor_ids: Facebook page URLs, group URLs, or profile URLs.
         tier: Tier string — ``"medium"`` (Bright Data, default).
         date_from: ISO 8601 lower date bound (optional).
         date_to: ISO 8601 upper date bound (optional).
         max_results: Optional cap on total records.
+        **_extra: Extra keyword arguments passed by the orchestration layer
+            (e.g. ``public_figure_ids``, ``language_filter``). Silently
+            ignored — actor-only tasks do not use these parameters.
 
     Returns:
         Dict with ``records_collected``, ``status``, ``arena``, ``platform``, ``tier``.
@@ -319,108 +250,206 @@ def facebook_collect_actors(
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    logger.info(
-        "facebook: collect_by_actors started — run=%s tier=%s actors=%d",
-        collection_run_id,
-        tier,
-        len(actor_ids),
-    )
-    _update_task_status(collection_run_id, _PLATFORM, "running")
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="social_media",
-        platform="facebook",
-        status="running",
-        records_collected=0,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-
-    credential_pool = CredentialPool()
-    collector = FacebookCollector(credential_pool=credential_pool)
-    tier_enum = Tier(tier)
-
     try:
-        records = asyncio.run(
-            collector.collect_by_actors(
+        logger.info(
+            "facebook: collect_by_actors started — run=%s tier=%s actors=%d",
+            collection_run_id,
+            tier,
+            len(actor_ids),
+        )
+        _update_task_status(collection_run_id, _PLATFORM, "running")
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="social_media",
+            platform="facebook",
+            status="running",
+            records_collected=0,
+            error_message=None,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
+
+        credential_pool = CredentialPool()
+        collector = FacebookCollector(credential_pool=credential_pool)
+        tier_enum = Tier(tier)
+
+        # Check if force_recollect is set (opt-out from coverage check)
+        force_recollect = _extra.get("force_recollect", False)
+
+        # Pre-collection coverage check: narrow date range to uncovered gaps
+        effective_date_from = date_from
+        effective_date_to = date_to
+        if not force_recollect and date_from and date_to:
+            from datetime import datetime as _dt  # noqa: PLC0415
+
+            from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
+                check_existing_coverage,
+            )
+
+            gaps = check_existing_coverage(
+                platform=_PLATFORM,
+                date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
+                date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
                 actor_ids=actor_ids,
-                tier=tier_enum,
+            )
+            if not gaps:
+                logger.info(
+                    "facebook: full coverage exists for run=%s — skipping API call, "
+                    "will reindex existing records only.",
+                    collection_run_id,
+                )
+                from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+                    reindex_existing_records,
+                )
+
+                linked = reindex_existing_records(
+                    platform=_PLATFORM,
+                    collection_run_id=collection_run_id,
+                    query_design_id=query_design_id,
+                    actor_ids=actor_ids,
+                    date_from=date_from,
+                    date_to=date_to,
+                )
+                _update_task_status(
+                    collection_run_id, _PLATFORM, "completed", records_collected=0
+                )
+                publish_task_update(
+                    redis_url=_redis_url,
+                    run_id=collection_run_id,
+                    arena=_ARENA,
+                    platform=_PLATFORM,
+                    status="completed",
+                    records_collected=0,
+                    error_message=None,
+                    elapsed_seconds=elapsed_since(_task_start),
+                )
+                return {
+                    "records_collected": 0,
+                    "records_linked": linked,
+                    "status": "completed",
+                    "arena": _ARENA,
+                    "platform": _PLATFORM,
+                    "tier": tier,
+                    "coverage_skip": True,
+                }
+            effective_date_from = gaps[0][0].isoformat()
+            effective_date_to = gaps[-1][1].isoformat()
+            logger.info(
+                "facebook: narrowing collection to uncovered range %s — %s (run=%s)",
+                effective_date_from,
+                effective_date_to,
+                collection_run_id,
+            )
+
+        try:
+            records = asyncio.run(
+                collector.collect_by_actors(
+                    actor_ids=actor_ids,
+                    tier=tier_enum,
+                    date_from=effective_date_from,
+                    date_to=effective_date_to,
+                    max_results=max_results,
+                )
+            )
+        except NoCredentialAvailableError as exc:
+            msg = f"facebook: no credential available for tier={tier}: {exc}"
+            logger.error(msg)
+            _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="facebook",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM) from exc
+        except ArenaRateLimitError:
+            logger.warning(
+                "facebook: rate limited on collect_by_actors for run=%s — will retry.",
+                collection_run_id,
+            )
+            raise
+        except ArenaCollectionError as exc:
+            msg = str(exc)
+            logger.error(
+                "facebook: actor collection error for run=%s: %s", collection_run_id, msg
+            )
+            _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="facebook",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
+
+        count = len(records)
+
+        # Persist collected records to the database.
+        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+            persist_collected_records,
+            record_collection_attempts_batch,
+        )
+
+        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
+        # Record successful collection attempts for future pre-checks.
+        if date_from and date_to:
+            record_collection_attempts_batch(
+                platform=_PLATFORM,
+                collection_run_id=collection_run_id,
+                query_design_id=query_design_id,
+                inputs=actor_ids,
+                input_type="actor",
                 date_from=date_from,
                 date_to=date_to,
-                max_results=max_results,
+                records_returned=inserted,
             )
+
+        logger.info(
+            "facebook: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
+            collection_run_id,
+            count,
+            inserted,
+            skipped,
         )
-    except NoCredentialAvailableError as exc:
-        msg = f"facebook: no credential available for tier={tier}: {exc}"
-        logger.error(msg)
-        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+        _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
-            arena="social_media",
-            platform="facebook",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
+            arena=_ARENA,
+            platform=_PLATFORM,
+            status="completed",
+            records_collected=inserted,
+            error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM) from exc
-    except ArenaRateLimitError:
-        logger.warning(
-            "facebook: rate limited on collect_by_actors for run=%s — will retry.",
+        return {
+            "records_collected": inserted,
+            "status": "completed",
+            "arena": _ARENA,
+            "platform": _PLATFORM,
+            "tier": tier,
+        }
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "facebook: collect_by_actors timed out — run=%s",
             collection_run_id,
         )
-        raise
-    except ArenaCollectionError as exc:
-        msg = str(exc)
-        logger.error(
-            "facebook: actor collection error for run=%s: %s", collection_run_id, msg
+        _update_task_status(
+            collection_run_id,
+            _PLATFORM,
+            "failed",
+            error_message="Collection timed out",
         )
-        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="social_media",
-            platform="facebook",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
-            elapsed_seconds=elapsed_since(_task_start),
-        )
-        raise
-
-    count = len(records)
-
-    # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
-
-    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
-    logger.info(
-        "facebook: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
-        collection_run_id,
-        count,
-        inserted,
-        skipped,
-    )
-    _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="social_media",
-        platform="facebook",
-        status="completed",
-        records_collected=inserted,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-    return {
-        "records_collected": inserted,
-        "status": "completed",
-        "arena": _ARENA,
-        "platform": _PLATFORM,
-        "tier": tier,
-    }
+        return {"status": "failed", "error": "timeout", "arena": _ARENA}
 
 
 @celery_app.task(

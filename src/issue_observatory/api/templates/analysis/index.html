@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Analysis — {{ run.id | default(run_id) | truncate(8, true, '') }}{% endblock %}
+{% block title %}Analysis — {% if mode == 'design' %}{{ design.name | default(design_id) | truncate(30, true, '…') }}{% else %}{{ run.id | default(run_id) | truncate(8, true, '') }}{% endif %}{% endblock %}
 
 {% block extra_head %}
 {#
@@ -7,10 +7,10 @@
     These libraries are not needed on other pages so they live here, not in base.html.
 
     Load order matters:
-      1. graphology core (defines window.Graph)
-      2. sigma (depends on graphology)
-      3. graphology-layout (random layout helper — defines window.graphologyLayout)
-      4. graphology-layout-forceatlas2 (FA2 worker — defines window.graphologyLayoutForceAtlas2)
+      1. graphology core UMD (exports window.graphology — the Graph constructor)
+      2. sigma UMD (exports window.Sigma)
+      3. graphology-library UMD (exports window.graphologyLibrary — bundles layout, FA2, etc.)
+      4. Bridge script to map globals to names expected by network_preview.js
       5. network_preview.js (local helper — exposes window.initNetworkPreview)
 
     GR-16: chartjs-plugin-annotation must load AFTER Chart.js (already in base.html)
@@ -18,9 +18,16 @@
     The UMD build exposes window.ChartAnnotation.
 #}
 <script src="https://cdn.jsdelivr.net/npm/graphology@0.25.4/dist/graphology.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/sigma@3.0.0-beta.35/build/sigma.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/graphology-layout@0.6.1/dist/graphology-layout.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/graphology-layout-forceatlas2@0.10.1/dist/graphology-layout-forceatlas2.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sigma@3.0.2/dist/sigma.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/graphology-library@0.8.0/dist/graphology-library.min.js"></script>
+<script>
+  // Bridge: map CDN globals to the names used by network_preview.js and inline Alpine code.
+  if (typeof window.graphology !== 'undefined') window.Graph = window.graphology;
+  if (typeof window.graphologyLibrary !== 'undefined') {
+    window.graphologyLayout = window.graphologyLibrary.layout;
+    window.graphologyLayoutForceAtlas2 = window.graphologyLibrary.layoutForceAtlas2;
+  }
+</script>
 {# GR-16: Chart.js annotation plugin for political calendar event overlays. #}
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3/dist/chartjs-plugin-annotation.min.js"></script>
 <script>
@@ -42,12 +49,18 @@
 
 {% block content %}
 {#
-    Analysis dashboard for a completed collection run.
+    Analysis dashboard — operates in two modes:
+        mode="design"  — design-level cross-run analysis (default when accessed via /analysis/design/{id})
+        mode="run"     — single-run analysis (legacy path /analysis/{run_id})
 
-    Context variables injected by the route handler:
-        run_id  (str)  — UUID of the collection run
-        run     (dict) — {id, status, mode, query_design_id, started_at,
-                          completed_at, credits_spent, tier}
+    Context variables injected by the route handler (see routes/analysis.py):
+        mode        (str)  — "design" or "run"
+        design_id   (str)  — UUID of the query design (always in design mode, may be in run mode)
+        design      (dict) — {id, name, description} (design mode only)
+        run_id      (str)  — UUID of a specific run (run mode; or pre-selected run in design mode)
+        run         (dict) — {id, status, mode, query_design_id, started_at, completed_at, credits_spent, tier}
+        runs        (list) — [{id, started_at, records_collected}] (design mode — for run dropdown)
+        run_count   (int)  — total runs for this design (design mode)
 
     All chart data is fetched client-side via Alpine fetch() inside each
     component's x-init block.  Filters are managed by the top-level
@@ -69,13 +82,27 @@
 {# ------------------------------------------------------------------ #}
 <div
     class="max-w-7xl mx-auto space-y-6"
-    x-data="analysisDashboard('{{ run_id }}')"
+    x-data="analysisDashboard('{{ design_id or '' }}', '{{ run_id or '' }}', '{{ mode }}')"
     x-init="init()"
 >
 
     {# ---- Page header ------------------------------------------------ #}
     <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="flex items-center gap-3">
+            {% if mode == 'design' %}
+            <a href="/query-designs/{{ design_id }}"
+               class="text-gray-400 hover:text-gray-600 transition-colors"
+               aria-label="Back to query design">
+                <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                     viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
+                </svg>
+            </a>
+            <div>
+                <h1 class="text-xl font-bold text-gray-900">Analysis Dashboard</h1>
+                <p class="text-sm text-gray-600 mt-0.5">{{ design.name | default(design_id) }}</p>
+            </div>
+            {% else %}
             <a href="/collections"
                class="text-gray-400 hover:text-gray-600 transition-colors"
                aria-label="Back to collections">
@@ -88,9 +115,48 @@
                 <h1 class="text-xl font-bold text-gray-900">Analysis Dashboard</h1>
                 <p class="text-xs text-gray-400 font-mono mt-0.5">{{ run_id }}</p>
             </div>
+            {% endif %}
         </div>
         <div class="flex flex-wrap items-center gap-2">
-            {# YF-06: Link to design-level analysis if this run belongs to a query design #}
+            {% if mode == 'design' %}
+            {# Design mode: run count badge and link to the design #}
+            {% if run_count %}
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800">
+                {{ run_count }} run{{ 's' if run_count != 1 else '' }}
+            </span>
+            {% endif %}
+            <a href="/query-designs/{{ design_id }}"
+               class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-gray-700 border border-gray-200 rounded-md hover:bg-gray-50 transition-colors"
+               title="View query design">
+                <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+                View design
+            </a>
+            {# Scope indicator — updates dynamically as user selects/deselects runs #}
+            <span x-show="filters.run_id"
+                  x-cloak
+                  class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200">
+                <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                Viewing single run
+            </span>
+            <span x-show="!filters.run_id"
+                  x-cloak
+                  class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 border border-green-200">
+                <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                </svg>
+                All runs aggregated
+            </span>
+            {% else %}
+            {# Run mode: link to design-level analysis if available #}
             {% if run.query_design_id %}
             <a href="/analysis/design/{{ run.query_design_id }}"
                class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-purple-700 border border-purple-200 rounded-md hover:bg-purple-50 transition-colors"
@@ -103,18 +169,6 @@
                 All runs
             </a>
             {% endif %}
-            {# m-06: Compare Runs button (opens modal to select second run) #}
-            <button type="button"
-                    @click="$dispatch('open-compare-modal')"
-                    class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-blue-700 border border-blue-200 rounded-md hover:bg-blue-50 transition-colors"
-                    title="Compare this run with another run">
-                <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                     stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round"
-                          d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
-                </svg>
-                Compare runs
-            </button>
             {# Status badge #}
             {% set _sc = {
                 'completed': 'bg-green-100 text-green-800',
@@ -137,13 +191,29 @@
                 {{ run.mode | capitalize }}
             </span>
             {% endif %}
+            {% endif %}
+            {# m-06: Compare Runs button — requires a specific run to be selected as baseline.
+               Uses Alpine x-show so it appears dynamically when a run is selected via dropdown. #}
+            <button type="button"
+                    x-show="filters.run_id"
+                    x-cloak
+                    @click="$dispatch('open-compare-modal')"
+                    class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-blue-700 border border-blue-200 rounded-md hover:bg-blue-50 transition-colors"
+                    title="Compare this run with another run">
+                <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                          d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
+                </svg>
+                Compare runs
+            </button>
         </div>
     </div>
 
     {# ---- Summary stats cards ---------------------------------------- #}
     <div
         class="grid grid-cols-2 gap-4 sm:grid-cols-4"
-        x-data="summaryCards('{{ run_id }}')"
+        x-data="summaryCards()"
         x-init="load()"
     >
         {# Loading skeleton — rendered with a simple loop via JS #}
@@ -162,7 +232,7 @@
                  x-text="'Could not load summary: ' + error"></div>
         </template>
 
-        {# Loaded cards #}
+        {# Loaded cards — handles both run-level and design-level response shapes #}
         <template x-if="!loading && !error && summary">
             <div class="contents">
                 <div class="bg-white rounded-lg shadow px-5 py-4">
@@ -171,22 +241,24 @@
                        x-text="summary.total_records !== undefined ? summary.total_records.toLocaleString() : '—'"></p>
                 </div>
                 <div class="bg-white rounded-lg shadow px-5 py-4">
-                    <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Arenas</p>
+                    <p class="text-xs font-medium text-gray-500 uppercase tracking-wider"
+                       x-text="summary.completed_runs !== undefined ? 'Completed runs' : 'Arenas'"></p>
                     <p class="mt-1 text-2xl font-semibold text-gray-900"
-                       x-text="summary.by_arena ? summary.by_arena.length : '—'"></p>
+                       x-text="summary.completed_runs !== undefined ? summary.completed_runs : (summary.by_arena ? summary.by_arena.length : '—')"></p>
                 </div>
                 <div class="bg-white rounded-lg shadow px-5 py-4">
                     <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Date range</p>
                     <p class="mt-1 text-sm font-medium text-gray-700 leading-snug">
-                        <span x-text="summary.published_at_min ? summary.published_at_min.slice(0,10) : '—'"></span>
+                        <span x-text="(summary.content_date_from || summary.published_at_min || summary.first_run_at || '').slice(0,10) || '—'"></span>
                         <span class="text-gray-400"> – </span>
-                        <span x-text="summary.published_at_max ? summary.published_at_max.slice(0,10) : '—'"></span>
+                        <span x-text="(summary.content_date_to || summary.published_at_max || summary.last_completed_at || '').slice(0,10) || '—'"></span>
                     </p>
                 </div>
                 <div class="bg-white rounded-lg shadow px-5 py-4">
-                    <p class="text-xs font-medium text-gray-500 uppercase tracking-wider">Credits spent</p>
+                    <p class="text-xs font-medium text-gray-500 uppercase tracking-wider"
+                       x-text="summary.total_credits !== undefined ? 'Total credits' : 'Credits spent'"></p>
                     <p class="mt-1 text-2xl font-semibold text-gray-900"
-                       x-text="summary.credits_spent !== undefined ? summary.credits_spent.toLocaleString() : '—'"></p>
+                       x-text="(summary.total_credits !== undefined ? summary.total_credits : summary.credits_spent) !== undefined ? (summary.total_credits !== undefined ? summary.total_credits : summary.credits_spent).toLocaleString() : '—'"></p>
                 </div>
             </div>
         </template>
@@ -203,6 +275,24 @@
     #}
     <div class="bg-white rounded-lg shadow px-5 py-4">
         <div class="flex flex-wrap items-end gap-4">
+            {# Collection Run dropdown — only shown in design mode when runs are available #}
+            {% if mode == 'design' and runs %}
+            <div>
+                <label class="block text-xs font-medium text-gray-700 mb-1">Collection Run</label>
+                <select
+                    x-model="filters.run_id"
+                    class="block w-48 rounded-md border border-gray-300 shadow-sm text-sm px-2 py-1.5
+                           focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none bg-white"
+                >
+                    <option value="">All runs ({{ run_count }})</option>
+                    {% for r in runs %}
+                    <option value="{{ r.id }}" {% if run_id and r.id == run_id %}selected{% endif %}>
+                        {{ r.started_at[:16] if r.started_at else 'Unknown' }} ({{ r.records_collected or 0 }} records)
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% endif %}
             <div>
                 <label class="block text-xs font-medium text-gray-700 mb-1">Platform</label>
                 <select
@@ -289,7 +379,7 @@
         {# Volume over time — spans full width #}
         <div
             class="bg-white rounded-lg shadow p-5 lg:col-span-2"
-            x-data="volumeChart('{{ run_id }}')"
+            x-data="volumeChart()"
             x-init="init()"
             @filter-applied.window="load()"
         >
@@ -368,7 +458,7 @@
         {# Top actors #}
         <div
             class="bg-white rounded-lg shadow p-5"
-            x-data="actorsChart('{{ run_id }}')"
+            x-data="actorsChart()"
             x-init="load()"
             @filter-applied.window="load()"
         >
@@ -392,7 +482,7 @@
         {# Top terms #}
         <div
             class="bg-white rounded-lg shadow p-5"
-            x-data="termsChart('{{ run_id }}')"
+            x-data="termsChart()"
             x-init="load()"
             @filter-applied.window="load()"
         >
@@ -409,7 +499,7 @@
         {# Engagement distribution — spans full width #}
         <div
             class="bg-white rounded-lg shadow p-5 lg:col-span-2"
-            x-data="engagementChart('{{ run_id }}')"
+            x-data="engagementChart()"
             x-init="load()"
             @filter-applied.window="load()"
         >
@@ -435,7 +525,7 @@
     #}
     <div
         class="bg-white rounded-lg shadow p-5"
-        x-data="emergentTermsPanel('{{ run_id }}')"
+        x-data="emergentTermsPanel()"
         x-init="load()"
     >
         <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
@@ -487,7 +577,7 @@
             x-show="!loading && !error && terms.length === 0"
             class="flex items-center justify-center h-24 text-sm text-gray-400 italic"
         >
-            No emergent terms data available for this run.
+            No emergent terms data available for this {{ 'design' if mode == 'design' else 'run' }}.
         </div>
 
         {# Chart + table side-by-side #}
@@ -515,26 +605,31 @@
                                 <td class="px-4 py-2 text-right text-gray-700"
                                     x-text="t.document_frequency !== undefined ? t.document_frequency.toLocaleString() : '—'"></td>
                                 <td class="px-4 py-2 text-center">
-                                    {#
-                                        "Add to query design" — placeholder action.
-                                        Full integration (selecting a design and POSTing the term)
-                                        requires a backend endpoint and a design picker modal.
-                                        For now this copies the term name to the clipboard.
-                                    #}
                                     <button
                                         type="button"
-                                        @click="copyTerm(t.term)"
-                                        title="Copy term name to clipboard"
-                                        class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs
-                                               font-medium text-blue-700 bg-blue-50 rounded-md
-                                               hover:bg-blue-100 transition-colors"
+                                        @click="addTerm(t.term)"
+                                        :disabled="!queryDesignId || isExistingTerm(t.term) || addedTerms.has(t.term)"
+                                        :title="!queryDesignId
+                                            ? 'No query design linked'
+                                            : isExistingTerm(t.term)
+                                                ? 'Already in query design'
+                                                : addedTerms.has(t.term)
+                                                    ? 'Successfully added'
+                                                    : 'Add to query design'"
+                                        :class="isExistingTerm(t.term) || addedTerms.has(t.term)
+                                            ? 'inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-green-700 bg-green-50 rounded-md cursor-default'
+                                            : 'inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 rounded-md hover:bg-blue-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed'"
                                     >
-                                        <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none"
-                                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round"
-                                                  d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                                        <svg x-show="isExistingTerm(t.term) || addedTerms.has(t.term)"
+                                             class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                             stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
                                         </svg>
-                                        Add to query design
+                                        <span x-text="isExistingTerm(t.term)
+                                            ? 'Already added'
+                                            : addedTerms.has(t.term)
+                                                ? 'Added'
+                                                : 'Add to design'"></span>
                                     </button>
                                 </td>
                             </tr>
@@ -543,25 +638,14 @@
                 </table>
             </div>
 
-            {# Clipboard confirmation toast (inline, no extra lib) #}
-            <div
-                x-show="clipboardToast"
-                x-transition:enter="transition ease-out duration-200"
-                x-transition:enter-start="opacity-0 translate-y-1"
-                x-transition:enter-end="opacity-100 translate-y-0"
-                x-transition:leave="transition ease-in duration-150"
-                x-transition:leave-start="opacity-100"
-                x-transition:leave-end="opacity-0"
-                class="fixed bottom-4 right-4 bg-gray-900 text-white text-sm px-4 py-2 rounded-lg shadow-lg z-50"
-                x-text="clipboardToast"
-            ></div>
+            <p x-show="addError" class="mt-2 text-xs text-red-600" x-text="addError"></p>
         </div>
     </div>{# /emergent terms #}
 
     {# ---- Network section -------------------------------------------- #}
     <div
         class="bg-white rounded-lg shadow p-5"
-        x-data="networkTabs('{{ run_id }}')"
+        x-data="networkTabs()"
         x-init="init()"
     >
         <h2 class="text-sm font-semibold text-gray-900 mb-4">Network analysis</h2>
@@ -590,9 +674,10 @@
 
             {# Network sub-tabs: Static | Temporal #}
             <div
-                x-data="networkPreview('{{ run_id }}', 'actor')"
+                x-data="networkPreview('actors')"
                 x-init="init()"
-                @destroy.window="if ($event.detail && $event.detail.tab === 'actor') destroy()"
+                @destroy.window="if ($event.detail && $event.detail.tab === 'actors') destroy()"
+                @network-tab-changed.window="onTabChanged($event.detail.tab)"
             >
                 <div class="flex gap-1 mb-3">
                     <button
@@ -614,7 +699,7 @@
                 {# Static network preview #}
                 <div x-show="viewMode === 'static'">
                     <template x-if="_includeNetworkPreview()">
-                        <div x-html="_buildNetworkPreviewHTML('actor-network-container')"></div>
+                        <div x-html="_buildNetworkPreviewHTML('actors-network-container')"></div>
                     </template>
                     {# Large-graph warning — shown when node count exceeds the preview limit #}
                     <div x-show="!loading && tooLarge"
@@ -627,7 +712,7 @@
                         <span x-text="`Graph too large to preview (${nodeCount} nodes). Showing top 100 nodes by degree. Download GEXF for full visualisation in Gephi.`"></span>
                     </div>
                     <div class="relative">
-                        <div id="actor-network-container" class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50" style="height: 360px;">
+                        <div id="actors-network-container" class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50" style="height: 360px;">
                             <div x-show="loading" class="absolute inset-0 flex items-center justify-center">
                                 <div class="text-sm text-gray-400 animate-pulse">Loading network data...</div>
                             </div>
@@ -635,8 +720,11 @@
                                 <p class="text-sm text-red-600 text-center" x-text="error"></p>
                             </div>
                             <div x-show="!loading && !error && nodeCount === 0"
-                                 class="absolute inset-0 flex items-center justify-center">
-                                <p class="text-sm text-gray-400 italic">No network data available for this run.</p>
+                                 class="absolute inset-0 flex flex-col items-center justify-center">
+                                <img src="{{ url_for('static', path='images/brand/qr-pattern-2x.png') }}"
+                                     alt="" aria-hidden="true"
+                                     class="absolute inset-0 w-full h-full object-contain opacity-[0.04] pointer-events-none">
+                                <p class="relative text-sm text-gray-400 italic">No network data available for this {{ 'design' if mode == 'design' else 'run' }}.</p>
                             </div>
                         </div>
                         {# Zoom controls — overlaid top-right corner of the canvas #}
@@ -677,14 +765,14 @@
                         <p class="text-xs text-gray-500">
                             Each bar represents a time period. Click a bar to load that period's network preview.
                         </p>
-                        <canvas id="actor-temporal-chart" height="80"></canvas>
+                        <canvas id="actors-temporal-chart" height="80"></canvas>
                         <div class="flex items-center gap-2 text-xs text-gray-600">
                             <span>Selected period:</span>
                             <span class="font-medium text-gray-900"
                                   x-text="selectedPeriod || 'None — click a bar above'"></span>
                         </div>
                         {# Period network container #}
-                        <div id="actor-period-network-container"
+                        <div id="actors-period-network-container"
                              class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50"
                              style="height: 300px;"
                              x-show="selectedPeriod">
@@ -698,7 +786,7 @@
                 {# Download button (always visible when data exists) #}
                 <div class="mt-3 flex flex-wrap gap-2">
                     <a
-                        href="/content/export?format=gexf&network_type=actor&run_id={{ run_id }}"
+                        :href="_gexfExportUrl('actor')"
                         class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300
                                text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 transition-colors"
                     >
@@ -726,8 +814,9 @@
             </p>
 
             <div
-                x-data="networkPreview('{{ run_id }}', 'term')"
+                x-data="networkPreview('terms')"
                 x-init="init()"
+                @network-tab-changed.window="onTabChanged($event.detail.tab)"
             >
                 <div class="flex gap-1 mb-3">
                     <button
@@ -758,7 +847,7 @@
                         <span x-text="`Graph too large to preview (${nodeCount} nodes). Showing top 100 nodes by degree. Download GEXF for full visualisation in Gephi.`"></span>
                     </div>
                     <div class="relative">
-                        <div id="term-network-container" class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50" style="height: 360px;">
+                        <div id="terms-network-container" class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50" style="height: 360px;">
                             <div x-show="loading" class="absolute inset-0 flex items-center justify-center">
                                 <div class="text-sm text-gray-400 animate-pulse">Loading network data...</div>
                             </div>
@@ -766,8 +855,11 @@
                                 <p class="text-sm text-red-600 text-center" x-text="error"></p>
                             </div>
                             <div x-show="!loading && !error && nodeCount === 0"
-                                 class="absolute inset-0 flex items-center justify-center">
-                                <p class="text-sm text-gray-400 italic">No network data available for this run.</p>
+                                 class="absolute inset-0 flex flex-col items-center justify-center">
+                                <img src="{{ url_for('static', path='images/brand/qr-pattern-2x.png') }}"
+                                     alt="" aria-hidden="true"
+                                     class="absolute inset-0 w-full h-full object-contain opacity-[0.04] pointer-events-none">
+                                <p class="relative text-sm text-gray-400 italic">No network data available for this {{ 'design' if mode == 'design' else 'run' }}.</p>
                             </div>
                         </div>
                         {# Zoom controls — overlaid top-right corner of the canvas #}
@@ -796,12 +888,12 @@
                     <div x-show="!temporalLoading && !temporalError && temporalPeriods.length === 0"
                          class="py-4 text-sm text-gray-400 italic">No temporal snapshots available.</div>
                     <div x-show="!temporalLoading && !temporalError && temporalPeriods.length > 0" class="space-y-4">
-                        <canvas id="term-temporal-chart" height="80"></canvas>
+                        <canvas id="terms-temporal-chart" height="80"></canvas>
                         <div x-show="selectedPeriod" class="flex items-center gap-2 text-xs text-gray-600">
                             <span>Selected:</span>
                             <span class="font-medium text-gray-900" x-text="selectedPeriod"></span>
                         </div>
-                        <div id="term-period-network-container"
+                        <div id="terms-period-network-container"
                              x-show="selectedPeriod"
                              class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50"
                              style="height: 300px;">
@@ -814,7 +906,7 @@
 
                 <div class="mt-3 flex flex-wrap gap-2">
                     <a
-                        href="/content/export?format=gexf&network_type=term&run_id={{ run_id }}"
+                        :href="_gexfExportUrl('term')"
                         class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300
                                text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 transition-colors"
                     >
@@ -841,8 +933,9 @@
             </p>
 
             <div
-                x-data="networkPreview('{{ run_id }}', 'bipartite')"
+                x-data="networkPreview('bipartite')"
                 x-init="init()"
+                @network-tab-changed.window="onTabChanged($event.detail.tab)"
             >
                 <div class="flex gap-1 mb-3">
                     <button
@@ -881,8 +974,11 @@
                                 <p class="text-sm text-red-600 text-center" x-text="error"></p>
                             </div>
                             <div x-show="!loading && !error && nodeCount === 0"
-                                 class="absolute inset-0 flex items-center justify-center">
-                                <p class="text-sm text-gray-400 italic">No network data available for this run.</p>
+                                 class="absolute inset-0 flex flex-col items-center justify-center">
+                                <img src="{{ url_for('static', path='images/brand/qr-pattern-2x.png') }}"
+                                     alt="" aria-hidden="true"
+                                     class="absolute inset-0 w-full h-full object-contain opacity-[0.04] pointer-events-none">
+                                <p class="relative text-sm text-gray-400 italic">No network data available for this {{ 'design' if mode == 'design' else 'run' }}.</p>
                             </div>
                         </div>
                         {# Zoom controls — overlaid top-right corner of the canvas #}
@@ -935,7 +1031,7 @@
 
                 <div class="mt-3 flex flex-wrap gap-2">
                     <a
-                        href="/content/export?format=gexf&network_type=bipartite&run_id={{ run_id }}"
+                        :href="_gexfExportUrl('bipartite')"
                         class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300
                                text-gray-700 text-sm font-medium rounded-md hover:bg-gray-50 transition-colors"
                     >
@@ -1022,7 +1118,7 @@
     #}
     <div
         class="bg-white rounded-lg shadow p-5"
-        x-data="enrichmentResults('{{ run_id }}')"
+        x-data="enrichmentResults()"
         x-init="init()"
     >
         <h2 class="text-sm font-semibold text-gray-900 mb-4">Enrichment Analysis</h2>
@@ -1207,9 +1303,18 @@
     {# ---- Export section --------------------------------------------- #}
     <div
         class="bg-white rounded-lg shadow p-5"
-        x-data="exportPanel('{{ run_id }}')"
+        x-data="exportPanel()"
     >
-        <h2 class="text-sm font-semibold text-gray-900 mb-4">Export data</h2>
+        <h2 class="text-sm font-semibold text-gray-900 mb-2">Export data</h2>
+        {% if mode == 'design' %}
+        <p class="text-xs text-gray-500 mb-4">
+            <span x-show="!$root.filters.run_id">Exporting records from <strong>all runs</strong> in this query design.</span>
+            <span x-show="$root.filters.run_id" x-cloak>Exporting records from the <strong>selected run</strong> only.</span>
+            Platform, arena, and date filters from the filter bar above are also applied.
+        </p>
+        {% else %}
+        <p class="text-xs text-gray-500 mb-4">Exporting records from this collection run.</p>
+        {% endif %}
 
         {# Format selector #}
         <fieldset class="mb-4">
@@ -1265,8 +1370,8 @@
         <div class="flex flex-wrap gap-3">
             <a
                 :href="exportFormat === 'gexf'
-                    ? `/content/export?format=gexf&network_type=${gexfNetworkType}&run_id={{ run_id }}`
-                    : `/content/export?format=${exportFormat}&run_id={{ run_id }}`"
+                    ? _gexfExportUrl(gexfNetworkType)
+                    : _buildExportUrl(exportFormat)"
                 class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white
                        text-sm font-medium rounded-md hover:bg-blue-700 transition-colors"
             >
@@ -1407,7 +1512,7 @@
     {# ---- Suggested terms section (IP2-053) -------------------------- #}
     <div
         class="bg-white rounded-lg shadow p-5"
-        x-data="suggestedTermsPanel('{{ run_id }}', '{{ run.query_design_id or '' }}')"
+        x-data="suggestedTermsPanel()"
         x-init="load()"
     >
         <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
@@ -1426,7 +1531,7 @@
             x-show="!loading && !error && terms.length === 0"
             class="flex items-center justify-center h-16 text-sm text-gray-400 italic"
         >
-            No suggestions available for this run.
+            No suggestions available for this {{ 'design' if mode == 'design' else 'run' }}.
         </div>
 
         <div x-show="!loading && !error && terms.length > 0">
@@ -1485,8 +1590,36 @@
         </div>
     </div>{# /suggested terms #}
 
+    {# ---- Included Runs table (design mode only) --------------------- #}
+    {% if mode == 'design' and runs %}
+    <div class="bg-white rounded-lg shadow overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-200">
+            <h2 class="text-sm font-semibold text-gray-900">Included Runs</h2>
+            <p class="text-xs text-gray-500 mt-0.5">Analysis aggregates data from all completed runs below</p>
+        </div>
+        <table class="min-w-full divide-y divide-gray-200 text-sm">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Run ID</th>
+                    <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Started</th>
+                    <th class="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Records</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+                {% for r in runs %}
+                <tr class="hover:bg-gray-50 transition-colors">
+                    <td class="px-6 py-3 font-mono text-xs text-gray-700">{{ r.id[:8] }}…</td>
+                    <td class="px-6 py-3 text-xs text-gray-500">{{ r.started_at[:16] if r.started_at else '' }}</td>
+                    <td class="px-6 py-3 text-right text-xs font-mono text-gray-700">{{ r.records_collected or 0 }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
     {# m-06: Cross-run comparison modal (SB-06) #}
-    <div x-data="compareRunsModal('{{ run_id }}', {{ run.query_design_id | tojson if run.query_design_id else 'null' }})"
+    <div x-data="compareRunsModal()"
          x-show="showModal"
          x-cloak
          @open-compare-modal.window="openModal()"
@@ -1586,43 +1719,155 @@
 <script>
 'use strict';
 
-// ---- Utility: build a query-string from the current filter state ----
-function _analysisFilterQs(extra) {
+// ---- Cleanup: destroy all Chart.js instances before HTMX boost swaps ----
+// Prevents stale ResizeObserver / animation-frame callbacks from firing
+// after the canvases are removed from the DOM.
+document.addEventListener('htmx:beforeSwap', function () {
+    if (typeof Chart !== 'undefined') {
+        Object.values(Chart.instances || {}).forEach(function (c) {
+            try { c.destroy(); } catch (_) { /* ignore */ }
+        });
+    }
+});
+
+// ---- Shared scope for design-level / run-level analysis ----
+// Set by the top-level analysisDashboard() component and read by all child components.
+window.__analysisScope = {
+    designId: '',
+    runId: '',
+    mode: 'run',  // 'design' or 'run'
+};
+
+/**
+ * Build the API URL for an analysis endpoint.
+ * In design mode: /analysis/design/{designId}/{endpoint}?run_id=...&platform=...
+ * In run mode: /analysis/{runId}/{endpoint}?platform=...
+ *
+ * @param {string} endpoint - e.g. 'summary', 'volume', 'actors'
+ * @param {Object} [extraParams] - additional key/value pairs to append
+ * @returns {string}
+ */
+function _buildAnalysisUrl(endpoint, extraParams) {
+    const scope = window.__analysisScope;
     const f = window.__analysisFilters || {};
     const p = new URLSearchParams();
-    if (f.platform)    p.set('platform',    f.platform);
-    if (f.arena)       p.set('arena',       f.arena);
-    if (f.date_from)   p.set('date_from',   f.date_from);
-    if (f.date_to)     p.set('date_to',     f.date_to);
-    if (f.granularity) p.set('granularity', f.granularity);
-    if (extra) Object.entries(extra).forEach(([k, v]) => p.set(k, v));
-    const s = p.toString();
-    return s ? '?' + s : '';
+
+    if (scope.mode === 'design') {
+        if (!scope.designId) {
+            console.warn('[analysis] _buildAnalysisUrl: designId is empty');
+            return '#';
+        }
+        if (f.run_id)      p.set('run_id',      f.run_id);
+        if (f.platform)    p.set('platform',    f.platform);
+        if (f.arena)       p.set('arena',       f.arena);
+        if (f.date_from)   p.set('date_from',   f.date_from);
+        if (f.date_to)     p.set('date_to',     f.date_to);
+        if (f.granularity) p.set('granularity', f.granularity);
+        if (extraParams) Object.entries(extraParams).forEach(([k, v]) => { if (v != null && v !== '') p.set(k, String(v)); });
+        const qs = p.toString();
+        return `/analysis/design/${scope.designId}/${endpoint}${qs ? '?' + qs : ''}`;
+    } else {
+        if (!scope.runId) {
+            console.warn('[analysis] _buildAnalysisUrl: runId is empty');
+            return '#';
+        }
+        if (f.platform)    p.set('platform',    f.platform);
+        if (f.arena)       p.set('arena',       f.arena);
+        if (f.date_from)   p.set('date_from',   f.date_from);
+        if (f.date_to)     p.set('date_to',     f.date_to);
+        if (f.granularity) p.set('granularity', f.granularity);
+        if (extraParams) Object.entries(extraParams).forEach(([k, v]) => { if (v != null && v !== '') p.set(k, String(v)); });
+        const qs = p.toString();
+        return `/analysis/${scope.runId}/${endpoint}${qs ? '?' + qs : ''}`;
+    }
+}
+
+/**
+ * Build a GEXF export URL that is scope-aware.
+ *
+ * @param {string} networkType - 'actor', 'term', or 'bipartite'
+ * @returns {string}
+ */
+function _gexfExportUrl(networkType) {
+    const scope = window.__analysisScope;
+    const f = window.__analysisFilters || {};
+    if (scope.mode === 'design' && !scope.designId) return '#';
+    if (scope.mode !== 'design' && !scope.runId) return '#';
+    const p = new URLSearchParams();
+    p.set('format', 'gexf');
+    p.set('network_type', networkType);
+    if (scope.mode === 'design') {
+        p.set('query_design_id', scope.designId);
+        if (f.run_id) p.set('run_id', f.run_id);
+    } else {
+        p.set('run_id', scope.runId);
+    }
+    return `/content/export?${p.toString()}`;
+}
+
+/**
+ * Build a flat export URL for the export panel.
+ *
+ * @param {string} format - e.g. 'csv', 'xlsx', 'json'
+ * @param {Object} [extraParams]
+ * @returns {string}
+ */
+function _buildExportUrl(format, extraParams) {
+    const scope = window.__analysisScope;
+    const f = window.__analysisFilters || {};
+    if (scope.mode === 'design' && !scope.designId) return '#';
+    if (scope.mode !== 'design' && !scope.runId) return '#';
+    const p = new URLSearchParams();
+    p.set('format', format);
+    if (scope.mode === 'design') {
+        p.set('query_design_id', scope.designId);
+        if (f.run_id) p.set('run_id', f.run_id);
+    } else {
+        p.set('run_id', scope.runId);
+    }
+    if (extraParams) Object.entries(extraParams).forEach(([k, v]) => { if (v != null && v !== '') p.set(k, String(v)); });
+    return `/content/export?${p.toString()}`;
 }
 
 // ---- Top-level dashboard component ----------------------------------------
-function analysisDashboard(runId) {
+function analysisDashboard(designId, runId, mode) {
     return {
-        runId,
         filters: {
+            run_id: runId || '',
             platform: '',
             arena: '',
             date_from: '',
             date_to: '',
             granularity: 'day',
         },
-        // IP2-012: dropdown option lists populated from GET /analysis/{run_id}/filter-options.
+        // IP2-012: dropdown option lists populated from GET .../filter-options.
         platformOptions: [],
         arenaOptions: [],
 
         async init() {
+            // Set the shared scope so child components can resolve URLs.
+            window.__analysisScope = { designId: designId || '', runId: runId || '', mode: mode || 'run' };
             // Expose a live reference so chart sub-components can read filters.
             window.__analysisFilters = this.filters;
 
+            // Watch for run_id filter changes to update scope and URL bar.
+            this.$watch('filters.run_id', (val) => {
+                window.__analysisScope.runId = val;
+                if (mode === 'design') {
+                    const url = new URL(window.location.href);
+                    if (val) {
+                        url.searchParams.set('run_id', val);
+                    } else {
+                        url.searchParams.delete('run_id');
+                    }
+                    history.replaceState(null, '', url.toString());
+                }
+            });
+
             // IP2-012: Load filter options from the backend.
-            // GET /analysis/{run_id}/filter-options returns { platforms: string[], arenas: string[] }.
             try {
-                const resp = await fetch(`/analysis/${runId}/filter-options`, { credentials: 'include' });
+                const url = _buildAnalysisUrl('filter-options');
+                const resp = await fetch(url, { credentials: 'include' });
                 if (resp.ok) {
                     const data = await resp.json();
                     if (Array.isArray(data.platforms)) this.platformOptions = data.platforms;
@@ -1638,6 +1883,7 @@ function analysisDashboard(runId) {
             window.dispatchEvent(new CustomEvent('filter-applied', { detail: { ...this.filters } }));
         },
         resetFilters() {
+            this.filters.run_id      = '';
             this.filters.platform    = '';
             this.filters.arena       = '';
             this.filters.date_from   = '';
@@ -1649,9 +1895,8 @@ function analysisDashboard(runId) {
 }
 
 // ---- Summary cards --------------------------------------------------------
-function summaryCards(runId) {
+function summaryCards() {
     return {
-        runId,
         loading: true,
         error: null,
         summary: null,
@@ -1659,7 +1904,7 @@ function summaryCards(runId) {
             this.loading = true;
             this.error = null;
             try {
-                const res = await fetch(`/analysis/${runId}/summary`, { credentials: 'include' });
+                const res = await fetch(_buildAnalysisUrl('summary'), { credentials: 'include' });
                 if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                 this.summary = await res.json();
             } catch (e) {
@@ -1672,9 +1917,8 @@ function summaryCards(runId) {
 }
 
 // ---- Volume-over-time chart (GR-16: political calendar event overlay) -----
-function volumeChart(runId) {
+function volumeChart() {
     return {
-        runId,
         loading: false,
         error: null,
 
@@ -1772,8 +2016,7 @@ function volumeChart(runId) {
             this.loading = true;
             this.error = null;
             try {
-                const qs = _analysisFilterQs();
-                const res = await fetch(`/analysis/${runId}/volume${qs}`, { credentials: 'include' });
+                const res = await fetch(_buildAnalysisUrl('volume'), { credentials: 'include' });
                 if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                 const rows = await res.json();
 
@@ -1790,6 +2033,9 @@ function volumeChart(runId) {
                     xLabel: 'Date',
                     yLabel: 'Number of records',
                 };
+                // Use $nextTick to ensure the canvas is in the DOM after
+                // HTMX boost navigation before Chart.js tries to render.
+                await this.$nextTick();
                 if (typeof window.initMultiArenaVolumeChart === 'function') {
                     window.initMultiArenaVolumeChart('volumeChart', { labels, rows, arenaNames, ...axisLabels }, events);
                 } else if (typeof window.initVolumeChart === 'function') {
@@ -1812,9 +2058,8 @@ function volumeChart(runId) {
 }
 
 // ---- Top-actors horizontal bar chart -------------------------------------
-function actorsChart(runId) {
+function actorsChart() {
     return {
-        runId,
         loading: false,
         error: null,
         // True when at least one returned actor has a resolved_name.
@@ -1826,12 +2071,7 @@ function actorsChart(runId) {
             this.error = null;
             this.hasResolvedActors = false;
             try {
-                const f = window.__analysisFilters || {};
-                const p = new URLSearchParams({ limit: 20 });
-                if (f.platform)  p.set('platform',  f.platform);
-                if (f.date_from) p.set('date_from',  f.date_from);
-                if (f.date_to)   p.set('date_to',    f.date_to);
-                const res = await fetch(`/analysis/${runId}/actors?${p}`, { credentials: 'include' });
+                const res = await fetch(_buildAnalysisUrl('actors', { limit: 20 }), { credentials: 'include' });
                 if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                 const rows = await res.json();
 
@@ -1849,6 +2089,7 @@ function actorsChart(runId) {
 
                 this.hasResolvedActors = rows.some(r => !!r.resolved_name);
 
+                await this.$nextTick();
                 if (typeof window.initActorsChart === 'function') {
                     window.initActorsChart('actorsChart', {
                         labels,
@@ -1867,22 +2108,18 @@ function actorsChart(runId) {
 }
 
 // ---- Top-terms horizontal bar chart --------------------------------------
-function termsChart(runId) {
+function termsChart() {
     return {
-        runId,
         loading: false,
         error: null,
         async load() {
             this.loading = true;
             this.error = null;
             try {
-                const f = window.__analysisFilters || {};
-                const p = new URLSearchParams({ limit: 20 });
-                if (f.date_from) p.set('date_from', f.date_from);
-                if (f.date_to)   p.set('date_to',   f.date_to);
-                const res = await fetch(`/analysis/${runId}/terms?${p}`, { credentials: 'include' });
+                const res = await fetch(_buildAnalysisUrl('terms', { limit: 20 }), { credentials: 'include' });
                 if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                 const rows = await res.json();
+                await this.$nextTick();
                 if (typeof window.initTermsChart === 'function') {
                     window.initTermsChart('termsChart', {
                         labels: rows.map(r => r.term),
@@ -1901,25 +2138,18 @@ function termsChart(runId) {
 }
 
 // ---- Engagement distribution grouped bar chart ---------------------------
-function engagementChart(runId) {
+function engagementChart() {
     return {
-        runId,
         loading: false,
         error: null,
         async load() {
             this.loading = true;
             this.error = null;
             try {
-                const f = window.__analysisFilters || {};
-                const p = new URLSearchParams();
-                if (f.platform)  p.set('platform', f.platform);
-                if (f.arena)     p.set('arena',    f.arena);
-                if (f.date_from) p.set('date_from', f.date_from);
-                if (f.date_to)   p.set('date_to',   f.date_to);
-                const qs = p.toString() ? '?' + p.toString() : '';
-                const res = await fetch(`/analysis/${runId}/engagement${qs}`, { credentials: 'include' });
+                const res = await fetch(_buildAnalysisUrl('engagement'), { credentials: 'include' });
                 if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                 const data = await res.json();
+                await this.$nextTick();
                 if (typeof window.initEngagementStatsChart === 'function') {
                     window.initEngagementStatsChart('engagementChart', data, {
                         xLabel: 'Metric',
@@ -1947,33 +2177,38 @@ function engagementChart(runId) {
 
 // ---- Emergent Terms panel component ---------------------------------------
 //
-// Fetches TF-IDF emergent terms from GET /analysis/{run_id}/emergent-terms
+// Fetches TF-IDF emergent terms from GET .../emergent-terms
 //   Query params: top_n (int), exclude_search_terms (bool)
 //   Response: [{ term: string, score: number, document_frequency: number,
 //                is_search_term: boolean }]
 //
-function emergentTermsPanel(runId) {
+function emergentTermsPanel() {
     return {
-        runId,
         loading: false,
         error: null,
         terms: [],
         excludeSearchTerms: true,
         topN: 20,
-        clipboardToast: '',
-        _toastTimer: null,
+        existingTerms: new Set(),
+        addedTerms: new Set(),
+        addError: null,
+
+        get queryDesignId() {
+            return window.__analysisScope.designId || null;
+        },
 
         async load() {
             this.loading = true;
             this.error = null;
             try {
-                const p = new URLSearchParams({
-                    top_n: this.topN,
-                    exclude_search_terms: this.excludeSearchTerms ? '1' : '0',
-                });
-                const res = await fetch(`/analysis/${runId}/emergent-terms?${p}`, { credentials: 'include' });
+                const res = await fetch(
+                    _buildAnalysisUrl('emergent-terms', {
+                        top_n: this.topN,
+                        exclude_search_terms: this.excludeSearchTerms ? '1' : '0',
+                    }),
+                    { credentials: 'include' }
+                );
                 if (res.status === 404) {
-                    // Endpoint not yet implemented — show empty state silently.
                     this.terms = [];
                     return;
                 }
@@ -1981,6 +2216,10 @@ function emergentTermsPanel(runId) {
                 this.terms = await res.json();
                 // Render chart after DOM updates with new terms.
                 this.$nextTick(() => this._renderChart());
+                // Load existing terms to pre-mark "Already added" buttons.
+                if (this.queryDesignId) {
+                    await this.loadExistingTerms();
+                }
             } catch (e) {
                 this.error = e.message;
             } finally {
@@ -2003,72 +2242,106 @@ function emergentTermsPanel(runId) {
             if (typeof window.initTermsChart === 'function') {
                 const canvas = document.getElementById('emergentTermsChart');
                 if (!canvas) return;
+                // Verify 2D context is available (can fail after HTMX boost navigation).
+                try { if (!canvas.getContext('2d')) return; } catch (_) { return; }
                 // Destroy any existing chart instance on this canvas first.
                 const existing = window.Chart && window.Chart.getChart(canvas);
                 if (existing) existing.destroy();
-                // Render using initTermsChart with overridden colour via Chart.js options.
-                new window.Chart(canvas, {
-                    type: 'bar',
-                    data: {
-                        labels: this.terms.map(t => t.term),
-                        datasets: [{
-                            label: 'Emergence score',
-                            data: this.terms.map(t => t.score),
-                            // Green-600 to distinguish from the regular terms chart (amber).
-                            backgroundColor: 'rgba(22, 163, 74, 0.7)',
-                            borderColor: '#16a34a',
-                            borderWidth: 0,
-                            borderRadius: 3,
-                        }],
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: true,
-                        indexAxis: 'y',
-                        plugins: {
-                            legend: { display: false },
-                            tooltip: {
-                                backgroundColor: '#1f2937',
-                                titleColor: '#f9fafb',
-                                bodyColor: '#d1d5db',
-                                padding: 10,
-                                cornerRadius: 6,
+                // Render using Chart.js directly with overridden colour.
+                try {
+                    new window.Chart(canvas, {
+                        type: 'bar',
+                        data: {
+                            labels: this.terms.map(t => t.term),
+                            datasets: [{
+                                label: 'Emergence score',
+                                data: this.terms.map(t => t.score),
+                                backgroundColor: 'rgba(22, 163, 74, 0.7)',
+                                borderColor: '#16a34a',
+                                borderWidth: 0,
+                                borderRadius: 3,
+                            }],
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: true,
+                            indexAxis: 'y',
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: {
+                                    backgroundColor: '#1f2937',
+                                    titleColor: '#f9fafb',
+                                    bodyColor: '#d1d5db',
+                                    padding: 10,
+                                    cornerRadius: 6,
+                                },
+                            },
+                            scales: {
+                                x: {
+                                    beginAtZero: true,
+                                    ticks: { color: '#6b7280', font: { size: 11 }, precision: 4 },
+                                    grid: { color: 'rgba(0,0,0,0.05)' },
+                                    title: { display: true, text: 'Emergence score', color: '#6b7280', font: { size: 11 } },
+                                },
+                                y: {
+                                    ticks: { color: '#374151', font: { size: 11 } },
+                                    grid: { display: false },
+                                    title: { display: true, text: 'Term', color: '#6b7280', font: { size: 11 } },
+                                },
                             },
                         },
-                        scales: {
-                            x: {
-                                beginAtZero: true,
-                                ticks: { color: '#6b7280', font: { size: 11 }, precision: 4 },
-                                grid: { color: 'rgba(0,0,0,0.05)' },
-                                title: { display: true, text: 'Emergence score', color: '#6b7280', font: { size: 11 } },
-                            },
-                            y: {
-                                ticks: { color: '#374151', font: { size: 11 } },
-                                grid: { display: false },
-                                title: { display: true, text: 'Term', color: '#6b7280', font: { size: 11 } },
-                            },
-                        },
-                    },
-                });
+                    });
+                } catch (e) { console.warn('[analysis] Emergent terms chart failed:', e.message); }
             }
         },
 
-        async copyTerm(term) {
-            // Copy the term name to the system clipboard so it can be pasted
-            // into a query design's search terms field.
+        async loadExistingTerms() {
             try {
-                await navigator.clipboard.writeText(term);
-                this._showToast(`Copied "${term}" to clipboard`);
-            } catch (_) {
-                // Clipboard API may be blocked in insecure contexts.
-                this._showToast('Could not access clipboard. Copy manually: ' + term);
+                const res = await fetch(`/query-designs/${this.queryDesignId}`, {
+                    credentials: 'include',
+                    headers: { 'Accept': 'application/json' },
+                });
+                if (!res.ok) return;
+                const data = await res.json();
+                if (data.search_terms && Array.isArray(data.search_terms)) {
+                    this.existingTerms = new Set(
+                        data.search_terms
+                            .filter(t => t.is_active)
+                            .map(t => t.term.toLowerCase())
+                    );
+                }
+            } catch (e) {
+                console.warn('Could not load existing terms:', e);
             }
         },
 
-        _showToast(msg) {
-            if (this._toastTimer) clearTimeout(this._toastTimer);
-            this.clipboardToast = msg;
-            this._toastTimer = setTimeout(() => { this.clipboardToast = ''; }, 3000);
+        isExistingTerm(term) {
+            return this.existingTerms.has(term.toLowerCase());
+        },
+
+        async addTerm(term) {
+            if (!this.queryDesignId) return;
+            this.addError = null;
+            try {
+                const body = new URLSearchParams({
+                    term,
+                    term_type: 'keyword',
+                    group_label: 'auto_discovered',
+                });
+                const res = await fetch(`/query-designs/${this.queryDesignId}/terms`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: body.toString(),
+                });
+                if (!res.ok) {
+                    const errBody = await res.text().catch(() => '');
+                    throw new Error(`HTTP ${res.status}: ${errBody || res.statusText}`);
+                }
+                this.addedTerms = new Set([...this.addedTerms, term]);
+            } catch (e) {
+                this.addError = `Could not add "${term}": ${e.message}`;
+            }
         },
     };
 }
@@ -2079,9 +2352,8 @@ function emergentTermsPanel(runId) {
 // The three network tabs (actor/term/bipartite) each embed their own
 // networkPreview() Alpine component which owns the sigma.js lifecycle.
 //
-function networkTabs(runId) {
+function networkTabs() {
     return {
-        runId,
         activeTab: 'actor',
         tabs: [
             { id: 'actor',         label: 'Actor network' },
@@ -2100,13 +2372,15 @@ function networkTabs(runId) {
 
         switchTab(tabId) {
             this.activeTab = tabId;
+            // Notify networkPreview components so they can lazy-load / teardown.
+            this.$dispatch('network-tab-changed', { tab: tabId });
         },
 
         async loadCrossplatform() {
             this.crossplatformLoading = true;
             this.crossplatformError = null;
             try {
-                const res = await fetch(`/analysis/${runId}/network/cross-platform`, { credentials: 'include' });
+                const res = await fetch(_buildAnalysisUrl('network/cross-platform'), { credentials: 'include' });
                 if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                 this.crossplatformActors = await res.json();
             } catch (e) {
@@ -2129,20 +2403,16 @@ function networkTabs(runId) {
 //   - graphology-layout        (window.graphologyLayout)
 //   - graphology-layout-forceatlas2 (window.graphologyLayoutForceAtlas2)
 //
-// API endpoint expected:
+// API endpoint (design mode):
+//   GET /analysis/design/{design_id}/network/{network_type}
+// API endpoint (run mode):
 //   GET /analysis/{run_id}/network/{network_type}
 //   Response: {
 //       nodes: [{ id: string, label: string, node_type: 'actor'|'term', weight?: number }],
 //       edges: [{ source: string, target: string, weight?: number }]
 //   }
 //
-// Temporal snapshots endpoint expected:
-//   GET /analysis/{run_id}/network/{network_type}/temporal
-//   Response: [{ period: string, node_count: int, edge_count: int }]
-//
-// Period snapshot endpoint:
-//   GET /analysis/{run_id}/network/{network_type}/temporal/{period}
-//   Response: GEXF graph data in JSON format with nodes and edges
+// Temporal snapshots and period endpoints are constructed analogously.
 //
 // Maximum nodes to render in the browser preview.
 // Graphs larger than this are trimmed to the top-N nodes by degree before
@@ -2151,9 +2421,8 @@ const _NETWORK_PREVIEW_MAX_NODES = 100;
 // Maximum edges to render alongside the trimmed node set.
 const _NETWORK_PREVIEW_MAX_EDGES = 200;
 
-function networkPreview(runId, networkType) {
+function networkPreview(networkType) {
     return {
-        runId,
         networkType,
 
         // Static network state
@@ -2179,11 +2448,52 @@ function networkPreview(runId, networkType) {
         _periodSigmaInstance: null,
         _temporalChartInstance: null,
 
+        // Map networkType to the parent tab ID used by networkTabs.
+        _tabIdMap: { actors: 'actor', terms: 'term', bipartite: 'bipartite' },
+        // Map networkType to the singular form expected by temporal API endpoints.
+        _temporalTypeMap: { actors: 'actor', terms: 'term' },
+        _loaded: false,
+        _cachedGraphData: null,
+
         // --------------- lifecycle ----------------------------------------
 
         async init() {
-            // Load the static network on mount.
-            await this.loadStatic();
+            // Only eagerly load the default active tab ('actor') to avoid
+            // creating WebGL contexts for hidden tabs.  Other tabs lazy-load
+            // when switched to via the 'network-tab-changed' event.
+            const myTab = this._tabIdMap[networkType] || networkType;
+            if (myTab === 'actor') {
+                await this.loadStatic();
+                this._loaded = true;
+            }
+        },
+
+        async onTabChanged(activeTabId) {
+            const myTab = this._tabIdMap[networkType] || networkType;
+            if (activeTabId === myTab) {
+                // Tab became visible — load if first time, re-render if sigma was killed.
+                if (!this._loaded) {
+                    await this.loadStatic();
+                    this._loaded = true;
+                } else if (!this.sigmaInstance && this._cachedGraphData) {
+                    this.$nextTick(() => this._renderSigma(
+                        this._cachedGraphData, this._containerId(), 'sigmaInstance'));
+                }
+            } else {
+                // Tab hidden — kill sigma to free WebGL contexts.
+                this._killSigma();
+            }
+        },
+
+        _killSigma() {
+            if (this.sigmaInstance) {
+                this.sigmaInstance.kill();
+                this.sigmaInstance = null;
+            }
+            if (this._periodSigmaInstance) {
+                this._periodSigmaInstance.kill();
+                this._periodSigmaInstance = null;
+            }
         },
 
         destroy() {
@@ -2219,7 +2529,7 @@ function networkPreview(runId, networkType) {
 
             try {
                 const res = await fetch(
-                    `/analysis/${runId}/network/${networkType}`,
+                    _buildAnalysisUrl(`network/${networkType}`),
                     { credentials: 'include' }
                 );
                 if (res.status === 404) {
@@ -2241,6 +2551,7 @@ function networkPreview(runId, networkType) {
                 if (this.nodeCount > 0) {
                     // Trim oversized graphs before rendering to keep sigma.js responsive.
                     const trimmed = this._trimGraph(graphData);
+                    this._cachedGraphData = trimmed;
                     // Wait for Alpine to finish rendering the container before measuring it.
                     this.$nextTick(() => this._renderSigma(trimmed, this._containerId(), 'sigmaInstance'));
                 }
@@ -2298,11 +2609,18 @@ function networkPreview(runId, networkType) {
 
         async loadTemporal() {
             if (this.temporalPeriods.length > 0) return;  // Already loaded.
+            // Backend temporal endpoints expect singular type ('actor'/'term').
+            // 'bipartite' is not supported for temporal — show empty state.
+            const temporalType = this._temporalTypeMap[networkType];
+            if (!temporalType) {
+                this.temporalPeriods = [];
+                return;
+            }
             this.temporalLoading = true;
             this.temporalError = null;
             try {
                 const res = await fetch(
-                    `/analysis/${runId}/network/${networkType}/temporal`,
+                    _buildAnalysisUrl(`network/${temporalType}/temporal`),
                     { credentials: 'include' }
                 );
                 if (res.status === 404) {
@@ -2331,9 +2649,11 @@ function networkPreview(runId, networkType) {
             }
 
             try {
+                const temporalType = this._temporalTypeMap[networkType];
+                if (!temporalType) return;
                 const encodedPeriod = encodeURIComponent(period);
                 const res = await fetch(
-                    `/analysis/${runId}/network/${networkType}/temporal/${encodedPeriod}`,
+                    _buildAnalysisUrl(`network/${temporalType}/temporal/${encodedPeriod}`),
                     { credentials: 'include' }
                 );
                 if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
@@ -2525,6 +2845,8 @@ function networkPreview(runId, networkType) {
             const canvasId = this._temporalChartCanvasId();
             const canvas = document.getElementById(canvasId);
             if (!canvas) return;
+            // Verify 2D context is available (can fail after HTMX boost navigation).
+            try { if (!canvas.getContext('2d')) return; } catch (_) { return; }
 
             // Destroy any existing chart on this canvas.
             if (this._temporalChartInstance) {
@@ -2539,69 +2861,70 @@ function networkPreview(runId, networkType) {
             // Capture reference to this Alpine component for the click callback.
             const self = this;
 
-            this._temporalChartInstance = new window.Chart(canvas, {
-                type: 'bar',
-                data: {
-                    labels,
-                    datasets: [
-                        {
-                            label: 'Nodes',
-                            data: periods.map(p => p.node_count || 0),
-                            backgroundColor: 'rgba(37, 99, 235, 0.7)',
-                            borderColor: '#2563eb',
-                            borderWidth: 0,
-                            borderRadius: 3,
+            try {
+                this._temporalChartInstance = new window.Chart(canvas, {
+                    type: 'bar',
+                    data: {
+                        labels,
+                        datasets: [
+                            {
+                                label: 'Nodes',
+                                data: periods.map(p => p.node_count || 0),
+                                backgroundColor: 'rgba(37, 99, 235, 0.7)',
+                                borderColor: '#2563eb',
+                                borderWidth: 0,
+                                borderRadius: 3,
+                            },
+                            {
+                                label: 'Edges',
+                                data: periods.map(p => p.edge_count || 0),
+                                backgroundColor: 'rgba(217, 119, 6, 0.7)',
+                                borderColor: '#d97706',
+                                borderWidth: 0,
+                                borderRadius: 3,
+                            },
+                        ],
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: {
+                                labels: { font: { size: 12, family: 'system-ui, sans-serif' }, color: '#374151' },
+                            },
+                            tooltip: {
+                                backgroundColor: '#1f2937',
+                                titleColor: '#f9fafb',
+                                bodyColor: '#d1d5db',
+                                padding: 10,
+                                cornerRadius: 6,
+                            },
                         },
-                        {
-                            label: 'Edges',
-                            data: periods.map(p => p.edge_count || 0),
-                            backgroundColor: 'rgba(217, 119, 6, 0.7)',
-                            borderColor: '#d97706',
-                            borderWidth: 0,
-                            borderRadius: 3,
+                        scales: {
+                            x: {
+                                ticks: { color: '#6b7280', font: { size: 11 }, maxRotation: 45 },
+                                grid: { display: false },
+                                title: { display: true, text: 'Period', color: '#6b7280', font: { size: 11 } },
+                            },
+                            y: {
+                                beginAtZero: true,
+                                ticks: { color: '#6b7280', font: { size: 11 }, precision: 0 },
+                                grid: { color: 'rgba(0,0,0,0.05)' },
+                                title: { display: true, text: 'Count', color: '#6b7280', font: { size: 11 } },
+                            },
                         },
-                    ],
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: true,
-                    plugins: {
-                        legend: {
-                            labels: { font: { size: 12, family: 'system-ui, sans-serif' }, color: '#374151' },
+                        onClick(event, elements) {
+                            if (!elements.length) return;
+                            const idx = elements[0].index;
+                            const period = periods[idx] ? periods[idx].period : null;
+                            if (period) self.loadPeriod(period);
                         },
-                        tooltip: {
-                            backgroundColor: '#1f2937',
-                            titleColor: '#f9fafb',
-                            bodyColor: '#d1d5db',
-                            padding: 10,
-                            cornerRadius: 6,
+                        onHover(event, elements) {
+                            event.native.target.style.cursor = elements.length ? 'pointer' : 'default';
                         },
                     },
-                    scales: {
-                        x: {
-                            ticks: { color: '#6b7280', font: { size: 11 }, maxRotation: 45 },
-                            grid: { display: false },
-                            title: { display: true, text: 'Period', color: '#6b7280', font: { size: 11 } },
-                        },
-                        y: {
-                            beginAtZero: true,
-                            ticks: { color: '#6b7280', font: { size: 11 }, precision: 0 },
-                            grid: { color: 'rgba(0,0,0,0.05)' },
-                            title: { display: true, text: 'Count', color: '#6b7280', font: { size: 11 } },
-                        },
-                    },
-                    // Click a bar to load that period's network.
-                    onClick(event, elements) {
-                        if (!elements.length) return;
-                        const idx = elements[0].index;
-                        const period = periods[idx] ? periods[idx].period : null;
-                        if (period) self.loadPeriod(period);
-                    },
-                    onHover(event, elements) {
-                        event.native.target.style.cursor = elements.length ? 'pointer' : 'default';
-                    },
-                },
-            });
+                });
+            } catch (e) { console.warn('[analysis] Temporal chart failed:', e.message); }
         },
 
         // Helper called by x-html to force Alpine to recognise container init.
@@ -2612,9 +2935,8 @@ function networkPreview(runId, networkType) {
 }
 
 // ---- Export panel component -----------------------------------------------
-function exportPanel(runId) {
+function exportPanel() {
     return {
-        runId,
         exportFormat: 'csv',
         // formats: the value is what is sent to the server; label is what the researcher sees.
         // tooltip (optional) is shown as a help icon for citation formats.
@@ -2646,20 +2968,15 @@ function exportPanel(runId) {
         },
 
         filteredExportUrl() {
-            const f = window.__analysisFilters || {};
             const fe = this.filteredExport;
             // Derive format: RIS/BibTeX map to same keys on the filtered export endpoint;
             // GEXF is not supported by the filtered endpoint (only tabular formats).
             const fmt = (this.exportFormat === 'gexf') ? 'csv' : this.exportFormat;
-            const p = new URLSearchParams({ format: fmt });
-            if (f.platform)                    p.set('platform',       f.platform);
-            if (f.arena)                       p.set('arena',          f.arena);
-            if (f.date_from)                   p.set('date_from',      f.date_from);
-            if (f.date_to)                     p.set('date_to',        f.date_to);
-            if (fe.search_term.trim())         p.set('search_term',    fe.search_term.trim());
-            if (fe.top_actors.trim())          p.set('top_actors',     fe.top_actors.trim());
-            if (fe.min_engagement !== '')      p.set('min_engagement', fe.min_engagement);
-            return `/analysis/${runId}/filtered-export?${p.toString()}`;
+            const extras = {};
+            if (fe.search_term.trim())    extras.search_term    = fe.search_term.trim();
+            if (fe.top_actors.trim())     extras.top_actors     = fe.top_actors.trim();
+            if (fe.min_engagement !== '') extras.min_engagement = fe.min_engagement;
+            return _buildAnalysisUrl('filtered-export', { format: fmt, ...extras });
         },
 
         async startAsyncExport() {
@@ -2673,10 +2990,20 @@ function exportPanel(runId) {
 
             try {
                 // Build POST body — include network_type only for GEXF format.
-                const payload = {
-                    format: this.exportFormat,
-                    run_id: this.runId,
-                };
+                const scope = window.__analysisScope;
+                const f = window.__analysisFilters || {};
+                const payload = { format: this.exportFormat };
+                // Provide the run_id for the async job. In design mode, use the
+                // currently selected run if set; fall back to the design scope.
+                if (scope.mode === 'design') {
+                    if (f.run_id) {
+                        payload.run_id = f.run_id;
+                    } else {
+                        payload.query_design_id = scope.designId;
+                    }
+                } else {
+                    payload.run_id = scope.runId;
+                }
                 if (this.exportFormat === 'gexf') {
                     payload.network_type = this.gexfNetworkType;
                 }
@@ -2738,9 +3065,8 @@ function exportPanel(runId) {
 //
 // All data is fetched from the existing enrichment endpoints in routes/analysis.py.
 //
-function enrichmentResults(runId) {
+function enrichmentResults() {
     return {
-        runId,
 
         // Language distribution state
         languagesLoading: false,
@@ -2774,7 +3100,7 @@ function enrichmentResults(runId) {
             this.languagesLoading = true;
             this.languagesError = null;
             try {
-                const res = await fetch(`/analysis/${this.runId}/enrichments/languages`, {
+                const res = await fetch(_buildAnalysisUrl('enrichments/languages'), {
                     credentials: 'include',
                 });
                 if (!res.ok) {
@@ -2797,7 +3123,7 @@ function enrichmentResults(runId) {
             this.entitiesLoading = true;
             this.entitiesError = null;
             try {
-                const res = await fetch(`/analysis/${this.runId}/enrichments/entities?limit=20`, {
+                const res = await fetch(_buildAnalysisUrl('enrichments/entities', { limit: 20 }), {
                     credentials: 'include',
                 });
                 if (!res.ok) {
@@ -2819,7 +3145,7 @@ function enrichmentResults(runId) {
             this.propagationLoading = true;
             this.propagationError = null;
             try {
-                const res = await fetch(`/analysis/${this.runId}/enrichments/propagation`, {
+                const res = await fetch(_buildAnalysisUrl('enrichments/propagation'), {
                     credentials: 'include',
                 });
                 if (!res.ok) {
@@ -2841,7 +3167,7 @@ function enrichmentResults(runId) {
             this.coordinationLoading = true;
             this.coordinationError = null;
             try {
-                const res = await fetch(`/analysis/${this.runId}/enrichments/coordination`, {
+                const res = await fetch(_buildAnalysisUrl('enrichments/coordination'), {
                     credentials: 'include',
                 });
                 if (!res.ok) {
@@ -2863,22 +3189,18 @@ function enrichmentResults(runId) {
 
 // ---- Suggested terms panel component (IP2-053 + SB-01) --------------------
 //
-// Loads emergent terms that are not yet in the query design from the endpoint:
-//   GET /analysis/{run_id}/suggested-terms
-// Response: [{ term: string, score: float, document_frequency: int }]
+// Loads emergent terms that are not yet in the query design.
+// URL is resolved via _buildAnalysisUrl('suggested-terms').
 //
 // SB-01: One-click term addition from analysis dashboard
 // - Pre-marks terms that are already in the query design
 // - Sets group_label to "auto_discovered" when adding terms
 // - Shows inline success feedback
 //
-// If a queryDesignId is available, the "Add to query design" button POSTs to:
-//   POST /query-designs/{design_id}/terms  (HTMX form, application/x-www-form-urlencoded)
+// Reads designId from window.__analysisScope to determine the query design.
 //
-function suggestedTermsPanel(runId, queryDesignId) {
+function suggestedTermsPanel() {
     return {
-        runId,
-        queryDesignId: queryDesignId || null,
         loading: false,
         error: null,
         terms: [],
@@ -2886,13 +3208,18 @@ function suggestedTermsPanel(runId, queryDesignId) {
         addedTerms: new Set(),
         addError: null,
 
+        get queryDesignId() {
+            const scope = window.__analysisScope;
+            // In design mode, use designId directly.
+            // In run mode, the run's query_design_id is exposed via the scope.
+            return scope.designId || null;
+        },
+
         async load() {
             this.loading = true;
             this.error = null;
             try {
-                // Fetch suggested terms
-                const p = new URLSearchParams({ top_n: 10 });
-                const res = await fetch(`/analysis/${runId}/suggested-terms?${p}`, { credentials: 'include' });
+                const res = await fetch(_buildAnalysisUrl('suggested-terms', { top_n: 10 }), { credentials: 'include' });
                 if (res.status === 404) {
                     // Endpoint not yet available — show empty state silently.
                     this.terms = [];
@@ -2971,16 +3298,23 @@ function suggestedTermsPanel(runId, queryDesignId) {
 // user to select one to compare with the current run.
 // On submission, navigates to GET /analysis/compare?run_ids={baseline},{new}
 //
-function compareRunsModal(currentRunId, queryDesignId) {
+// Reads currentRunId and queryDesignId from window.__analysisScope.
+//
+function compareRunsModal() {
     return {
         showModal: false,
-        currentRunId,
-        queryDesignId,
         loadingRuns: false,
         loading: false,
         error: null,
         availableRuns: [],
         selectedRunId: null,
+
+        get currentRunId() {
+            return window.__analysisScope ? window.__analysisScope.runId : '';
+        },
+        get queryDesignId() {
+            return window.__analysisScope ? window.__analysisScope.designId : null;
+        },
 
         openModal() {
             this.showModal = true;

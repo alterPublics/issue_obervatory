@@ -96,7 +96,7 @@
                     <td class="px-6 py-3 text-right font-mono text-gray-900">{{ alloc.credits_amount | default(0) }}</td>
                     <td class="px-6 py-3 text-gray-500 text-xs">{{ alloc.valid_until | default('No expiry') }}</td>
                     <td class="px-6 py-3 text-gray-500 text-xs">{{ alloc.memo | default('') }}</td>
-                    <td class="px-6 py-3 text-gray-500 text-xs">{{ alloc.allocated_at | default('') | truncate(16, true, '') }}</td>
+                    <td class="px-6 py-3 text-gray-500 text-xs">{{ alloc.allocated_at | default('') | string | truncate(16, true, '') }}</td>
                 </tr>
                 {% endfor %}
             </tbody>

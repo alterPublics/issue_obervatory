@@ -27,6 +27,8 @@ import logging
 import time
 from typing import Any
 
+from celery.exceptions import SoftTimeLimitExceeded
+
 from issue_observatory.arenas.bluesky.collector import BlueskyCollector
 from issue_observatory.config.settings import get_settings
 from issue_observatory.core.credential_pool import CredentialPool
@@ -52,6 +54,8 @@ def _update_task_status(
     status: str,
     records_collected: int = 0,
     error_message: str | None = None,
+    actors_skipped: int = 0,
+    skipped_actor_detail: list[dict[str, str]] | None = None,
 ) -> None:
     """Best-effort update of the ``collection_tasks`` row for this arena.
 
@@ -63,11 +67,15 @@ def _update_task_status(
         status: New status (``"running"`` | ``"completed"`` | ``"failed"``).
         records_collected: Number of records collected (for completed updates).
         error_message: Error description (for failed updates).
+        actors_skipped: Number of actors skipped due to per-actor errors.
+        skipped_actor_detail: List of dicts with actor_id, reason, error.
     """
     try:
         from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
 
         with get_sync_session() as session:
+            import json  # noqa: PLC0415
+
             from sqlalchemy import text  # noqa: PLC0415
 
             session.execute(
@@ -77,6 +85,8 @@ def _update_task_status(
                     SET status = :status,
                         records_collected = :records_collected,
                         error_message = :error_message,
+                        actors_skipped = :actors_skipped,
+                        skipped_actor_detail = :skipped_actor_detail,
                         completed_at = CASE WHEN :status IN ('completed', 'failed')
                                             THEN NOW() ELSE completed_at END,
                         started_at   = CASE WHEN :status = 'running' AND started_at IS NULL
@@ -88,6 +98,10 @@ def _update_task_status(
                     "status": status,
                     "records_collected": records_collected,
                     "error_message": error_message,
+                    "actors_skipped": actors_skipped,
+                    "skipped_actor_detail": json.dumps(skipped_actor_detail)
+                    if skipped_actor_detail
+                    else None,
                     "run_id": collection_run_id,
                     "arena": arena,
                 },
@@ -114,6 +128,8 @@ def _update_task_status(
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
+    soft_time_limit=600,
+    time_limit=720,
 )
 def bluesky_collect_terms(
     self: Any,
@@ -159,105 +175,233 @@ def bluesky_collect_terms(
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    logger.info(
-        "bluesky: collect_by_terms started — run=%s terms=%d",
-        collection_run_id,
-        len(terms),
-    )
-    _update_task_status(collection_run_id, "bluesky", "running")
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="bluesky",
-        platform="bluesky",
-        status="running",
-        records_collected=0,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-
-    credential_pool = CredentialPool()
-    collector = BlueskyCollector(credential_pool=credential_pool)
-
     try:
-        records = asyncio.run(
-            collector.collect_by_terms(
+        logger.info(
+            "bluesky: collect_by_terms started — run=%s terms=%d",
+            collection_run_id,
+            len(terms),
+        )
+        _update_task_status(collection_run_id, "bluesky", "running")
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="bluesky",
+            platform="bluesky",
+            status="running",
+            records_collected=0,
+            error_message=None,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
+
+        credential_pool = CredentialPool()
+        collector = BlueskyCollector(credential_pool=credential_pool)
+
+        # Check if force_recollect is set (opt-out from coverage check)
+        force_recollect = _extra.get("force_recollect", False)
+
+        # Pre-collection coverage check: narrow date range to uncovered gaps
+        effective_date_from = date_from
+        effective_date_to = date_to
+        if not force_recollect and date_from and date_to:
+            from datetime import datetime as _dt  # noqa: PLC0415
+
+            from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
+                check_existing_coverage,
+            )
+
+            gaps = check_existing_coverage(
+                platform="bluesky",
+                date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
+                date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
                 terms=terms,
-                tier=Tier.FREE,
+            )
+            if not gaps:
+                logger.info(
+                    "bluesky: full coverage exists for run=%s — skipping API call, "
+                    "will reindex existing records only.",
+                    collection_run_id,
+                )
+                # Skip API call — jump to persist + reindex
+                from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+                    reindex_existing_records,
+                )
+
+                linked = reindex_existing_records(
+                    platform="bluesky",
+                    collection_run_id=collection_run_id,
+                    query_design_id=query_design_id,
+                    terms=terms,
+                    date_from=date_from,
+                    date_to=date_to,
+                )
+                _update_task_status(
+                    collection_run_id, "bluesky", "completed", records_collected=0
+                )
+                publish_task_update(
+                    redis_url=_redis_url,
+                    run_id=collection_run_id,
+                    arena="bluesky",
+                    platform="bluesky",
+                    status="completed",
+                    records_collected=0,
+                    error_message=None,
+                    elapsed_seconds=elapsed_since(_task_start),
+                )
+                return {
+                    "records_collected": 0,
+                    "records_linked": linked,
+                    "status": "completed",
+                    "arena": "bluesky",
+                    "tier": "free",
+                    "coverage_skip": True,
+                }
+            # Use the first gap's boundaries as the narrowed date range
+            effective_date_from = gaps[0][0].isoformat()
+            effective_date_to = gaps[-1][1].isoformat()
+            logger.info(
+                "bluesky: narrowing collection to uncovered range %s — %s (run=%s)",
+                effective_date_from,
+                effective_date_to,
+                collection_run_id,
+            )
+
+        # Define a progress callback that emits SSE updates during long-running collections
+        def _report_progress(count: int) -> None:
+            """Publish intermediate progress via event_bus during collection."""
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="bluesky",
+                platform="bluesky",
+                status="running",
+                records_collected=count,
+                error_message=None,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            logger.debug("bluesky: progress update — collected=%d", count)
+
+        try:
+            records = asyncio.run(
+                collector.collect_by_terms(
+                    terms=terms,
+                    tier=Tier.FREE,
+                    date_from=effective_date_from,
+                    date_to=effective_date_to,
+                    max_results=max_results,
+                    language_filter=language_filter,
+                    progress_callback=_report_progress,
+                )
+            )
+        except NoCredentialAvailableError as exc:
+            # Should not occur for Bluesky (free/unauthenticated), but handle gracefully.
+            msg = f"bluesky: credential error (unexpected): {exc}"
+            logger.error(msg)
+            _update_task_status(collection_run_id, "bluesky", "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="bluesky",
+                platform="bluesky",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise ArenaCollectionError(msg, arena="bluesky", platform="bluesky") from exc
+        except ArenaRateLimitError:
+            logger.warning(
+                "bluesky: rate limited on collect_by_terms for run=%s — will retry.",
+                collection_run_id,
+            )
+            raise
+        except ArenaCollectionError as exc:
+            msg = str(exc)
+            logger.error("bluesky: collection error for run=%s: %s", collection_run_id, msg)
+            _update_task_status(collection_run_id, "bluesky", "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="bluesky",
+                platform="bluesky",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
+
+        count = len(records)
+
+        # Persist collected records to the database.
+        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+            persist_collected_records,
+            record_collection_attempts_batch,
+            reindex_existing_records,
+        )
+
+        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
+        # Link existing records from other runs that match these terms/dates.
+        linked = reindex_existing_records(
+            platform="bluesky",
+            collection_run_id=collection_run_id,
+            query_design_id=query_design_id,
+            terms=terms,
+            date_from=date_from,
+            date_to=date_to,
+        )
+
+        # Record successful collection attempts for future pre-checks.
+        if date_from and date_to:
+            record_collection_attempts_batch(
+                platform="bluesky",
+                collection_run_id=collection_run_id,
+                query_design_id=query_design_id,
+                inputs=terms,
+                input_type="term",
                 date_from=date_from,
                 date_to=date_to,
-                max_results=max_results,
-                language_filter=language_filter,
+                records_returned=inserted,
             )
+
+        logger.info(
+            "bluesky: collect_by_terms completed — run=%s records=%d inserted=%d "
+            "skipped=%d linked=%d",
+            collection_run_id,
+            count,
+            inserted,
+            skipped,
+            linked,
         )
-    except NoCredentialAvailableError as exc:
-        # Should not occur for Bluesky (free/unauthenticated), but handle gracefully.
-        msg = f"bluesky: credential error (unexpected): {exc}"
-        logger.error(msg)
-        _update_task_status(collection_run_id, "bluesky", "failed", error_message=msg)
+        _update_task_status(collection_run_id, "bluesky", "completed", records_collected=inserted)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="bluesky",
             platform="bluesky",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
+            status="completed",
+            records_collected=inserted,
+            error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        raise ArenaCollectionError(msg, arena="bluesky", platform="bluesky") from exc
-    except ArenaRateLimitError:
-        logger.warning(
-            "bluesky: rate limited on collect_by_terms for run=%s — will retry.",
+        return {
+            "records_collected": inserted,
+            "status": "completed",
+            "arena": "bluesky",
+            "tier": "free",
+        }
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "bluesky: collect_by_terms timed out after 10 minutes — run=%s",
             collection_run_id,
         )
-        raise
-    except ArenaCollectionError as exc:
-        msg = str(exc)
-        logger.error("bluesky: collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, "bluesky", "failed", error_message=msg)
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="bluesky",
-            platform="bluesky",
-            status="failed",
-            records_collected=0,
-            error_message=msg,
-            elapsed_seconds=elapsed_since(_task_start),
+        _update_task_status(
+            collection_run_id,
+            "bluesky",
+            "failed",
+            error_message="Collection timed out after 10 minutes",
         )
-        raise
-
-    count = len(records)
-
-    # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
-
-    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
-    logger.info(
-        "bluesky: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
-        collection_run_id,
-        count,
-        inserted,
-        skipped,
-    )
-    _update_task_status(collection_run_id, "bluesky", "completed", records_collected=inserted)
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="bluesky",
-        platform="bluesky",
-        status="completed",
-        records_collected=inserted,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-    return {
-        "records_collected": inserted,
-        "status": "completed",
-        "arena": "bluesky",
-        "tier": "free",
-    }
+        return {"status": "failed", "error": "timeout", "arena": "bluesky"}
 
 
 @celery_app.task(
@@ -268,6 +412,8 @@ def bluesky_collect_terms(
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
+    soft_time_limit=600,
+    time_limit=720,
 )
 def bluesky_collect_actors(
     self: Any,
@@ -306,88 +452,141 @@ def bluesky_collect_actors(
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    logger.info(
-        "bluesky: collect_by_actors started — run=%s actors=%d",
-        collection_run_id,
-        len(actor_ids),
-    )
-    _update_task_status(collection_run_id, "bluesky", "running")
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="bluesky",
-        platform="bluesky",
-        status="running",
-        records_collected=0,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-
-    credential_pool = CredentialPool()
-    collector = BlueskyCollector(credential_pool=credential_pool)
-
     try:
-        records = asyncio.run(
-            collector.collect_by_actors(
-                actor_ids=actor_ids,
-                tier=Tier.FREE,
-                date_from=date_from,
-                date_to=date_to,
-                max_results=max_results,
-            )
-        )
-    except ArenaRateLimitError:
-        logger.warning(
-            "bluesky: rate limited on collect_by_actors for run=%s — will retry.",
+        logger.info(
+            "bluesky: collect_by_actors started — run=%s actors=%d",
             collection_run_id,
+            len(actor_ids),
         )
-        raise
-    except ArenaCollectionError as exc:
-        msg = str(exc)
-        logger.error("bluesky: actor collection error for run=%s: %s", collection_run_id, msg)
-        _update_task_status(collection_run_id, "bluesky", "failed", error_message=msg)
+        _update_task_status(collection_run_id, "bluesky", "running")
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="bluesky",
             platform="bluesky",
-            status="failed",
+            status="running",
             records_collected=0,
-            error_message=msg,
+            error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        raise
 
-    count = len(records)
+        credential_pool = CredentialPool()
+        collector = BlueskyCollector(credential_pool=credential_pool)
 
-    # Persist collected records to the database.
-    from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+        try:
+            records = asyncio.run(
+                collector.collect_by_actors(
+                    actor_ids=actor_ids,
+                    tier=Tier.FREE,
+                    date_from=date_from,
+                    date_to=date_to,
+                    max_results=max_results,
+                )
+            )
+        except ArenaRateLimitError:
+            logger.warning(
+                "bluesky: rate limited on collect_by_actors for run=%s — will retry.",
+                collection_run_id,
+            )
+            raise
+        except ArenaCollectionError as exc:
+            msg = str(exc)
+            logger.error("bluesky: actor collection error for run=%s: %s", collection_run_id, msg)
+            _update_task_status(collection_run_id, "bluesky", "failed", error_message=msg)
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="bluesky",
+                platform="bluesky",
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
 
-    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
-    logger.info(
-        "bluesky: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
-        collection_run_id,
-        count,
-        inserted,
-        skipped,
-    )
-    _update_task_status(collection_run_id, "bluesky", "completed", records_collected=inserted)
-    publish_task_update(
-        redis_url=_redis_url,
-        run_id=collection_run_id,
-        arena="bluesky",
-        platform="bluesky",
-        status="completed",
-        records_collected=inserted,
-        error_message=None,
-        elapsed_seconds=elapsed_since(_task_start),
-    )
-    return {
-        "records_collected": inserted,
-        "status": "completed",
-        "arena": "bluesky",
-        "tier": "free",
-    }
+        count = len(records)
+
+        # Persist collected records to the database.
+        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+            persist_collected_records,
+            record_collection_attempts_batch,
+            reindex_existing_records,
+        )
+
+        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
+        # Link existing records from other runs that match these actors/dates.
+        linked = reindex_existing_records(
+            platform="bluesky",
+            collection_run_id=collection_run_id,
+            query_design_id=query_design_id,
+            actor_ids=actor_ids,
+            date_from=date_from,
+            date_to=date_to,
+        )
+
+        # Record successful collection attempts for future pre-checks.
+        if date_from and date_to:
+            record_collection_attempts_batch(
+                platform="bluesky",
+                collection_run_id=collection_run_id,
+                query_design_id=query_design_id,
+                inputs=actor_ids,
+                input_type="actor",
+                date_from=date_from,
+                date_to=date_to,
+                records_returned=inserted,
+            )
+
+        skipped_actors = collector.skipped_actors
+        logger.info(
+            "bluesky: collect_by_actors completed — run=%s records=%d inserted=%d "
+            "dupes_skipped=%d actors_skipped=%d linked=%d",
+            collection_run_id,
+            count,
+            inserted,
+            skipped,
+            len(skipped_actors),
+            linked,
+        )
+        _update_task_status(
+            collection_run_id,
+            "bluesky",
+            "completed",
+            records_collected=inserted,
+            actors_skipped=len(skipped_actors),
+            skipped_actor_detail=skipped_actors or None,
+        )
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="bluesky",
+            platform="bluesky",
+            status="completed",
+            records_collected=inserted,
+            error_message=None,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
+        return {
+            "records_collected": inserted,
+            "status": "completed",
+            "arena": "bluesky",
+            "tier": "free",
+            "actors_skipped": len(skipped_actors),
+        }
+    except SoftTimeLimitExceeded:
+        logger.error(
+            "bluesky: collect_by_actors timed out after 10 minutes — run=%s",
+            collection_run_id,
+        )
+        _update_task_status(
+            collection_run_id,
+            "bluesky",
+            "failed",
+            error_message="Collection timed out after 10 minutes",
+        )
+        return {"status": "failed", "error": "timeout", "arena": "bluesky"}
 
 
 @celery_app.task(

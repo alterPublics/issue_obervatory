@@ -23,7 +23,7 @@ import uuid
 from typing import Annotated, AsyncGenerator, Optional
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,6 +69,42 @@ async def _get_job_or_404(
             detail=f"Scraping job '{job_id}' not found.",
         )
     return job
+
+
+async def _render_jobs_table(
+    request: Request,
+    db: AsyncSession,
+    current_user: User,
+) -> Response:
+    """Render the jobs table HTML fragment.
+
+    Helper function used by multiple endpoints to return consistent HTMX responses.
+    Queries the 50 most recent jobs for the current user and renders the jobs table template.
+
+    Args:
+        request: The incoming HTTP request.
+        db: Async database session.
+        current_user: The authenticated user.
+
+    Returns:
+        HTML response containing the jobs table fragment.
+    """
+    stmt = (
+        select(ScrapingJob)
+        .where(ScrapingJob.created_by == current_user.id)
+        .order_by(ScrapingJob.created_at.desc())
+        .limit(50)
+    )
+    result = await db.execute(stmt)
+    jobs = list(result.scalars().all())
+
+    if not hasattr(request.app.state, "templates"):
+        raise RuntimeError("Templates not initialized")
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        "scraping/_jobs_table.html",
+        {"request": request, "jobs": jobs, "user": current_user},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +182,112 @@ async def create_scraping_job(
     return job
 
 
+@router.post("/form", response_class=HTMLResponse)
+async def create_scraping_job_form(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    source_type: Annotated[str, Form()],
+    source_collection_run_id: Annotated[Optional[str], Form()] = None,
+    source_urls: Annotated[Optional[str], Form()] = None,
+    query_design_id: Annotated[Optional[str], Form()] = None,
+    delay_min: Annotated[float, Form()] = 2.0,
+    delay_max: Annotated[float, Form()] = 5.0,
+    timeout_seconds: Annotated[int, Form()] = 30,
+    respect_robots_txt: Annotated[Optional[str], Form()] = None,
+    use_playwright_fallback: Annotated[Optional[str], Form()] = None,
+    max_retries: Annotated[Optional[int], Form()] = None,
+) -> HTMLResponse:
+    """Create a scraping job from a browser form submission.
+
+    Accepts application/x-www-form-urlencoded data from HTMX, parses it into
+    a ScrapingJobCreate payload, and delegates to the main create_scraping_job
+    function for validation and job creation.
+
+    After successful creation, returns an HTML fragment (the jobs table) by
+    querying all jobs and rendering the _jobs_table.html template.
+
+    Args:
+        request: The incoming HTTP request.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        source_type: "collection_run" or "manual_urls" (form field).
+        source_collection_run_id: Optional UUID string of the collection run (form field).
+        source_urls: Optional newline-separated URLs (form field, textarea).
+        query_design_id: Optional UUID string of the query design (form field).
+        delay_min: Minimum inter-request delay in seconds (form field, default 2.0).
+        delay_max: Maximum inter-request delay in seconds (form field, default 5.0).
+        timeout_seconds: HTTP request timeout in seconds (form field, default 30).
+        respect_robots_txt: Checkbox value "on" if checked (form field).
+        use_playwright_fallback: Checkbox value "on" if checked (form field).
+        max_retries: Per-URL retry count on transient errors (form field, default 2).
+
+    Returns:
+        HTML fragment containing the updated jobs table.
+
+    Raises:
+        HTTPException 422: If source parameters are inconsistent or invalid UUIDs.
+    """
+    # Parse UUIDs
+    parsed_collection_run_id: Optional[uuid.UUID] = None
+    if source_collection_run_id:
+        try:
+            parsed_collection_run_id = uuid.UUID(source_collection_run_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid source_collection_run_id format",
+            ) from exc
+
+    parsed_query_design_id: Optional[uuid.UUID] = None
+    if query_design_id:
+        try:
+            parsed_query_design_id = uuid.UUID(query_design_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid query_design_id format",
+            ) from exc
+
+    # Parse source URLs from textarea (newline-separated)
+    parsed_urls: Optional[list[str]] = None
+    if source_urls:
+        parsed_urls = [
+            line.strip()
+            for line in source_urls.strip().split("\n")
+            if line.strip()
+        ]
+
+    # Convert checkbox values to booleans (HTML forms send "on" for checked)
+    respect_robots = respect_robots_txt == "on"
+    use_playwright = use_playwright_fallback == "on"
+
+    # Build a ScrapingJobCreate payload
+    payload = ScrapingJobCreate(
+        source_type=source_type,
+        source_collection_run_id=parsed_collection_run_id,
+        source_urls=parsed_urls,
+        query_design_id=parsed_query_design_id,
+        delay_min=delay_min,
+        delay_max=delay_max,
+        timeout_seconds=timeout_seconds,
+        respect_robots_txt=respect_robots,
+        use_playwright_fallback=use_playwright,
+        max_retries=max_retries if max_retries is not None else 2,
+    )
+
+    # Delegate to the main create function (reuses all validation logic)
+    await create_scraping_job(payload, db, current_user)
+
+    logger.info(
+        "scraping_job_created_via_form",
+        user_id=str(current_user.id),
+    )
+
+    # Return updated jobs table HTML fragment
+    return await _render_jobs_table(request, db, current_user)
+
+
 # ---------------------------------------------------------------------------
 # List
 # ---------------------------------------------------------------------------
@@ -161,7 +303,7 @@ async def list_scraping_jobs(
 ):
     """List scraping jobs created by the current user.
 
-    Returns HTML fragment when Accept header includes text/html, otherwise JSON.
+    Returns HTML fragment when HX-Request header is present, otherwise JSON.
 
     Args:
         request: The current HTTP request.
@@ -174,6 +316,11 @@ async def list_scraping_jobs(
         A list of :class:`~issue_observatory.core.schemas.scraping.ScrapingJobRead` dicts
         or an HTML fragment of the jobs table.
     """
+    # Return HTML fragment for HTMX requests
+    if request.headers.get("HX-Request"):
+        return await _render_jobs_table(request, db, current_user)
+
+    # Return JSON for API requests
     stmt = (
         select(ScrapingJob)
         .where(ScrapingJob.created_by == current_user.id)
@@ -197,19 +344,6 @@ async def list_scraping_jobs(
     result = await db.execute(stmt)
     jobs = list(result.scalars().all())
 
-    # Return HTML fragment for HTMX requests
-    accept = request.headers.get("Accept", "")
-    if "text/html" in accept:
-        if not hasattr(request.app.state, "templates"):
-            raise RuntimeError("Templates not initialized")
-        templates = request.app.state.templates
-        return templates.TemplateResponse(
-            "scraping/_jobs_table.html",
-            {"request": request, "jobs": jobs, "user": current_user},
-            media_type="text/html",
-        )
-
-    # Return JSON for API requests
     return jobs
 
 
@@ -248,24 +382,29 @@ async def get_scraping_job(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{job_id}/cancel", response_model=ScrapingJobRead)
+@router.post("/{job_id}/cancel", response_model=None)
 async def cancel_scraping_job(
     job_id: uuid.UUID,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-) -> ScrapingJob:
+):
     """Cancel a pending or running scraping job.
 
     Dispatches :func:`~issue_observatory.scraper.tasks.cancel_scraping_job_task`
     to revoke the Celery worker task and mark the job as ``'cancelled'``.
 
+    Returns HTML fragment for HTMX requests, otherwise JSON.
+
     Args:
         job_id: UUID of the scraping job to cancel.
+        request: The incoming HTTP request.
         db: Injected async database session.
         current_user: The authenticated, active user making the request.
 
     Returns:
-        The updated :class:`~issue_observatory.core.schemas.scraping.ScrapingJobRead`.
+        The updated :class:`~issue_observatory.core.schemas.scraping.ScrapingJobRead`
+        or an HTML fragment of the jobs table.
 
     Raises:
         HTTPException 404: If the job does not exist.
@@ -299,6 +438,12 @@ async def cancel_scraping_job(
         job_id=str(job_id),
         user_id=str(current_user.id),
     )
+
+    # Return HTML fragment for HTMX requests
+    if request.headers.get("HX-Request"):
+        return await _render_jobs_table(request, db, current_user)
+
+    # Return JSON for API requests
     return job
 
 
@@ -307,18 +452,25 @@ async def cancel_scraping_job(
 # ---------------------------------------------------------------------------
 
 
-@router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+@router.delete("/{job_id}", response_model=None)
 async def delete_scraping_job(
     job_id: uuid.UUID,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-) -> None:
+):
     """Delete a scraping job (only if in a terminal state).
+
+    Returns HTML fragment for HTMX requests, otherwise 204 No Content.
 
     Args:
         job_id: UUID of the scraping job to delete.
+        request: The incoming HTTP request.
         db: Injected async database session.
         current_user: The authenticated, active user making the request.
+
+    Returns:
+        204 No Content for API requests, or an HTML fragment of the jobs table for HTMX.
 
     Raises:
         HTTPException 404: If the job does not exist.
@@ -345,6 +497,13 @@ async def delete_scraping_job(
         job_id=str(job_id),
         user_id=str(current_user.id),
     )
+
+    # Return HTML fragment for HTMX requests
+    if request.headers.get("HX-Request"):
+        return await _render_jobs_table(request, db, current_user)
+
+    # Return 204 No Content for API requests
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ---------------------------------------------------------------------------

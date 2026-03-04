@@ -4,6 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}{% endblock %} — The Issue Observatory</title>
+    <link rel="icon" href="{{ url_for('static', path='images/brand/favicon.ico') }}" type="image/x-icon">
+
+    {# Web fonts — Space Grotesk (headings), Inter (body), JetBrains Mono (data) #}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 
     {#
         Tailwind CSS — development fallback via CDN play script.
@@ -19,8 +25,66 @@
             theme: {
                 extend: {
                     colors: {
-                        brand: { 50: '#eff6ff', 600: '#2563eb', 700: '#1d4ed8' }
-                    }
+                        brand: {
+                            50:  '#F3E8FF',
+                            100: '#E9D5FF',
+                            200: '#D8B4FE',
+                            300: '#C084FC',
+                            400: '#A855F7',
+                            500: '#7C3AED',
+                            600: '#4A1080',
+                            700: '#3B0764',
+                            800: '#2E0550',
+                            900: '#1E0338',
+                            950: '#120D1F',
+                        },
+                        'brand-green': {
+                            50:  '#ECFDF5',
+                            100: '#D1FAE5',
+                            200: '#A7F3D0',
+                            300: '#6EE7B7',
+                            400: '#3D9B3A',
+                            500: '#2D7A2B',
+                            600: '#15803D',
+                            700: '#166534',
+                            800: '#14532D',
+                        },
+                        'brand-gold': {
+                            50:  '#FEFCE8',
+                            100: '#FEF9C3',
+                            200: '#FEF08A',
+                            300: '#ECC417',
+                            400: '#D4C020',
+                            500: '#B8A61C',
+                            600: '#9E8C00',
+                            700: '#854D0E',
+                            800: '#713F12',
+                        },
+                        surface: {
+                            base:     '#0F0A1A',
+                            card:     '#1A1225',
+                            elevated: '#231A30',
+                            input:    '#1E1530',
+                            nav:      '#120D1F',
+                        },
+                        'surface-light': {
+                            base: '#F5F0FA',
+                            card: '#FDFBFF',
+                        },
+                    },
+                    fontFamily: {
+                        heading: ['Space Grotesk', 'system-ui', 'sans-serif'],
+                        sans:    ['Inter', 'system-ui', 'sans-serif'],
+                        mono:    ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+                    },
+                    boxShadow: {
+                        'brand':    '0 4px 6px -1px rgba(74, 16, 128, 0.1), 0 2px 4px -2px rgba(74, 16, 128, 0.1)',
+                        'brand-lg': '0 10px 15px -3px rgba(74, 16, 128, 0.1), 0 4px 6px -4px rgba(74, 16, 128, 0.1)',
+                    },
+                    backgroundImage: {
+                        'brand-gradient': 'linear-gradient(135deg, #4A1080, #3D9B3A, #D4C020)',
+                        'brand-gradient-h': 'linear-gradient(90deg, #4A1080, #3D9B3A, #D4C020)',
+                    },
                 }
             }
         }
@@ -44,18 +108,107 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 
     {# Application JS — must load before Alpine initialises (no defer). #}
-    <script src="{{ url_for('static', path='js/app.js') }}"></script>
+    <script src="{{ url_for('static', path='js/app.js') }}?v=4"></script>
+
+    {#
+        Alpine.js ↔ HTMX bridge (inline).
+        When hx-boost swaps page content, Alpine.js must re-initialise x-data
+        components on the new DOM. This inline copy ensures the bridge is always
+        active even if app.js is cached by the browser.
+    #}
+    <script>
+    document.addEventListener('htmx:load', function (evt) {
+        if (window.Alpine) window.Alpine.initTree(evt.detail.elt);
+    });
+    </script>
 
     {# Chart helpers — loaded after Chart.js CDN, also without defer so initVolumeChart etc. are available in template <script> blocks. #}
-    <script src="{{ url_for('static', path='js/charts.js') }}"></script>
+    <script src="{{ url_for('static', path='js/charts.js') }}?v=3"></script>
 
     {% block extra_head %}{% endblock %}
 </head>
-<body class="bg-gray-50 text-gray-900 min-h-screen flex" hx-boost="true">
+<body class="bg-surface-light-base text-gray-900 font-sans min-h-screen flex" hx-boost="true">
     {% include '_partials/nav.html' %}
     <main class="flex-1 p-6 overflow-auto">
         {% include '_partials/flash.html' %}
         {% block content %}{% endblock %}
     </main>
+
+    {# Session expiry warning — shows banner 5 minutes before the 30-minute session expires #}
+    <div id="session-expiry-warning"
+         class="hidden fixed bottom-0 left-0 right-0 bg-amber-100 border-t-2 border-amber-400 px-4 py-3 shadow-lg z-50"
+         x-data="{ show: false }"
+         x-show="show"
+         x-transition:enter="transition ease-out duration-300"
+         x-transition:enter-start="transform translate-y-full"
+         x-transition:enter-end="transform translate-y-0"
+         x-transition:leave="transition ease-in duration-200"
+         x-transition:leave-start="transform translate-y-0"
+         x-transition:leave-end="transform translate-y-full">
+        <div class="max-w-7xl mx-auto flex items-center justify-between gap-4">
+            <div class="flex items-center gap-3">
+                <svg class="w-5 h-5 text-amber-600 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <div>
+                    <p class="text-sm font-medium text-amber-900">
+                        Your session will expire in <span x-text="Math.ceil((window.__sessionExpiresAt - Date.now()) / 60000)"></span> minutes.
+                    </p>
+                    <p class="text-xs text-amber-700">
+                        Save your work and refresh the page to extend your session.
+                    </p>
+                </div>
+            </div>
+            <button type="button"
+                    @click="show = false"
+                    class="text-amber-900 hover:text-amber-700 transition-colors"
+                    aria-label="Dismiss session warning">
+                <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        // Session sliding window: the server middleware re-issues the JWT on
+        // every successful request, so the 30-minute TTL resets on activity.
+        // This client-side timer tracks the last known activity and warns
+        // when 30 minutes of inactivity are about to expire the session.
+        var SESSION_DURATION_MS = 30 * 60 * 1000;
+        var WARNING_THRESHOLD_MS = 5 * 60 * 1000;
+
+        window.__sessionExpiresAt = Date.now() + SESSION_DURATION_MS;
+
+        // Reset the expiry timer on every successful HTMX request, since the
+        // server middleware just refreshed the JWT cookie.
+        document.addEventListener('htmx:afterRequest', function (evt) {
+            if (evt.detail.xhr.status >= 200 && evt.detail.xhr.status < 400) {
+                window.__sessionExpiresAt = Date.now() + SESSION_DURATION_MS;
+                // Hide the warning banner if it was showing
+                var warningEl = document.getElementById('session-expiry-warning');
+                if (warningEl) {
+                    warningEl.classList.add('hidden');
+                    try { Alpine.$data(warningEl).show = false; } catch(e) {}
+                }
+            }
+        });
+
+        function checkSessionExpiry() {
+            var timeRemaining = window.__sessionExpiresAt - Date.now();
+            if (timeRemaining <= WARNING_THRESHOLD_MS && timeRemaining > 0) {
+                var warningEl = document.getElementById('session-expiry-warning');
+                if (warningEl) {
+                    warningEl.classList.remove('hidden');
+                    try { Alpine.$data(warningEl).show = true; } catch(e) {}
+                }
+            }
+        }
+
+        setInterval(checkSessionExpiry, 30000);
+        document.addEventListener('DOMContentLoaded', checkSessionExpiry);
+    })();
+    </script>
 </body>
 </html>

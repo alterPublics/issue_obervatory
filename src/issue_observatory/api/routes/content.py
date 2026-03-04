@@ -30,12 +30,18 @@ from typing import Annotated, Any, Optional
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from sqlalchemy import func, select, text
+from sqlalchemy import Text as SAText, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from issue_observatory.analysis.export import ContentExporter
+from issue_observatory.analysis.network import (
+    build_bipartite_network,
+    get_actor_co_occurrence,
+    get_term_co_occurrence,
+)
 from issue_observatory.api.dependencies import get_current_active_user
 from issue_observatory.core.database import get_db
+from issue_observatory.core.models.actors import Actor
 from issue_observatory.core.models.collection import CollectionRun
 from issue_observatory.core.models.content import UniversalContentRecord
 from issue_observatory.core.models.users import User
@@ -108,6 +114,26 @@ _EXPORT_EXTENSIONS: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
+# UUID parameter helper
+# ---------------------------------------------------------------------------
+
+
+def _parse_uuid(value: Optional[str]) -> Optional[uuid.UUID]:
+    """Parse an optional string as UUID, treating empty/whitespace as None.
+
+    HTMX form serialization sends empty strings for ``<select>`` elements with
+    ``<option value="">``.  FastAPI's ``Optional[uuid.UUID]`` rejects empty
+    strings with HTTP 422.  This helper provides a safe fallback.
+    """
+    if not value or not value.strip():
+        return None
+    try:
+        return uuid.UUID(value)
+    except (ValueError, AttributeError):
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Shared filter helper
 # ---------------------------------------------------------------------------
 
@@ -123,6 +149,9 @@ def _build_content_stmt(
     language: Optional[str],
     run_id: Optional[uuid.UUID],
     limit: Optional[int],
+    project_id: Optional[uuid.UUID] = None,
+    show_all: bool = False,
+    scrape_status: Optional[str] = None,
 ) -> Any:  # noqa: ANN401
     """Build a SELECT statement against ``content_records`` with ownership scope.
 
@@ -140,6 +169,8 @@ def _build_content_stmt(
         language: Optional ISO 639-1 language code filter.
         run_id: Optional specific collection run UUID filter.
         limit: Maximum number of rows to return (applied as SQL LIMIT).
+        project_id: Optional project UUID filter — restricts to runs belonging
+            to the given project.
 
     Returns:
         A SQLAlchemy ``Select`` statement ready for ``await db.execute()``.
@@ -161,9 +192,9 @@ def _build_content_stmt(
             .order_by(UniversalContentRecord.collected_at.desc())
         )
 
-    if platform is not None:
+    if platform:
         stmt = stmt.where(UniversalContentRecord.platform == platform)
-    if arena is not None:
+    if arena:
         stmt = stmt.where(UniversalContentRecord.arena == arena)
     if query_design_id is not None:
         stmt = stmt.where(UniversalContentRecord.query_design_id == query_design_id)
@@ -171,14 +202,31 @@ def _build_content_stmt(
         stmt = stmt.where(UniversalContentRecord.published_at >= date_from)
     if date_to is not None:
         stmt = stmt.where(UniversalContentRecord.published_at <= date_to)
-    if language is not None:
+    if language:
         stmt = stmt.where(UniversalContentRecord.language == language)
     if run_id is not None:
         stmt = stmt.where(UniversalContentRecord.collection_run_id == run_id)
-    if search_term is not None:
-        stmt = stmt.where(
-            UniversalContentRecord.search_terms_matched.contains([search_term])
+    if project_id is not None:
+        project_run_ids = (
+            select(CollectionRun.id)
+            .where(CollectionRun.project_id == project_id)
+            .scalar_subquery()
         )
+        stmt = stmt.where(UniversalContentRecord.collection_run_id.in_(project_run_ids))
+    if search_term:
+        from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY  # noqa: PLC0415
+
+        stmt = stmt.where(
+            UniversalContentRecord.search_terms_matched.cast(PG_ARRAY(SAText)).contains(
+                [search_term]
+            )
+        )
+    # Default: only show term-matched content unless show_all is True
+    if not show_all:
+        stmt = stmt.where(UniversalContentRecord.term_matched.is_(True))
+    # Scrape status filter
+    if scrape_status:
+        stmt = stmt.where(UniversalContentRecord.scrape_status == scrape_status)
     if limit is not None:
         stmt = stmt.limit(limit)
 
@@ -219,6 +267,8 @@ def _record_to_dict(record: UniversalContentRecord) -> dict[str, Any]:
         "query_design_id": record.query_design_id,
         "raw_metadata": record.raw_metadata,
         "content_hash": record.content_hash,
+        "scrape_status": record.scrape_status,
+        "term_matched": record.term_matched,
     }
 
 
@@ -263,21 +313,27 @@ def _decode_cursor(cursor: str) -> tuple[Optional[datetime], Optional[uuid.UUID]
         return None, None
 
 
-def _parse_date_param(value: Optional[str]) -> Optional[datetime]:
+def _parse_date_param(value: Optional[str], *, end_of_day: bool = False) -> Optional[datetime]:
     """Parse a YYYY-MM-DD date string into a timezone-aware ``datetime``.
 
     Returns ``None`` if the value is missing or cannot be parsed.
 
     Args:
         value: A date string in ISO format (e.g. ``"2024-01-15"``).
+        end_of_day: If True, set time to 23:59:59 instead of 00:00:00.
+            Use for upper-bound (date_to) parameters so that "2026-02-26"
+            includes all records published on that day.
 
     Returns:
-        A UTC-midnight ``datetime`` or ``None``.
+        A UTC ``datetime`` or ``None``.
     """
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+        dt = datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+        if end_of_day:
+            dt = dt.replace(hour=23, minute=59, second=59)
+        return dt
     except ValueError:
         return None
 
@@ -301,12 +357,19 @@ def _build_browse_stmt(
     cursor_published_at: Optional[datetime],
     cursor_id: Optional[uuid.UUID],
     limit: int,
+    project_id: Optional[uuid.UUID] = None,
+    show_all: bool = False,
+    scrape_status: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    sort_dir: Optional[str] = None,
+    page_offset: int = 0,
 ) -> Any:  # noqa: ANN401
-    """Build a keyset-paginated SELECT for the content browser.
+    """Build a paginated SELECT for the content browser.
 
-    Ordering is ``(published_at DESC NULLS LAST, id DESC)`` to support stable
-    cursor pagination on the partitioned table.  Full-text search uses
-    ``to_tsvector('danish', ...)`` with ``plainto_tsquery``.
+    Default ordering is ``(published_at DESC NULLS LAST, id DESC)`` with keyset
+    cursor pagination.  When a non-default ``sort_by`` is requested, simple
+    offset pagination is used instead (the 2000-row cap makes this safe).
+    Full-text search uses ``to_tsvector('danish', ...)`` with ``plainto_tsquery``.
 
     Args:
         current_user: Authenticated user — used for ownership scoping.
@@ -323,18 +386,27 @@ def _build_browse_stmt(
             previous page (keyset lower bound).
         cursor_id: ``id`` value of the last row on the previous page.
         limit: Maximum rows to return.
+        project_id: Optional project UUID filter — restricts to runs belonging
+            to the given project.
+        sort_by: Column to sort by (whitelist: published_at, platform, author,
+            arena, engagement_score).  Default: published_at.
+        sort_dir: Sort direction — ``asc`` or ``desc``.  Default: desc.
+        page_offset: Offset for simple pagination when non-default sort is active.
 
     Returns:
         A SQLAlchemy ``Select`` statement.
     """
     ucr = UniversalContentRecord
 
+    # A2: Resolved author name via LEFT JOIN to actors table
+    resolved_name_col = Actor.canonical_name.label("_resolved_name")
+
     # SB-13: Join with collection_runs to get mode for badge display
     if current_user.role == "admin":
-        stmt = select(ucr, CollectionRun.mode).join(
-            CollectionRun,
-            ucr.collection_run_id == CollectionRun.id,
-            isouter=True,
+        stmt = (
+            select(ucr, CollectionRun.mode, resolved_name_col)
+            .join(CollectionRun, ucr.collection_run_id == CollectionRun.id, isouter=True)
+            .join(Actor, ucr.author_id == Actor.id, isouter=True)
         )
     else:
         user_run_ids_subq = (
@@ -343,29 +415,36 @@ def _build_browse_stmt(
             .scalar_subquery()
         )
         stmt = (
-            select(ucr, CollectionRun.mode)
+            select(ucr, CollectionRun.mode, resolved_name_col)
             .join(CollectionRun, ucr.collection_run_id == CollectionRun.id, isouter=True)
+            .join(Actor, ucr.author_id == Actor.id, isouter=True)
             .where(ucr.collection_run_id.in_(user_run_ids_subq))
         )
 
     # Optional filters
-    if platform is not None:
+    if platform:
         stmt = stmt.where(ucr.platform == platform)
-    if arena is not None:
+    if arena:
         stmt = stmt.where(ucr.arena == arena)
     if date_from is not None:
         stmt = stmt.where(ucr.published_at >= date_from)
     if date_to is not None:
         stmt = stmt.where(ucr.published_at <= date_to)
-    if language is not None:
+    if language:
         stmt = stmt.where(ucr.language == language)
     if run_id is not None:
         stmt = stmt.where(ucr.collection_run_id == run_id)
-    if search_term is not None:
-        stmt = stmt.where(ucr.search_terms_matched.contains([search_term]))
+    if search_term:
+        # Use PostgreSQL array containment operator (@>) via cast to avoid
+        # SQLAlchemy's base ARRAY.contains() NotImplementedError.
+        from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY  # noqa: PLC0415
+
+        stmt = stmt.where(
+            ucr.search_terms_matched.cast(PG_ARRAY(SAText)).contains([search_term])
+        )
 
     # SB-13: Filter by collection mode (batch/live)
-    if mode is not None:
+    if mode:
         mode_run_ids_subq = (
             select(CollectionRun.id)
             .where(CollectionRun.mode == mode)
@@ -377,36 +456,80 @@ def _build_browse_stmt(
             )
         stmt = stmt.where(ucr.collection_run_id.in_(mode_run_ids_subq.scalar_subquery()))
 
+    # Project-level filter: restrict to runs belonging to a specific project.
+    if project_id is not None:
+        project_run_ids_subq = (
+            select(CollectionRun.id)
+            .where(CollectionRun.project_id == project_id)
+            .scalar_subquery()
+        )
+        stmt = stmt.where(ucr.collection_run_id.in_(project_run_ids_subq))
+
+    # Default: only show term-matched content unless show_all is True
+    if not show_all:
+        stmt = stmt.where(ucr.term_matched.is_(True))
+    # Scrape status filter
+    if scrape_status:
+        stmt = stmt.where(ucr.scrape_status == scrape_status)
+
     # Full-text search using the GIN index created in migration 001.
     if q:
-        tsvector_expr = text(
+        fts_clause = text(
             "to_tsvector('danish', coalesce(content_records.text_content, '')"
             " || ' ' || coalesce(content_records.title, ''))"
-        )
-        tsquery_expr = text("plainto_tsquery('danish', :q)")
-        stmt = stmt.where(tsvector_expr.op("@@")(tsquery_expr)).params(q=q)
+            " @@ plainto_tsquery('danish', :q)"
+        ).bindparams(q=q)
+        stmt = stmt.where(fts_clause)
 
-    # Keyset cursor: rows strictly before (published_at, id) in DESC order.
-    if cursor_published_at is not None and cursor_id is not None:
-        stmt = stmt.where(
-            (ucr.published_at < cursor_published_at)
-            | (
-                (ucr.published_at == cursor_published_at)
-                & (ucr.id < cursor_id)
-            )
-        )
-    elif cursor_id is not None:
-        # Cursor with null published_at — both null rows come last already.
-        stmt = stmt.where(ucr.id < cursor_id)
+    # --- Sorting and pagination ---
+    # Whitelist of sortable columns.
+    _sort_columns = {
+        "published_at": ucr.published_at,
+        "platform": ucr.platform,
+        "author": ucr.author_display_name,
+        "arena": ucr.arena,
+        "engagement_score": ucr.engagement_score,
+    }
 
-    stmt = (
-        stmt.order_by(
-            ucr.published_at.desc().nullslast(),
-            ucr.id.desc(),
-        )
-        .limit(limit)
-    )
+    effective_sort = sort_by if sort_by in _sort_columns else "published_at"
+    effective_dir = "asc" if sort_dir == "asc" else "desc"
+    use_keyset = effective_sort == "published_at"
 
+    if use_keyset:
+        # Keyset cursor: rows strictly before (published_at, id) in DESC/ASC order.
+        if cursor_published_at is not None and cursor_id is not None:
+            if effective_dir == "desc":
+                stmt = stmt.where(
+                    (ucr.published_at < cursor_published_at)
+                    | (
+                        (ucr.published_at == cursor_published_at)
+                        & (ucr.id < cursor_id)
+                    )
+                )
+            else:
+                stmt = stmt.where(
+                    (ucr.published_at > cursor_published_at)
+                    | (
+                        (ucr.published_at == cursor_published_at)
+                        & (ucr.id > cursor_id)
+                    )
+                )
+        elif cursor_id is not None:
+            if effective_dir == "desc":
+                stmt = stmt.where(ucr.id < cursor_id)
+            else:
+                stmt = stmt.where(ucr.id > cursor_id)
+
+    sort_col = _sort_columns[effective_sort]
+    if effective_dir == "desc":
+        stmt = stmt.order_by(sort_col.desc().nullslast(), ucr.id.desc())
+    else:
+        stmt = stmt.order_by(sort_col.asc().nullsfirst(), ucr.id.asc())
+
+    if not use_keyset and page_offset > 0:
+        stmt = stmt.offset(page_offset)
+
+    stmt = stmt.limit(limit)
     return stmt
 
 
@@ -424,25 +547,58 @@ async def _fetch_recent_runs(
 
     Returns:
         A list of dicts with keys ``id``, ``status``, ``query_design_name``,
-        ``created_at``.
+        ``created_at``, ``formatted_date``, ``records_collected``.
     """
+    from sqlalchemy.orm import selectinload  # noqa: PLC0415
+
     if current_user.role == "admin":
-        stmt = select(CollectionRun).order_by(CollectionRun.started_at.desc().nulls_last()).limit(limit)
+        stmt = (
+            select(CollectionRun)
+            .options(selectinload(CollectionRun.query_design))
+            .order_by(CollectionRun.started_at.desc().nulls_last())
+            .limit(limit)
+        )
     else:
         stmt = (
             select(CollectionRun)
+            .options(selectinload(CollectionRun.query_design))
             .where(CollectionRun.initiated_by == current_user.id)
             .order_by(CollectionRun.started_at.desc().nulls_last())
             .limit(limit)
         )
     result = await db.execute(stmt)
     rows = result.scalars().all()
+
+    # Fetch record counts for all runs in a single query
+    run_ids = [r.id for r in rows]
+    if run_ids:
+        count_stmt = (
+            select(
+                UniversalContentRecord.collection_run_id,
+                func.count(UniversalContentRecord.id).label("count")
+            )
+            .where(UniversalContentRecord.collection_run_id.in_(run_ids))
+            .group_by(UniversalContentRecord.collection_run_id)
+        )
+        count_result = await db.execute(count_stmt)
+        record_counts = {row[0]: row[1] for row in count_result.fetchall()}
+    else:
+        record_counts = {}
+
+    def format_date(dt: datetime | None) -> str:
+        """Format datetime as '15 Feb 2026' style."""
+        if not dt:
+            return ""
+        return dt.strftime("%d %b %Y")
+
     return [
         {
             "id": str(r.id),
             "status": r.status,
-            "query_design_name": getattr(r, "query_design_name", "") or "Run",
+            "query_design_name": r.query_design.name if r.query_design else "Untitled",
             "created_at": r.started_at.isoformat() if r.started_at else "",
+            "formatted_date": format_date(r.started_at),
+            "records_collected": record_counts.get(r.id, 0),
         }
         for r in rows
     ]
@@ -460,6 +616,10 @@ async def _count_matching(
     search_term: Optional[str],
     run_id: Optional[uuid.UUID],
     mode: Optional[str],
+    arenas_list: Optional[list[str]] = None,
+    project_id: Optional[uuid.UUID] = None,
+    show_all: bool = False,
+    scrape_status: Optional[str] = None,
 ) -> int:
     """Return the total number of records matching the current browser filters.
 
@@ -477,6 +637,9 @@ async def _count_matching(
         search_term: ``search_terms_matched`` array membership filter.
         run_id: Collection run UUID filter.
         mode: Collection mode filter ('batch' or 'live').
+        arenas_list: Multi-value platform filter (when multiple checkboxes selected).
+        project_id: Optional project UUID filter — restricts to runs belonging
+            to the given project.
 
     Returns:
         Integer row count (may be approximate on very large datasets).
@@ -497,7 +660,15 @@ async def _count_matching(
         cursor_published_at=None,
         cursor_id=None,
         limit=_BROWSE_CAP + 1,  # count up to cap+1 to detect overflow
+        project_id=project_id,
+        show_all=show_all,
+        scrape_status=scrape_status,
     )
+
+    # Apply multi-arena IN filter if provided
+    if arenas_list and len(arenas_list) > 1:
+        stmt = stmt.where(UniversalContentRecord.platform.in_(arenas_list))
+
     count_stmt = select(func.count()).select_from(stmt.subquery())
     result = await db.execute(count_stmt)
     return result.scalar_one() or 0
@@ -532,6 +703,11 @@ def _orm_row_to_template_dict(row: Any) -> dict[str, Any]:  # noqa: ANN401
     # SB-13: Extract mode from the joined collection_runs table
     mode = _get("mode") or _get("_browse_mode") or ""
 
+    # A2: Use resolved actor name when available
+    resolved_name = _get("_resolved_name")
+    author = resolved_name or _get("author_display_name") or ""
+
+    metadata = _get("raw_metadata") or {}
     return {
         "id": str(_get("id") or ""),
         "platform": _get("platform") or "",
@@ -539,7 +715,8 @@ def _orm_row_to_template_dict(row: Any) -> dict[str, Any]:  # noqa: ANN401
         "content_type": _get("content_type") or "",
         "title": _get("title") or "",
         "text": _get("text_content") or "",
-        "author": _get("author_display_name") or "",
+        "author": author,
+        "author_resolved": bool(resolved_name),
         "author_id": str(_get("author_platform_id") or ""),
         "url": _get("url") or "",
         "published_at": pub.isoformat() if pub else "",
@@ -548,16 +725,23 @@ def _orm_row_to_template_dict(row: Any) -> dict[str, Any]:  # noqa: ANN401
         "engagement_score": _get("engagement_score") or 0,
         "search_terms_matched": terms if isinstance(terms, list) else [],
         "run_id": str(_get("collection_run_id") or ""),
-        "metadata": _get("raw_metadata") or {},
+        "metadata": metadata,
         "mode": mode,
+        "scrape_status": _get("scrape_status") or "",
+        "term_matched": _get("term_matched") if _get("term_matched") is not None else True,
+        "actual_poster_name": metadata.get("actual_poster_name", ""),
     }
 
 
-def _orm_to_detail_dict(record: UniversalContentRecord) -> dict[str, Any]:
+def _orm_to_detail_dict(
+    record: UniversalContentRecord,
+    resolved_name: str | None = None,
+) -> dict[str, Any]:
     """Convert an ORM ``UniversalContentRecord`` to the detail template context dict.
 
     Args:
         record: An ORM instance loaded from the database.
+        resolved_name: Optional canonical actor name from a LEFT JOIN with actors.
 
     Returns:
         Dict with keys expected by ``content/record_detail.html``.
@@ -566,6 +750,10 @@ def _orm_to_detail_dict(record: UniversalContentRecord) -> dict[str, Any]:
     col = record.collected_at
     terms = record.search_terms_matched or []
 
+    # A2: Prefer resolved actor name over raw display name
+    author = resolved_name or record.author_display_name or ""
+
+    metadata = record.raw_metadata or {}
     return {
         "id": str(record.id),
         "platform": record.platform or "",
@@ -573,7 +761,8 @@ def _orm_to_detail_dict(record: UniversalContentRecord) -> dict[str, Any]:
         "content_type": record.content_type or "",
         "title": record.title or "",
         "text": record.text_content or "",
-        "author": record.author_display_name or "",
+        "author": author,
+        "author_resolved": bool(resolved_name),
         "author_id": str(record.author_platform_id or ""),
         "url": record.url or "",
         "published_at": pub.isoformat() if pub else "",
@@ -582,7 +771,10 @@ def _orm_to_detail_dict(record: UniversalContentRecord) -> dict[str, Any]:
         "engagement_score": record.engagement_score or 0,
         "search_terms_matched": terms if isinstance(terms, list) else [],
         "run_id": str(record.collection_run_id or ""),
-        "metadata": record.raw_metadata or {},
+        "metadata": metadata,
+        "scrape_status": record.scrape_status or "",
+        "term_matched": record.term_matched if record.term_matched is not None else True,
+        "actual_poster_name": metadata.get("actual_poster_name", ""),
     }
 
 
@@ -595,7 +787,7 @@ def _orm_to_detail_dict(record: UniversalContentRecord) -> dict[str, Any]:
 async def content_record_count(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    run_id: Optional[uuid.UUID] = Query(default=None, description="Filter by specific collection run UUID."),
+    run_id: Optional[str] = Query(default=None, description="Filter by specific collection run UUID."),
 ) -> dict[str, int]:
     """Return total content record count for the current user's collection runs.
 
@@ -609,6 +801,7 @@ async def content_record_count(
     Returns:
         Dict with a single ``total`` key containing the record count.
     """
+    run_id = _parse_uuid(run_id)  # type: ignore[assignment]
     stmt = (
         select(func.count())
         .select_from(UniversalContentRecord)
@@ -636,15 +829,21 @@ async def content_browser_page(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     q: Optional[str] = Query(default=None, description="Full-text search query."),
+    arenas: Optional[list[str]] = Query(default=None, description="Multi-value platform filter from checkboxes."),
     platform: Optional[str] = Query(default=None),
     arena: Optional[str] = Query(default=None),
     date_from: Optional[str] = Query(default=None),
     date_to: Optional[str] = Query(default=None),
     language: Optional[str] = Query(default=None),
     search_term: Optional[str] = Query(default=None),
-    run_id: Optional[uuid.UUID] = Query(default=None),
+    run_id: Optional[str] = Query(default=None),
     mode: Optional[str] = Query(default=None, description="Collection mode filter: 'batch' or 'live'."),
-    query_design_id: Optional[uuid.UUID] = Query(default=None, description="Active query design for quick-add actor flow."),
+    query_design_id: Optional[str] = Query(default=None, description="Active query design for quick-add actor flow."),
+    project_id: Optional[str] = Query(default=None, description="Filter content to a specific project."),
+    show_all: bool = Query(default=False, description="Show all content including non-term-matched records."),
+    scrape_status_filter: Optional[str] = Query(default=None, alias="scrape_status", description="Filter by scrape status: pending, scraped, failed."),
+    sort_by: Optional[str] = Query(default=None, description="Column to sort by."),
+    sort_dir: Optional[str] = Query(default=None, description="Sort direction: asc or desc."),
 ) -> Response:
     """Render the full content browser HTML page.
 
@@ -663,23 +862,55 @@ async def content_browser_page(
         date_to: Optional upper date bound (YYYY-MM-DD string from form).
         language: Optional ISO 639-1 language code.
         search_term: Optional filter on ``search_terms_matched`` array.
-        run_id: Optional collection run UUID filter.
+        run_id: Optional collection run UUID filter (accepts empty string).
+        project_id: Optional project UUID filter (accepts empty string).
+        show_all: If True, include non-term-matched records (default: False).
+        scrape_status_filter: Filter by scrape status (pending/scraped/failed).
+        sort_by: Column to sort by (published_at, platform, author, arena, engagement_score).
+        sort_dir: Sort direction (asc or desc).
 
     Returns:
         ``TemplateResponse`` rendering ``content/browser.html``.
     """
+    run_id = _parse_uuid(run_id)  # type: ignore[assignment]
+    query_design_id = _parse_uuid(query_design_id)  # type: ignore[assignment]
+    # Track whether project_id was explicitly passed (even as empty string)
+    # so we can distinguish "absent" (auto-select default) from "empty" (show all).
+    project_id_was_explicit = project_id is not None
+    project_id = _parse_uuid(project_id)  # type: ignore[assignment]
+
     templates = request.app.state.templates
 
     if templates is None:
         raise HTTPException(status_code=500, detail="Template engine not initialised.")
 
     date_from_dt = _parse_date_param(date_from)
-    date_to_dt = _parse_date_param(date_to)
+    date_to_dt = _parse_date_param(date_to, end_of_day=True)
+
+    # Auto-select the project with the most recent collection data when no
+    # project_id was explicitly provided in the URL.
+    if not project_id_was_explicit and project_id is None:
+        latest_project_stmt = (
+            select(CollectionRun.project_id)
+            .where(CollectionRun.initiated_by == current_user.id)
+            .where(CollectionRun.project_id.isnot(None))
+            .order_by(CollectionRun.started_at.desc().nulls_last())
+            .limit(1)
+        )
+        latest_pid = (await db.execute(latest_project_stmt)).scalar_one_or_none()
+        if latest_pid:
+            project_id = latest_pid  # type: ignore[assignment]
+
+    # Handle arenas multi-value filter (same logic as /content/records)
+    arenas_list: list[str] = arenas or []
+    platform_filter: Optional[str] = platform
+    if len(arenas_list) == 1:
+        platform_filter = arenas_list[0]
 
     stmt = _build_browse_stmt(
         current_user=current_user,
         q=q,
-        platform=platform,
+        platform=platform_filter if len(arenas_list) <= 1 else None,
         arena=arena,
         date_from=date_from_dt,
         date_to=date_to_dt,
@@ -690,7 +921,18 @@ async def content_browser_page(
         cursor_published_at=None,
         cursor_id=None,
         limit=_BROWSE_LIMIT,
+        project_id=project_id,
+        show_all=show_all,
+        scrape_status=scrape_status_filter,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
     )
+
+    # Apply multi-arena IN filter when multiple checkboxes selected
+    if len(arenas_list) > 1:
+        ucr = UniversalContentRecord
+        stmt = stmt.where(ucr.platform.in_(arenas_list))
+
     result = await db.execute(stmt)
     raw_rows = list(result.mappings().all())
 
@@ -704,23 +946,45 @@ async def content_browser_page(
         ucr_obj._browse_mode = rrow.get("mode", "")  # type: ignore[attr-defined]
         records.append(ucr_obj)
 
+    effective_sort_page = sort_by if sort_by in {"published_at", "platform", "author", "arena", "engagement_score"} else "published_at"
+    use_keyset_page = effective_sort_page == "published_at"
+
     cursor: Optional[str] = None
     if len(records) == _BROWSE_LIMIT:
-        last_rec = records[-1]
-        pub_at = getattr(last_rec, "published_at", None)
-        rec_id = getattr(last_rec, "id", None)
-        if pub_at and rec_id:
-            cursor = _encode_cursor(pub_at, rec_id)
+        if use_keyset_page:
+            last_rec = records[-1]
+            pub_at = getattr(last_rec, "published_at", None)
+            rec_id = getattr(last_rec, "id", None)
+            if pub_at and rec_id:
+                cursor = _encode_cursor(pub_at, rec_id)
+        else:
+            cursor = "offset"
 
     # Fetch recent collection runs for the sidebar run selector (last 20).
     recent_runs = await _fetch_recent_runs(db, current_user)
 
+    # Fetch user's projects for the project filter dropdown.
+    from issue_observatory.core.models.project import Project as ProjectModel  # noqa: PLC0415
+
+    projects_stmt = (
+        select(ProjectModel)
+        .where(ProjectModel.owner_id == current_user.id)
+        .order_by(ProjectModel.name)
+    )
+    projects_result = await db.execute(projects_stmt)
+    user_projects = [
+        {"id": str(p.id), "name": p.name}
+        for p in projects_result.scalars().all()
+    ]
+
     # Total count (approximate — count without cursor/limit for display).
+    # For multi-arena counts, _count_matching will build the IN filter internally.
+    count_platform = platform_filter if len(arenas_list) <= 1 else None
     total_count = await _count_matching(
         db=db,
         current_user=current_user,
         q=q,
-        platform=platform,
+        platform=count_platform,
         arena=arena,
         date_from=date_from_dt,
         date_to=date_to_dt,
@@ -728,18 +992,27 @@ async def content_browser_page(
         search_term=search_term,
         run_id=run_id,
         mode=mode,
+        arenas_list=arenas_list if len(arenas_list) > 1 else None,
+        project_id=project_id,
+        show_all=show_all,
+        scrape_status=scrape_status_filter,
     )
 
     filter_ctx = {
         "q": q or "",
         "platform": platform or "",
-        "arenas": [arena] if arena else [],
+        "arenas": arenas_list,  # multi-value checkbox state
         "date_from": date_from or "",
         "date_to": date_to or "",
         "language": language or "",
         "search_term": search_term or "",
         "run_id": str(run_id) if run_id else "",
         "mode": mode or "",
+        "project_id": str(project_id) if project_id else "",
+        "show_all": show_all,
+        "scrape_status": scrape_status_filter or "",
+        "sort_by": sort_by or "published_at",
+        "sort_dir": sort_dir or "desc",
     }
 
     return templates.TemplateResponse(
@@ -753,6 +1026,7 @@ async def content_browser_page(
             "filter": filter_ctx,
             "cursor": cursor or "",
             "active_query_design_id": str(query_design_id) if query_design_id else "",
+            "user_projects": user_projects,
         },
     )
 
@@ -775,14 +1049,19 @@ async def content_records_fragment(
     date_to: Optional[str] = Query(default=None),
     language: Optional[str] = Query(default=None),
     search_term: Optional[str] = Query(default=None),
-    run_id: Optional[uuid.UUID] = Query(default=None),
+    run_id: Optional[str] = Query(default=None),
     mode: Optional[str] = Query(default=None, description="Collection mode filter: 'batch' or 'live'."),
+    project_id: Optional[str] = Query(default=None, description="Filter content to a specific project."),
+    show_all: bool = Query(default=False, description="Show all content including non-term-matched records."),
+    scrape_status_filter: Optional[str] = Query(default=None, alias="scrape_status", description="Filter by scrape status: pending, scraped, failed."),
     offset: int = Query(default=0, ge=0, description="Running total of rows already sent."),
     limit: int = Query(default=_BROWSE_LIMIT, ge=1, le=_MAX_LIMIT),
     format: Optional[str] = Query(
         default=None,
         description="Response format: 'json' or omit for HTML. Also checks Accept header.",
     ),
+    sort_by: Optional[str] = Query(default=None, description="Column to sort by."),
+    sort_dir: Optional[str] = Query(default=None, description="Sort direction: asc or desc."),
 ) -> Response:
     """Return content records as HTML fragment or JSON array.
 
@@ -824,6 +1103,10 @@ async def content_records_fragment(
         sentinel ``<tr hx-trigger="revealed">`` for further loading, or
         ``JSONResponse`` with records array and pagination metadata.
     """
+    # Coerce empty-string UUID params from HTMX form serialization.
+    run_id = _parse_uuid(run_id)  # type: ignore[arg-type]
+    project_id = _parse_uuid(project_id)  # type: ignore[arg-type]
+
     # Determine response format based on query param and Accept header.
     wants_json = _prefers_json(request, format)
 
@@ -859,34 +1142,48 @@ async def content_records_fragment(
         cursor_published_at, cursor_id_val = _decode_cursor(cursor)
 
     date_from_dt = _parse_date_param(date_from)
-    date_to_dt = _parse_date_param(date_to)
+    date_to_dt = _parse_date_param(date_to, end_of_day=True)
 
     # Merge arenas multi-value list with singular platform/arena params.
-    arena_filter: Optional[str] = None
+    # Note: 'arenas' checkbox group sends platform_name values, so we filter on platform column.
     arenas_list: list[str] = arenas or []
+    platform_filter: Optional[str] = platform  # explicit single platform param
+
+    # When a single arena checkbox is checked, use it as platform filter
     if len(arenas_list) == 1:
-        arena_filter = arenas_list[0]
+        platform_filter = arenas_list[0]
     # When multiple arenas checked we build an IN filter below.
+
+    # Determine if we're using non-default sort (offset pagination).
+    effective_sort = sort_by if sort_by in {"published_at", "platform", "author", "arena", "engagement_score"} else "published_at"
+    use_keyset = effective_sort == "published_at"
 
     stmt = _build_browse_stmt(
         current_user=current_user,
         q=q,
-        platform=platform,
-        arena=arena_filter if len(arenas_list) <= 1 else None,
+        platform=platform_filter if len(arenas_list) <= 1 else None,
+        arena=None,  # arena grouping handled via arenas_list below
         date_from=date_from_dt,
         date_to=date_to_dt,
         language=language,
         search_term=search_term,
         run_id=run_id,
         mode=mode,
-        cursor_published_at=cursor_published_at,
-        cursor_id=cursor_id_val,
+        cursor_published_at=cursor_published_at if use_keyset else None,
+        cursor_id=cursor_id_val if use_keyset else None,
         limit=remaining,
+        project_id=project_id,
+        show_all=show_all,
+        scrape_status=scrape_status_filter,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        page_offset=offset if not use_keyset else 0,
     )
 
     # Multiple arena filter (IN clause) applied post-base when >1 selected.
+    # The 'arenas' parameter contains platform_name values from checkboxes.
     if len(arenas_list) > 1:
-        stmt = stmt.where(UniversalContentRecord.arena.in_(arenas_list))
+        stmt = stmt.where(UniversalContentRecord.platform.in_(arenas_list))
 
     result = await db.execute(stmt)
     raw_rows = list(result.mappings().all())
@@ -903,11 +1200,16 @@ async def content_records_fragment(
     new_offset = offset + len(records)
     next_cursor: Optional[str] = None
     if len(records) == remaining and new_offset < _BROWSE_CAP:
-        last_rec = records[-1]
-        pub_at = getattr(last_rec, "published_at", None)
-        rec_id = getattr(last_rec, "id", None)
-        if pub_at and rec_id:
-            next_cursor = _encode_cursor(pub_at, rec_id)
+        if use_keyset:
+            last_rec = records[-1]
+            pub_at = getattr(last_rec, "published_at", None)
+            rec_id = getattr(last_rec, "id", None)
+            if pub_at and rec_id:
+                next_cursor = _encode_cursor(pub_at, rec_id)
+        else:
+            # Offset pagination: use a placeholder cursor so the sentinel renders.
+            # The actual pagination is driven by the offset param.
+            next_cursor = "offset"
 
     template_records = [_orm_row_to_template_dict(r) for r in records]
 
@@ -959,6 +1261,40 @@ async def content_records_fragment(
                 "browse_cap": _BROWSE_CAP,
             }
         )
+
+        # OOB count update: on fresh filter requests (no cursor, offset=0),
+        # compute the total count and send it as an out-of-band swap so the
+        # record-count badge stays in sync with filters.
+        if not cursor and offset == 0:
+            count_platform = platform_filter if len(arenas_list) <= 1 else None
+            total_count = await _count_matching(
+                db=db,
+                current_user=current_user,
+                q=q,
+                platform=count_platform,
+                arena=None,
+                date_from=date_from_dt,
+                date_to=date_to_dt,
+                language=language,
+                search_term=search_term,
+                run_id=run_id,
+                mode=mode,
+                arenas_list=arenas_list if len(arenas_list) > 1 else None,
+                project_id=project_id,
+                show_all=show_all,
+                scrape_status=scrape_status_filter,
+            )
+            if total_count > _BROWSE_CAP:
+                count_text = "2,000+ records"
+            elif total_count > 0:
+                count_text = f"{total_count:,} record{'s' if total_count != 1 else ''}"
+            else:
+                count_text = ""
+            html += (
+                f'<span id="record-count" hx-swap-oob="innerHTML">'
+                f"{count_text}</span>"
+            )
+
         return HTMLResponse(html, status_code=200)
 
 
@@ -971,7 +1307,7 @@ async def content_records_fragment(
 async def get_search_terms_for_run(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    run_id: Optional[uuid.UUID] = Query(default=None, description="Collection run UUID."),
+    run_id: Optional[str] = Query(default=None, description="Collection run UUID."),
 ) -> HTMLResponse:
     """Return HTML ``<option>`` elements for the search-term filter dropdown.
 
@@ -995,6 +1331,7 @@ async def get_search_terms_for_run(
         the "All terms" option when ``run_id`` is not provided or no terms are
         found.
     """
+    run_id = _parse_uuid(run_id)  # type: ignore[assignment]
     terms: list[str] = []
 
     if run_id is not None:
@@ -1048,7 +1385,7 @@ async def get_search_terms_for_run(
 async def get_discovered_links(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    query_design_id: Optional[uuid.UUID] = Query(
+    query_design_id: Optional[str] = Query(
         default=None,
         description=(
             "Optional UUID of a query design to scope to. "
@@ -1113,6 +1450,8 @@ async def get_discovered_links(
         HTTPException 404: Not raised — an empty result is returned when no
             links are found.
     """
+    query_design_id = _parse_uuid(query_design_id)  # type: ignore[assignment]
+
     from issue_observatory.analysis.link_miner import LinkMiner  # noqa: PLC0415
 
     miner = LinkMiner()
@@ -1181,13 +1520,14 @@ async def export_content_sync(  # type: ignore[misc]
             "One of: actor, term, bipartite."
         ),
     ),
+    arenas: Optional[list[str]] = Query(default=None, description="Multi-value platform filter from checkboxes."),
     platform: Optional[str] = Query(default=None, description="Filter by platform name."),
     arena: Optional[str] = Query(default=None, description="Filter by arena name."),
-    query_design_id: Optional[uuid.UUID] = Query(default=None),
-    date_from: Optional[datetime] = Query(default=None),
-    date_to: Optional[datetime] = Query(default=None),
+    query_design_id: Optional[str] = Query(default=None),
+    date_from: Optional[str] = Query(default=None),
+    date_to: Optional[str] = Query(default=None),
     language: Optional[str] = Query(default=None),
-    run_id: Optional[uuid.UUID] = Query(
+    run_id: Optional[str] = Query(
         default=None, description="Filter by specific collection run UUID."
     ),
     search_term: Optional[str] = Query(default=None),
@@ -1221,11 +1561,11 @@ async def export_content_sync(  # type: ignore[misc]
             ``"actor"``.
         platform: Optional platform filter.
         arena: Optional arena filter.
-        query_design_id: Optional query design UUID filter.
+        query_design_id: Optional query design UUID filter (accepts empty string).
         date_from: Optional lower bound on ``published_at``.
         date_to: Optional upper bound on ``published_at``.
         language: Optional ISO 639-1 language code filter.
-        run_id: Optional collection run UUID filter.
+        run_id: Optional collection run UUID filter (accepts empty string).
         search_term: Optional term contained in ``search_terms_matched``.
         limit: Maximum records (1–10 000; default 10 000).
         include_metadata: If True, include ``raw_metadata`` as a JSON string
@@ -1241,6 +1581,11 @@ async def export_content_sync(  # type: ignore[misc]
         HTTPException 500: If serialization fails due to a missing optional
             dependency (openpyxl / pyarrow not installed).
     """
+    query_design_id = _parse_uuid(query_design_id)  # type: ignore[assignment]
+    run_id = _parse_uuid(run_id)  # type: ignore[assignment]
+    date_from = _parse_date_param(date_from)  # type: ignore[assignment]
+    date_to = _parse_date_param(date_to, end_of_day=True)  # type: ignore[assignment]
+
     if format not in _EXPORT_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1257,9 +1602,15 @@ async def export_content_sync(  # type: ignore[misc]
             ),
         )
 
+    # Handle arenas multi-value filter (same logic as content browser)
+    arenas_list: list[str] = arenas or []
+    platform_filter: Optional[str] = platform
+    if len(arenas_list) == 1:
+        platform_filter = arenas_list[0]
+
     stmt = _build_content_stmt(
         current_user=current_user,
-        platform=platform,
+        platform=platform_filter if len(arenas_list) <= 1 else None,
         arena=arena,
         query_design_id=query_design_id,
         date_from=date_from,
@@ -1269,6 +1620,10 @@ async def export_content_sync(  # type: ignore[misc]
         run_id=run_id,
         limit=limit,
     )
+
+    # Apply multi-arena IN filter when multiple checkboxes selected
+    if len(arenas_list) > 1:
+        stmt = stmt.where(UniversalContentRecord.platform.in_(arenas_list))
 
     db_result = await db.execute(stmt)
     orm_rows = list(db_result.scalars().all())
@@ -1290,7 +1645,33 @@ async def export_content_sync(  # type: ignore[misc]
         elif format == "bibtex":
             file_bytes = exporter.export_bibtex(records)
         else:  # gexf
-            file_bytes = await exporter.export_gexf(records, network_type=network_type)
+            # Build network graph using proper network analysis functions
+            # instead of passing raw records to export_gexf
+            if network_type == "actor":
+                graph = await get_actor_co_occurrence(
+                    db=db,
+                    run_id=run_id,
+                    query_design_id=query_design_id,
+                    arena=arena,
+                    platform=platform,
+                    date_from=date_from,
+                    date_to=date_to,
+                )
+            elif network_type == "term":
+                graph = await get_term_co_occurrence(
+                    db=db,
+                    run_id=run_id,
+                    query_design_id=query_design_id,
+                    arena=arena,
+                )
+            else:  # bipartite
+                graph = await build_bipartite_network(
+                    db=db,
+                    run_id=run_id,
+                    query_design_id=query_design_id,
+                    arena=arena,
+                )
+            file_bytes = await exporter.export_gexf(graph, network_type=network_type)
     except ImportError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1345,11 +1726,11 @@ async def export_content_async(
     ),
     platform: Optional[str] = Query(default=None),
     arena: Optional[str] = Query(default=None),
-    query_design_id: Optional[uuid.UUID] = Query(default=None),
-    date_from: Optional[datetime] = Query(default=None),
-    date_to: Optional[datetime] = Query(default=None),
+    query_design_id: Optional[str] = Query(default=None),
+    date_from: Optional[str] = Query(default=None),
+    date_to: Optional[str] = Query(default=None),
     language: Optional[str] = Query(default=None),
-    run_id: Optional[uuid.UUID] = Query(default=None),
+    run_id: Optional[str] = Query(default=None),
     search_term: Optional[str] = Query(default=None),
 ) -> dict[str, str]:
     """Dispatch an asynchronous export job for large datasets.
@@ -1370,11 +1751,11 @@ async def export_content_async(
             ``"actor"``.
         platform: Optional platform filter.
         arena: Optional arena filter.
-        query_design_id: Optional query design UUID.
+        query_design_id: Optional query design UUID (accepts empty string).
         date_from: Optional lower bound on ``published_at``.
         date_to: Optional upper bound on ``published_at``.
         language: Optional ISO 639-1 language code.
-        run_id: Optional collection run UUID.
+        run_id: Optional collection run UUID (accepts empty string).
         search_term: Optional term in ``search_terms_matched``.
 
     Returns:
@@ -1384,6 +1765,11 @@ async def export_content_async(
         HTTPException 400: If the format is not supported, or if
             ``network_type`` is invalid for GEXF exports.
     """
+    query_design_id = _parse_uuid(query_design_id)  # type: ignore[assignment]
+    run_id = _parse_uuid(run_id)  # type: ignore[assignment]
+    date_from = _parse_date_param(date_from)  # type: ignore[assignment]
+    date_to = _parse_date_param(date_to, end_of_day=True)  # type: ignore[assignment]
+
     if format not in _EXPORT_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1702,9 +2088,14 @@ async def get_content_record_html(
     if templates is None:
         raise HTTPException(status_code=500, detail="Template engine not initialised.")
 
+    # A2: Include resolved actor name via LEFT JOIN
+    resolved_name_col = Actor.canonical_name.label("_resolved_name")
+
     if current_user.role == "admin":
-        stmt = select(UniversalContentRecord).where(
-            UniversalContentRecord.id == record_id
+        stmt = (
+            select(UniversalContentRecord, resolved_name_col)
+            .join(Actor, UniversalContentRecord.author_id == Actor.id, isouter=True)
+            .where(UniversalContentRecord.id == record_id)
         )
     else:
         user_run_ids_subq = (
@@ -1712,21 +2103,27 @@ async def get_content_record_html(
             .where(CollectionRun.initiated_by == current_user.id)
             .scalar_subquery()
         )
-        stmt = select(UniversalContentRecord).where(
-            UniversalContentRecord.id == record_id,
-            UniversalContentRecord.collection_run_id.in_(user_run_ids_subq),
+        stmt = (
+            select(UniversalContentRecord, resolved_name_col)
+            .join(Actor, UniversalContentRecord.author_id == Actor.id, isouter=True)
+            .where(
+                UniversalContentRecord.id == record_id,
+                UniversalContentRecord.collection_run_id.in_(user_run_ids_subq),
+            )
         )
 
     db_result = await db.execute(stmt)
-    orm_record = db_result.scalar_one_or_none()
+    db_row = db_result.one_or_none()
 
-    if orm_record is None:
+    if db_row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Content record '{record_id}' not found.",
         )
 
-    record_ctx = _orm_to_detail_dict(orm_record)
+    orm_record = db_row[0]
+    resolved_name = db_row[1]
+    record_ctx = _orm_to_detail_dict(orm_record, resolved_name=resolved_name)
     is_panel = hx_request is not None
 
     return templates.TemplateResponse(
@@ -1738,3 +2135,181 @@ async def get_content_record_html(
             "standalone": not is_panel,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Content Fetch Enrichment
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{record_id:uuid}/fetch-content")
+async def fetch_content_for_record(
+    record_id: uuid.UUID,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> Response:
+    """Fetch full page content for a thin content record.
+
+    Retrieves the URL from the record, fetches the page, extracts text via
+    trafilatura, and updates the record in place.  The original ``text_content``
+    (if any) is preserved in ``raw_metadata.original_snippet``.
+
+    Requires ``published_at`` in the JSON body for partition-pruned lookup.
+
+    Returns:
+        JSON with updated record summary on success, or error details on failure.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    published_at_str = body.get("published_at")
+    if not published_at_str:
+        return JSONResponse(
+            {"ok": False, "error": "published_at is required"},
+            status_code=400,
+        )
+
+    # Parse published_at for partition pruning
+    try:
+        published_at_dt = datetime.fromisoformat(published_at_str.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return JSONResponse(
+            {"ok": False, "error": "Invalid published_at format"},
+            status_code=400,
+        )
+
+    # Fetch the record with ownership check
+    if current_user.role == "admin":
+        stmt = select(UniversalContentRecord).where(
+            UniversalContentRecord.id == record_id,
+            UniversalContentRecord.published_at == published_at_dt,
+        )
+    else:
+        user_run_ids_subq = (
+            select(CollectionRun.id)
+            .where(CollectionRun.initiated_by == current_user.id)
+            .scalar_subquery()
+        )
+        stmt = select(UniversalContentRecord).where(
+            UniversalContentRecord.id == record_id,
+            UniversalContentRecord.published_at == published_at_dt,
+            UniversalContentRecord.collection_run_id.in_(user_run_ids_subq),
+        )
+
+    db_result = await db.execute(stmt)
+    record = db_result.scalar_one_or_none()
+
+    if record is None:
+        return JSONResponse(
+            {"ok": False, "error": "Record not found"},
+            status_code=404,
+        )
+
+    if not record.url:
+        return JSONResponse(
+            {"ok": False, "error": "Record has no URL to fetch"},
+            status_code=400,
+        )
+
+    # Lazy imports for scraper modules
+    from issue_observatory.scraper.http_fetcher import fetch_url as scraper_fetch  # noqa: PLC0415
+    from issue_observatory.scraper.content_extractor import extract_from_html as scraper_extract  # noqa: PLC0415
+    import httpx as _httpx  # noqa: PLC0415
+
+    # Fetch the page content
+    try:
+        async with _httpx.AsyncClient(
+            timeout=30.0,
+            follow_redirects=True,
+            headers={"User-Agent": "IssueObservatory/1.0"},
+        ) as client:
+            robots_cache: dict[str, bool] = {}
+            fetch_result = await scraper_fetch(
+                record.url,
+                client=client,
+                timeout=30.0,
+                respect_robots=True,
+                robots_cache=robots_cache,
+            )
+    except Exception as exc:
+        logger.error(
+            "fetch_content: HTTP fetch failed for record %s: %s", record_id, exc
+        )
+        return JSONResponse(
+            {"ok": False, "error": f"Fetch failed: {exc}"},
+            status_code=502,
+        )
+
+    if fetch_result.error or fetch_result.html is None:
+        return JSONResponse(
+            {"ok": False, "error": f"Fetch error: {fetch_result.error or 'No HTML returned'}"},
+            status_code=502,
+        )
+
+    # Extract content
+    try:
+        extracted = scraper_extract(fetch_result.html, fetch_result.final_url or record.url)
+    except Exception as exc:
+        logger.error(
+            "fetch_content: extraction failed for record %s: %s", record_id, exc
+        )
+        return JSONResponse(
+            {"ok": False, "error": f"Content extraction failed: {exc}"},
+            status_code=502,
+        )
+
+    if not extracted.text:
+        return JSONResponse(
+            {"ok": False, "error": "No text content could be extracted from the page"},
+            status_code=422,
+        )
+
+    # Preserve original snippet in raw_metadata
+    metadata = dict(record.raw_metadata) if record.raw_metadata else {}
+    if record.text_content and "original_snippet" not in metadata:
+        metadata["original_snippet"] = record.text_content
+
+    # Update the record
+    metadata["content_fetched"] = True
+    metadata["content_fetched_at"] = datetime.now(tz=timezone.utc).isoformat()
+
+    # Use raw SQL for partition-pruned update
+    update_stmt = text("""
+        UPDATE content_records
+        SET text_content = :text_content,
+            title = COALESCE(:title, title),
+            language = COALESCE(:language, language),
+            scrape_status = 'scraped',
+            raw_metadata = :raw_metadata
+        WHERE id = :id AND published_at = :published_at
+    """)
+
+    await db.execute(
+        update_stmt,
+        {
+            "text_content": extracted.text,
+            "title": extracted.title,
+            "language": extracted.language,
+            "raw_metadata": json.dumps(metadata),
+            "id": str(record_id),
+            "published_at": published_at_dt,
+        },
+    )
+    await db.commit()
+
+    logger.info(
+        "fetch_content: updated record %s with %d chars of content",
+        record_id,
+        len(extracted.text),
+    )
+
+    return JSONResponse({
+        "ok": True,
+        "record_id": str(record_id),
+        "title": extracted.title or record.title or "",
+        "text_length": len(extracted.text),
+        "language": extracted.language,
+    })

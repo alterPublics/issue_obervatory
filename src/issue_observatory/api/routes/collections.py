@@ -19,13 +19,13 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, AsyncGenerator, Optional
 
 import redis.asyncio as aioredis
 import structlog
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +41,7 @@ from issue_observatory.api.dependencies import (
 from issue_observatory.core.database import get_db
 from issue_observatory.core.email_service import EmailService, get_email_service
 from issue_observatory.core.models.collection import CollectionRun, CollectionTask
+from issue_observatory.core.models.project import Project
 from issue_observatory.core.models.query_design import QueryDesign
 from issue_observatory.core.models.users import User
 from issue_observatory.core.credit_service import CreditService
@@ -50,6 +51,7 @@ from issue_observatory.core.schemas.collection import (
     CollectionRunRead,
     CreditEstimateRequest,
     CreditEstimateResponse,
+    ProjectCollectionCreate,
 )
 from issue_observatory.analysis.alerting import fetch_recent_volume_spikes
 
@@ -131,6 +133,35 @@ def _templates(request: Request) -> Jinja2Templates:
     if templates is None:
         raise RuntimeError("Templates not configured on app.state")
     return templates
+
+
+def _render_run_summary_fragment(
+    request: Request,
+    run: CollectionRun,
+) -> Response:
+    """Render the run summary card HTML fragment for HTMX responses.
+
+    Converts the ORM run object to the context dict expected by the
+    ``_fragments/run_summary.html`` template.  Returned as the response
+    to cancel/suspend/resume POST requests so HTMX can ``outerHTML``
+    swap it into ``#run-summary-card``.
+    """
+    run_dict = {
+        "id": str(run.id),
+        "status": run.status,
+        "query_design_name": getattr(run, "_query_design_name", None) or "",
+        "tier": run.tier or "free",
+        "mode": run.mode or "batch",
+        "records_collected": run.records_collected or 0,
+        "credits_spent": run.credits_spent or 0,
+        "started_at": str(run.started_at) if run.started_at else None,
+        "finished_at": str(run.completed_at) if run.completed_at else None,
+    }
+    templates = _templates(request)
+    return templates.TemplateResponse(
+        "_fragments/run_summary.html",
+        {"request": request, "run": run_dict},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -291,14 +322,35 @@ async def list_collection_runs(
 
         # Build a simple HTML table with run summaries
         rows_html = ""
+        now = datetime.now(timezone.utc)
+        idle_cutoff = now - timedelta(minutes=30)
+
         for run in runs:
-            status_badge_class = {
-                "pending": "bg-yellow-100 text-yellow-800",
-                "running": "bg-blue-100 text-blue-800",
-                "completed": "bg-green-100 text-green-800",
-                "failed": "bg-red-100 text-red-800",
-                "suspended": "bg-gray-100 text-gray-800",
-            }.get(run.status, "bg-gray-100 text-gray-800")
+            # R-05: Detect stuck runs
+            is_stuck = False
+            display_status = run.status
+
+            if run.status == "running":
+                # Check if stuck: started >30min ago AND no records, OR inactive >30min
+                if run.started_at and run.started_at < idle_cutoff:
+                    if run.records_collected == 0:
+                        # Started long ago but no records at all
+                        is_stuck = True
+                    # Note: We don't have access to last collected_at here in the list view,
+                    # so we only flag runs with zero records as stuck. The full stale run
+                    # detection logic in _task_helpers.py does a more thorough check.
+
+            if is_stuck:
+                display_status = "stuck"
+                status_badge_class = "bg-amber-100 text-amber-800"
+            else:
+                status_badge_class = {
+                    "pending": "bg-yellow-100 text-yellow-800",
+                    "running": "bg-blue-100 text-blue-800",
+                    "completed": "bg-green-100 text-green-800",
+                    "failed": "bg-red-100 text-red-800",
+                    "suspended": "bg-gray-100 text-gray-800",
+                }.get(run.status, "bg-gray-100 text-gray-800")
 
             started_at_str = run.started_at.strftime("%Y-%m-%d %H:%M") if run.started_at else "—"
 
@@ -310,7 +362,7 @@ async def list_collection_runs(
     </td>
     <td class="px-6 py-3 text-sm">
         <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {status_badge_class}">
-            {run.status.capitalize()}
+            {display_status.capitalize()}
         </span>
     </td>
     <td class="px-6 py-3 text-sm text-gray-900">{run.records_collected:,}</td>
@@ -505,6 +557,8 @@ async def create_collection_run(  # type: ignore[misc]
 
     run = CollectionRun(
         query_design_id=payload.query_design_id,
+        # Auto-populate project_id from the query design's project association.
+        project_id=query_design.project_id,
         initiated_by=current_user.id,
         mode=payload.mode,
         # Global default tier — used for arenas not present in merged_arenas_config.
@@ -671,7 +725,16 @@ async def create_collection_run_form(
     )
 
     # Delegate to the main create function (reuses all validation and credit logic)
-    run = await create_collection_run(request, payload, db, current_user)
+    try:
+        run = await create_collection_run(request, payload, db, current_user)
+    except HTTPException as exc:
+        from urllib.parse import quote  # noqa: PLC0415
+
+        flash_msg = quote(str(exc.detail))
+        return RedirectResponse(
+            url=f"/collections?flash={flash_msg}&flash_level=error",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
 
     logger.info(
         "collection_run_created_via_form",
@@ -681,6 +744,173 @@ async def create_collection_run_form(
 
     return RedirectResponse(
         url=f"/collections/{run.id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Project-level collection launch
+# ---------------------------------------------------------------------------
+
+
+@router.post("/project", response_model=None, status_code=status.HTTP_201_CREATED)
+async def create_project_collection(
+    request: Request,
+    payload: ProjectCollectionCreate,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> list[CollectionRunRead]:
+    """Launch a collection run for every active query design in a project.
+
+    Creates one ``CollectionRun`` per active QD in the project. Each run
+    gets its own credit reservation and Celery dispatch. All runs share
+    the same ``project_id``, ``mode``, ``tier``, date range, and launcher-level
+    ``arenas_config``.
+
+    Args:
+        request: The incoming HTTP request.
+        payload: Validated ``ProjectCollectionCreate`` request body.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        List of created ``CollectionRunRead`` objects.
+
+    Raises:
+        HTTPException 404: If the project does not exist.
+        HTTPException 403: If the caller does not own the project.
+        HTTPException 422: If the project has no active query designs.
+    """
+    # Verify the project exists and is owned by this user
+    proj_result = await db.execute(
+        select(Project)
+        .where(Project.id == payload.project_id)
+        .options(selectinload(Project.query_designs))
+    )
+    project = proj_result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project '{payload.project_id}' not found.",
+        )
+    ownership_guard(project.owner_id, current_user)
+
+    # Filter to active query designs only
+    active_qds = [qd for qd in project.query_designs if qd.is_active]
+    if not active_qds:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Project has no active query designs. Add at least one active query design before launching a collection.",
+        )
+
+    # Create one CollectionRun per QD, delegating to the existing create function
+    created_runs: list[CollectionRunRead] = []
+    for qd in active_qds:
+        qd_payload = CollectionRunCreate(
+            query_design_id=qd.id,
+            mode=payload.mode,
+            tier=payload.tier,
+            date_from=payload.date_from,
+            date_to=payload.date_to,
+            arenas_config=payload.arenas_config,
+        )
+        run = await create_collection_run(request, qd_payload, db, current_user)
+        created_runs.append(CollectionRunRead.model_validate(run))
+
+    logger.info(
+        "project_collection_created",
+        project_id=str(payload.project_id),
+        runs_created=len(created_runs),
+        user_id=str(current_user.id),
+    )
+
+    return created_runs
+
+
+@router.post("/project-form", status_code=status.HTTP_303_SEE_OTHER)
+async def create_project_collection_form(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    project_id: Annotated[str, Form()],
+    mode: Annotated[str, Form()] = "batch",
+    tier: Annotated[str, Form()] = "free",
+    date_from: Annotated[Optional[str], Form()] = None,
+    date_to: Annotated[Optional[str], Form()] = None,
+) -> RedirectResponse:
+    """Launch a project-level collection from a browser form submission.
+
+    Accepts application/x-www-form-urlencoded data from the launcher form
+    and delegates to ``create_project_collection`` for all validation,
+    credit estimation, reservation, and orchestration logic.
+
+    Args:
+        request: The incoming HTTP request.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        project_id: UUID string of the project (form field).
+        mode: Collection mode (form field, default "batch").
+        tier: Global default tier (form field, default "free").
+        date_from: Optional start date in ISO format YYYY-MM-DD.
+        date_to: Optional end date in ISO format YYYY-MM-DD.
+
+    Returns:
+        HTTP 303 redirect to the project collection detail page.
+    """
+    try:
+        parsed_project_id = uuid.UUID(project_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid project ID",
+        ) from exc
+
+    parsed_date_from: Optional[date] = None
+    parsed_date_to: Optional[date] = None
+    if date_from:
+        try:
+            parsed_date_from = date.fromisoformat(date_from)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid date_from format: {date_from}",
+            ) from exc
+    if date_to:
+        try:
+            parsed_date_to = date.fromisoformat(date_to)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid date_to format: {date_to}",
+            ) from exc
+
+    payload = ProjectCollectionCreate(
+        project_id=parsed_project_id,
+        mode=mode,
+        tier=tier,
+        date_from=parsed_date_from,
+        date_to=parsed_date_to,
+    )
+
+    try:
+        await create_project_collection(request, payload, db, current_user)
+    except HTTPException as exc:
+        from urllib.parse import quote  # noqa: PLC0415
+
+        flash_msg = quote(str(exc.detail))
+        return RedirectResponse(
+            url=f"/collections?flash={flash_msg}&flash_level=error",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    logger.info(
+        "project_collection_created_via_form",
+        project_id=project_id,
+        user_id=str(current_user.id),
+    )
+
+    return RedirectResponse(
+        url=f"/collections/project/{project_id}",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -960,13 +1190,14 @@ async def get_collection_run(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{run_id:uuid}/cancel", response_model=CollectionRunRead)
+@router.post("/{run_id:uuid}/cancel", response_model=None)
 async def cancel_collection_run(
+    request: Request,
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     email_svc: Annotated[EmailService, Depends(get_email_service)],
-) -> CollectionRun:
+):
     """Cancel a pending or running collection run.
 
     Sets the run status to ``'failed'`` if the run has not yet reached a
@@ -994,7 +1225,7 @@ async def cancel_collection_run(
     run = await _get_run_or_404(run_id, db)
     ownership_guard(run.initiated_by, current_user)
 
-    if run.status in ("completed", "failed"):
+    if run.status in ("completed", "failed", "cancelled"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
@@ -1003,7 +1234,8 @@ async def cancel_collection_run(
             ),
         )
 
-    run.status = "failed"
+    run.status = "cancelled"
+    run.completed_at = datetime.now(tz=timezone.utc)
     run.error_log = "Cancelled by user."
     await db.commit()
     await db.refresh(run)
@@ -1078,7 +1310,9 @@ async def cancel_collection_run(
         credits_spent=run.credits_spent,
     )
 
-    return run
+    if request.headers.get("HX-Request"):
+        return _render_run_summary_fragment(request, run)
+    return CollectionRunRead.model_validate(run)
 
 
 # ---------------------------------------------------------------------------
@@ -1086,17 +1320,18 @@ async def cancel_collection_run(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{run_id:uuid}/suspend", response_model=CollectionRunRead)
+@router.post("/{run_id:uuid}/suspend", response_model=None)
 async def suspend_collection_run(
+    request: Request,
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-) -> CollectionRun:
-    """Suspend an active live-tracking collection run.
+):
+    """Suspend an active or pending live-tracking collection run.
 
     Sets ``CollectionRun.status`` to ``'suspended'`` and records
     ``suspended_at`` to the current UTC time.  Only valid on runs with
-    ``mode='live'`` and ``status='active'``.
+    ``mode='live'`` and ``status`` in ``('active', 'pending')``.
 
     Args:
         run_id: UUID of the collection run to suspend.
@@ -1116,12 +1351,12 @@ async def suspend_collection_run(
     run = await _get_run_or_404(run_id, db)
     ownership_guard(run.initiated_by, current_user)
 
-    if run.mode != "live" or run.status != "active":
+    if run.mode != "live" or run.status not in ("active", "pending"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 f"Cannot suspend run with mode='{run.mode}' status='{run.status}'. "
-                "Only live runs with status='active' can be suspended."
+                "Only live runs with status='active' or 'pending' can be suspended."
             ),
         )
 
@@ -1135,15 +1370,19 @@ async def suspend_collection_run(
         run_id=str(run_id),
         user_id=str(current_user.id),
     )
-    return run
+
+    if request.headers.get("HX-Request"):
+        return _render_run_summary_fragment(request, run)
+    return CollectionRunRead.model_validate(run)
 
 
-@router.post("/{run_id:uuid}/resume", response_model=CollectionRunRead)
+@router.post("/{run_id:uuid}/resume", response_model=None)
 async def resume_collection_run(
+    request: Request,
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-) -> CollectionRun:
+):
     """Resume a suspended live-tracking collection run.
 
     Sets ``CollectionRun.status`` back to ``'active'`` and clears
@@ -1185,7 +1424,10 @@ async def resume_collection_run(
         run_id=str(run_id),
         user_id=str(current_user.id),
     )
-    return run
+
+    if request.headers.get("HX-Request"):
+        return _render_run_summary_fragment(request, run)
+    return CollectionRunRead.model_validate(run)
 
 
 # ---------------------------------------------------------------------------

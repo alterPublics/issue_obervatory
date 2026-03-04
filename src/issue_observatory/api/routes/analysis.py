@@ -64,6 +64,7 @@ from issue_observatory.analysis.descriptive import (
     get_top_named_entities,
     get_top_terms,
     get_volume_over_time,
+    get_volume_with_deltas,
 )
 from issue_observatory.analysis.propagation import get_propagation_flows
 from issue_observatory.analysis.export import ContentExporter
@@ -79,6 +80,7 @@ from issue_observatory.api.dependencies import get_current_active_user, ownershi
 from issue_observatory.core.database import get_db
 from issue_observatory.core.models.collection import CollectionRun
 from issue_observatory.core.models.content import UniversalContentRecord
+from issue_observatory.core.models.project import Project
 from issue_observatory.core.models.query_design import QueryDesign, SearchTerm
 from issue_observatory.core.models.users import User
 
@@ -136,35 +138,113 @@ async def analysis_landing(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
 ) -> Response:
-    """Render the analysis landing page with recent completed runs.
+    """Render the analysis landing page grouped by query design.
 
-    Shows a prompt to select a collection run for analysis, along with
-    a list of the user's most recent completed runs for quick access.
+    Lists all query designs owned by the current user, each with their
+    completed collection runs with enriched metadata (top platforms, date
+    range, formatted dates), so researchers can jump directly to analysis.
     """
+    from sqlalchemy import func  # noqa: PLC0415
     from sqlalchemy.orm import selectinload  # noqa: PLC0415
 
+    # Fetch completed runs with their query designs
     stmt = (
         select(CollectionRun)
         .options(selectinload(CollectionRun.query_design))
         .where(
             CollectionRun.initiated_by == current_user.id,
-            CollectionRun.status == "completed",
+            CollectionRun.status.in_(["completed", "cancelled", "failed"]),
+            CollectionRun.records_collected > 0,
         )
         .order_by(CollectionRun.started_at.desc().nulls_last())
-        .limit(10)
     )
     result = await db.execute(stmt)
     runs = result.scalars().all()
 
-    recent_runs = [
-        {
+    run_ids = [r.id for r in runs]
+
+    # R-13: Single aggregate query for per-platform counts across all runs.
+    platform_counts_by_run: dict[uuid.UUID, list[tuple[str, int]]] = {}
+    date_ranges_by_run: dict[uuid.UUID, tuple[str, str]] = {}
+
+    if run_ids:
+        # Per-platform counts (only term-matched, non-duplicate records)
+        pc_result = await db.execute(
+            select(
+                UniversalContentRecord.collection_run_id,
+                UniversalContentRecord.platform,
+                func.count(UniversalContentRecord.id).label("cnt"),
+            )
+            .where(
+                UniversalContentRecord.collection_run_id.in_(run_ids),
+                UniversalContentRecord.term_matched.is_(True),
+            )
+            .group_by(
+                UniversalContentRecord.collection_run_id,
+                UniversalContentRecord.platform,
+            )
+            .order_by(func.count(UniversalContentRecord.id).desc())
+        )
+        for row in pc_result.all():
+            platform_counts_by_run.setdefault(row.collection_run_id, []).append(
+                (row.platform, row.cnt)
+            )
+
+        # Date ranges (min/max published_at, term-matched only)
+        dr_result = await db.execute(
+            select(
+                UniversalContentRecord.collection_run_id,
+                func.min(UniversalContentRecord.published_at).label("min_date"),
+                func.max(UniversalContentRecord.published_at).label("max_date"),
+            )
+            .where(
+                UniversalContentRecord.collection_run_id.in_(run_ids),
+                UniversalContentRecord.term_matched.is_(True),
+            )
+            .group_by(UniversalContentRecord.collection_run_id)
+        )
+        for row in dr_result.all():
+            min_d = row.min_date.strftime("%d %b %Y") if row.min_date else ""
+            max_d = row.max_date.strftime("%d %b %Y") if row.max_date else ""
+            date_ranges_by_run[row.collection_run_id] = (min_d, max_d)
+
+    # Group runs by query design
+    designs_map: dict[str, dict[str, Any]] = {}
+    for r in runs:
+        design_id = str(r.query_design_id) if r.query_design_id else "none"
+        if design_id not in designs_map:
+            designs_map[design_id] = {
+                "id": design_id,
+                "name": r.query_design.name if r.query_design else "(no query design)",
+                "runs": [],
+            }
+
+        # Format date
+        formatted_date = ""
+        if r.started_at:
+            formatted_date = r.started_at.strftime("%d %b %Y, %H:%M")
+
+        # Top 3 platforms for this run
+        top_platforms = [
+            {"name": p, "count": c}
+            for p, c in (platform_counts_by_run.get(r.id, []))[:3]
+        ]
+
+        # Date range
+        date_range = date_ranges_by_run.get(r.id, ("", ""))
+
+        designs_map[design_id]["runs"].append({
             "id": str(r.id),
-            "design_name": r.query_design.name if r.query_design else "(unknown)",
             "started_at": r.started_at.isoformat() if r.started_at else "",
-            "records": r.records_collected,
-        }
-        for r in runs
-    ]
+            "formatted_date": formatted_date,
+            "records": r.records_collected or 0,
+            "mode": r.mode or "batch",
+            "top_platforms": top_platforms,
+            "date_range_start": date_range[0],
+            "date_range_end": date_range[1],
+        })
+
+    design_entries = list(designs_map.values())
 
     templates = request.app.state.templates
     return templates.TemplateResponse(
@@ -172,7 +252,7 @@ async def analysis_landing(
         {
             "request": request,
             "user": current_user,
-            "recent_runs": recent_runs,
+            "design_entries": design_entries,
         },
     )
 
@@ -189,7 +269,13 @@ async def analysis_dashboard(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
 ) -> Any:
-    """Render the analysis dashboard HTML page for a collection run.
+    """Redirect to the design-level analysis dashboard for a collection run.
+
+    When the run is associated with a query design, redirects to
+    ``/analysis/design/{design_id}?run_id={run_id}`` so the researcher sees
+    the design-scoped dashboard with this run pre-selected.  Falls back to
+    the per-run view (rendered directly) for orphaned runs that have no
+    associated query design.
 
     Args:
         run_id: UUID of the collection run to analyse.
@@ -198,7 +284,8 @@ async def analysis_dashboard(
         current_user: The authenticated, active user making the request.
 
     Returns:
-        A Jinja2 ``TemplateResponse`` rendering ``analysis/index.html``.
+        A ``RedirectResponse`` to the design dashboard, or a Jinja2
+        ``TemplateResponse`` rendering ``analysis/index.html`` for orphaned runs.
 
     Raises:
         HTTPException 404: If the run does not exist.
@@ -206,6 +293,14 @@ async def analysis_dashboard(
     """
     run = await _get_run_or_raise(run_id, db, current_user)
 
+    # Redirect to the design-level dashboard when the run has a parent design.
+    if run.query_design_id is not None:
+        return RedirectResponse(
+            url=f"/analysis/design/{run.query_design_id}?run_id={run_id}",
+            status_code=status.HTTP_302_FOUND,
+        )
+
+    # Fallback: orphaned run (no query design) — render the per-run view directly.
     templates = request.app.state.templates
     if templates is None:
         raise HTTPException(
@@ -218,6 +313,7 @@ async def analysis_dashboard(
         {
             "request": request,
             "user": current_user,
+            "mode": "run",
             "run_id": str(run_id),
             "run": {
                 "id": str(run.id),
@@ -229,6 +325,10 @@ async def analysis_dashboard(
                 "credits_spent": run.credits_spent,
                 "tier": getattr(run, "tier", None),
             },
+            "design_id": None,
+            "design": None,
+            "runs": [],
+            "run_count": 1,
         },
     )
 
@@ -1213,9 +1313,34 @@ async def export_temporal_network_gexf(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
+    except Exception as exc:
+        # Catch all database errors and return a proper JSON error response
+        logger.error(
+            "analysis.export_temporal_gexf.db_error",
+            run_id=str(run_id),
+            error=str(exc),
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate temporal network snapshots: {str(exc)}",
+        ) from exc
 
-    exporter = ContentExporter()
-    gexf_bytes = await exporter.export_temporal_gexf(snapshots)
+    try:
+        exporter = ContentExporter()
+        gexf_bytes = await exporter.export_temporal_gexf(snapshots)
+    except Exception as exc:
+        # Catch GEXF serialization errors
+        logger.error(
+            "analysis.export_temporal_gexf.serialization_error",
+            run_id=str(run_id),
+            error=str(exc),
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to serialize temporal GEXF: {str(exc)}",
+        ) from exc
 
     filename = f"run_{run_id}_temporal_{network_type}_{interval}.gexf"
 
@@ -1271,14 +1396,19 @@ async def get_filter_options(
     except Exception:  # noqa: BLE001
         return {"platforms": [], "arenas": []}
 
+    base_filters = [
+        UniversalContentRecord.collection_run_id == run_id,
+        UniversalContentRecord.term_matched.is_(True),
+        UniversalContentRecord.raw_metadata["duplicate_of"].as_string().is_(None),
+    ]
     platform_stmt = (
         select(distinct(UniversalContentRecord.platform))
-        .where(UniversalContentRecord.collection_run_id == run_id)
+        .where(*base_filters)
         .order_by(UniversalContentRecord.platform)
     )
     arena_stmt = (
         select(distinct(UniversalContentRecord.arena))
-        .where(UniversalContentRecord.collection_run_id == run_id)
+        .where(*base_filters)
         .order_by(UniversalContentRecord.arena)
     )
 
@@ -1447,7 +1577,11 @@ async def filtered_export(
     # Build query with ownership scope (run already verified) and all filters.
     stmt = (
         select(UniversalContentRecord)
-        .where(UniversalContentRecord.collection_run_id == run_id)
+        .where(
+            UniversalContentRecord.collection_run_id == run_id,
+            UniversalContentRecord.term_matched.is_(True),
+            UniversalContentRecord.raw_metadata["duplicate_of"].as_string().is_(None),
+        )
         .order_by(UniversalContentRecord.collected_at.desc())
         .limit(limit)
     )
@@ -1644,32 +1778,74 @@ async def _get_design_or_raise(
     return design
 
 
+async def _validate_run_for_design(
+    design_id: uuid.UUID,
+    run_id: uuid.UUID | None,
+    db: AsyncSession,
+    current_user: User,
+) -> uuid.UUID | None:
+    """Validate that an optional run_id belongs to the given design.
+
+    If ``run_id`` is provided, verifies that the run exists, that the caller
+    owns it, and that it belongs to ``design_id``.  Returns the validated
+    run_id or ``None`` when no run_id was provided.
+
+    Args:
+        design_id: UUID of the query design the run must belong to.
+        run_id: Optional UUID of the collection run to validate.
+        db: Active async database session.
+        current_user: The authenticated user making the request.
+
+    Returns:
+        The validated ``run_id`` or ``None``.
+
+    Raises:
+        HTTPException 400: If the run does not belong to the given design.
+        HTTPException 403: If the current user does not own the run.
+        HTTPException 404: If the run does not exist.
+    """
+    if run_id is None:
+        return None
+    run = await _get_run_or_raise(run_id, db, current_user)
+    if run.query_design_id != design_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Run '{run_id}' does not belong to design '{design_id}'.",
+        )
+    return run_id
+
+
 @router.get("/design/{design_id:uuid}", include_in_schema=False)
 async def analysis_dashboard_design(
     design_id: uuid.UUID,
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
+    run_id: uuid.UUID | None = Query(default=None, description="Optional run to scope the dashboard to."),
 ) -> Any:
-    """Render the analysis dashboard HTML page for all runs in a query design.
+    """Render the analysis dashboard HTML page for a query design.
 
-    Aggregates data across all collection runs belonging to the specified query
-    design, enabling researchers to analyze their full corpus for a topic.
+    Renders the unified analysis dashboard scoped to the given query design,
+    aggregating data across all collection runs by default.  When ``run_id``
+    is provided the dashboard is scoped to that single run instead.
 
     Args:
         design_id: UUID of the query design to analyse.
         request: The incoming HTTP request (required by Jinja2 TemplateResponse).
         db: Injected async database session.
         current_user: The authenticated, active user making the request.
+        run_id: Optional UUID of a specific run to scope the dashboard to.
 
     Returns:
-        A Jinja2 ``TemplateResponse`` rendering ``analysis/design.html``.
+        A Jinja2 ``TemplateResponse`` rendering ``analysis/index.html``.
 
     Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
         HTTPException 404: If the query design does not exist.
         HTTPException 403: If the current user does not own the design.
     """
     design = await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
 
     templates = request.app.state.templates
     if templates is None:
@@ -1678,23 +1854,39 @@ async def analysis_dashboard_design(
             detail="Template engine not initialised.",
         )
 
-    # Fetch all completed runs for this design to show context.
+    # Fetch all runs with data for this design to populate the run dropdown.
     runs_stmt = (
         select(CollectionRun)
         .where(
             CollectionRun.query_design_id == design_id,
-            CollectionRun.status == "completed",
+            CollectionRun.status.in_(["completed", "cancelled", "failed"]),
+            CollectionRun.records_collected > 0,
         )
         .order_by(CollectionRun.started_at.desc())
     )
     runs_result = await db.execute(runs_stmt)
     runs = runs_result.scalars().all()
 
+    # Optionally load the selected run for context display.
+    selected_run: dict[str, Any] | None = None
+    if run_id is not None:
+        for r in runs:
+            if r.id == run_id:
+                selected_run = {
+                    "id": str(r.id),
+                    "started_at": r.started_at.isoformat() if r.started_at else None,
+                    "records_collected": r.records_collected,
+                    "status": r.status,
+                    "mode": r.mode,
+                }
+                break
+
     return templates.TemplateResponse(
-        "analysis/design.html",
+        "analysis/index.html",
         {
             "request": request,
             "user": current_user,
+            "mode": "design",
             "design_id": str(design_id),
             "design": {
                 "id": str(design.id),
@@ -1710,6 +1902,8 @@ async def analysis_dashboard_design(
                 }
                 for r in runs
             ],
+            "run_id": str(run_id) if run_id else None,
+            "run": selected_run,
         },
     )
 
@@ -1719,25 +1913,40 @@ async def design_summary(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
 ) -> dict[str, Any]:
-    """Return aggregated statistics across all runs in a query design.
+    """Return aggregated statistics for a query design or a specific run within it.
+
+    When ``run_id`` is provided, returns per-run summary statistics (same as
+    ``GET /analysis/{run_id}/summary``).  When omitted, aggregates across all
+    runs belonging to the design.
 
     Args:
         design_id: UUID of the query design.
         db: Injected async database session.
         current_user: The authenticated, active user making the request.
+        run_id: Optional UUID of a specific run to scope the summary to.
 
     Returns:
-        Dict with design metadata and aggregated run statistics.
+        Dict with design metadata and aggregated run statistics, or per-run
+        statistics when ``run_id`` is supplied.
 
     Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
         HTTPException 404: If the query design does not exist.
         HTTPException 403: If the current user does not own the design.
     """
     await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+
+    if run_id is not None:
+        return await get_run_summary(db, run_id=run_id)
 
     # Aggregate across all runs for this design.
-    sql = text(
+    runs_sql = text(
         """
         SELECT
             COUNT(DISTINCT cr.id)                     AS total_runs,
@@ -1745,17 +1954,32 @@ async def design_summary(
                 WHERE cr.status = 'completed'
             )                                         AS completed_runs,
             COALESCE(SUM(cr.credits_spent), 0)       AS total_credits,
-            COALESCE(SUM(cr.records_collected), 0)   AS total_records,
             MIN(cr.started_at)                       AS first_run_at,
             MAX(cr.completed_at)                     AS last_completed_at
         FROM collection_runs cr
         WHERE cr.query_design_id = :design_id
         """
     )
-    result = await db.execute(sql, {"design_id": str(design_id)})
-    row = result.fetchone()
+    runs_result = await db.execute(runs_sql, {"design_id": str(design_id)})
+    runs_row = runs_result.fetchone()
 
-    if row is None:
+    # Accurate record count and content date range from filtered content_records.
+    content_sql = text(
+        """
+        SELECT
+            COUNT(*)           AS total_records,
+            MIN(published_at)  AS content_date_from,
+            MAX(published_at)  AS content_date_to
+        FROM content_records
+        WHERE query_design_id = :design_id
+          AND term_matched = TRUE
+          AND (raw_metadata->>'duplicate_of') IS NULL
+        """
+    )
+    content_result = await db.execute(content_sql, {"design_id": str(design_id)})
+    content_row = content_result.fetchone()
+
+    if runs_row is None:
         return {
             "design_id": str(design_id),
             "total_runs": 0,
@@ -1764,16 +1988,26 @@ async def design_summary(
             "total_records": 0,
             "first_run_at": None,
             "last_completed_at": None,
+            "content_date_from": None,
+            "content_date_to": None,
         }
 
     return {
         "design_id": str(design_id),
-        "total_runs": row.total_runs,
-        "completed_runs": row.completed_runs,
-        "total_credits": int(row.total_credits or 0),
-        "total_records": int(row.total_records or 0),
-        "first_run_at": row.first_run_at.isoformat() if row.first_run_at else None,
-        "last_completed_at": row.last_completed_at.isoformat() if row.last_completed_at else None,
+        "total_runs": runs_row.total_runs,
+        "completed_runs": runs_row.completed_runs,
+        "total_credits": int(runs_row.total_credits or 0),
+        "total_records": int(content_row.total_records or 0) if content_row else 0,
+        "first_run_at": runs_row.first_run_at.isoformat() if runs_row.first_run_at else None,
+        "last_completed_at": (
+            runs_row.last_completed_at.isoformat() if runs_row.last_completed_at else None
+        ),
+        "content_date_from": (
+            content_row.content_date_from.isoformat() if content_row and content_row.content_date_from else None
+        ),
+        "content_date_to": (
+            content_row.content_date_to.isoformat() if content_row and content_row.content_date_to else None
+        ),
     }
 
 
@@ -1787,8 +2021,20 @@ async def design_volume_over_time(
     date_from: Optional[datetime] = Query(default=None, description="Lower bound on published_at."),
     date_to: Optional[datetime] = Query(default=None, description="Upper bound on published_at."),
     granularity: str = Query(default="day", description="Time bucket: hour, day, week, month."),
+    delta_mode: bool = Query(
+        default=False,
+        description="Use delta counting for snapshot arenas (google_search, "
+        "google_autocomplete, ai_chat_search).",
+    ),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
 ) -> list[dict[str, Any]]:
-    """Return content volume over time across all runs in a query design.
+    """Return content volume over time for a query design or a specific run within it.
+
+    When ``run_id`` is provided, results are scoped to that single run.
+    When omitted, results are aggregated across all runs belonging to the design.
 
     Args:
         design_id: UUID of the query design.
@@ -1799,21 +2045,26 @@ async def design_volume_over_time(
         date_from: Optional lower bound on ``published_at``.
         date_to: Optional upper bound on ``published_at``.
         granularity: Time bucket size — one of ``hour``, ``day``, ``week``, ``month``.
+        delta_mode: When True, snapshot arenas show only new items per period.
+        run_id: Optional UUID of a specific run to scope the query to.
 
     Returns:
         List of dicts with ``period``, ``count``, and ``arenas`` breakdown.
 
     Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
         HTTPException 404: If the query design does not exist.
         HTTPException 403: If the current user does not own the design.
         HTTPException 422: If ``granularity`` is invalid.
     """
     await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+    volume_fn = get_volume_with_deltas if delta_mode else get_volume_over_time
     try:
-        return await get_volume_over_time(
+        return await volume_fn(
             db,
-            query_design_id=design_id,
-            run_id=None,
+            query_design_id=design_id if run_id is None else None,
+            run_id=run_id,
             arena=arena,
             platform=platform,
             date_from=date_from,
@@ -1836,8 +2087,12 @@ async def design_top_actors(
     date_from: Optional[datetime] = Query(default=None),
     date_to: Optional[datetime] = Query(default=None),
     limit: int = Query(default=20, ge=1, le=200, description="Maximum actors to return."),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
 ) -> list[dict[str, Any]]:
-    """Return top authors by post volume across all runs in a query design.
+    """Return top authors by post volume for a query design or a specific run.
 
     Args:
         design_id: UUID of the query design.
@@ -1847,19 +2102,22 @@ async def design_top_actors(
         date_from: Optional lower bound on ``published_at``.
         date_to: Optional upper bound on ``published_at``.
         limit: Maximum number of actors to return (1–200, default 20).
+        run_id: Optional UUID of a specific run to scope the query to.
 
     Returns:
         List of dicts ordered by post count descending.
 
     Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
         HTTPException 404: If the query design does not exist.
         HTTPException 403: If the current user does not own the design.
     """
     await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
     return await get_top_actors(
         db,
-        query_design_id=design_id,
-        run_id=None,
+        query_design_id=design_id if run_id is None else None,
+        run_id=run_id,
         platform=platform,
         date_from=date_from,
         date_to=date_to,
@@ -1875,8 +2133,12 @@ async def design_top_terms(
     date_from: Optional[datetime] = Query(default=None),
     date_to: Optional[datetime] = Query(default=None),
     limit: int = Query(default=20, ge=1, le=200, description="Maximum terms to return."),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
 ) -> list[dict[str, Any]]:
-    """Return top search terms by match frequency across all runs in a query design.
+    """Return top search terms by match frequency for a query design or a specific run.
 
     Args:
         design_id: UUID of the query design.
@@ -1885,19 +2147,22 @@ async def design_top_terms(
         date_from: Optional lower bound on ``published_at``.
         date_to: Optional upper bound on ``published_at``.
         limit: Maximum number of terms to return (1–200, default 20).
+        run_id: Optional UUID of a specific run to scope the query to.
 
     Returns:
         List of dicts with ``term`` and ``count``, ordered by count descending.
 
     Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
         HTTPException 404: If the query design does not exist.
         HTTPException 403: If the current user does not own the design.
     """
     await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
     return await get_top_terms(
         db,
-        query_design_id=design_id,
-        run_id=None,
+        query_design_id=design_id if run_id is None else None,
+        run_id=run_id,
         date_from=date_from,
         date_to=date_to,
         limit=limit,
@@ -1914,8 +2179,12 @@ async def design_network_actors(
     date_from: Optional[datetime] = Query(default=None),
     date_to: Optional[datetime] = Query(default=None),
     min_co_occurrences: int = Query(default=2, ge=1, description="Minimum edge weight."),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
 ) -> dict[str, Any]:
-    """Return the actor co-occurrence graph across all runs in a query design.
+    """Return the actor co-occurrence graph for a query design or a specific run.
 
     Args:
         design_id: UUID of the query design.
@@ -1926,19 +2195,22 @@ async def design_network_actors(
         date_from: Optional lower bound on ``published_at``.
         date_to: Optional upper bound on ``published_at``.
         min_co_occurrences: Minimum edge weight to include (default 2).
+        run_id: Optional UUID of a specific run to scope the query to.
 
     Returns:
         Graph dict ``{nodes: [...], edges: [...]}``.
 
     Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
         HTTPException 404: If the query design does not exist.
         HTTPException 403: If the current user does not own the design.
     """
     await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
     return await get_actor_co_occurrence(
         db,
-        query_design_id=design_id,
-        run_id=None,
+        query_design_id=design_id if run_id is None else None,
+        run_id=run_id,
         platform=platform,
         arena=arena,
         date_from=date_from,
@@ -1954,8 +2226,12 @@ async def design_network_terms(
     current_user: Annotated[User, Depends(get_current_active_user)],
     arena: Optional[str] = Query(default=None, description="Filter to a specific arena."),
     min_co_occurrences: int = Query(default=2, ge=1, description="Minimum shared records."),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
 ) -> dict[str, Any]:
-    """Return the term co-occurrence graph across all runs in a query design.
+    """Return the term co-occurrence graph for a query design or a specific run.
 
     Args:
         design_id: UUID of the query design.
@@ -1963,19 +2239,22 @@ async def design_network_terms(
         current_user: The authenticated, active user making the request.
         arena: Optional arena filter.
         min_co_occurrences: Minimum number of shared records (default 2).
+        run_id: Optional UUID of a specific run to scope the query to.
 
     Returns:
         Graph dict ``{nodes: [...], edges: [...]}``.
 
     Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
         HTTPException 404: If the query design does not exist.
         HTTPException 403: If the current user does not own the design.
     """
     await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
     return await get_term_co_occurrence(
         db,
-        query_design_id=design_id,
-        run_id=None,
+        query_design_id=design_id if run_id is None else None,
+        run_id=run_id,
         arena=arena,
         min_co_occurrences=min_co_occurrences,
     )
@@ -1988,8 +2267,12 @@ async def design_network_bipartite(
     current_user: Annotated[User, Depends(get_current_active_user)],
     arena: Optional[str] = Query(default=None, description="Filter to a specific arena."),
     limit: int = Query(default=500, ge=1, le=2000, description="Max edges to return."),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
 ) -> dict[str, Any]:
-    """Return the bipartite actor-term graph across all runs in a query design.
+    """Return the bipartite actor-term graph for a query design or a specific run.
 
     Args:
         design_id: UUID of the query design.
@@ -1997,22 +2280,1055 @@ async def design_network_bipartite(
         current_user: The authenticated, active user making the request.
         arena: Optional arena filter.
         limit: Maximum number of edges to return (default 500, max 2000).
+        run_id: Optional UUID of a specific run to scope the query to.
 
     Returns:
         Graph dict ``{nodes: [...], edges: [...]}`` with typed nodes.
 
     Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
         HTTPException 404: If the query design does not exist.
         HTTPException 403: If the current user does not own the design.
     """
     await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
     return await build_bipartite_network(
         db,
-        query_design_id=design_id,
-        run_id=None,
+        query_design_id=design_id if run_id is None else None,
+        run_id=run_id,
         arena=arena,
         limit=limit,
     )
+
+
+# ---------------------------------------------------------------------------
+# Design-level endpoints — additional analysis endpoints (parallel to per-run)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/design/{design_id:uuid}/engagement")
+async def design_engagement(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    platform: Optional[str] = Query(default=None, description="Filter by platform."),
+    arena: Optional[str] = Query(default=None, description="Filter by arena."),
+    date_from: Optional[datetime] = Query(default=None),
+    date_to: Optional[datetime] = Query(default=None),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
+) -> dict[str, Any]:
+    """Return engagement distribution for a query design or a specific run.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        platform: Optional platform filter.
+        arena: Optional arena filter.
+        date_from: Optional lower bound on ``published_at``.
+        date_to: Optional upper bound on ``published_at``.
+        run_id: Optional UUID of a specific run to scope the query to.
+
+    Returns:
+        Dict keyed by metric with mean, median, p95, and max sub-keys.
+
+    Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+    return await get_engagement_distribution(
+        db,
+        query_design_id=design_id if run_id is None else None,
+        run_id=run_id,
+        arena=arena,
+        platform=platform,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+
+@router.get("/design/{design_id:uuid}/emergent-terms")
+async def design_emergent_terms(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    top_n: int = Query(default=50, ge=5, le=200, description="Number of top terms to return."),
+    exclude_search_terms: bool = Query(
+        default=True,
+        description="Exclude terms already present as query design search terms.",
+    ),
+    min_doc_frequency: int = Query(
+        default=2, ge=1, description="Minimum document frequency to include a term."
+    ),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
+) -> list[dict[str, Any]]:
+    """Return emergent TF-IDF terms for a query design or a specific run.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        top_n: Number of top terms to return (5–200, default 50).
+        exclude_search_terms: Whether to exclude existing search terms (default True).
+        min_doc_frequency: Minimum document frequency threshold (default 2).
+        run_id: Optional UUID of a specific run to scope the query to.
+
+    Returns:
+        List of dicts ``{"term": str, "score": float, "document_frequency": int}``
+        ordered by TF-IDF score descending.
+
+    Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+    return await get_emergent_terms(
+        db,
+        query_design_id=design_id if run_id is None else None,
+        run_id=run_id,
+        top_n=top_n,
+        exclude_search_terms=exclude_search_terms,
+        min_doc_frequency=min_doc_frequency,
+    )
+
+
+@router.get("/design/{design_id:uuid}/temporal-comparison")
+async def design_temporal_comparison(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    period: str = Query(
+        default="week",
+        description="Time period for comparison: 'week' or 'month'.",
+    ),
+    date_from: Optional[datetime] = Query(
+        default=None,
+        description="Optional start of current period (ISO 8601).",
+    ),
+    date_to: Optional[datetime] = Query(
+        default=None,
+        description="Optional end of current period (ISO 8601).",
+    ),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
+) -> dict[str, Any]:
+    """Period-over-period volume comparison for a query design or a specific run.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        period: Time period — ``"week"`` (default) or ``"month"``.
+        date_from: Optional start of the current period.
+        date_to: Optional end of the current period.
+        run_id: Optional UUID of a specific run to scope the query to.
+
+    Returns:
+        Dict with ``current_period``, ``previous_period``, ``delta``,
+        ``pct_change``, and ``per_arena`` breakdown.
+
+    Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+        HTTPException 422: If ``period`` is invalid.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+    try:
+        return await get_temporal_comparison(
+            db,
+            query_design_id=design_id if run_id is None else None,
+            run_id=run_id,
+            period=period,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get("/design/{design_id:uuid}/arena-comparison")
+async def design_arena_comparison(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
+) -> dict[str, Any]:
+    """Side-by-side arena metrics for a query design or a specific run.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        run_id: Optional UUID of a specific run to scope the query to.
+
+    Returns:
+        Dict with ``by_arena`` list and ``totals`` aggregate.
+
+    Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+    return await get_arena_comparison(
+        db,
+        query_design_id=design_id if run_id is None else None,
+        run_id=run_id,
+    )
+
+
+@router.get("/design/{design_id:uuid}/actors-unified")
+async def design_top_actors_unified(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    date_from: Optional[datetime] = Query(default=None),
+    date_to: Optional[datetime] = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=200, description="Maximum actors to return."),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
+) -> list[dict[str, Any]]:
+    """Return top actors grouped by canonical identity for a query design or a specific run.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        date_from: Optional lower bound on ``published_at``.
+        date_to: Optional upper bound on ``published_at``.
+        limit: Maximum number of actors to return (1–200, default 20).
+        run_id: Optional UUID of a specific run to scope the query to.
+
+    Returns:
+        List of dicts with ``actor_id``, ``canonical_name``, ``platforms``,
+        ``count``, and ``total_engagement``, ordered by post count descending.
+
+    Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+    return await get_top_actors_unified(
+        db,
+        query_design_id=design_id if run_id is None else None,
+        run_id=run_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+    )
+
+
+@router.get("/design/{design_id:uuid}/network/cross-platform")
+async def design_network_cross_platform(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    min_platforms: int = Query(default=2, ge=2, description="Minimum platform count."),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
+) -> list[dict[str, Any]]:
+    """Return canonical actors active on multiple platforms for a query design or run.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        min_platforms: Minimum number of distinct platforms required (default 2).
+        run_id: Optional UUID of a specific run to scope the query to.
+
+    Returns:
+        List of dicts with ``actor_id``, ``canonical_name``, ``platform_count``,
+        ``platforms``, and ``total_records``, ordered by platform count descending.
+
+    Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+    return await get_cross_platform_actors(
+        db,
+        query_design_id=design_id if run_id is None else None,
+        run_id=run_id,
+        min_platforms=min_platforms,
+    )
+
+
+@router.get("/design/{design_id:uuid}/network/temporal")
+async def design_network_temporal(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    interval: str = Query(
+        default="week",
+        description="Time bucket size: 'day', 'week', or 'month'.",
+    ),
+    network_type: str = Query(
+        default="actor",
+        description="Network type: 'actor' or 'term'.",
+    ),
+    limit_per_snapshot: int = Query(
+        default=100, ge=10, le=500, description="Maximum edges per snapshot."
+    ),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
+) -> list[dict[str, Any]]:
+    """Return temporal network snapshot index for a query design or a specific run.
+
+    Returns the index (period, node_count, edge_count) without full graph payloads.
+    Use the ``/network/{type}/temporal/{period}`` endpoint to fetch individual graphs.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        interval: Time bucket size — ``"day"``, ``"week"``, or ``"month"``.
+        network_type: Network to compute — ``"actor"`` or ``"term"``.
+        limit_per_snapshot: Maximum edges per snapshot (10–500, default 100).
+        run_id: Optional UUID of a specific run to scope the query to.
+
+    Returns:
+        List of ``{"period", "node_count", "edge_count"}`` dicts ordered by period.
+
+    Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+        HTTPException 422: If ``interval`` or ``network_type`` is invalid.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+    try:
+        snapshots = await get_temporal_network_snapshots(
+            db,
+            query_design_id=design_id if run_id is None else None,
+            run_id=run_id,
+            interval=interval,
+            network_type=network_type,
+            limit_per_snapshot=limit_per_snapshot,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    return [
+        {"period": s["period"], "node_count": s["node_count"], "edge_count": s["edge_count"]}
+        for s in snapshots
+    ]
+
+
+@router.get("/design/{design_id:uuid}/network/{network_type}/temporal")
+async def design_network_temporal_by_type(
+    design_id: uuid.UUID,
+    network_type: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    interval: str = Query(default="week", description="Time bucket: day, week, month."),
+    limit_per_snapshot: int = Query(default=100, ge=10, le=500),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
+) -> list[dict[str, Any]]:
+    """Temporal network snapshot index — path alias with network_type in URL.
+
+    Delegates to :func:`design_network_temporal` with ``network_type`` extracted
+    from the URL path.  Returns index without full graph payloads.
+
+    Args:
+        design_id: UUID of the query design.
+        network_type: One of ``"actor"``, ``"term"``, or ``"bipartite"``.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        interval: Time bucket size (default ``"week"``).
+        limit_per_snapshot: Maximum edges per snapshot (default 100).
+        run_id: Optional UUID of a specific run to scope the query to.
+
+    Returns:
+        List of ``{"period", "node_count", "edge_count"}`` dicts ordered by period.
+
+    Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+        HTTPException 422: If ``interval`` or ``network_type`` is invalid.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+    try:
+        snapshots = await get_temporal_network_snapshots(
+            db,
+            query_design_id=design_id if run_id is None else None,
+            run_id=run_id,
+            interval=interval,
+            network_type=network_type,
+            limit_per_snapshot=limit_per_snapshot,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    return [
+        {"period": s["period"], "node_count": s["node_count"], "edge_count": s["edge_count"]}
+        for s in snapshots
+    ]
+
+
+@router.get("/design/{design_id:uuid}/network/{network_type}/temporal/{period}")
+async def design_network_temporal_period(
+    design_id: uuid.UUID,
+    network_type: str,
+    period: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    interval: str = Query(default="week", description="Time bucket: day, week, month."),
+    limit_per_snapshot: int = Query(default=200, ge=10, le=500),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
+) -> dict[str, Any]:
+    """Return the network graph for a single temporal period within a query design.
+
+    The *period* path parameter must match one of the ISO 8601 period strings
+    returned by the temporal index endpoint.
+
+    Args:
+        design_id: UUID of the query design.
+        network_type: One of ``"actor"``, ``"term"``.
+        period: ISO 8601 period string matching a snapshot period key.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        interval: Must match the interval used for the index request.
+        limit_per_snapshot: Maximum edges in the returned snapshot.
+        run_id: Optional UUID of a specific run to scope the query to.
+
+    Returns:
+        Graph dict ``{"nodes": [...], "edges": [...]}`` for the requested period.
+
+    Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
+        HTTPException 404: If the period is not found in the temporal index.
+        HTTPException 422: If interval or network_type is invalid.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+    try:
+        snapshots = await get_temporal_network_snapshots(
+            db,
+            query_design_id=design_id if run_id is None else None,
+            run_id=run_id,
+            interval=interval,
+            network_type=network_type,
+            limit_per_snapshot=limit_per_snapshot,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+    for snapshot in snapshots:
+        snap_period = str(snapshot.get("period", ""))
+        if snap_period.startswith(period) or period.startswith(snap_period):
+            return snapshot.get("graph", {"nodes": [], "edges": []})
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Period '{period}' not found in temporal snapshots for this design.",
+    )
+
+
+@router.get("/design/{design_id:uuid}/network/enhanced-bipartite")
+async def design_network_enhanced_bipartite(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    limit: int = Query(
+        default=500, ge=1, le=2000, description="Max edges in the base bipartite graph."
+    ),
+    top_emergent: int = Query(
+        default=30, ge=5, le=100, description="Number of emergent terms to add."
+    ),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
+) -> dict[str, Any]:
+    """Return an enhanced bipartite actor-term graph for a query design or a specific run.
+
+    Combines the standard bipartite graph with additional term nodes discovered
+    via TF-IDF extraction.  Term nodes carry a ``term_type`` attribute:
+    ``"search_term"`` or ``"emergent_term"``.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        limit: Maximum number of edges in the base bipartite graph
+            (default 500, max 2000).
+        top_emergent: Number of emergent terms to extract and add as term nodes
+            (5–100, default 30).
+        run_id: Optional UUID of a specific run to scope the query to.
+
+    Returns:
+        Graph dict ``{"nodes": [...], "edges": [...]}`` with term nodes carrying
+        a ``"term_type"`` attribute.
+
+    Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+
+    emergent = await get_emergent_terms(
+        db,
+        query_design_id=design_id,
+        run_id=run_id,
+        top_n=top_emergent,
+        exclude_search_terms=True,
+    )
+    return await build_enhanced_bipartite_network(
+        db,
+        emergent_terms=emergent,
+        query_design_id=design_id if run_id is None else None,
+        run_id=run_id,
+        limit=limit,
+    )
+
+
+@router.get("/design/{design_id:uuid}/filter-options")
+async def design_filter_options(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope filter options to.",
+    ),
+) -> dict[str, list[str]]:
+    """Return distinct platform and arena values for a query design or a specific run.
+
+    Called by the analysis dashboard to populate the platform and arena filter
+    dropdowns.  Returns empty lists rather than HTTP 404 when the design has
+    no data yet.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        run_id: Optional UUID of a specific run to scope the filter options to.
+
+    Returns:
+        ``{"platforms": [...], "arenas": [...]}`` with sorted, deduplicated
+        string lists.
+
+    Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    try:
+        await _get_design_or_raise(design_id, db, current_user)
+        run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+    except Exception:  # noqa: BLE001
+        return {"platforms": [], "arenas": []}
+
+    if run_id is not None:
+        scope_filter = UniversalContentRecord.collection_run_id == run_id
+    else:
+        scope_filter = UniversalContentRecord.query_design_id == design_id
+
+    base_filters = [
+        scope_filter,
+        UniversalContentRecord.term_matched.is_(True),
+        UniversalContentRecord.raw_metadata["duplicate_of"].as_string().is_(None),
+    ]
+    platform_stmt = (
+        select(distinct(UniversalContentRecord.platform))
+        .where(*base_filters)
+        .order_by(UniversalContentRecord.platform)
+    )
+    arena_stmt = (
+        select(distinct(UniversalContentRecord.arena))
+        .where(*base_filters)
+        .order_by(UniversalContentRecord.arena)
+    )
+
+    platform_result = await db.execute(platform_stmt)
+    arena_result = await db.execute(arena_stmt)
+
+    platforms: list[str] = [row[0] for row in platform_result.fetchall() if row[0]]
+    arenas: list[str] = [row[0] for row in arena_result.fetchall() if row[0]]
+
+    logger.info(
+        "analysis.design_filter_options",
+        design_id=str(design_id),
+        run_id=str(run_id) if run_id else None,
+        platform_count=len(platforms),
+        arena_count=len(arenas),
+    )
+
+    return {"platforms": platforms, "arenas": arenas}
+
+
+@router.get("/design/{design_id:uuid}/enrichments/languages")
+async def design_enrichment_languages(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
+) -> list[dict[str, Any]]:
+    """Return language distribution from enrichment results for a query design or run.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        run_id: Optional UUID of a specific run to scope the query to.
+
+    Returns:
+        List of dicts ordered by count descending.
+
+    Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+    return await get_language_distribution(
+        db,
+        query_design_id=design_id if run_id is None else None,
+        run_id=run_id,
+    )
+
+
+@router.get("/design/{design_id:uuid}/enrichments/entities")
+async def design_enrichment_entities(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    limit: int = Query(default=20, ge=1, le=100, description="Maximum entities to return."),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
+) -> list[dict[str, Any]]:
+    """Return most frequent named entities from enrichment data for a query design or run.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        limit: Maximum number of entities to return (1–100, default 20).
+        run_id: Optional UUID of a specific run to scope the query to.
+
+    Returns:
+        List of dicts ordered by count descending.
+
+    Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+    return await get_top_named_entities(
+        db,
+        query_design_id=design_id if run_id is None else None,
+        run_id=run_id,
+        limit=limit,
+    )
+
+
+@router.get("/design/{design_id:uuid}/enrichments/propagation")
+async def design_enrichment_propagation(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
+) -> list[dict[str, Any]]:
+    """Return cross-arena propagation patterns for a query design or a specific run.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        run_id: Optional UUID of a specific run to scope the query to.
+
+    Returns:
+        List of dicts ordered by cluster size descending.
+
+    Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+    return await get_propagation_patterns(
+        db,
+        query_design_id=design_id if run_id is None else None,
+        run_id=run_id,
+    )
+
+
+@router.get("/design/{design_id:uuid}/enrichments/coordination")
+async def design_enrichment_coordination(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
+) -> list[dict[str, Any]]:
+    """Return coordination signals from enrichment data for a query design or run.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        run_id: Optional UUID of a specific run to scope the query to.
+
+    Returns:
+        List of dicts ordered by signal strength descending.
+
+    Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+    return await get_coordination_signals(
+        db,
+        query_design_id=design_id if run_id is None else None,
+        run_id=run_id,
+    )
+
+
+@router.get("/design/{design_id:uuid}/enrichments/sentiment")
+async def design_enrichment_sentiment(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
+) -> dict[str, Any]:
+    """Return sentiment distribution from enrichment data for a query design or run.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        run_id: Optional UUID of a specific run to scope the query to.
+
+    Returns:
+        Dict with sentiment counts and average score.
+
+    Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
+        HTTPException 404: If the query design does not exist.
+        HTTPException 403: If the current user does not own the design.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+    return await get_sentiment_distribution(
+        db,
+        query_design_id=design_id if run_id is None else None,
+        run_id=run_id,
+    )
+
+
+@router.get("/design/{design_id:uuid}/filtered-export")
+async def design_filtered_export(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    format: str = Query(
+        default="csv",
+        description="Export format: csv, xlsx, ndjson, parquet, ris, bibtex.",
+    ),
+    platform: Optional[str] = Query(default=None, description="Filter by platform name."),
+    arena: Optional[str] = Query(default=None, description="Filter by arena name."),
+    date_from: Optional[datetime] = Query(
+        default=None, description="Inclusive lower bound on published_at (ISO 8601)."
+    ),
+    date_to: Optional[datetime] = Query(
+        default=None, description="Inclusive upper bound on published_at (ISO 8601)."
+    ),
+    search_term: Optional[str] = Query(
+        default=None,
+        description="Only include records matching this search term in search_terms_matched.",
+    ),
+    top_actors: Optional[str] = Query(
+        default=None,
+        description="Comma-separated list of author_display_name values to filter by.",
+    ),
+    min_engagement: Optional[float] = Query(
+        default=None, description="Minimum engagement_score to include."
+    ),
+    limit: int = Query(
+        default=10_000,
+        ge=1,
+        le=10_000,
+        description="Maximum number of records to export (hard cap: 10 000).",
+    ),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope export to; omit for all design runs.",
+    ),
+) -> Response:
+    """Export filtered content records from a query design (or specific run) as a file.
+
+    Applies the specified filters to the ``content_records`` table, scoped to
+    the given query design.  When ``run_id`` is provided, results are further
+    scoped to that single run.
+
+    Supported formats: ``csv``, ``xlsx``, ``ndjson``, ``parquet``, ``ris``,
+    ``bibtex``.
+
+    Args:
+        design_id: UUID of the query design to export from.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        format: Output format.
+        platform: Optional platform name filter.
+        arena: Optional arena name filter.
+        date_from: Optional lower bound on ``published_at``.
+        date_to: Optional upper bound on ``published_at``.
+        search_term: Optional term that must appear in ``search_terms_matched``.
+        top_actors: Optional comma-separated list of ``author_display_name``
+            values to restrict the export to.
+        min_engagement: Optional minimum ``engagement_score``.
+        limit: Maximum records to include (1–10 000; default 10 000).
+        run_id: Optional UUID of a specific run to scope the export to.
+
+    Returns:
+        A ``Response`` with the file bytes and a ``Content-Disposition:
+        attachment`` header.
+
+    Raises:
+        HTTPException 400: If the format is unsupported or ``run_id`` does not
+            belong to ``design_id``.
+        HTTPException 403: If the current user does not own the design.
+        HTTPException 404: If the design does not exist.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+
+    if format not in _EXPORT_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Unsupported export format {format!r}. "
+                f"Choose from: {', '.join(_EXPORT_CONTENT_TYPES)}."
+            ),
+        )
+
+    # Scope to the specific run when provided, otherwise the whole design.
+    if run_id is not None:
+        scope_filter = UniversalContentRecord.collection_run_id == run_id
+    else:
+        scope_filter = UniversalContentRecord.query_design_id == design_id
+
+    stmt = (
+        select(UniversalContentRecord)
+        .where(
+            scope_filter,
+            UniversalContentRecord.term_matched.is_(True),
+            UniversalContentRecord.raw_metadata["duplicate_of"].as_string().is_(None),
+        )
+        .order_by(UniversalContentRecord.collected_at.desc())
+        .limit(limit)
+    )
+
+    if platform:
+        stmt = stmt.where(UniversalContentRecord.platform == platform)
+    if arena:
+        stmt = stmt.where(UniversalContentRecord.arena == arena)
+    if date_from:
+        stmt = stmt.where(UniversalContentRecord.published_at >= date_from)
+    if date_to:
+        stmt = stmt.where(UniversalContentRecord.published_at <= date_to)
+    if search_term:
+        stmt = stmt.where(
+            UniversalContentRecord.search_terms_matched.contains([search_term])
+        )
+    if min_engagement is not None:
+        stmt = stmt.where(UniversalContentRecord.engagement_score >= min_engagement)
+    if top_actors:
+        actor_names = [a.strip() for a in top_actors.split(",") if a.strip()]
+        if actor_names:
+            stmt = stmt.where(
+                UniversalContentRecord.author_display_name.in_(actor_names)
+            )
+
+    db_result = await db.execute(stmt)
+    orm_rows = list(db_result.scalars().all())
+    records = [_record_to_dict(r) for r in orm_rows]
+
+    exporter = ContentExporter()
+    try:
+        if format == "csv":
+            file_bytes = await exporter.export_csv(records)
+        elif format == "xlsx":
+            file_bytes = await exporter.export_xlsx(records)
+        elif format == "ndjson":
+            file_bytes = await exporter.export_json(records)
+        elif format == "parquet":
+            file_bytes = await exporter.export_parquet(records)
+        elif format == "ris":
+            file_bytes = exporter.export_ris(records)
+        else:  # bibtex
+            file_bytes = exporter.export_bibtex(records)
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
+
+    ext = _EXPORT_EXTENSIONS[format]
+    scope_label = f"run_{run_id}" if run_id else f"design_{design_id}"
+    filename = f"{scope_label}_{format}_export.{ext}"
+    content_type = _EXPORT_CONTENT_TYPES[format]
+
+    logger.info(
+        "analysis.design_filtered_export",
+        design_id=str(design_id),
+        run_id=str(run_id) if run_id else None,
+        user_id=str(current_user.id),
+        format=format,
+        record_count=len(records),
+    )
+
+    return Response(
+        content=file_bytes,
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/design/{design_id:uuid}/suggested-terms")
+async def design_suggested_terms(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    top_n: int = Query(
+        default=10, ge=1, le=50, description="Maximum number of suggested terms to return."
+    ),
+    min_doc_frequency: int = Query(
+        default=2, ge=1, description="Minimum document frequency for a suggested term."
+    ),
+    run_id: uuid.UUID | None = Query(
+        default=None,
+        description="Optional run to scope analysis to; omit for design-level aggregate.",
+    ),
+) -> list[dict[str, Any]]:
+    """Return novel emergent terms for a query design or a specific run.
+
+    Calls ``get_emergent_terms()`` scoped to the design (or run), then removes
+    terms already present in the query design's search term list so that only
+    genuinely novel vocabulary is returned.
+
+    Args:
+        design_id: UUID of the query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        top_n: Maximum number of suggestions to return (1–50, default 10).
+        min_doc_frequency: Minimum document frequency for a suggested term (default 2).
+        run_id: Optional UUID of a specific run to scope the query to.
+
+    Returns:
+        List of dicts ``{"term": str, "score": float, "document_frequency": int}``
+        ordered by TF-IDF score descending, excluding existing search terms.
+
+    Raises:
+        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
+        HTTPException 403: If the current user does not own the design.
+        HTTPException 404: If the design does not exist.
+    """
+    await _get_design_or_raise(design_id, db, current_user)
+    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
+
+    all_emergent = await get_emergent_terms(
+        db,
+        query_design_id=design_id,
+        run_id=run_id,
+        top_n=top_n * 4,
+        exclude_search_terms=True,
+        min_doc_frequency=min_doc_frequency,
+    )
+
+    # Build a set of existing search term strings for this query design.
+    existing_terms: set[str] = set()
+    term_stmt = select(SearchTerm.term).where(
+        SearchTerm.query_design_id == design_id,
+        SearchTerm.is_active.is_(True),
+    )
+    term_result = await db.execute(term_stmt)
+    existing_terms = {row[0].lower() for row in term_result.fetchall()}
+
+    suggestions = [
+        item
+        for item in all_emergent
+        if item["term"].lower() not in existing_terms
+    ][:top_n]
+
+    logger.info(
+        "analysis.design_suggested_terms",
+        design_id=str(design_id),
+        run_id=str(run_id) if run_id else None,
+        existing_count=len(existing_terms),
+        suggestion_count=len(suggestions),
+    )
+
+    return suggestions
 
 
 # ---------------------------------------------------------------------------
@@ -2340,3 +3656,108 @@ async def coordination_events(
         min_score=min_score,
         limit=limit,
     )
+
+
+# ---------------------------------------------------------------------------
+# Project-level and user-level volume endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get("/project/{project_id:uuid}/volume")
+async def project_volume_over_time(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    platform: Optional[str] = Query(default=None, description="Filter by platform."),
+    arena: Optional[str] = Query(default=None, description="Filter by arena."),
+    date_from: Optional[datetime] = Query(default=None, description="Lower bound on published_at."),
+    date_to: Optional[datetime] = Query(default=None, description="Upper bound on published_at."),
+    granularity: str = Query(default="day", description="Time bucket: hour, day, week, month."),
+    delta_mode: bool = Query(
+        default=False,
+        description="Use delta counting for snapshot arenas.",
+    ),
+) -> list[dict[str, Any]]:
+    """Return content volume over time across all designs in a project.
+
+    Fetches all query_design_ids belonging to the project, verifies ownership,
+    and returns aggregated volume data.
+    """
+    proj_result = await db.execute(
+        select(Project).where(Project.id == project_id)
+    )
+    project = proj_result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project '{project_id}' not found.",
+        )
+    ownership_guard(project.owner_id, current_user)
+
+    qd_result = await db.execute(
+        select(QueryDesign.id).where(QueryDesign.project_id == project_id)
+    )
+    qd_ids = [row[0] for row in qd_result.all()]
+    if not qd_ids:
+        return []
+
+    volume_fn = get_volume_with_deltas if delta_mode else get_volume_over_time
+    try:
+        return await volume_fn(
+            db,
+            query_design_ids=qd_ids,
+            arena=arena,
+            platform=platform,
+            date_from=date_from,
+            date_to=date_to,
+            granularity=granularity,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get("/volume")
+async def user_volume_over_time(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    platform: Optional[str] = Query(default=None, description="Filter by platform."),
+    arena: Optional[str] = Query(default=None, description="Filter by arena."),
+    date_from: Optional[datetime] = Query(default=None, description="Lower bound on published_at."),
+    date_to: Optional[datetime] = Query(default=None, description="Upper bound on published_at."),
+    granularity: str = Query(default="day", description="Time bucket: hour, day, week, month."),
+    delta_mode: bool = Query(
+        default=False,
+        description="Use delta counting for snapshot arenas.",
+    ),
+) -> list[dict[str, Any]]:
+    """Return content volume over time across all of the current user's designs.
+
+    Aggregates volume data from every query design owned by the authenticated
+    user.
+    """
+    qd_result = await db.execute(
+        select(QueryDesign.id).where(QueryDesign.owner_id == current_user.id)
+    )
+    qd_ids = [row[0] for row in qd_result.all()]
+    if not qd_ids:
+        return []
+
+    volume_fn = get_volume_with_deltas if delta_mode else get_volume_over_time
+    try:
+        return await volume_fn(
+            db,
+            query_design_ids=qd_ids,
+            arena=arena,
+            platform=platform,
+            date_from=date_from,
+            date_to=date_to,
+            granularity=granularity,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
