@@ -7,10 +7,10 @@
     These libraries are not needed on other pages so they live here, not in base.html.
 
     Load order matters:
-      1. graphology core (defines window.Graph)
-      2. sigma (depends on graphology)
-      3. graphology-layout (random layout helper — defines window.graphologyLayout)
-      4. graphology-layout-forceatlas2 (FA2 worker — defines window.graphologyLayoutForceAtlas2)
+      1. graphology core UMD (exports window.graphology — the Graph constructor)
+      2. sigma UMD (exports window.Sigma)
+      3. graphology-library UMD (exports window.graphologyLibrary — bundles layout, FA2, etc.)
+      4. Bridge script to map globals to names expected by network_preview.js
       5. network_preview.js (local helper — exposes window.initNetworkPreview)
 
     GR-16: chartjs-plugin-annotation must load AFTER Chart.js (already in base.html)
@@ -18,9 +18,16 @@
     The UMD build exposes window.ChartAnnotation.
 #}
 <script src="https://cdn.jsdelivr.net/npm/graphology@0.25.4/dist/graphology.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/sigma@3.0.0-beta.35/build/sigma.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/graphology-layout@0.6.1/dist/graphology-layout.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/graphology-layout-forceatlas2@0.10.1/dist/graphology-layout-forceatlas2.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sigma@3.0.2/dist/sigma.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/graphology-library@0.8.0/dist/graphology-library.min.js"></script>
+<script>
+  // Bridge: map CDN globals to the names used by network_preview.js and inline Alpine code.
+  if (typeof window.graphology !== 'undefined') window.Graph = window.graphology;
+  if (typeof window.graphologyLibrary !== 'undefined') {
+    window.graphologyLayout = window.graphologyLibrary.layout;
+    window.graphologyLayoutForceAtlas2 = window.graphologyLibrary.layoutForceAtlas2;
+  }
+</script>
 {# GR-16: Chart.js annotation plugin for political calendar event overlays. #}
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3/dist/chartjs-plugin-annotation.min.js"></script>
 <script>
@@ -670,6 +677,7 @@
                 x-data="networkPreview('actors')"
                 x-init="init()"
                 @destroy.window="if ($event.detail && $event.detail.tab === 'actors') destroy()"
+                @network-tab-changed.window="onTabChanged($event.detail.tab)"
             >
                 <div class="flex gap-1 mb-3">
                     <button
@@ -691,7 +699,7 @@
                 {# Static network preview #}
                 <div x-show="viewMode === 'static'">
                     <template x-if="_includeNetworkPreview()">
-                        <div x-html="_buildNetworkPreviewHTML('actor-network-container')"></div>
+                        <div x-html="_buildNetworkPreviewHTML('actors-network-container')"></div>
                     </template>
                     {# Large-graph warning — shown when node count exceeds the preview limit #}
                     <div x-show="!loading && tooLarge"
@@ -704,7 +712,7 @@
                         <span x-text="`Graph too large to preview (${nodeCount} nodes). Showing top 100 nodes by degree. Download GEXF for full visualisation in Gephi.`"></span>
                     </div>
                     <div class="relative">
-                        <div id="actor-network-container" class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50" style="height: 360px;">
+                        <div id="actors-network-container" class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50" style="height: 360px;">
                             <div x-show="loading" class="absolute inset-0 flex items-center justify-center">
                                 <div class="text-sm text-gray-400 animate-pulse">Loading network data...</div>
                             </div>
@@ -754,14 +762,14 @@
                         <p class="text-xs text-gray-500">
                             Each bar represents a time period. Click a bar to load that period's network preview.
                         </p>
-                        <canvas id="actor-temporal-chart" height="80"></canvas>
+                        <canvas id="actors-temporal-chart" height="80"></canvas>
                         <div class="flex items-center gap-2 text-xs text-gray-600">
                             <span>Selected period:</span>
                             <span class="font-medium text-gray-900"
                                   x-text="selectedPeriod || 'None — click a bar above'"></span>
                         </div>
                         {# Period network container #}
-                        <div id="actor-period-network-container"
+                        <div id="actors-period-network-container"
                              class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50"
                              style="height: 300px;"
                              x-show="selectedPeriod">
@@ -805,6 +813,7 @@
             <div
                 x-data="networkPreview('terms')"
                 x-init="init()"
+                @network-tab-changed.window="onTabChanged($event.detail.tab)"
             >
                 <div class="flex gap-1 mb-3">
                     <button
@@ -835,7 +844,7 @@
                         <span x-text="`Graph too large to preview (${nodeCount} nodes). Showing top 100 nodes by degree. Download GEXF for full visualisation in Gephi.`"></span>
                     </div>
                     <div class="relative">
-                        <div id="term-network-container" class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50" style="height: 360px;">
+                        <div id="terms-network-container" class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50" style="height: 360px;">
                             <div x-show="loading" class="absolute inset-0 flex items-center justify-center">
                                 <div class="text-sm text-gray-400 animate-pulse">Loading network data...</div>
                             </div>
@@ -873,12 +882,12 @@
                     <div x-show="!temporalLoading && !temporalError && temporalPeriods.length === 0"
                          class="py-4 text-sm text-gray-400 italic">No temporal snapshots available.</div>
                     <div x-show="!temporalLoading && !temporalError && temporalPeriods.length > 0" class="space-y-4">
-                        <canvas id="term-temporal-chart" height="80"></canvas>
+                        <canvas id="terms-temporal-chart" height="80"></canvas>
                         <div x-show="selectedPeriod" class="flex items-center gap-2 text-xs text-gray-600">
                             <span>Selected:</span>
                             <span class="font-medium text-gray-900" x-text="selectedPeriod"></span>
                         </div>
-                        <div id="term-period-network-container"
+                        <div id="terms-period-network-container"
                              x-show="selectedPeriod"
                              class="relative w-full rounded-lg border border-gray-200 overflow-hidden bg-gray-50"
                              style="height: 300px;">
@@ -920,6 +929,7 @@
             <div
                 x-data="networkPreview('bipartite')"
                 x-init="init()"
+                @network-tab-changed.window="onTabChanged($event.detail.tab)"
             >
                 <div class="flex gap-1 mb-3">
                     <button
@@ -2353,6 +2363,8 @@ function networkTabs() {
 
         switchTab(tabId) {
             this.activeTab = tabId;
+            // Notify networkPreview components so they can lazy-load / teardown.
+            this.$dispatch('network-tab-changed', { tab: tabId });
         },
 
         async loadCrossplatform() {
@@ -2427,11 +2439,52 @@ function networkPreview(networkType) {
         _periodSigmaInstance: null,
         _temporalChartInstance: null,
 
+        // Map networkType to the parent tab ID used by networkTabs.
+        _tabIdMap: { actors: 'actor', terms: 'term', bipartite: 'bipartite' },
+        // Map networkType to the singular form expected by temporal API endpoints.
+        _temporalTypeMap: { actors: 'actor', terms: 'term' },
+        _loaded: false,
+        _cachedGraphData: null,
+
         // --------------- lifecycle ----------------------------------------
 
         async init() {
-            // Load the static network on mount.
-            await this.loadStatic();
+            // Only eagerly load the default active tab ('actor') to avoid
+            // creating WebGL contexts for hidden tabs.  Other tabs lazy-load
+            // when switched to via the 'network-tab-changed' event.
+            const myTab = this._tabIdMap[networkType] || networkType;
+            if (myTab === 'actor') {
+                await this.loadStatic();
+                this._loaded = true;
+            }
+        },
+
+        async onTabChanged(activeTabId) {
+            const myTab = this._tabIdMap[networkType] || networkType;
+            if (activeTabId === myTab) {
+                // Tab became visible — load if first time, re-render if sigma was killed.
+                if (!this._loaded) {
+                    await this.loadStatic();
+                    this._loaded = true;
+                } else if (!this.sigmaInstance && this._cachedGraphData) {
+                    this.$nextTick(() => this._renderSigma(
+                        this._cachedGraphData, this._containerId(), 'sigmaInstance'));
+                }
+            } else {
+                // Tab hidden — kill sigma to free WebGL contexts.
+                this._killSigma();
+            }
+        },
+
+        _killSigma() {
+            if (this.sigmaInstance) {
+                this.sigmaInstance.kill();
+                this.sigmaInstance = null;
+            }
+            if (this._periodSigmaInstance) {
+                this._periodSigmaInstance.kill();
+                this._periodSigmaInstance = null;
+            }
         },
 
         destroy() {
@@ -2489,6 +2542,7 @@ function networkPreview(networkType) {
                 if (this.nodeCount > 0) {
                     // Trim oversized graphs before rendering to keep sigma.js responsive.
                     const trimmed = this._trimGraph(graphData);
+                    this._cachedGraphData = trimmed;
                     // Wait for Alpine to finish rendering the container before measuring it.
                     this.$nextTick(() => this._renderSigma(trimmed, this._containerId(), 'sigmaInstance'));
                 }
@@ -2546,11 +2600,18 @@ function networkPreview(networkType) {
 
         async loadTemporal() {
             if (this.temporalPeriods.length > 0) return;  // Already loaded.
+            // Backend temporal endpoints expect singular type ('actor'/'term').
+            // 'bipartite' is not supported for temporal — show empty state.
+            const temporalType = this._temporalTypeMap[networkType];
+            if (!temporalType) {
+                this.temporalPeriods = [];
+                return;
+            }
             this.temporalLoading = true;
             this.temporalError = null;
             try {
                 const res = await fetch(
-                    _buildAnalysisUrl(`network/${networkType}/temporal`),
+                    _buildAnalysisUrl(`network/${temporalType}/temporal`),
                     { credentials: 'include' }
                 );
                 if (res.status === 404) {
@@ -2579,9 +2640,11 @@ function networkPreview(networkType) {
             }
 
             try {
+                const temporalType = this._temporalTypeMap[networkType];
+                if (!temporalType) return;
                 const encodedPeriod = encodeURIComponent(period);
                 const res = await fetch(
-                    _buildAnalysisUrl(`network/${networkType}/temporal/${encodedPeriod}`),
+                    _buildAnalysisUrl(`network/${temporalType}/temporal/${encodedPeriod}`),
                     { credentials: 'include' }
                 );
                 if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);

@@ -2,33 +2,39 @@
 {% block title %}Create Account{% endblock %}
 
 {% block content %}
-<div class="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+<div class="min-h-screen flex items-center justify-center px-4">
     <div class="w-full max-w-md">
         {# Brand mark #}
         <div class="text-center mb-8">
-            <h1 class="text-2xl font-bold text-gray-900">Issue Observatory</h1>
-            <p class="text-sm text-gray-500 mt-1">Danish media monitor</p>
+            {# Gradient brand circle mark #}
+            <div class="w-14 h-14 mx-auto mb-4 rounded-full bg-gradient-to-br from-brand-600 via-brand-green-400 to-brand-gold-400 flex items-center justify-center">
+                <div class="w-10 h-10 rounded-full bg-surface-card flex items-center justify-center">
+                    <div class="w-6 h-6 rounded-full bg-gradient-to-br from-brand-500 to-brand-green-400"></div>
+                </div>
+            </div>
+            <h1 class="font-heading text-2xl font-semibold text-white tracking-tight">Issue Observatory</h1>
+            <p class="text-sm text-brand-300 mt-1">Aarhus University</p>
         </div>
 
-        <div class="bg-white rounded-lg shadow px-8 py-8">
-            <h2 class="text-lg font-semibold text-gray-900 mb-6">Create your account</h2>
+        <div class="bg-surface-card rounded-lg shadow-brand-lg border border-white/10 px-8 py-8">
+            <h2 class="font-heading text-lg font-semibold text-white mb-6">Create your account</h2>
 
             {# Registration error #}
             {% if register_error | default('') %}
-            <div class="rounded-md bg-red-50 border border-red-200 px-4 py-3 mb-5 text-sm text-red-800">
+            <div class="rounded-md bg-red-500/10 border border-red-400/20 px-4 py-3 mb-5 text-sm text-red-300">
                 {{ register_error }}
             </div>
             {% endif %}
 
             {# Registration success #}
             {% if register_success | default(false) %}
-            <div class="rounded-md bg-green-50 border border-green-200 px-4 py-3 mb-5 text-sm text-green-800">
+            <div class="rounded-md bg-brand-green-400/10 border border-brand-green-400/20 px-4 py-3 mb-5 text-sm text-brand-green-300">
                 <p class="font-medium">Account created successfully!</p>
                 <p class="mt-1">Your account is pending activation by an administrator. You will be notified when it is ready.</p>
             </div>
             <div class="mt-6 text-center">
                 <a href="/auth/login"
-                   class="text-sm text-blue-600 hover:text-blue-800 font-medium">
+                   class="text-sm text-brand-400 hover:text-brand-300 font-medium transition-colors">
                     Go to sign in
                 </a>
             </div>
@@ -44,22 +50,22 @@
                   @submit.prevent="submitRegister">
                 <div class="space-y-4">
                     <div>
-                        <label for="email" class="block text-sm font-medium text-gray-700 mb-1">
-                            Email <span class="text-red-500">*</span>
+                        <label for="email" class="block text-sm font-medium text-brand-200 mb-1">
+                            Email <span class="text-red-400">*</span>
                         </label>
                         <input type="email"
                                id="email"
                                name="email"
                                autocomplete="email"
                                required
-                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                               class="w-full bg-surface-input border border-white/10 rounded px-3 py-2 text-sm text-white placeholder-brand-300/40 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
                                placeholder="forsker@ku.dk">
-                        <p class="text-xs text-gray-400 mt-1">Use your institutional email address.</p>
+                        <p class="text-xs text-brand-300/50 mt-1">Use your institutional email address.</p>
                     </div>
 
                     <div>
-                        <label for="password" class="block text-sm font-medium text-gray-700 mb-1">
-                            Password <span class="text-red-500">*</span>
+                        <label for="password" class="block text-sm font-medium text-brand-200 mb-1">
+                            Password <span class="text-red-400">*</span>
                         </label>
                         <input type="password"
                                id="password"
@@ -69,7 +75,7 @@
                                minlength="8"
                                x-model="password"
                                @input="checkStrength()"
-                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                               class="w-full bg-surface-input border border-white/10 rounded px-3 py-2 text-sm text-white placeholder-brand-300/40 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
                                placeholder="At least 8 characters">
 
                         {# Password strength meter #}
@@ -79,20 +85,20 @@
                                      :class="{
                                          'bg-red-400':    strength >= i && strength <= 1,
                                          'bg-yellow-400': strength >= i && strength === 2,
-                                         'bg-blue-400':   strength >= i && strength === 3,
+                                         'bg-brand-400':  strength >= i && strength === 3,
                                          'bg-green-500':  strength >= i && strength === 4,
-                                         'bg-gray-200':   strength < i
+                                         'bg-white/10':   strength < i
                                      }">
                                 </div>
                             </template>
                         </div>
-                        <p class="text-xs text-gray-400 mt-1"
+                        <p class="text-xs text-brand-300/50 mt-1"
                            x-text="strengthLabel || 'Enter a password'">Enter a password</p>
                     </div>
 
                     <div>
-                        <label for="confirm_password" class="block text-sm font-medium text-gray-700 mb-1">
-                            Confirm password <span class="text-red-500">*</span>
+                        <label for="confirm_password" class="block text-sm font-medium text-brand-200 mb-1">
+                            Confirm password <span class="text-red-400">*</span>
                         </label>
                         <input type="password"
                                id="confirm_password"
@@ -100,10 +106,10 @@
                                autocomplete="new-password"
                                required
                                x-model="confirmPassword"
-                               class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                               :class="confirmPassword && password !== confirmPassword ? 'border-red-300 focus:ring-red-500' : ''"
+                               class="w-full bg-surface-input border border-white/10 rounded px-3 py-2 text-sm text-white placeholder-brand-300/40 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+                               :class="confirmPassword && password !== confirmPassword ? 'border-red-400/40 focus:ring-red-500' : ''"
                                placeholder="Repeat password">
-                        <p class="text-xs text-red-600 mt-1"
+                        <p class="text-xs text-red-400 mt-1"
                            x-show="confirmPassword && password !== confirmPassword">
                             Passwords do not match.
                         </p>
@@ -111,13 +117,13 @@
 
                     {# Inline error shown by Alpine on registration failure #}
                     <div x-show="errorMessage" x-cloak
-                         class="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-800"
+                         class="rounded-md bg-red-500/10 border border-red-400/20 px-3 py-2 text-sm text-red-300"
                          x-text="errorMessage">
                     </div>
 
                     <button type="submit"
                             :disabled="loading || !password || password !== confirmPassword || strength < 2"
-                            class="w-full flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                            class="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-brand-600 to-brand-500 text-white text-sm font-medium rounded-md hover:from-brand-700 hover:to-brand-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-150">
                         <svg x-show="loading" class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg"
                              fill="none" viewBox="0 0 24 24" aria-hidden="true">
                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
@@ -129,15 +135,15 @@
             </form>
 
             <div class="mt-6 text-center">
-                <p class="text-sm text-gray-500">
+                <p class="text-sm text-brand-300/60">
                     Already have an account?
-                    <a href="/auth/login" class="text-blue-600 hover:text-blue-800 font-medium">Sign in</a>
+                    <a href="/auth/login" class="text-brand-400 hover:text-brand-300 font-medium transition-colors">Sign in</a>
                 </p>
             </div>
             {% endif %}
         </div>
 
-        <p class="text-center text-xs text-gray-400 mt-6">
+        <p class="text-center text-xs text-brand-300/40 mt-6">
             The Issue Observatory &mdash; Aarhus University
         </p>
     </div>

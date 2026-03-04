@@ -5,8 +5,47 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}{% endblock %} — The Issue Observatory</title>
 
+    {# Web fonts #}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+
     {# TODO: Replace with compiled app.css for production (make css). #}
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50:  '#F3E8FF',
+                            100: '#E9D5FF',
+                            200: '#D8B4FE',
+                            300: '#C084FC',
+                            400: '#A855F7',
+                            500: '#7C3AED',
+                            600: '#4A1080',
+                            700: '#3B0764',
+                            800: '#2E0550',
+                            900: '#1E0338',
+                            950: '#120D1F',
+                        },
+                        surface: {
+                            base:     '#0F0A1A',
+                            card:     '#1A1225',
+                            elevated: '#231A30',
+                            input:    '#1E1530',
+                            nav:      '#120D1F',
+                        },
+                    },
+                    fontFamily: {
+                        heading: ['Space Grotesk', 'system-ui', 'sans-serif'],
+                        sans:    ['Inter', 'system-ui', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
 
     <link rel="stylesheet" href="{{ url_for('static', path='css/app.css') }}">
 
@@ -20,7 +59,7 @@
 
     {% block extra_head %}{% endblock %}
 </head>
-<body class="bg-gray-50 text-gray-900 min-h-screen">
+<body class="bg-gradient-to-br from-surface-base via-surface-card to-surface-nav text-white font-sans min-h-screen">
     {% block content %}{% endblock %}
 </body>
 </html>

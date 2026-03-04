@@ -66,17 +66,17 @@ const NETWORK_PREVIEW_MAX_NODES = 100;
 /** Maximum edges to render alongside the trimmed node set. */
 const NETWORK_PREVIEW_MAX_EDGES = 200;
 
-/** Node colour for actor-type nodes (blue-500). */
-const COLOR_ACTOR = '#3b82f6';
+/** Node colour for actor-type nodes (brand purple). */
+const COLOR_ACTOR = '#7C3AED';
 
-/** Node colour for term-type nodes (amber-500). */
-const COLOR_TERM  = '#f59e0b';
+/** Node colour for term-type nodes (brand gold). */
+const COLOR_TERM  = '#D4C020';
 
 /** Default node colour when node_type is absent. */
-const COLOR_DEFAULT = '#6b7280';
+const COLOR_DEFAULT = '#6B5F80';
 
-/** Edge colour (gray-400 at 60 % opacity). */
-const COLOR_EDGE = 'rgba(156, 163, 175, 0.6)';
+/** Edge colour (purple-tinted at 25% opacity). */
+const COLOR_EDGE = 'rgba(139, 92, 246, 0.25)';
 
 // ---------------------------------------------------------------------------
 // Internal instance registry
@@ -275,8 +275,8 @@ window.initNetworkPreview = function initNetworkPreview(containerId, graphData, 
         renderEdgeLabels: false,
         // Show node labels only when zoomed in enough to keep the graph readable.
         labelRenderedSizeThreshold: 6,
-        labelFont: 'system-ui, sans-serif',
-        defaultEdgeColor: 'rgba(156, 163, 175, 0.5)',
+        labelFont: 'Inter, system-ui, sans-serif',
+        defaultEdgeColor: 'rgba(139, 92, 246, 0.2)',
         defaultEdgeType: 'line',
         // Prevents sigma from throwing when the container has no dimensions yet.
         allowInvalidContainer: true,
@@ -290,13 +290,13 @@ window.initNetworkPreview = function initNetworkPreview(containerId, graphData, 
             if (n === hoveredNode || graph.neighbors(hoveredNode).includes(n)) {
                 return { ...data, highlighted: true };
             }
-            return { ...data, color: 'rgba(200,200,200,0.3)', label: '' };
+            return { ...data, color: 'rgba(107, 95, 128, 0.25)', label: '' };
         });
         sigma.setSetting('edgeReducer', (edge, data) => {
             if (graph.extremities(edge).includes(hoveredNode)) {
-                return { ...data, color: '#6b7280', size: (data.size || 1) + 1 };
+                return { ...data, color: '#A855F7', size: (data.size || 1) + 1 };
             }
-            return { ...data, color: 'rgba(200,200,200,0.15)' };
+            return { ...data, color: 'rgba(139, 92, 246, 0.08)' };
         });
     });
 

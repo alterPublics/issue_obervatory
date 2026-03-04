@@ -5,6 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}{% endblock %} — The Issue Observatory</title>
 
+    {# Web fonts — Space Grotesk (headings), Inter (body), JetBrains Mono (data) #}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+
     {#
         Tailwind CSS — development fallback via CDN play script.
         TODO: Replace with compiled app.css for production:
@@ -19,8 +24,66 @@
             theme: {
                 extend: {
                     colors: {
-                        brand: { 50: '#eff6ff', 600: '#2563eb', 700: '#1d4ed8' }
-                    }
+                        brand: {
+                            50:  '#F3E8FF',
+                            100: '#E9D5FF',
+                            200: '#D8B4FE',
+                            300: '#C084FC',
+                            400: '#A855F7',
+                            500: '#7C3AED',
+                            600: '#4A1080',
+                            700: '#3B0764',
+                            800: '#2E0550',
+                            900: '#1E0338',
+                            950: '#120D1F',
+                        },
+                        'brand-green': {
+                            50:  '#ECFDF5',
+                            100: '#D1FAE5',
+                            200: '#A7F3D0',
+                            300: '#6EE7B7',
+                            400: '#3D9B3A',
+                            500: '#2D7A2B',
+                            600: '#15803D',
+                            700: '#166534',
+                            800: '#14532D',
+                        },
+                        'brand-gold': {
+                            50:  '#FEFCE8',
+                            100: '#FEF9C3',
+                            200: '#FEF08A',
+                            300: '#ECC417',
+                            400: '#D4C020',
+                            500: '#B8A61C',
+                            600: '#9E8C00',
+                            700: '#854D0E',
+                            800: '#713F12',
+                        },
+                        surface: {
+                            base:     '#0F0A1A',
+                            card:     '#1A1225',
+                            elevated: '#231A30',
+                            input:    '#1E1530',
+                            nav:      '#120D1F',
+                        },
+                        'surface-light': {
+                            base: '#F5F0FA',
+                            card: '#FDFBFF',
+                        },
+                    },
+                    fontFamily: {
+                        heading: ['Space Grotesk', 'system-ui', 'sans-serif'],
+                        sans:    ['Inter', 'system-ui', 'sans-serif'],
+                        mono:    ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+                    },
+                    boxShadow: {
+                        'brand':    '0 4px 6px -1px rgba(74, 16, 128, 0.1), 0 2px 4px -2px rgba(74, 16, 128, 0.1)',
+                        'brand-lg': '0 10px 15px -3px rgba(74, 16, 128, 0.1), 0 4px 6px -4px rgba(74, 16, 128, 0.1)',
+                    },
+                    backgroundImage: {
+                        'brand-gradient': 'linear-gradient(135deg, #4A1080, #3D9B3A, #D4C020)',
+                        'brand-gradient-h': 'linear-gradient(90deg, #4A1080, #3D9B3A, #D4C020)',
+                    },
                 }
             }
         }
@@ -63,7 +126,7 @@
 
     {% block extra_head %}{% endblock %}
 </head>
-<body class="bg-gray-50 text-gray-900 min-h-screen flex" hx-boost="true">
+<body class="bg-surface-light-base text-gray-900 font-sans min-h-screen flex" hx-boost="true">
     {% include '_partials/nav.html' %}
     <main class="flex-1 p-6 overflow-auto">
         {% include '_partials/flash.html' %}

@@ -233,7 +233,15 @@
       "WebFetch(domain:forlag.kristeligt-dagblad.dk)",
       "Bash(date:*)",
       "Bash(pgrep:*)",
-      "Bash(.venv/bin/celery:*)"
+      "Bash(.venv/bin/celery:*)",
+      "WebFetch(domain:cdn.jsdelivr.net)",
+      "WebFetch(domain:www.sigmajs.org)",
+      "WebFetch(domain:www.jsdelivr.com)",
+      "WebFetch(domain:www.npmjs.com)",
+      "Bash(echo === Frontend endpoint calls ===:*)",
+      "Bash(docker ps:*)",
+      "Bash(echo Cannot check postgres status:*)",
+      "Bash(pg_isready:*)"
     ]
   }
 }

@@ -24,33 +24,40 @@ const _CHART_DEFAULTS = {
     annotation: false,
     legend: {
       labels: {
-        font: { size: 12, family: 'system-ui, sans-serif' },
-        color: '#374151',  // gray-700
+        font: { size: 12, family: 'Inter, system-ui, sans-serif' },
+        color: '#5C4F72',
+        usePointStyle: true,
+        pointStyleWidth: 8,
+        padding: 16,
       },
     },
     tooltip: {
-      backgroundColor: '#1f2937',  // gray-800
-      titleColor: '#f9fafb',
-      bodyColor: '#d1d5db',
-      padding: 10,
-      cornerRadius: 6,
+      backgroundColor: '#1E1530',
+      titleColor: '#E8E0F0',
+      bodyColor: '#A89BBF',
+      borderColor: 'rgba(139, 92, 246, 0.2)',
+      borderWidth: 1,
+      padding: 12,
+      cornerRadius: 8,
+      titleFont: { family: 'Space Grotesk, system-ui, sans-serif', weight: '600' },
+      bodyFont: { family: 'Inter, system-ui, sans-serif' },
     },
   },
 };
 
 // ---------------------------------------------------------------------------
-// Colour palette — consistent across all charts.
+// Colour palette — brand-derived, consistent across all charts.
 // ---------------------------------------------------------------------------
 
 const _PALETTE = [
-  '#2563eb', // blue-600
-  '#16a34a', // green-600
-  '#d97706', // amber-600
-  '#9333ea', // purple-600
-  '#dc2626', // red-600
-  '#0891b2', // cyan-600
-  '#ea580c', // orange-600
-  '#4f46e5', // indigo-600
+  '#7C3AED', // violet (purple anchor)
+  '#3D9B3A', // brand green
+  '#D4C020', // brand yellow
+  '#A855F7', // lighter violet
+  '#16A34A', // darker green
+  '#EAB308', // brighter yellow
+  '#581C87', // deep purple
+  '#65A30D', // lime (green-yellow bridge)
 ];
 
 // ---------------------------------------------------------------------------
@@ -169,7 +176,7 @@ function _buildAnnotations(events, chartLabels) {
         content: ev.label,
         position: 'start',
         rotation: -90,
-        font: { size: 9, family: 'system-ui, sans-serif' },
+        font: { size: 9, family: 'Inter, system-ui, sans-serif' },
         // Low-opacity background so the label doesn't obscure data.
         backgroundColor: ev.color + '22',
         color: ev.color,
@@ -222,8 +229,8 @@ window.initVolumeChart = function initVolumeChart(canvasId, data, events = [], o
       datasets: [{
         label: data.label || 'Records',
         data: data.values || [],
-        backgroundColor: isLine ? 'rgba(37, 99, 235, 0.15)' : 'rgba(37, 99, 235, 0.7)',
-        borderColor: '#2563eb',
+        backgroundColor: isLine ? 'rgba(124, 58, 237, 0.15)' : 'rgba(124, 58, 237, 0.7)',
+        borderColor: '#7C3AED',
         borderWidth: isLine ? 2 : 0,
         fill: isLine,
         tension: isLine ? 0.3 : undefined,
@@ -239,18 +246,18 @@ window.initVolumeChart = function initVolumeChart(canvasId, data, events = [], o
       },
       scales: {
         x: {
-          ticks: { color: '#6b7280', font: { size: 11 }, maxRotation: 45 },
+          ticks: { color: '#8B7FA0', font: { size: 11 }, maxRotation: 45 },
           grid: { display: false },
           title: data.xLabel
-            ? { display: true, text: data.xLabel, color: '#6b7280', font: { size: 11 } }
+            ? { display: true, text: data.xLabel, color: '#8B7FA0', font: { size: 11, family: 'Inter, system-ui, sans-serif' } }
             : { display: false },
         },
         y: {
           beginAtZero: true,
-          ticks: { color: '#6b7280', font: { size: 11 }, precision: 0 },
-          grid: { color: 'rgba(0,0,0,0.05)' },
+          ticks: { color: '#8B7FA0', font: { size: 11 }, precision: 0 },
+          grid: { color: 'rgba(74, 16, 128, 0.06)' },
           title: data.yLabel
-            ? { display: true, text: data.yLabel, color: '#6b7280', font: { size: 11 } }
+            ? { display: true, text: data.yLabel, color: '#8B7FA0', font: { size: 11, family: 'Inter, system-ui, sans-serif' } }
             : { display: false },
         },
       },
@@ -286,8 +293,8 @@ window.initEngagementChart = function initEngagementChart(canvasId, data, option
       datasets: [{
         label: data.label || 'Engagement',
         data: data.values || [],
-        backgroundColor: 'rgba(22, 163, 74, 0.7)',  // green-600
-        borderColor: '#16a34a',
+        backgroundColor: 'rgba(61, 155, 58, 0.7)',  // brand green
+        borderColor: '#3D9B3A',
         borderWidth: 0,
         borderRadius: 3,
       }],
@@ -296,13 +303,13 @@ window.initEngagementChart = function initEngagementChart(canvasId, data, option
       ..._CHART_DEFAULTS,
       scales: {
         x: {
-          ticks: { color: '#6b7280', font: { size: 11 } },
+          ticks: { color: '#8B7FA0', font: { size: 11 } },
           grid: { display: false },
         },
         y: {
           beginAtZero: true,
-          ticks: { color: '#6b7280', font: { size: 11 }, precision: 0 },
-          grid: { color: 'rgba(0,0,0,0.05)' },
+          ticks: { color: '#8B7FA0', font: { size: 11 }, precision: 0 },
+          grid: { color: 'rgba(74, 16, 128, 0.06)' },
         },
       },
       ...options,
@@ -346,8 +353,8 @@ window.initActorsChart = function initActorsChart(canvasId, data, options = {}) 
       datasets: [{
         label: 'Posts',
         data: data.values || [],
-        backgroundColor: 'rgba(37, 99, 235, 0.7)',
-        borderColor: '#2563eb',
+        backgroundColor: 'rgba(124, 58, 237, 0.7)',
+        borderColor: '#7C3AED',
         borderWidth: 0,
         borderRadius: 3,
       }],
@@ -358,17 +365,17 @@ window.initActorsChart = function initActorsChart(canvasId, data, options = {}) 
       scales: {
         x: {
           beginAtZero: true,
-          ticks: { color: '#6b7280', font: { size: 11 }, precision: 0 },
-          grid: { color: 'rgba(0,0,0,0.05)' },
+          ticks: { color: '#8B7FA0', font: { size: 11 }, precision: 0 },
+          grid: { color: 'rgba(74, 16, 128, 0.06)' },
           title: data.xLabel
-            ? { display: true, text: data.xLabel, color: '#6b7280', font: { size: 11 } }
+            ? { display: true, text: data.xLabel, color: '#8B7FA0', font: { size: 11, family: 'Inter, system-ui, sans-serif' } }
             : { display: false },
         },
         y: {
-          ticks: { color: '#374151', font: { size: 11 } },
+          ticks: { color: '#5C4F72', font: { size: 11 } },
           grid: { display: false },
           title: data.yLabel
-            ? { display: true, text: data.yLabel, color: '#6b7280', font: { size: 11 } }
+            ? { display: true, text: data.yLabel, color: '#8B7FA0', font: { size: 11, family: 'Inter, system-ui, sans-serif' } }
             : { display: false },
         },
       },
@@ -403,8 +410,8 @@ window.initTermsChart = function initTermsChart(canvasId, data, options = {}) {
       datasets: [{
         label: 'Matches',
         data: data.values || [],
-        backgroundColor: 'rgba(217, 119, 6, 0.7)',  // amber-600
-        borderColor: '#d97706',
+        backgroundColor: 'rgba(212, 192, 32, 0.7)',  // brand gold
+        borderColor: '#D4C020',
         borderWidth: 0,
         borderRadius: 3,
       }],
@@ -415,17 +422,17 @@ window.initTermsChart = function initTermsChart(canvasId, data, options = {}) {
       scales: {
         x: {
           beginAtZero: true,
-          ticks: { color: '#6b7280', font: { size: 11 }, precision: 0 },
-          grid: { color: 'rgba(0,0,0,0.05)' },
+          ticks: { color: '#8B7FA0', font: { size: 11 }, precision: 0 },
+          grid: { color: 'rgba(74, 16, 128, 0.06)' },
           title: data.xLabel
-            ? { display: true, text: data.xLabel, color: '#6b7280', font: { size: 11 } }
+            ? { display: true, text: data.xLabel, color: '#8B7FA0', font: { size: 11, family: 'Inter, system-ui, sans-serif' } }
             : { display: false },
         },
         y: {
-          ticks: { color: '#374151', font: { size: 11 } },
+          ticks: { color: '#5C4F72', font: { size: 11 } },
           grid: { display: false },
           title: data.yLabel
-            ? { display: true, text: data.yLabel, color: '#6b7280', font: { size: 11 } }
+            ? { display: true, text: data.yLabel, color: '#8B7FA0', font: { size: 11, family: 'Inter, system-ui, sans-serif' } }
             : { display: false },
         },
       },
@@ -471,24 +478,24 @@ window.initEngagementStatsChart = function initEngagementStatsChart(canvasId, da
         {
           label: 'Mean',
           data: metrics.map(m => data[m] ? (data[m].mean ?? 0) : 0),
-          backgroundColor: 'rgba(37, 99, 235, 0.7)',
-          borderColor: '#2563eb',
+          backgroundColor: 'rgba(124, 58, 237, 0.7)',
+          borderColor: '#7C3AED',
           borderWidth: 0,
           borderRadius: 3,
         },
         {
           label: 'Median',
           data: metrics.map(m => data[m] ? (data[m].median ?? 0) : 0),
-          backgroundColor: 'rgba(22, 163, 74, 0.7)',
-          borderColor: '#16a34a',
+          backgroundColor: 'rgba(61, 155, 58, 0.7)',
+          borderColor: '#3D9B3A',
           borderWidth: 0,
           borderRadius: 3,
         },
         {
           label: 'p95',
           data: metrics.map(m => data[m] ? (data[m].p95 ?? 0) : 0),
-          backgroundColor: 'rgba(217, 119, 6, 0.7)',
-          borderColor: '#d97706',
+          backgroundColor: 'rgba(212, 192, 32, 0.7)',
+          borderColor: '#D4C020',
           borderWidth: 0,
           borderRadius: 3,
         },
@@ -498,18 +505,18 @@ window.initEngagementStatsChart = function initEngagementStatsChart(canvasId, da
       ..._CHART_DEFAULTS,
       scales: {
         x: {
-          ticks: { color: '#374151', font: { size: 12 } },
+          ticks: { color: '#5C4F72', font: { size: 12 } },
           grid: { display: false },
           title: xLabel
-            ? { display: true, text: xLabel, color: '#6b7280', font: { size: 11 } }
+            ? { display: true, text: xLabel, color: '#8B7FA0', font: { size: 11, family: 'Inter, system-ui, sans-serif' } }
             : { display: false },
         },
         y: {
           beginAtZero: true,
-          ticks: { color: '#6b7280', font: { size: 11 }, precision: 1 },
-          grid: { color: 'rgba(0,0,0,0.05)' },
+          ticks: { color: '#8B7FA0', font: { size: 11 }, precision: 1 },
+          grid: { color: 'rgba(74, 16, 128, 0.06)' },
           title: yLabel
-            ? { display: true, text: yLabel, color: '#6b7280', font: { size: 11 } }
+            ? { display: true, text: yLabel, color: '#8B7FA0', font: { size: 11, family: 'Inter, system-ui, sans-serif' } }
             : { display: false },
         },
       },
@@ -557,8 +564,8 @@ window.initMultiArenaVolumeChart = function initMultiArenaVolumeChart(canvasId, 
     : [{
         label: 'Total records',
         data: rows.map(r => r.count),
-        borderColor: '#2563eb',
-        backgroundColor: 'rgba(37,99,235,0.1)',
+        borderColor: '#7C3AED',
+        backgroundColor: 'rgba(124,58,237,0.1)',
         borderWidth: 2,
         fill: true,
         tension: 0.3,
@@ -583,18 +590,18 @@ window.initMultiArenaVolumeChart = function initMultiArenaVolumeChart(canvasId, 
       },
       scales: {
         x: {
-          ticks: { color: '#6b7280', font: { size: 11 }, maxRotation: 45 },
+          ticks: { color: '#8B7FA0', font: { size: 11 }, maxRotation: 45 },
           grid: { display: false },
           title: xLabel
-            ? { display: true, text: xLabel, color: '#6b7280', font: { size: 11 } }
+            ? { display: true, text: xLabel, color: '#8B7FA0', font: { size: 11, family: 'Inter, system-ui, sans-serif' } }
             : { display: false },
         },
         y: {
           beginAtZero: true,
-          ticks: { color: '#6b7280', font: { size: 11 }, precision: 0 },
-          grid: { color: 'rgba(0,0,0,0.05)' },
+          ticks: { color: '#8B7FA0', font: { size: 11 }, precision: 0 },
+          grid: { color: 'rgba(74, 16, 128, 0.06)' },
           title: yLabel
-            ? { display: true, text: yLabel, color: '#6b7280', font: { size: 11 } }
+            ? { display: true, text: yLabel, color: '#8B7FA0', font: { size: 11, family: 'Inter, system-ui, sans-serif' } }
             : { display: false },
         },
       },
@@ -637,9 +644,9 @@ window.initEmergentTermsChart = function initEmergentTermsChart(canvasId, data, 
       datasets: [{
         label: 'Emergence score',
         data: data.values || [],
-        // Green-600 distinguishes this chart from the regular terms chart (amber).
-        backgroundColor: 'rgba(22, 163, 74, 0.7)',
-        borderColor: '#16a34a',
+        // Brand green distinguishes this chart from the regular terms chart (gold).
+        backgroundColor: 'rgba(61, 155, 58, 0.7)',
+        borderColor: '#3D9B3A',
         borderWidth: 0,
         borderRadius: 3,
       }],
@@ -655,17 +662,17 @@ window.initEmergentTermsChart = function initEmergentTermsChart(canvasId, data, 
         x: {
           beginAtZero: true,
           // Four decimal places for small TF-IDF / BM25-style scores.
-          ticks: { color: '#6b7280', font: { size: 11 }, precision: 4 },
-          grid: { color: 'rgba(0,0,0,0.05)' },
+          ticks: { color: '#8B7FA0', font: { size: 11 }, precision: 4 },
+          grid: { color: 'rgba(74, 16, 128, 0.06)' },
           title: data.xLabel
-            ? { display: true, text: data.xLabel, color: '#6b7280', font: { size: 11 } }
-            : { display: true, text: 'Emergence score', color: '#6b7280', font: { size: 11 } },
+            ? { display: true, text: data.xLabel, color: '#8B7FA0', font: { size: 11, family: 'Inter, system-ui, sans-serif' } }
+            : { display: true, text: 'Emergence score', color: '#8B7FA0', font: { size: 11, family: 'Inter, system-ui, sans-serif' } },
         },
         y: {
-          ticks: { color: '#374151', font: { size: 11 } },
+          ticks: { color: '#5C4F72', font: { size: 11 } },
           grid: { display: false },
           title: data.yLabel
-            ? { display: true, text: data.yLabel, color: '#6b7280', font: { size: 11 } }
+            ? { display: true, text: data.yLabel, color: '#8B7FA0', font: { size: 11, family: 'Inter, system-ui, sans-serif' } }
             : { display: false },
         },
       },
@@ -691,7 +698,7 @@ window.initArenaBreakdownChart = function initArenaBreakdownChart(canvasId, data
         data: data.values || [],
         backgroundColor: _PALETTE.slice(0, (data.labels || []).length),
         borderWidth: 2,
-        borderColor: '#ffffff',
+        borderColor: '#F5F0FA',
         hoverOffset: 6,
       }],
     },
