@@ -6,14 +6,11 @@
     <div class="w-full max-w-md">
         {# Brand mark #}
         <div class="text-center mb-8">
-            {# Gradient brand circle mark #}
-            <div class="w-14 h-14 mx-auto mb-4 rounded-full bg-gradient-to-br from-brand-600 via-brand-green-400 to-brand-gold-400 flex items-center justify-center">
-                <div class="w-10 h-10 rounded-full bg-surface-card flex items-center justify-center">
-                    <div class="w-6 h-6 rounded-full bg-gradient-to-br from-brand-500 to-brand-green-400"></div>
-                </div>
-            </div>
+            <img src="{{ url_for('static', path='images/brand/wordmark-gradient-2x.png') }}"
+                 alt="Issue Observatory"
+                 class="h-8 mx-auto mb-4">
             <h1 class="font-heading text-2xl font-semibold text-white tracking-tight">Issue Observatory</h1>
-            <p class="text-sm text-brand-300 mt-1">Aarhus University</p>
+            <p class="text-sm text-brand-300 mt-1">RUC Digital Media Lab</p>
         </div>
 
         <div class="bg-surface-card rounded-lg shadow-brand-lg border border-white/10 px-8 py-8">
@@ -144,7 +141,7 @@
         </div>
 
         <p class="text-center text-xs text-brand-300/40 mt-6">
-            The Issue Observatory &mdash; Aarhus University
+            The Issue Observatory &mdash; RUC Digital Media Lab
         </p>
     </div>
 </div>

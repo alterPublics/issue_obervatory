@@ -40,7 +40,7 @@ These four settings have no defaults. The application will fail to start if any 
 The PostgreSQL connection string. Must use the `asyncpg` driver.
 
 ```
-DATABASE_URL=postgresql+asyncpg://observatory:your_db_password@localhost:5432/issue_observatory
+DATABASE_URL=postgresql+asyncpg://observatory:your_db_password@localhost:5481/issue_observatory
 ```
 
 If you are using Docker Compose with the bundled PostgreSQL service, use:
@@ -108,10 +108,10 @@ These settings configure connections to the services that The Issue Observatory 
 ### Redis
 
 ```
-REDIS_URL=redis://localhost:6379/0
+REDIS_URL=redis://localhost:6381/0
 ```
 
-Default: `redis://localhost:6379/0`. Used for application caching and session state.
+Default: `redis://localhost:6381/0`. Used for application caching and session state.
 
 If using Docker Compose, change `localhost` to `redis` (the container hostname):
 
@@ -122,8 +122,8 @@ REDIS_URL=redis://redis:6379/0
 ### Celery (Task Queue)
 
 ```
-CELERY_BROKER_URL=redis://localhost:6379/1
-CELERY_RESULT_BACKEND=redis://localhost:6379/2
+CELERY_BROKER_URL=redis://localhost:6381/1
+CELERY_RESULT_BACKEND=redis://localhost:6381/2
 ```
 
 Defaults: Redis databases 1 and 2 (isolated from the application Redis on database 0). If using Docker Compose, replace `localhost` with `redis`.
@@ -261,13 +261,13 @@ Adjust this value if your Data Protection Impact Assessment (DPIA) specifies a d
 ### CORS
 
 ```
-ALLOWED_ORIGINS=["http://localhost:8000"]
+ALLOWED_ORIGINS=["http://localhost:8011"]
 ```
 
 Default: only localhost. For production, add your domain:
 
 ```
-ALLOWED_ORIGINS=["https://observatory.your-university.dk", "http://localhost:8000"]
+ALLOWED_ORIGINS=["https://observatory.your-university.dk", "http://localhost:8011"]
 ```
 
 ### Admin Bootstrap
@@ -432,7 +432,7 @@ DEFAULT_LOCALE_COUNTRY=dk
 DATA_RETENTION_DAYS=730
 
 # CORS allowed origins (add your production domain)
-ALLOWED_ORIGINS=["http://localhost:8000"]
+ALLOWED_ORIGINS=["http://localhost:8011"]
 
 # ------------------------------------------------------------------------------
 # ADMIN BOOTSTRAP (first-run only; leave empty to skip)
@@ -515,7 +515,7 @@ You should see containers for: `app`, `db` (PostgreSQL), `redis`, `minio`, `work
 ### Step 4: Verify the health endpoint
 
 ```bash
-curl http://localhost:8000/api/health
+curl http://localhost:8011/api/health
 ```
 
 A successful response looks like:
@@ -526,7 +526,7 @@ A successful response looks like:
 
 ### Step 5: Log in to the admin UI
 
-Open `http://localhost:8000` in your browser. If you set `FIRST_ADMIN_EMAIL` and `FIRST_ADMIN_PASSWORD`, log in with those credentials. Navigate to Admin > Credentials to begin adding arena API keys.
+Open `http://localhost:8011` in your browser. If you set `FIRST_ADMIN_EMAIL` and `FIRST_ADMIN_PASSWORD`, log in with those credentials. Navigate to Admin > Credentials to begin adding arena API keys.
 
 ### Common Issues
 

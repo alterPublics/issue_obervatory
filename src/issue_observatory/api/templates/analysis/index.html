@@ -720,8 +720,11 @@
                                 <p class="text-sm text-red-600 text-center" x-text="error"></p>
                             </div>
                             <div x-show="!loading && !error && nodeCount === 0"
-                                 class="absolute inset-0 flex items-center justify-center">
-                                <p class="text-sm text-gray-400 italic">No network data available for this {{ 'design' if mode == 'design' else 'run' }}.</p>
+                                 class="absolute inset-0 flex flex-col items-center justify-center">
+                                <img src="{{ url_for('static', path='images/brand/qr-pattern-2x.png') }}"
+                                     alt="" aria-hidden="true"
+                                     class="absolute inset-0 w-full h-full object-contain opacity-[0.04] pointer-events-none">
+                                <p class="relative text-sm text-gray-400 italic">No network data available for this {{ 'design' if mode == 'design' else 'run' }}.</p>
                             </div>
                         </div>
                         {# Zoom controls — overlaid top-right corner of the canvas #}
@@ -852,8 +855,11 @@
                                 <p class="text-sm text-red-600 text-center" x-text="error"></p>
                             </div>
                             <div x-show="!loading && !error && nodeCount === 0"
-                                 class="absolute inset-0 flex items-center justify-center">
-                                <p class="text-sm text-gray-400 italic">No network data available for this {{ 'design' if mode == 'design' else 'run' }}.</p>
+                                 class="absolute inset-0 flex flex-col items-center justify-center">
+                                <img src="{{ url_for('static', path='images/brand/qr-pattern-2x.png') }}"
+                                     alt="" aria-hidden="true"
+                                     class="absolute inset-0 w-full h-full object-contain opacity-[0.04] pointer-events-none">
+                                <p class="relative text-sm text-gray-400 italic">No network data available for this {{ 'design' if mode == 'design' else 'run' }}.</p>
                             </div>
                         </div>
                         {# Zoom controls — overlaid top-right corner of the canvas #}
@@ -968,8 +974,11 @@
                                 <p class="text-sm text-red-600 text-center" x-text="error"></p>
                             </div>
                             <div x-show="!loading && !error && nodeCount === 0"
-                                 class="absolute inset-0 flex items-center justify-center">
-                                <p class="text-sm text-gray-400 italic">No network data available for this {{ 'design' if mode == 'design' else 'run' }}.</p>
+                                 class="absolute inset-0 flex flex-col items-center justify-center">
+                                <img src="{{ url_for('static', path='images/brand/qr-pattern-2x.png') }}"
+                                     alt="" aria-hidden="true"
+                                     class="absolute inset-0 w-full h-full object-contain opacity-[0.04] pointer-events-none">
+                                <p class="relative text-sm text-gray-400 italic">No network data available for this {{ 'design' if mode == 'design' else 'run' }}.</p>
                             </div>
                         </div>
                         {# Zoom controls — overlaid top-right corner of the canvas #}

@@ -6,12 +6,18 @@
 <nav class="w-64 bg-surface-nav min-h-screen flex flex-col flex-shrink-0 relative">
     {# Gradient accent bar on left edge #}
     <div class="absolute left-0 top-0 bottom-0 w-0.5 brand-gradient-bar"></div>
+    {# Subtle binary data background texture #}
+    <img src="{{ url_for('static', path='images/brand/binary-col-white-4x.png') }}"
+         alt="" aria-hidden="true"
+         class="absolute right-0 top-0 h-full w-auto object-cover opacity-[0.03] pointer-events-none select-none">
 
     {# Brand header #}
     <div class="p-4 border-b border-white/10">
         <a href="/dashboard" class="block">
-            <h1 class="font-heading text-base font-semibold text-white leading-tight tracking-tight">Issue Observatory</h1>
-            <p class="text-xs text-brand-300 mt-0.5">Danish media monitor</p>
+            <img src="{{ url_for('static', path='images/brand/wordmark-gradient-2x.png') }}"
+                 alt="" aria-hidden="true"
+                 class="h-4 mb-1.5 opacity-80">
+            <h1 class="font-heading text-2xl font-semibold text-white leading-tight tracking-tight">Issue Observatory</h1>
         </a>
     </div>
 

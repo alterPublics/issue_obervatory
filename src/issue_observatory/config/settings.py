@@ -47,14 +47,14 @@ class Settings(BaseSettings):
 
     Must use the ``asyncpg`` driver, e.g.::
 
-        postgresql+asyncpg://user:password@localhost:5432/issue_observatory
+        postgresql+asyncpg://user:password@localhost:5481/issue_observatory
     """
 
     # ------------------------------------------------------------------
     # Redis
     # ------------------------------------------------------------------
 
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str = "redis://localhost:6381/0"
     """Redis connection URL used by the application (session state, caching)."""
 
     # ------------------------------------------------------------------
@@ -116,10 +116,10 @@ class Settings(BaseSettings):
     # Celery task queue
     # ------------------------------------------------------------------
 
-    celery_broker_url: str = "redis://localhost:6379/1"
+    celery_broker_url: str = "redis://localhost:6381/1"
     """Redis URL used as Celery's message broker (database 1 to isolate from app)."""
 
-    celery_result_backend: str = "redis://localhost:6379/2"
+    celery_result_backend: str = "redis://localhost:6381/2"
     """Redis URL used to store Celery task results (database 2)."""
 
     # ------------------------------------------------------------------
@@ -176,7 +176,7 @@ class Settings(BaseSettings):
     # CORS
     # ------------------------------------------------------------------
 
-    allowed_origins: list[str] = ["http://localhost:8000"]
+    allowed_origins: list[str] = ["http://localhost:8011"]
     """Origins permitted by the CORS middleware.  Extend for production domains."""
 
     # ------------------------------------------------------------------

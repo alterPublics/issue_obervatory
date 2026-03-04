@@ -1,5 +1,5 @@
 {#
-    HTMX request indicator spinner.
+    HTMX request indicator spinner — branded "O" mark.
     Place this wherever an `hx-indicator` attribute should show a spinner.
     The element is hidden by default; HTMX adds the `htmx-request` class during
     the request, which (in conjunction with the htmx CSS) makes it visible.
@@ -13,12 +13,8 @@
 #}
 <span id="spinner"
       class="htmx-indicator inline-flex items-center gap-1.5 text-sm text-gray-500">
-    <svg class="animate-spin w-4 h-4 text-brand-500"
-         xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-         aria-hidden="true">
-        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-        <path class="opacity-75" fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-    </svg>
+    <img src="{{ url_for('static', path='images/brand/logo-o-purple-2x.png') }}"
+         alt="" aria-hidden="true"
+         class="w-4 h-4 brand-spinner">
     Loading...
 </span>

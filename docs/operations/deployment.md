@@ -26,7 +26,7 @@ Copy `.env.example` to `.env` and fill in required values before first run.
 
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
-| `REDIS_URL` | `redis://localhost:6379/0` | No | Redis connection URL for application use (sessions, caching) |
+| `REDIS_URL` | `redis://localhost:6381/0` | No | Redis connection URL for application use (sessions, caching) |
 
 ### Security
 
@@ -52,8 +52,8 @@ Copy `.env.example` to `.env` and fill in required values before first run.
 
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
-| `CELERY_BROKER_URL` | `redis://localhost:6379/1` | No | Redis URL for Celery broker (DB 1, isolated from app) |
-| `CELERY_RESULT_BACKEND` | `redis://localhost:6379/2` | No | Redis URL for Celery result storage (DB 2) |
+| `CELERY_BROKER_URL` | `redis://localhost:6381/1` | No | Redis URL for Celery broker (DB 1, isolated from app) |
+| `CELERY_RESULT_BACKEND` | `redis://localhost:6381/2` | No | Redis URL for Celery result storage (DB 2) |
 
 ### Admin Bootstrap
 
@@ -89,7 +89,7 @@ Copy `.env.example` to `.env` and fill in required values before first run.
 
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
-| `ALLOWED_ORIGINS` | `["http://localhost:8000"]` | No | JSON list of CORS-allowed origins |
+| `ALLOWED_ORIGINS` | `["http://localhost:8011"]` | No | JSON list of CORS-allowed origins |
 
 ### SMTP / Email
 
@@ -133,7 +133,7 @@ healthchecks to use the fast endpoint:
 
 ```yaml
 healthcheck:
-  test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+  test: ["CMD", "curl", "-f", "http://localhost:8011/health"]
   interval: 30s
   timeout: 5s
   retries: 3
@@ -201,8 +201,8 @@ docker compose exec app python scripts/bootstrap_admin.py
 docker compose exec app python scripts/create_partitions.py
 
 # 4. Verify application health
-curl http://localhost:8000/health
-curl http://localhost:8000/api/health
+curl http://localhost:8011/health
+curl http://localhost:8011/api/health
 ```
 
 ---
@@ -213,7 +213,7 @@ curl http://localhost:8000/api/health
 
 ```nginx
 upstream observatory {
-    server app:8000;
+    server app:8011;
 }
 
 server {
@@ -247,7 +247,7 @@ server {
 
 ```caddyfile
 observatory.example.com {
-    reverse_proxy app:8000 {
+    reverse_proxy app:8011 {
         header_up Host {host}
         header_up X-Real-IP {remote_host}
         header_up X-Forwarded-Proto {scheme}
@@ -292,7 +292,7 @@ Add the following to your `prometheus.yml`:
 scrape_configs:
   - job_name: issue_observatory
     static_configs:
-      - targets: ["app:8000"]
+      - targets: ["app:8011"]
     metrics_path: /metrics
     scrape_interval: 15s
 ```
