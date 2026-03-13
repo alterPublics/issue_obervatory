@@ -26,19 +26,17 @@ All Redis calls are mocked via AsyncMock.  No live Redis is required.
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from issue_observatory.workers.rate_limiter import (
     ARENA_DEFAULTS,
     RateLimitConfig,
-    RateLimitTimeoutError,
     RateLimiter,
+    RateLimitTimeoutError,
     rate_limited_request,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helper: build a RateLimiter with a fully mocked Redis client

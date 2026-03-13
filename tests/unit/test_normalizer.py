@@ -13,7 +13,7 @@ These tests are pure unit tests — no database, no network, no Celery.
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -74,7 +74,7 @@ class TestPseudonymization:
         platform = "reddit"
         user_id = "u_testuser"
         expected = hashlib.sha256(
-            f"{platform}:{user_id}:{TEST_SALT}".encode("utf-8")
+            f"{platform}:{user_id}:{TEST_SALT}".encode()
         ).hexdigest()
 
         result = norm.pseudonymize_author(platform, user_id)
@@ -160,7 +160,7 @@ class TestContentHash:
         The hash of 'æøå' must be stable regardless of whether the input
         is NFC or NFD encoded.
         """
-        import unicodedata  # noqa: PLC0415
+        import unicodedata
 
         text_nfc = unicodedata.normalize("NFC", "grønne søer i Ålborg")
         text_nfd = unicodedata.normalize("NFD", "grønne søer i Ålborg")
@@ -275,7 +275,7 @@ class TestNormalizeFieldMapping:
 
     def test_normalize_passes_collection_context(self, norm: Normalizer) -> None:
         """collection_run_id, query_design_id, and search_terms_matched are threaded through."""
-        import uuid  # noqa: PLC0415
+        import uuid
 
         run_id = str(uuid.uuid4())
         design_id = str(uuid.uuid4())
@@ -363,7 +363,7 @@ class TestTimestampExtraction:
 
     def test_normalize_parses_datetime_object(self, norm: Normalizer) -> None:
         """Python datetime objects are accepted and returned as ISO strings."""
-        dt = datetime(2024, 3, 20, 9, 0, 0, tzinfo=timezone.utc)
+        dt = datetime(2024, 3, 20, 9, 0, 0, tzinfo=UTC)
         raw = {"published_at": dt}
         result = norm.normalize(raw, platform="dr_rss", arena="news_media")
 

@@ -19,8 +19,9 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import date, datetime, timedelta, timezone
-from typing import Annotated, AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
+from datetime import UTC, date, datetime, timedelta
+from typing import Annotated
 
 import redis.asyncio as aioredis
 import structlog
@@ -31,6 +32,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from issue_observatory.analysis.alerting import fetch_recent_volume_spikes
 from issue_observatory.api.dependencies import (
     PaginationParams,
     get_current_active_user,
@@ -38,14 +40,14 @@ from issue_observatory.api.dependencies import (
     get_redis,
     ownership_guard,
 )
+from issue_observatory.core.credit_service import CreditService
 from issue_observatory.core.database import get_db
 from issue_observatory.core.email_service import EmailService, get_email_service
+from issue_observatory.core.exceptions import InsufficientCreditError
 from issue_observatory.core.models.collection import CollectionRun, CollectionTask
 from issue_observatory.core.models.project import Project
 from issue_observatory.core.models.query_design import QueryDesign
 from issue_observatory.core.models.users import User
-from issue_observatory.core.credit_service import CreditService
-from issue_observatory.core.exceptions import InsufficientCreditError
 from issue_observatory.core.schemas.collection import (
     CollectionRunCreate,
     CollectionRunRead,
@@ -53,9 +55,6 @@ from issue_observatory.core.schemas.collection import (
     CreditEstimateResponse,
     ProjectCollectionCreate,
 )
-from issue_observatory.analysis.alerting import fetch_recent_volume_spikes
-
-from issue_observatory.api.limiter import limiter
 
 logger = structlog.get_logger(__name__)
 
@@ -262,9 +261,9 @@ async def list_collection_runs(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     pagination: Annotated[PaginationParams, Depends(get_pagination)],
-    status_filter: Optional[str] = None,
-    query_design_id: Optional[uuid.UUID] = None,
-    format: Optional[str] = None,
+    status_filter: str | None = None,
+    query_design_id: uuid.UUID | None = None,
+    format: str | None = None,
 ) -> list[CollectionRun] | HTMLResponse:
     """List collection runs initiated by the current user.
 
@@ -322,7 +321,7 @@ async def list_collection_runs(
 
         # Build a simple HTML table with run summaries
         rows_html = ""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         idle_cutoff = now - timedelta(minutes=30)
 
         for run in runs:
@@ -435,6 +434,29 @@ async def create_collection_run(  # type: ignore[misc]
     ownership_guard(query_design.owner_id, current_user)
 
     # -----------------------------------------------------------------------
+    # Duplicate run guard: reject if an active run already exists for this QD.
+    # Uses FOR UPDATE to prevent TOCTOU race where two concurrent requests
+    # both pass the check before either inserts a new run.
+    # -----------------------------------------------------------------------
+    active_run_result = await db.execute(
+        select(CollectionRun.id).where(
+            and_(
+                CollectionRun.query_design_id == payload.query_design_id,
+                CollectionRun.status.in_(["pending", "running"]),
+            )
+        ).limit(1).with_for_update()
+    )
+    existing_run = active_run_result.scalar_one_or_none()
+    if existing_run is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"A collection run is already active for this query design "
+                f"(run {existing_run}). Wait for it to complete or cancel it first."
+            ),
+        )
+
+    # -----------------------------------------------------------------------
     # Tier precedence resolution (IP2-022)
     #
     # Tier selection follows a strict three-level hierarchy (highest priority
@@ -458,12 +480,56 @@ async def create_collection_run(  # type: ignore[misc]
     # Build the merged arenas_config for the run.
     # Start from the query design's saved preferences (level 1), then apply
     # any launcher-level overrides for arenas not already in the design config
-    # (level 2).
+    # (level 2).  Finally, deep-merge the project's source_config so that
+    # project-level source lists are included in the snapshot (level 0).
     design_arena_config: dict = query_design.arenas_config or {}
     launcher_arena_config: dict = payload.arenas_config or {}
 
     # Merge: query design config takes precedence; launcher config fills gaps.
     merged_arenas_config: dict = {**launcher_arena_config, **design_arena_config}
+
+    # Deep-merge project source_config — source lists live at project level.
+    if query_design.project_id:
+        project = await db.get(Project, query_design.project_id)
+        project_source_config: dict = (project.source_config or {}) if project else {}
+        for arena_name, arena_data in project_source_config.items():
+            if not isinstance(arena_data, dict):
+                continue
+            if arena_name not in merged_arenas_config:
+                merged_arenas_config[arena_name] = {}
+            if isinstance(merged_arenas_config[arena_name], dict):
+                for key, value in arena_data.items():
+                    # Only merge source list keys that aren't already set
+                    if key not in merged_arenas_config[arena_name]:
+                        merged_arenas_config[arena_name][key] = value
+
+    # Deduplicate source-list collections for project-level launches.
+    # When _skip_source_lists is set, this is a subsequent run in a multi-QD
+    # project launch.  Source lists are identical across runs, so we either
+    # exclude actor-only arenas entirely or strip the source-list key from
+    # dual-mode arenas (leaving term-based collection intact).
+    if merged_arenas_config.pop("_skip_source_lists", False):
+        from issue_observatory.arenas.registry import autodiscover, get_arena
+        from issue_observatory.core.models.query_design import SOURCE_LIST_KEYS
+
+        autodiscover()
+        exclude: list[str] = list(merged_arenas_config.get("_exclude_arenas") or [])
+        for arena_name, config_key in SOURCE_LIST_KEYS.items():
+            try:
+                cls = get_arena(arena_name)
+                if not getattr(cls, "supports_term_search", True):
+                    # Actor-only arena → exclude entirely
+                    exclude.append(arena_name)
+                    merged_arenas_config.pop(arena_name, None)
+                    continue
+            except KeyError:
+                pass
+            # Dual-mode arena → strip source-list key only (terms still fire)
+            arena_section = merged_arenas_config.get(arena_name)
+            if isinstance(arena_section, dict):
+                arena_section.pop(config_key, None)
+        if exclude:
+            merged_arenas_config["_exclude_arenas"] = list(set(exclude))
 
     # Normalize to flat {platform_name: tier} for date checks and credit
     # estimation.  The raw merged config (which may contain custom source
@@ -472,6 +538,26 @@ async def create_collection_run(  # type: ignore[misc]
     flat_arenas: dict[str, str] = _normalize_arenas_config(
         merged_arenas_config, default_tier=payload.tier,
     )
+
+    # Project-level arena filter (intersection).
+    # An arena must be enabled at both project and query design level to run.
+    # When project.arenas_config is truly empty/unset ({}), all QD-enabled
+    # arenas pass through.  But when the project has an explicit config with
+    # an empty arenas list ({"arenas": []}), ALL arenas are blocked.
+    if query_design.project_id and project:
+        raw_project_config = project.arenas_config or {}
+        has_explicit_config = "arenas" in raw_project_config
+        project_arenas = _normalize_arenas_config(
+            raw_project_config, default_tier=payload.tier,
+        )
+        if has_explicit_config:
+            flat_arenas = {k: v for k, v in flat_arenas.items() if k in project_arenas}
+            # Also filter the raw arenas list to keep the persisted snapshot consistent
+            if "arenas" in merged_arenas_config and isinstance(merged_arenas_config["arenas"], list):
+                merged_arenas_config["arenas"] = [
+                    a for a in merged_arenas_config["arenas"]
+                    if (a.get("id") or a.get("platform_name")) in project_arenas
+                ]
 
     logger.debug(
         "tier_precedence_resolved",
@@ -657,8 +743,8 @@ async def create_collection_run_form(
     query_design_id: Annotated[str, Form()],
     mode: Annotated[str, Form()] = "batch",
     tier: Annotated[str, Form()] = "free",
-    date_from: Annotated[Optional[str], Form()] = None,
-    date_to: Annotated[Optional[str], Form()] = None,
+    date_from: Annotated[str | None, Form()] = None,
+    date_to: Annotated[str | None, Form()] = None,
 ) -> RedirectResponse:
     """Launch a collection run from a browser form submission.
 
@@ -696,8 +782,8 @@ async def create_collection_run_form(
         ) from exc
 
     # Parse date strings to date objects
-    parsed_date_from: Optional[date] = None
-    parsed_date_to: Optional[date] = None
+    parsed_date_from: date | None = None
+    parsed_date_to: date | None = None
     if date_from:
         try:
             parsed_date_from = date.fromisoformat(date_from)
@@ -728,7 +814,7 @@ async def create_collection_run_form(
     try:
         run = await create_collection_run(request, payload, db, current_user)
     except HTTPException as exc:
-        from urllib.parse import quote  # noqa: PLC0415
+        from urllib.parse import quote
 
         flash_msg = quote(str(exc.detail))
         return RedirectResponse(
@@ -803,16 +889,23 @@ async def create_project_collection(
             detail="Project has no active query designs. Add at least one active query design before launching a collection.",
         )
 
-    # Create one CollectionRun per QD, delegating to the existing create function
+    # Create one CollectionRun per QD, delegating to the existing create function.
+    # Source lists live at the project level, so they are identical across all
+    # runs.  To avoid duplicating actor-only collections (Facebook, Instagram)
+    # and source-list-based collect_by_actors calls, we flag all runs after the
+    # first so that create_collection_run can strip the redundant source data.
     created_runs: list[CollectionRunRead] = []
-    for qd in active_qds:
+    for idx, qd in enumerate(active_qds):
+        run_arenas_config = dict(payload.arenas_config or {})
+        if idx > 0:
+            run_arenas_config["_skip_source_lists"] = True
         qd_payload = CollectionRunCreate(
             query_design_id=qd.id,
             mode=payload.mode,
             tier=payload.tier,
             date_from=payload.date_from,
             date_to=payload.date_to,
-            arenas_config=payload.arenas_config,
+            arenas_config=run_arenas_config,
         )
         run = await create_collection_run(request, qd_payload, db, current_user)
         created_runs.append(CollectionRunRead.model_validate(run))
@@ -835,8 +928,10 @@ async def create_project_collection_form(
     project_id: Annotated[str, Form()],
     mode: Annotated[str, Form()] = "batch",
     tier: Annotated[str, Form()] = "free",
-    date_from: Annotated[Optional[str], Form()] = None,
-    date_to: Annotated[Optional[str], Form()] = None,
+    date_from: Annotated[str | None, Form()] = None,
+    date_to: Annotated[str | None, Form()] = None,
+    exclude_arenas: Annotated[list[str], Form()] = [],  # noqa: B006
+    only_collect_new: Annotated[str | None, Form()] = None,
 ) -> RedirectResponse:
     """Launch a project-level collection from a browser form submission.
 
@@ -865,8 +960,8 @@ async def create_project_collection_form(
             detail="Invalid project ID",
         ) from exc
 
-    parsed_date_from: Optional[date] = None
-    parsed_date_to: Optional[date] = None
+    parsed_date_from: date | None = None
+    parsed_date_to: date | None = None
     if date_from:
         try:
             parsed_date_from = date.fromisoformat(date_from)
@@ -884,18 +979,25 @@ async def create_project_collection_form(
                 detail=f"Invalid date_to format: {date_to}",
             ) from exc
 
+    arenas_config: dict = {}
+    if exclude_arenas:
+        arenas_config["_exclude_arenas"] = exclude_arenas
+    if only_collect_new == "true":
+        arenas_config["_only_collect_new"] = True
+
     payload = ProjectCollectionCreate(
         project_id=parsed_project_id,
         mode=mode,
         tier=tier,
         date_from=parsed_date_from,
         date_to=parsed_date_to,
+        arenas_config=arenas_config,
     )
 
     try:
         await create_project_collection(request, payload, db, current_user)
     except HTTPException as exc:
-        from urllib.parse import quote  # noqa: PLC0415
+        from urllib.parse import quote
 
         flash_msg = quote(str(exc.detail))
         return RedirectResponse(
@@ -928,7 +1030,7 @@ async def estimate_collection_credits(
     payload: CreditEstimateRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
+    hx_request: str | None = Header(default=None, alias="HX-Request"),
 ) -> CreditEstimateResponse | HTMLResponse:
     """Calculate a pre-flight credit cost estimate for a proposed collection run.
 
@@ -1235,17 +1337,64 @@ async def cancel_collection_run(
         )
 
     run.status = "cancelled"
-    run.completed_at = datetime.now(tz=timezone.utc)
+    run.completed_at = datetime.now(tz=UTC)
     run.error_log = "Cancelled by user."
+
+    # Cancel all non-terminal collection tasks for this run.
+    from sqlalchemy import update as sql_update
+
+    await db.execute(
+        sql_update(CollectionTask)
+        .where(
+            and_(
+                CollectionTask.collection_run_id == run_id,
+                CollectionTask.status.notin_(["completed", "failed", "cancelled"]),
+            )
+        )
+        .values(
+            status="cancelled",
+            error_message="Cancelled by user.",
+            completed_at=datetime.now(tz=UTC),
+        )
+    )
+
+    # Revoke any Celery tasks that are still executing.
+    task_id_result = await db.execute(
+        select(CollectionTask.celery_task_id).where(
+            and_(
+                CollectionTask.collection_run_id == run_id,
+                CollectionTask.celery_task_id.isnot(None),
+            )
+        )
+    )
+    celery_task_ids = [row[0] for row in task_id_result.fetchall() if row[0]]
+    if celery_task_ids:
+        try:
+            from issue_observatory.workers.celery_app import celery_app as _celery
+
+            for task_id in celery_task_ids:
+                _celery.control.revoke(task_id, terminate=True, signal="SIGTERM")
+            logger.info(
+                "cancel_revoked_celery_tasks",
+                run_id=str(run_id),
+                revoked_count=len(celery_task_ids),
+            )
+        except Exception as exc:
+            logger.warning(
+                "cancel_revoke_failed",
+                run_id=str(run_id),
+                error=str(exc),
+            )
+
     await db.commit()
     await db.refresh(run)
 
     # Refund any reserved credits for this cancelled run.
     try:
         credit_svc = CreditService(session=db)
-        from sqlalchemy import select as _sel  # noqa: PLC0415
+        from sqlalchemy import select as _sel
 
-        from issue_observatory.core.models.collection import CreditTransaction  # noqa: PLC0415
+        from issue_observatory.core.models.collection import CreditTransaction
 
         reservations = (await db.execute(
             _sel(CreditTransaction).where(
@@ -1311,7 +1460,12 @@ async def cancel_collection_run(
     )
 
     if request.headers.get("HX-Request"):
-        return _render_run_summary_fragment(request, run)
+        resp = _render_run_summary_fragment(request, run)
+        resp.headers["HX-Trigger"] = (
+            '{"showFlash": {"level": "success", "message":'
+            ' "Collection run cancelled. Any reserved credits have been refunded."}}'
+        )
+        return resp
     return CollectionRunRead.model_validate(run)
 
 
@@ -1346,7 +1500,7 @@ async def suspend_collection_run(
         HTTPException 403: If the caller did not initiate the run (and is not admin).
         HTTPException 409: If the run is not a live run in active status.
     """
-    from datetime import datetime, timezone  # noqa: PLC0415
+    from datetime import datetime
 
     run = await _get_run_or_404(run_id, db)
     ownership_guard(run.initiated_by, current_user)
@@ -1361,7 +1515,7 @@ async def suspend_collection_run(
         )
 
     run.status = "suspended"
-    run.suspended_at = datetime.now(tz=timezone.utc)
+    run.suspended_at = datetime.now(tz=UTC)
     await db.commit()
     await db.refresh(run)
 
@@ -1638,7 +1792,7 @@ async def get_recent_volume_spikes_all_designs(
     current_user: Annotated[User, Depends(get_current_active_user)],
     days: int = Query(default=7, ge=1, le=30, description="Number of past days to include."),
     limit: int = Query(default=5, ge=1, le=20, description="Maximum number of spikes to return."),
-    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
+    hx_request: str | None = Header(default=None, alias="HX-Request"),
 ) -> list[dict[str, Any]] | HTMLResponse:
     """Return recent volume spike alerts across all query designs owned by the user.
 
@@ -1670,9 +1824,9 @@ async def get_recent_volume_spikes_all_designs(
         Ordered by completion time descending (most recent first).
         Empty list when no spikes exist in the window.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = datetime.now(UTC) - timedelta(days=days)
 
     # Find all completed runs for this user's query designs that have volume_spikes
     stmt = (
@@ -1846,7 +2000,7 @@ async def stream_collection_run(
                         pubsub.get_message(ignore_subscribe_messages=True),
                         timeout=30.0,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # No message in 30 s — send a keepalive comment to
                     # prevent proxies from closing an idle connection.
                     yield ": keepalive\n\n"

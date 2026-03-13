@@ -70,16 +70,25 @@ PHRASINGS_PER_TERM_PREMIUM: int = 10
 # Prompt templates
 # ---------------------------------------------------------------------------
 
-CHAT_SYSTEM_PROMPT: str = (
-    "Du er en hjælpsom assistent. Svar altid på dansk. "
-    "Besvar brugerens spørgsmål grundigt og præcist."
-)
-"""System prompt for the Perplexity Sonar chat search calls.
+CHAT_SYSTEM_PROMPTS: dict[str, str] = {
+    "da": (
+        "Du er en hjælpsom assistent. Svar altid på dansk. "
+        "Besvar brugerens spørgsmål grundigt og præcist."
+    ),
+    "en": (
+        "You are a helpful assistant. Always answer in English. "
+        "Answer the user's questions thoroughly and precisely."
+    ),
+}
+"""Language-specific system prompts for the chat search calls.
 
-Enforces Danish-language responses regardless of the language of cited
-source material.  This is the primary Danish localisation mechanism for
-this arena (no ``lang=da`` parameter exists for Perplexity's web search).
+Keyed by ISO 639-1 language code.  Falls back to English for unknown
+languages.  Enforces response language regardless of the language of
+cited source material.
 """
+
+# Backward-compat alias (used by health_check and any external refs).
+CHAT_SYSTEM_PROMPT: str = CHAT_SYSTEM_PROMPTS["da"]
 
 EXPANSION_SYSTEM_PROMPT_TEMPLATE: str = (
     "Du er en dansk bruger der søger information via en AI-chatbot.\n"
@@ -87,11 +96,26 @@ EXPANSION_SYSTEM_PROMPT_TEMPLATE: str = (
     "om dette emne. Varier mellem faktuelle, holdningssøgende og praktiske\n"
     "spørgsmål. Svar kun med spørgsmålene, et per linje."
 )
-"""System prompt template for the query expansion calls.
+"""System prompt template for the query expansion calls (Danish).
 
 ``{N}`` is replaced at runtime with the number of phrasings to generate.
 Instructs the model to output exactly N Danish questions — one per line —
 without any preamble or numbering.
+"""
+
+EXPANSION_PROMPTS: dict[str, str] = {
+    "da": EXPANSION_SYSTEM_PROMPT_TEMPLATE,
+    "en": (
+        "You are a user searching for information via an AI chatbot.\n"
+        "Generate exactly {N} realistic questions that a person would ask\n"
+        "about this topic. Vary between factual, opinion-seeking, and practical\n"
+        "questions. Reply only with the questions, one per line."
+    ),
+}
+"""Language-specific expansion prompt templates.
+
+Keyed by ISO 639-1 language code.  Falls back to Danish (``"da"``) for
+unknown languages.
 """
 
 # ---------------------------------------------------------------------------

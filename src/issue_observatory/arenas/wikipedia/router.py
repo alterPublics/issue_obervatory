@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -353,13 +353,13 @@ async def get_pageviews(
         )
 
     # Resolve date range: default to last 30 days ending yesterday.
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     if date_to is None:
         date_to = (now - timedelta(days=1)).strftime("%Y-%m-%d")
     if date_from is None:
         date_from = (now - timedelta(days=31)).strftime("%Y-%m-%d")
 
-    from issue_observatory.arenas.wikipedia.collector import (  # noqa: PLC0415
+    from issue_observatory.arenas.wikipedia.collector import (
         _resolve_pageview_date_range,
     )
 

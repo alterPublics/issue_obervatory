@@ -26,15 +26,13 @@ import logging
 import time
 from typing import Any
 
-from celery.exceptions import SoftTimeLimitExceeded
-
 from issue_observatory.arenas.wikipedia.collector import WikipediaCollector
+from issue_observatory.config.settings import get_settings
+from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
 )
-from issue_observatory.config.settings import get_settings
-from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -64,23 +62,24 @@ def _update_task_status(
         error_message: Error description for failed updates.
     """
     try:
-        from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+        from issue_observatory.core.database import get_sync_session
 
         with get_sync_session() as session:
-            from sqlalchemy import text  # noqa: PLC0415
+            from sqlalchemy import text
 
             session.execute(
                 text(
                     """
                     UPDATE collection_tasks
                     SET status = :status,
-                        records_collected = :records_collected,
+                        records_collected = GREATEST(records_collected, :records_collected),
                         error_message = :error_message,
                         completed_at = CASE WHEN :status IN ('completed', 'failed')
                                             THEN NOW() ELSE completed_at END,
                         started_at   = CASE WHEN :status = 'running' AND started_at IS NULL
                                             THEN NOW() ELSE started_at END
                     WHERE collection_run_id = :run_id AND arena = :arena
+                        AND status != 'cancelled'
                     """
                 ),
                 {
@@ -92,7 +91,7 @@ def _update_task_status(
                 },
             )
             session.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "wikipedia: failed to update collection_tasks status to '%s': %s",
             status,
@@ -118,8 +117,9 @@ def _load_arenas_config(query_design_id: str) -> dict:
         The ``arenas_config`` JSONB dict, or ``{}`` on failure.
     """
     try:
-        from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
-        from sqlalchemy import text  # noqa: PLC0415
+        from sqlalchemy import text
+
+        from issue_observatory.core.database import get_sync_session
 
         with get_sync_session() as session:
             row = session.execute(
@@ -128,7 +128,7 @@ def _load_arenas_config(query_design_id: str) -> dict:
             ).fetchone()
             if row and row[0]:
                 return dict(row[0])
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "wikipedia: failed to load arenas_config for design %s: %s",
             query_design_id,
@@ -150,8 +150,7 @@ def _load_arenas_config(query_design_id: str) -> dict:
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
-    soft_time_limit=600,
-    time_limit=720,
+    # No fixed time limit — records persist incrementally and stale_run_cleanup handles stuck tasks.
 )
 def wikipedia_collect_terms(
     self: Any,
@@ -195,142 +194,151 @@ def wikipedia_collect_terms(
         ArenaRateLimitError: Triggers automatic retry with exponential backoff.
         ArenaCollectionError: Marks the task as FAILED in Celery.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
+    from issue_observatory.arenas.base import Tier
 
     _settings = get_settings()
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
+    logger.info(
+        "wikipedia: collect_by_terms started — run=%s terms=%d tier=%s",
+        collection_run_id,
+        len(terms),
+        tier,
+    )
+    _update_task_status(collection_run_id, _ARENA, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="reference",
+        platform="wikipedia",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+
+    # GR-04: read researcher-configured seed articles from arenas_config.
+    arenas_config = _load_arenas_config(query_design_id)
+    extra_seed_articles: list[str] | None = None
+    wiki_config = arenas_config.get("wikipedia") or {}
+    if isinstance(wiki_config, dict):
+        raw_seeds = wiki_config.get("seed_articles")
+        if isinstance(raw_seeds, list) and raw_seeds:
+            extra_seed_articles = [str(a) for a in raw_seeds if a]
+
     try:
-        logger.info(
-            "wikipedia: collect_by_terms started — run=%s terms=%d tier=%s",
-            collection_run_id,
-            len(terms),
-            tier,
-        )
-        _update_task_status(collection_run_id, _ARENA, "running")
+        tier_enum = Tier(tier)
+    except ValueError:
+        msg = f"wikipedia: invalid tier '{tier}'. Only 'free' is supported."
+        logger.error(msg)
+        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="reference",
             platform="wikipedia",
-            status="running",
+            status="failed",
             records_collected=0,
-            error_message=None,
+            error_message=msg,
             elapsed_seconds=elapsed_since(_task_start),
         )
+        raise ArenaCollectionError(msg, arena=_ARENA, platform="wikipedia")
 
-        # GR-04: read researcher-configured seed articles from arenas_config.
-        arenas_config = _load_arenas_config(query_design_id)
-        extra_seed_articles: list[str] | None = None
-        wiki_config = arenas_config.get("wikipedia") or {}
-        if isinstance(wiki_config, dict):
-            raw_seeds = wiki_config.get("seed_articles")
-            if isinstance(raw_seeds, list) and raw_seeds:
-                extra_seed_articles = [str(a) for a in raw_seeds if a]
+    collector = WikipediaCollector()
 
-        try:
-            tier_enum = Tier(tier)
-        except ValueError:
-            msg = f"wikipedia: invalid tier '{tier}'. Only 'free' is supported."
-            logger.error(msg)
-            _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="reference",
-                platform="wikipedia",
-                status="failed",
-                records_collected=0,
-                error_message=msg,
-                elapsed_seconds=elapsed_since(_task_start),
+    # NOTE: Wikipedia is FORWARD_ONLY — it monitors editorial revisions and
+    # pageviews going forward.  Coverage pre-check is intentionally skipped
+    # because revision monitoring should always fetch the latest state.
+
+    from issue_observatory.workers._task_helpers import make_batch_sink
+
+    sink = make_batch_sink(collection_run_id, query_design_id)
+    collector.configure_batch_persistence(sink=sink, batch_size=100, collection_run_id=collection_run_id)
+
+    try:
+        remaining = asyncio.run(
+            collector.collect_by_terms(
+                terms=terms,
+                tier=tier_enum,
+                date_from=date_from,
+                date_to=date_to,
+                max_results=max_results,
+                language_filter=language_filter,
+                extra_seed_articles=extra_seed_articles,
             )
-            raise ArenaCollectionError(msg, arena=_ARENA, platform="wikipedia")
-
-        collector = WikipediaCollector()
-
-        # NOTE: Wikipedia is FORWARD_ONLY — it monitors editorial revisions and
-        # pageviews going forward.  Coverage pre-check is intentionally skipped
-        # because revision monitoring should always fetch the latest state.
-
-        try:
-            records = asyncio.run(
-                collector.collect_by_terms(
-                    terms=terms,
-                    tier=tier_enum,
-                    date_from=date_from,
-                    date_to=date_to,
-                    max_results=max_results,
-                    language_filter=language_filter,
-                    extra_seed_articles=extra_seed_articles,
-                )
-            )
-        except ArenaRateLimitError:
-            logger.warning(
-                "wikipedia: rate limited on collect_by_terms for run=%s — will retry.",
-                collection_run_id,
-            )
-            raise
-        except ArenaCollectionError as exc:
-            msg = str(exc)
-            logger.error("wikipedia: collection error for run=%s: %s", collection_run_id, msg)
-            _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="reference",
-                platform="wikipedia",
-                status="failed",
-                records_collected=0,
-                error_message=msg,
-                elapsed_seconds=elapsed_since(_task_start),
-            )
-            raise
-
-        count = len(records)
-
-        # Persist collected records to the database.
-        from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
-
-        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id, terms=terms)
-
-        logger.info(
-            "wikipedia: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
-            collection_run_id,
-            count,
-            inserted,
-            skipped,
         )
-        _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+    except ArenaRateLimitError:
+        logger.warning(
+            "wikipedia: rate limited on collect_by_terms for run=%s — will retry.",
+            collection_run_id,
+        )
+        raise
+    except ArenaCollectionError as exc:
+        msg = str(exc)
+        logger.error("wikipedia: collection error for run=%s: %s", collection_run_id, msg)
+        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="reference",
             platform="wikipedia",
-            status="completed",
-            records_collected=inserted,
-            error_message=None,
+            status="failed",
+            records_collected=0,
+            error_message=msg,
             elapsed_seconds=elapsed_since(_task_start),
         )
+        raise
 
-        return {
-            "records_collected": inserted,
-            "status": "completed",
-            "arena": _ARENA,
-            "tier": tier,
-        }
-    except SoftTimeLimitExceeded:
-        logger.error(
-            "wikipedia: collect_by_terms timed out after 10 minutes — run=%s",
-            collection_run_id,
+    from issue_observatory.workers._task_helpers import persist_collected_records
+
+    fallback_inserted, fallback_skipped = 0, 0
+    if remaining:
+        fallback_inserted, fallback_skipped = persist_collected_records(
+            remaining, collection_run_id, query_design_id, terms=terms
         )
-        _update_task_status(
-            collection_run_id,
-            _ARENA,
-            "failed",
-            error_message="Collection timed out after 10 minutes",
+    inserted = collector.batch_stats["inserted"] + fallback_inserted
+    skipped = collector.batch_stats["skipped"] + fallback_skipped
+
+    # Fallback: if in-memory counters lost track, use the actual DB count.
+    if inserted == 0:
+        from issue_observatory.workers._task_helpers import (
+            count_run_platform_records,
         )
-        return {"status": "failed", "error": "timeout", "arena": _ARENA}
+
+        db_count = count_run_platform_records(collection_run_id, "wikipedia")
+        if db_count > 0:
+            logger.info(
+                "wikipedia: in-memory counter=0 but DB has %d records — using DB count",
+                db_count,
+            )
+            inserted = db_count
+
+    logger.info(
+        "wikipedia: collect_by_terms completed — run=%s emitted=%d inserted=%d skipped=%d",
+        collection_run_id,
+        collector.batch_stats["emitted"],
+        inserted,
+        skipped,
+    )
+    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="reference",
+        platform="wikipedia",
+        status="completed",
+        records_collected=inserted,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+
+    return {
+        "records_collected": inserted,
+        "status": "completed",
+        "arena": _ARENA,
+        "tier": tier,
+    }
 
 
 @celery_app.task(
@@ -341,8 +349,7 @@ def wikipedia_collect_terms(
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
-    soft_time_limit=600,
-    time_limit=720,
+    # No fixed time limit — records persist incrementally and stale_run_cleanup handles stuck tasks.
 )
 def wikipedia_collect_actors(
     self: Any,
@@ -377,130 +384,139 @@ def wikipedia_collect_actors(
         ArenaRateLimitError: Triggers automatic retry.
         ArenaCollectionError: Marks the task as FAILED.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
+    from issue_observatory.arenas.base import Tier
 
     _settings = get_settings()
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
+    logger.info(
+        "wikipedia: collect_by_actors started — run=%s actors=%d tier=%s",
+        collection_run_id,
+        len(actor_ids),
+        tier,
+    )
+    _update_task_status(collection_run_id, _ARENA, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="reference",
+        platform="wikipedia",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+
     try:
-        logger.info(
-            "wikipedia: collect_by_actors started — run=%s actors=%d tier=%s",
-            collection_run_id,
-            len(actor_ids),
-            tier,
-        )
-        _update_task_status(collection_run_id, _ARENA, "running")
+        tier_enum = Tier(tier)
+    except ValueError:
+        msg = f"wikipedia: invalid tier '{tier}'. Only 'free' is supported."
+        logger.error(msg)
+        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="reference",
             platform="wikipedia",
-            status="running",
+            status="failed",
             records_collected=0,
-            error_message=None,
+            error_message=msg,
             elapsed_seconds=elapsed_since(_task_start),
         )
+        raise ArenaCollectionError(msg, arena=_ARENA, platform="wikipedia")
 
-        try:
-            tier_enum = Tier(tier)
-        except ValueError:
-            msg = f"wikipedia: invalid tier '{tier}'. Only 'free' is supported."
-            logger.error(msg)
-            _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="reference",
-                platform="wikipedia",
-                status="failed",
-                records_collected=0,
-                error_message=msg,
-                elapsed_seconds=elapsed_since(_task_start),
+    collector = WikipediaCollector()
+
+    # NOTE: Wikipedia is FORWARD_ONLY — coverage pre-check skipped.
+    # See collect_by_terms for explanation.
+
+    from issue_observatory.workers._task_helpers import make_batch_sink
+
+    sink = make_batch_sink(collection_run_id, query_design_id)
+    collector.configure_batch_persistence(sink=sink, batch_size=100, collection_run_id=collection_run_id)
+
+    try:
+        remaining = asyncio.run(
+            collector.collect_by_actors(
+                actor_ids=actor_ids,
+                tier=tier_enum,
+                date_from=date_from,
+                date_to=date_to,
+                max_results=max_results,
             )
-            raise ArenaCollectionError(msg, arena=_ARENA, platform="wikipedia")
-
-        collector = WikipediaCollector()
-
-        # NOTE: Wikipedia is FORWARD_ONLY — coverage pre-check skipped.
-        # See collect_by_terms for explanation.
-
-        try:
-            records = asyncio.run(
-                collector.collect_by_actors(
-                    actor_ids=actor_ids,
-                    tier=tier_enum,
-                    date_from=date_from,
-                    date_to=date_to,
-                    max_results=max_results,
-                )
-            )
-        except ArenaRateLimitError:
-            logger.warning(
-                "wikipedia: rate limited on collect_by_actors for run=%s — will retry.",
-                collection_run_id,
-            )
-            raise
-        except ArenaCollectionError as exc:
-            msg = str(exc)
-            logger.error("wikipedia: collection error for run=%s: %s", collection_run_id, msg)
-            _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="reference",
-                platform="wikipedia",
-                status="failed",
-                records_collected=0,
-                error_message=msg,
-                elapsed_seconds=elapsed_since(_task_start),
-            )
-            raise
-
-        count = len(records)
-
-        # Persist collected records to the database.
-        from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
-
-        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
-
-        logger.info(
-            "wikipedia: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
-            collection_run_id,
-            count,
-            inserted,
-            skipped,
         )
-        _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+    except ArenaRateLimitError:
+        logger.warning(
+            "wikipedia: rate limited on collect_by_actors for run=%s — will retry.",
+            collection_run_id,
+        )
+        raise
+    except ArenaCollectionError as exc:
+        msg = str(exc)
+        logger.error("wikipedia: collection error for run=%s: %s", collection_run_id, msg)
+        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="reference",
             platform="wikipedia",
-            status="completed",
-            records_collected=inserted,
-            error_message=None,
+            status="failed",
+            records_collected=0,
+            error_message=msg,
             elapsed_seconds=elapsed_since(_task_start),
         )
+        raise
 
-        return {
-            "records_collected": inserted,
-            "status": "completed",
-            "arena": _ARENA,
-            "tier": tier,
-        }
-    except SoftTimeLimitExceeded:
-        logger.error(
-            "wikipedia: collect_by_actors timed out after 10 minutes — run=%s",
-            collection_run_id,
+    from issue_observatory.workers._task_helpers import persist_collected_records
+
+    fallback_inserted, fallback_skipped = 0, 0
+    if remaining:
+        fallback_inserted, fallback_skipped = persist_collected_records(
+            remaining, collection_run_id, query_design_id
         )
-        _update_task_status(
-            collection_run_id,
-            _ARENA,
-            "failed",
-            error_message="Collection timed out after 10 minutes",
+    inserted = collector.batch_stats["inserted"] + fallback_inserted
+    skipped = collector.batch_stats["skipped"] + fallback_skipped
+
+    # Fallback: if in-memory counters lost track, use the actual DB count.
+    if inserted == 0:
+        from issue_observatory.workers._task_helpers import (
+            count_run_platform_records,
         )
-        return {"status": "failed", "error": "timeout", "arena": _ARENA}
+
+        db_count = count_run_platform_records(collection_run_id, "wikipedia")
+        if db_count > 0:
+            logger.info(
+                "wikipedia: in-memory counter=0 but DB has %d records — using DB count",
+                db_count,
+            )
+            inserted = db_count
+
+    logger.info(
+        "wikipedia: collect_by_actors completed — run=%s emitted=%d inserted=%d skipped=%d",
+        collection_run_id,
+        collector.batch_stats["emitted"],
+        inserted,
+        skipped,
+    )
+    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="reference",
+        platform="wikipedia",
+        status="completed",
+        records_collected=inserted,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+
+    return {
+        "records_collected": inserted,
+        "status": "completed",
+        "arena": _ARENA,
+        "tier": tier,
+    }
 
 
 @celery_app.task(

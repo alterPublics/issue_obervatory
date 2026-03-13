@@ -30,7 +30,7 @@ import logging
 import math
 import re
 import unicodedata
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from issue_observatory.core.deduplication import compute_simhash
@@ -130,14 +130,14 @@ class Normalizer:
             # Prefer the Settings class; fall back to direct env-var read so
             # that the normalizer can be constructed outside a fully configured
             # application (e.g. unit tests that set only this env var).
-            import os  # noqa: PLC0415
+            import os
 
-            from issue_observatory.config.danish_defaults import (  # noqa: PLC0415
+            from issue_observatory.config.danish_defaults import (
                 PSEUDONYMIZATION_SALT_ENV_VAR,
             )
 
             try:
-                from issue_observatory.config.settings import get_settings  # noqa: PLC0415
+                from issue_observatory.config.settings import get_settings
 
                 settings = get_settings()
                 salt = settings.pseudonymization_salt
@@ -152,7 +152,7 @@ class Normalizer:
         # Collection must not proceed without it. Raise an error rather than
         # silently degrading to None pseudonymized_author_id values.
         if not self._salt:
-            from issue_observatory.core.exceptions import NormalizationError  # noqa: PLC0415
+            from issue_observatory.core.exceptions import NormalizationError
 
             logger.critical(
                 "PSEUDONYMIZATION_SALT is empty or missing. "
@@ -244,7 +244,7 @@ class Normalizer:
             Dict with all ``content_records`` columns populated. Optional
             fields are ``None`` when not provided.
         """
-        collected_at = datetime.now(tz=timezone.utc).isoformat()
+        collected_at = datetime.now(tz=UTC).isoformat()
 
         # Attempt to extract common fields using well-known key names.
         platform_id = self._extract_str(raw_item, ["id", "post_id", "item_id", "url"])
@@ -639,12 +639,12 @@ class Normalizer:
 
             if isinstance(value, datetime):
                 if value.tzinfo is None:
-                    value = value.replace(tzinfo=timezone.utc)
+                    value = value.replace(tzinfo=UTC)
                 return value.isoformat()
 
             if isinstance(value, (int, float)):
                 try:
-                    dt = datetime.fromtimestamp(value, tz=timezone.utc)
+                    dt = datetime.fromtimestamp(value, tz=UTC)
                     return dt.isoformat()
                 except (OSError, OverflowError, ValueError):
                     continue
@@ -659,13 +659,15 @@ class Normalizer:
                     "%Y-%m-%dT%H:%M:%SZ",
                     "%Y-%m-%dT%H:%M:%S.%f%z",
                     "%Y-%m-%dT%H:%M:%S.%fZ",
+                    "%Y-%m-%dT%H:%M:%S",  # ISO 8601 no tz (Event Registry)
                     "%Y-%m-%d %H:%M:%S",
                     "%Y-%m-%d",
+                    "%a %b %d %H:%M:%S %z %Y",  # Twitter: "Fri Feb 27 07:44:39 +0000 2026"
                 ):
                     try:
                         dt = datetime.strptime(value, fmt)
                         if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=timezone.utc)
+                            dt = dt.replace(tzinfo=UTC)
                         return dt.isoformat()
                     except ValueError:
                         continue

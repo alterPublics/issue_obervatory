@@ -26,14 +26,13 @@ os.environ.setdefault(
     "CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA=="
 )
 
-from issue_observatory.api.routes.actors import (  # noqa: E402
+from issue_observatory.api.routes.actors import (
     CoOccurrencePair,
     CorpusCoOccurrenceRequest,
     CorpusCoOccurrenceResponse,
     SnowballActorEntry,
     SnowballRequest,
 )
-
 
 # ===========================================================================
 # SnowballActorEntry

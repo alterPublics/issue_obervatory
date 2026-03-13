@@ -123,15 +123,21 @@ celery_app.conf.update(
     # Task acknowledgement — acknowledge only after the task has completed
     # (not when it is received) to avoid data loss on worker crash.
     task_acks_late=True,
+    # Reject (don't redeliver) tasks whose worker process is killed.
+    # Without this, acks_late causes killed tasks to be redelivered as
+    # zombies — the DB row is already marked completed but a duplicate
+    # Celery process runs indefinitely, leaking DB connections.
+    task_reject_on_worker_lost=True,
     # Worker prefetch — set to 1 so that long-running collection tasks do
     # not pile up on a single worker and starve others.
     worker_prefetch_multiplier=1,
     # Result expiry — keep task results for 24 hours for status polling.
     result_expires=86_400,
-    # Task time limits — collection tasks should not run indefinitely.
-    # Soft limit sends SIGTERM; hard limit sends SIGKILL.
-    task_soft_time_limit=3_600,   # 1 hour soft limit
-    task_time_limit=7_200,        # 2 hour hard limit
+    # Task time limits — no global soft limit so arena tasks run to
+    # completion.  stale_run_cleanup catches genuinely stuck tasks.
+    # Hard limit is a safety net only (SIGKILL after 6 hours).
+    task_soft_time_limit=None,
+    task_time_limit=21_600,       # 6 hour hard limit (safety net)
     # Retry policy defaults for all tasks.
     task_max_retries=3,
     # Routing — streaming tasks (Bluesky firehose, Reddit, Telegram) run
@@ -175,7 +181,7 @@ celery_app.conf.beat_schedule = beat_schedule
 # Engine disposal on fork — prevents "attached to a different loop" errors
 # ---------------------------------------------------------------------------
 @worker_process_init.connect
-def _dispose_engines_on_fork(**kwargs: object) -> None:  # noqa: ARG001
+def _dispose_engines_on_fork(**kwargs: object) -> None:
     """Dispose SQLAlchemy engines after Celery forks a worker process.
 
     The async engine creates connection objects tied to the parent's event
@@ -184,7 +190,7 @@ def _dispose_engines_on_fork(**kwargs: object) -> None:  # noqa: ARG001
     connections to be created in the child's own event loop when
     ``asyncio.run()`` is called.
     """
-    from issue_observatory.core import database as _db  # noqa: PLC0415
+    from issue_observatory.core import database as _db
 
     _db.async_engine.sync_engine.dispose(close=False)
     _db._sync_engine.dispose(close=False)
@@ -194,7 +200,7 @@ def _dispose_engines_on_fork(**kwargs: object) -> None:  # noqa: ARG001
 # Engine disposal after each task — prevents cross-task event loop errors
 # ---------------------------------------------------------------------------
 @task_postrun.connect
-def _dispose_async_engine_after_task(**kwargs: object) -> None:  # noqa: ARG001
+def _dispose_async_engine_after_task(**kwargs: object) -> None:
     """Dispose the async engine's connection pool after each task completes.
 
     Celery prefork workers reuse the same process for multiple tasks.  If a
@@ -209,8 +215,8 @@ def _dispose_async_engine_after_task(**kwargs: object) -> None:  # noqa: ARG001
     clean connection pool.
     """
     try:
-        from issue_observatory.core import database as _db  # noqa: PLC0415
+        from issue_observatory.core import database as _db
 
         _db.async_engine.sync_engine.dispose(close=False)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass  # Best effort — never let cleanup crash the worker

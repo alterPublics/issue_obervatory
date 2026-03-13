@@ -33,23 +33,22 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.web.url_scraper._helpers import (  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.web.url_scraper._helpers import (
     build_searchable_text,
     deduplicate_urls,
     extract_domain,
 )
-from issue_observatory.arenas.web.url_scraper._normalizer import (  # noqa: E402
+from issue_observatory.arenas.web.url_scraper._normalizer import (
     normalize_raw_record,
 )
-from issue_observatory.arenas.web.url_scraper.collector import (  # noqa: E402
+from issue_observatory.arenas.web.url_scraper.collector import (
     UrlScraperCollector,
     _make_failure_record,
 )
-from issue_observatory.core.normalizer import Normalizer  # noqa: E402
-from issue_observatory.scraper.content_extractor import ExtractedContent  # noqa: E402
-from issue_observatory.scraper.http_fetcher import FetchResult  # noqa: E402
-
+from issue_observatory.core.normalizer import Normalizer
+from issue_observatory.scraper.content_extractor import ExtractedContent
+from issue_observatory.scraper.http_fetcher import FetchResult
 
 # ---------------------------------------------------------------------------
 # Sample data builders

@@ -42,6 +42,12 @@ BSKY_ACTOR_SEARCH_ENDPOINT: str = f"{BSKY_API_BASE}/app.bsky.actor.searchActors"
 BSKY_GET_PROFILE_ENDPOINT: str = f"{BSKY_API_BASE}/app.bsky.actor.getProfile"
 """Single actor profile lookup endpoint."""
 
+BSKY_PUBLIC_API_BASE: str = "https://public.api.bsky.app/xrpc"
+"""Public (unauthenticated) AT Protocol API base URL."""
+
+BSKY_GET_POST_THREAD_ENDPOINT: str = f"{BSKY_PUBLIC_API_BASE}/app.bsky.feed.getPostThread"
+"""Thread retrieval endpoint; does not require authentication."""
+
 BSKY_WEB_BASE: str = "https://bsky.app"
 """Web URL base for constructing post URLs from AT URIs."""
 

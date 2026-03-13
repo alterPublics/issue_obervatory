@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -42,12 +42,12 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.facebook.collector import (  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.facebook.collector import (
     FacebookCollector,
     _detect_facebook_dataset_id,
 )
-from issue_observatory.arenas.facebook.config import (  # noqa: E402
+from issue_observatory.arenas.facebook.config import (
     BRIGHTDATA_PROGRESS_URL,
     BRIGHTDATA_SNAPSHOT_URL,
     FACEBOOK_DATASET_ID_GROUPS,
@@ -55,7 +55,7 @@ from issue_observatory.arenas.facebook.config import (  # noqa: E402
     build_trigger_url,
     to_brightdata_date,
 )
-from issue_observatory.core.exceptions import (  # noqa: E402
+from issue_observatory.core.exceptions import (
     ArenaAuthError,
     ArenaCollectionError,
     ArenaRateLimitError,
@@ -180,7 +180,7 @@ class TestToBrightdataDate:
 
     def test_datetime_object_formatted_as_mm_dd_yyyy(self) -> None:
         """A datetime(2026, 1, 15) should produce '01-15-2026'."""
-        dt = datetime(2026, 1, 15, tzinfo=timezone.utc)
+        dt = datetime(2026, 1, 15, tzinfo=UTC)
         assert to_brightdata_date(dt) == "01-15-2026"
 
     def test_iso_string_converted_to_mm_dd_yyyy(self) -> None:

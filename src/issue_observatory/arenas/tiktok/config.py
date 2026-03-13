@@ -28,6 +28,9 @@ TIKTOK_VIDEO_QUERY_URL: str = "https://open.tiktokapis.com/v2/research/video/que
 TIKTOK_USER_INFO_URL: str = "https://open.tiktokapis.com/v2/research/user/info/"
 """User profile information endpoint."""
 
+TIKTOK_COMMENT_URL: str = "https://open.tiktokapis.com/v2/research/video/comment/list/"
+"""Comment list endpoint. POST with JSON body. Shares the 1K req/day quota."""
+
 TIKTOK_WEB_BASE: str = "https://www.tiktok.com"
 """Web URL base for constructing video URLs."""
 
@@ -47,12 +50,13 @@ TIKTOK_DATE_FORMAT: str = "%Y%m%d"
 TIKTOK_MAX_DATE_RANGE_DAYS: int = 30
 """Maximum date range per single video query request (API limit)."""
 
-TIKTOK_INDEXING_LAG_HOURS: int = 48
-"""New videos take up to 48 hours to appear in the Research API search index.
+TIKTOK_INDEXING_LAG_HOURS: int = 240
+"""New videos can take up to ~10 days to appear in the Research API search index.
 
-Per TikTok docs: 'New videos take up to 48 hours to be added to the search
-engine.' Live collection dispatches should shift date_to back by this amount
-to avoid querying a window where content hasn't been indexed yet.
+Per TikTok docs the nominal lag is 48 hours, but empirical observation (March
+2026) shows the search index routinely trails by 8-10 days.  Using 240 hours
+(10 days) ensures live collection dispatches extend ``date_from`` far enough
+back to capture content that was recently indexed but published earlier.
 """
 
 TIKTOK_TOKEN_EXPIRY_SECONDS: int = 7200
@@ -74,6 +78,11 @@ TIKTOK_VIDEO_FIELDS: str = (
     "username,effect_ids,playlist_id,voice_to_text"
 )
 """Comma-separated list of fields to request for each video."""
+
+TIKTOK_COMMENT_FIELDS: str = (
+    "id,video_id,text,like_count,reply_count,parent_comment_id,create_time"
+)
+"""Comma-separated list of fields to request for each comment."""
 
 # ---------------------------------------------------------------------------
 # Rate limiting

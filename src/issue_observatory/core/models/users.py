@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
@@ -53,11 +53,11 @@ class User(Base):
         nullable=False,
         index=True,
     )
-    hashed_password: Mapped[Optional[str]] = mapped_column(
+    hashed_password: Mapped[str | None] = mapped_column(
         sa.String(1024),
         nullable=True,
     )
-    display_name: Mapped[Optional[str]] = mapped_column(
+    display_name: Mapped[str | None] = mapped_column(
         sa.String(200),
         nullable=True,
     )
@@ -71,7 +71,7 @@ class User(Base):
         nullable=False,
         server_default=sa.text("false"),
     )
-    api_key: Mapped[Optional[str]] = mapped_column(
+    api_key: Mapped[str | None] = mapped_column(
         sa.String(64),
         unique=True,
         nullable=True,
@@ -82,11 +82,11 @@ class User(Base):
         nullable=False,
         server_default=sa.text("NOW()"),
     )
-    last_login_at: Mapped[Optional[datetime]] = mapped_column(
+    last_login_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )
-    metadata_: Mapped[Optional[dict]] = mapped_column(
+    metadata_: Mapped[dict | None] = mapped_column(
         "metadata",
         JSONB,
         nullable=True,
@@ -158,7 +158,7 @@ class CreditAllocation(Base):
         sa.Integer,
         nullable=False,
     )
-    allocated_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+    allocated_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
@@ -172,11 +172,11 @@ class CreditAllocation(Base):
         sa.Date,
         nullable=False,
     )
-    valid_until: Mapped[Optional[date]] = mapped_column(
+    valid_until: Mapped[date | None] = mapped_column(
         sa.Date,
         nullable=True,
     )
-    memo: Mapped[Optional[str]] = mapped_column(
+    memo: Mapped[str | None] = mapped_column(
         sa.Text,
         nullable=True,
     )
@@ -187,7 +187,7 @@ class CreditAllocation(Base):
         foreign_keys=[user_id],
         back_populates="credit_allocations",
     )
-    allocator: Mapped[Optional[User]] = relationship(
+    allocator: Mapped[User | None] = relationship(
         "User",
         foreign_keys=[allocated_by],
     )
@@ -231,7 +231,7 @@ class RefreshToken(Base):
         TIMESTAMP(timezone=True),
         nullable=False,
     )
-    revoked_at: Mapped[Optional[datetime]] = mapped_column(
+    revoked_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )

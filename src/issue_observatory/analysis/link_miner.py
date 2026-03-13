@@ -18,8 +18,7 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 import structlog
@@ -238,7 +237,7 @@ def _classify_url(url: str) -> tuple[str, str]:
         if host.startswith("www."):
             host = host[4:]
         return "web", host
-    except Exception:  # noqa: BLE001
+    except Exception:
         return "web", url
 
 
@@ -277,9 +276,9 @@ class LinkMiner:
     async def mine(
         self,
         db: AsyncSession,
-        query_design_id: Optional[uuid.UUID] = None,
-        user_id: Optional[uuid.UUID] = None,
-        platform_filter: Optional[str] = None,
+        query_design_id: uuid.UUID | None = None,
+        user_id: uuid.UUID | None = None,
+        platform_filter: str | None = None,
         min_source_count: int = 2,
         limit: int = 50,
     ) -> list[DiscoveredLink]:
@@ -339,8 +338,8 @@ class LinkMiner:
     async def _fetch_records(
         self,
         db: AsyncSession,
-        query_design_id: Optional[uuid.UUID] = None,
-        user_id: Optional[uuid.UUID] = None,
+        query_design_id: uuid.UUID | None = None,
+        user_id: uuid.UUID | None = None,
     ) -> list[UniversalContentRecord]:
         """Fetch all content records matching the scope.
 
@@ -426,7 +425,7 @@ class LinkMiner:
             if not text:
                 continue
 
-            collected_at: datetime = record.collected_at or datetime.now(tz=timezone.utc)
+            collected_at: datetime = record.collected_at or datetime.now(tz=UTC)
 
             # Extract URLs; deduplicate *within* this record.
             found_urls: set[str] = _extract_urls(text)
@@ -470,7 +469,7 @@ class LinkMiner:
     def _filter_and_rank(
         self,
         aggregated: dict[tuple[str, str], dict],
-        platform_filter: Optional[str],
+        platform_filter: str | None,
         min_source_count: int,
         limit: int,
     ) -> list[DiscoveredLink]:

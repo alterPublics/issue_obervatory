@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
@@ -74,23 +73,23 @@ class ApiCredential(Base):
         nullable=False,
         server_default=sa.text("true"),
     )
-    daily_quota: Mapped[Optional[int]] = mapped_column(
+    daily_quota: Mapped[int | None] = mapped_column(
         sa.Integer,
         nullable=True,
     )
-    monthly_quota: Mapped[Optional[int]] = mapped_column(
+    monthly_quota: Mapped[int | None] = mapped_column(
         sa.Integer,
         nullable=True,
     )
-    quota_reset_at: Mapped[Optional[datetime]] = mapped_column(
+    quota_reset_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )
-    last_used_at: Mapped[Optional[datetime]] = mapped_column(
+    last_used_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )
-    last_error_at: Mapped[Optional[datetime]] = mapped_column(
+    last_error_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )
@@ -99,7 +98,7 @@ class ApiCredential(Base):
         nullable=False,
         server_default=sa.text("0"),
     )
-    notes: Mapped[Optional[str]] = mapped_column(
+    notes: Mapped[str | None] = mapped_column(
         sa.Text,
         nullable=True,
     )

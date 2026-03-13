@@ -14,7 +14,6 @@ design configuration.
 from __future__ import annotations
 
 import logging
-from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -166,7 +165,7 @@ async def discover_feeds(url: str) -> list[dict[str, str]]:
 
                 feeds.append({"url": absolute_url, "title": title, "feed_type": feed_type})
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("feed_discovery: failed to parse HTML from %s: %s", url, exc)
 
         # Step 3: Probe common feed paths if no <link> tags found

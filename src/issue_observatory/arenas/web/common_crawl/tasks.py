@@ -24,15 +24,13 @@ import logging
 import time
 from typing import Any
 
-from celery.exceptions import SoftTimeLimitExceeded
-
 from issue_observatory.arenas.web.common_crawl.collector import CommonCrawlCollector
+from issue_observatory.config.settings import get_settings
+from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
 )
-from issue_observatory.config.settings import get_settings
-from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -63,23 +61,24 @@ def _update_task_status(
         error_message: Error description for failed updates.
     """
     try:
-        from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+        from issue_observatory.core.database import get_sync_session
 
         with get_sync_session() as session:
-            from sqlalchemy import text  # noqa: PLC0415
+            from sqlalchemy import text
 
             session.execute(
                 text(
                     """
                     UPDATE collection_tasks
                     SET status = :status,
-                        records_collected = :records_collected,
+                        records_collected = GREATEST(records_collected, :records_collected),
                         error_message = :error_message,
                         completed_at = CASE WHEN :status IN ('completed', 'failed')
                                             THEN NOW() ELSE completed_at END,
                         started_at   = CASE WHEN :status = 'running' AND started_at IS NULL
                                             THEN NOW() ELSE started_at END
                     WHERE collection_run_id = :run_id AND arena = :arena
+                        AND status != 'cancelled'
                     """
                 ),
                 {
@@ -91,7 +90,7 @@ def _update_task_status(
                 },
             )
             session.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "common_crawl: failed to update collection_tasks status to '%s': %s",
             status,
@@ -112,8 +111,7 @@ def _update_task_status(
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
-    soft_time_limit=600,
-    time_limit=720,
+    # No fixed time limit — records persist incrementally and stale_run_cleanup handles stuck tasks.
 )
 def common_crawl_collect_terms(
     self: Any,
@@ -152,187 +150,193 @@ def common_crawl_collect_terms(
         ArenaRateLimitError: Triggers automatic retry with exponential backoff.
         ArenaCollectionError: Marks the task as FAILED in Celery.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
-    from issue_observatory.arenas.web.common_crawl.config import CC_DEFAULT_INDEX  # noqa: PLC0415
+    from issue_observatory.arenas.base import Tier
+    from issue_observatory.arenas.web.common_crawl.config import CC_DEFAULT_INDEX
 
     _settings = get_settings()
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
+    logger.info(
+        "common_crawl: collect_by_terms started — run=%s terms=%d tier=%s",
+        collection_run_id,
+        len(terms),
+        tier,
+    )
+    _update_task_status(collection_run_id, _PLATFORM, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="web",
+        platform="common_crawl",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+
     try:
-        logger.info(
-            "common_crawl: collect_by_terms started — run=%s terms=%d tier=%s",
-            collection_run_id,
-            len(terms),
-            tier,
-        )
-        _update_task_status(collection_run_id, _PLATFORM, "running")
+        tier_enum = Tier(tier)
+    except ValueError:
+        msg = f"common_crawl: invalid tier '{tier}'. Only 'free' is supported."
+        logger.error(msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="web",
             platform="common_crawl",
-            status="running",
+            status="failed",
             records_collected=0,
-            error_message=None,
+            error_message=msg,
             elapsed_seconds=elapsed_since(_task_start),
         )
+        raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
-        try:
-            tier_enum = Tier(tier)
-        except ValueError:
-            msg = f"common_crawl: invalid tier '{tier}'. Only 'free' is supported."
-            logger.error(msg)
-            _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="web",
-                platform="common_crawl",
-                status="failed",
-                records_collected=0,
-                error_message=msg,
-                elapsed_seconds=elapsed_since(_task_start),
-            )
-            raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
+    collector = CommonCrawlCollector(cc_index=cc_index or CC_DEFAULT_INDEX)
 
-        collector = CommonCrawlCollector(cc_index=cc_index or CC_DEFAULT_INDEX)
+    # --- Pre-collection coverage check ---
+    force_recollect = _extra.get("force_recollect", False)
+    effective_date_from = date_from
+    effective_date_to = date_to
 
-        # --- Pre-collection coverage check ---
-        force_recollect = _extra.get("force_recollect", False)
-        effective_date_from = date_from
-        effective_date_to = date_to
+    if not force_recollect and date_from and date_to:
+        from datetime import datetime as _dt
 
-        if not force_recollect and date_from and date_to:
-            from datetime import datetime as _dt  # noqa: PLC0415
-            from issue_observatory.core.coverage_checker import check_existing_coverage  # noqa: PLC0415
+        from issue_observatory.core.coverage_checker import check_existing_coverage
 
-            gaps = check_existing_coverage(
-                platform="common_crawl",
-                date_from=_dt.fromisoformat(date_from),
-                date_to=_dt.fromisoformat(date_to),
-                terms=terms,
-            )
-            if not gaps:
-                logger.info(
-                    "common_crawl: full coverage exists for run=%s — skipping API call",
-                    collection_run_id,
-                )
-                _update_task_status(
-                    collection_run_id, _PLATFORM, "completed", records_collected=0
-                )
-                publish_task_update(
-                    redis_url=_redis_url,
-                    run_id=collection_run_id,
-                    arena="web",
-                    platform="common_crawl",
-                    status="completed",
-                    records_collected=0,
-                    error_message=None,
-                    elapsed_seconds=elapsed_since(_task_start),
-                )
-                return {
-                    "records_collected": 0,
-                    "status": "completed",
-                    "arena": _ARENA,
-                    "tier": tier,
-                    "coverage_skip": True,
-                }
-            effective_date_from = gaps[0][0].isoformat()
-            effective_date_to = gaps[-1][1].isoformat()
-
-        try:
-            records = asyncio.run(
-                collector.collect_by_terms(
-                    terms=terms,
-                    tier=tier_enum,
-                    date_from=effective_date_from,
-                    date_to=effective_date_to,
-                    max_results=max_results,
-                    language_filter=language_filter,
-                )
-            )
-        except ArenaRateLimitError:
-            logger.warning(
-                "common_crawl: rate limited on collect_by_terms for run=%s — will retry.",
+        gaps = check_existing_coverage(
+            platform="common_crawl",
+            date_from=_dt.fromisoformat(date_from),
+            date_to=_dt.fromisoformat(date_to),
+            terms=terms,
+        )
+        if not gaps:
+            logger.info(
+                "common_crawl: full coverage exists for run=%s — skipping API call",
                 collection_run_id,
             )
-            raise
-        except ArenaCollectionError as exc:
-            msg = str(exc)
-            logger.error("common_crawl: collection error for run=%s: %s", collection_run_id, msg)
-            _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+            _update_task_status(
+                collection_run_id, _PLATFORM, "completed", records_collected=0
+            )
             publish_task_update(
                 redis_url=_redis_url,
                 run_id=collection_run_id,
                 arena="web",
                 platform="common_crawl",
-                status="failed",
+                status="completed",
                 records_collected=0,
-                error_message=msg,
+                error_message=None,
                 elapsed_seconds=elapsed_since(_task_start),
             )
-            raise
+            return {
+                "records_collected": 0,
+                "status": "completed",
+                "arena": _ARENA,
+                "tier": tier,
+                "coverage_skip": True,
+            }
+        effective_date_from = gaps[0][0].isoformat()
+        effective_date_to = gaps[-1][1].isoformat()
 
-        count = len(records)
-
-        # Persist collected records to the database.
-        from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
-
-        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id, terms=terms)
-        logger.info(
-            "common_crawl: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
-            collection_run_id,
-            count,
-            inserted,
-            skipped,
-        )
-
-        # --- Record collection attempt metadata ---
-        if date_from and date_to:
-            from issue_observatory.workers._task_helpers import record_collection_attempts_batch  # noqa: PLC0415
-
-            record_collection_attempts_batch(
-                platform="common_crawl",
-                collection_run_id=collection_run_id,
-                query_design_id=query_design_id,
-                inputs=terms,
-                input_type="term",
-                date_from=date_from,
-                date_to=date_to,
-                records_returned=inserted,
+    try:
+        records = asyncio.run(
+            collector.collect_by_terms(
+                terms=terms,
+                tier=tier_enum,
+                date_from=effective_date_from,
+                date_to=effective_date_to,
+                max_results=max_results,
+                language_filter=language_filter,
             )
-
-        _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
+        )
+    except ArenaRateLimitError:
+        logger.warning(
+            "common_crawl: rate limited on collect_by_terms for run=%s — will retry.",
+            collection_run_id,
+        )
+        raise
+    except ArenaCollectionError as exc:
+        msg = str(exc)
+        logger.error("common_crawl: collection error for run=%s: %s", collection_run_id, msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="web",
             platform="common_crawl",
-            status="completed",
-            records_collected=inserted,
-            error_message=None,
+            status="failed",
+            records_collected=0,
+            error_message=msg,
             elapsed_seconds=elapsed_since(_task_start),
         )
+        raise
 
-        return {
-            "records_collected": inserted,
-            "status": "completed",
-            "arena": _ARENA,
-            "tier": tier,
-        }
-    except SoftTimeLimitExceeded:
-        logger.error(
-            "common_crawl: collect_by_terms timed out after 10 minutes — run=%s",
-            collection_run_id,
+    count = len(records)
+
+    # Persist collected records to the database.
+    from issue_observatory.workers._task_helpers import persist_collected_records
+
+    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id, terms=terms)
+
+    # Fallback: if in-memory counters lost track, use the actual DB count.
+    if inserted == 0:
+        from issue_observatory.workers._task_helpers import (
+            count_run_platform_records,
         )
-        _update_task_status(
-            collection_run_id,
-            _PLATFORM,
-            "failed",
-            error_message="Collection timed out after 10 minutes",
+
+        db_count = count_run_platform_records(collection_run_id, "common_crawl")
+        if db_count > 0:
+            logger.info(
+                "common_crawl: in-memory counter=0 but DB has %d records — using DB count",
+                db_count,
+            )
+            inserted = db_count
+
+    logger.info(
+        "common_crawl: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
+        collection_run_id,
+        count,
+        inserted,
+        skipped,
+    )
+
+    # --- Record collection attempt metadata ---
+    if date_from and date_to:
+        from issue_observatory.workers._task_helpers import (
+            record_collection_attempts_batch,
         )
-        return {"status": "failed", "error": "timeout", "arena": _ARENA}
+
+        record_collection_attempts_batch(
+            platform="common_crawl",
+            collection_run_id=collection_run_id,
+            query_design_id=query_design_id,
+            inputs=terms,
+            input_type="term",
+            date_from=date_from,
+            date_to=date_to,
+            records_returned=inserted,
+            per_input_counts=collector.per_input_counts,
+        )
+
+    _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="web",
+        platform="common_crawl",
+        status="completed",
+        records_collected=inserted,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+
+    return {
+        "records_collected": inserted,
+        "status": "completed",
+        "arena": _ARENA,
+        "tier": tier,
+    }
 
 
 @celery_app.task(
@@ -343,8 +347,7 @@ def common_crawl_collect_terms(
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
-    soft_time_limit=600,
-    time_limit=720,
+    # No fixed time limit — records persist incrementally and stale_run_cleanup handles stuck tasks.
 )
 def common_crawl_collect_actors(
     self: Any,
@@ -376,186 +379,192 @@ def common_crawl_collect_actors(
     Returns:
         Dict with ``records_collected``, ``status``, ``arena``, ``tier``.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
-    from issue_observatory.arenas.web.common_crawl.config import CC_DEFAULT_INDEX  # noqa: PLC0415
+    from issue_observatory.arenas.base import Tier
+    from issue_observatory.arenas.web.common_crawl.config import CC_DEFAULT_INDEX
 
     _settings = get_settings()
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
+    logger.info(
+        "common_crawl: collect_by_actors started — run=%s actors=%d tier=%s",
+        collection_run_id,
+        len(actor_ids),
+        tier,
+    )
+    _update_task_status(collection_run_id, _PLATFORM, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="web",
+        platform="common_crawl",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+
     try:
-        logger.info(
-            "common_crawl: collect_by_actors started — run=%s actors=%d tier=%s",
-            collection_run_id,
-            len(actor_ids),
-            tier,
-        )
-        _update_task_status(collection_run_id, _PLATFORM, "running")
+        tier_enum = Tier(tier)
+    except ValueError:
+        msg = f"common_crawl: invalid tier '{tier}'. Only 'free' is supported."
+        logger.error(msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="web",
             platform="common_crawl",
-            status="running",
+            status="failed",
             records_collected=0,
-            error_message=None,
+            error_message=msg,
             elapsed_seconds=elapsed_since(_task_start),
         )
+        raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
 
-        try:
-            tier_enum = Tier(tier)
-        except ValueError:
-            msg = f"common_crawl: invalid tier '{tier}'. Only 'free' is supported."
-            logger.error(msg)
-            _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="web",
-                platform="common_crawl",
-                status="failed",
-                records_collected=0,
-                error_message=msg,
-                elapsed_seconds=elapsed_since(_task_start),
-            )
-            raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM)
+    collector = CommonCrawlCollector(cc_index=cc_index or CC_DEFAULT_INDEX)
 
-        collector = CommonCrawlCollector(cc_index=cc_index or CC_DEFAULT_INDEX)
+    # --- Pre-collection coverage check ---
+    force_recollect = _extra.get("force_recollect", False)
+    effective_date_from = date_from
+    effective_date_to = date_to
 
-        # --- Pre-collection coverage check ---
-        force_recollect = _extra.get("force_recollect", False)
-        effective_date_from = date_from
-        effective_date_to = date_to
+    if not force_recollect and date_from and date_to:
+        from datetime import datetime as _dt
 
-        if not force_recollect and date_from and date_to:
-            from datetime import datetime as _dt  # noqa: PLC0415
-            from issue_observatory.core.coverage_checker import check_existing_coverage  # noqa: PLC0415
+        from issue_observatory.core.coverage_checker import check_existing_coverage
 
-            gaps = check_existing_coverage(
-                platform="common_crawl",
-                date_from=_dt.fromisoformat(date_from),
-                date_to=_dt.fromisoformat(date_to),
-                actor_ids=actor_ids,
-            )
-            if not gaps:
-                logger.info(
-                    "common_crawl: full coverage exists for run=%s — skipping API call",
-                    collection_run_id,
-                )
-                _update_task_status(
-                    collection_run_id, _PLATFORM, "completed", records_collected=0
-                )
-                publish_task_update(
-                    redis_url=_redis_url,
-                    run_id=collection_run_id,
-                    arena="web",
-                    platform="common_crawl",
-                    status="completed",
-                    records_collected=0,
-                    error_message=None,
-                    elapsed_seconds=elapsed_since(_task_start),
-                )
-                return {
-                    "records_collected": 0,
-                    "status": "completed",
-                    "arena": _ARENA,
-                    "tier": tier,
-                    "coverage_skip": True,
-                }
-            effective_date_from = gaps[0][0].isoformat()
-            effective_date_to = gaps[-1][1].isoformat()
-
-        try:
-            records = asyncio.run(
-                collector.collect_by_actors(
-                    actor_ids=actor_ids,
-                    tier=tier_enum,
-                    date_from=effective_date_from,
-                    date_to=effective_date_to,
-                    max_results=max_results,
-                )
-            )
-        except ArenaRateLimitError:
-            logger.warning(
-                "common_crawl: rate limited on collect_by_actors for run=%s — will retry.",
+        gaps = check_existing_coverage(
+            platform="common_crawl",
+            date_from=_dt.fromisoformat(date_from),
+            date_to=_dt.fromisoformat(date_to),
+            actor_ids=actor_ids,
+        )
+        if not gaps:
+            logger.info(
+                "common_crawl: full coverage exists for run=%s — skipping API call",
                 collection_run_id,
             )
-            raise
-        except ArenaCollectionError as exc:
-            msg = str(exc)
-            logger.error("common_crawl: collection error for run=%s: %s", collection_run_id, msg)
-            _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+            _update_task_status(
+                collection_run_id, _PLATFORM, "completed", records_collected=0
+            )
             publish_task_update(
                 redis_url=_redis_url,
                 run_id=collection_run_id,
                 arena="web",
                 platform="common_crawl",
-                status="failed",
+                status="completed",
                 records_collected=0,
-                error_message=msg,
+                error_message=None,
                 elapsed_seconds=elapsed_since(_task_start),
             )
-            raise
+            return {
+                "records_collected": 0,
+                "status": "completed",
+                "arena": _ARENA,
+                "tier": tier,
+                "coverage_skip": True,
+            }
+        effective_date_from = gaps[0][0].isoformat()
+        effective_date_to = gaps[-1][1].isoformat()
 
-        count = len(records)
-
-        # Persist collected records to the database.
-        from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
-
-        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
-        logger.info(
-            "common_crawl: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
-            collection_run_id,
-            count,
-            inserted,
-            skipped,
-        )
-
-        # --- Record collection attempt metadata ---
-        if date_from and date_to:
-            from issue_observatory.workers._task_helpers import record_collection_attempts_batch  # noqa: PLC0415
-
-            record_collection_attempts_batch(
-                platform="common_crawl",
-                collection_run_id=collection_run_id,
-                query_design_id=query_design_id,
-                inputs=actor_ids,
-                input_type="actor",
-                date_from=date_from,
-                date_to=date_to,
-                records_returned=inserted,
+    try:
+        records = asyncio.run(
+            collector.collect_by_actors(
+                actor_ids=actor_ids,
+                tier=tier_enum,
+                date_from=effective_date_from,
+                date_to=effective_date_to,
+                max_results=max_results,
             )
-
-        _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
+        )
+    except ArenaRateLimitError:
+        logger.warning(
+            "common_crawl: rate limited on collect_by_actors for run=%s — will retry.",
+            collection_run_id,
+        )
+        raise
+    except ArenaCollectionError as exc:
+        msg = str(exc)
+        logger.error("common_crawl: collection error for run=%s: %s", collection_run_id, msg)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="web",
             platform="common_crawl",
-            status="completed",
-            records_collected=inserted,
-            error_message=None,
+            status="failed",
+            records_collected=0,
+            error_message=msg,
             elapsed_seconds=elapsed_since(_task_start),
         )
+        raise
 
-        return {
-            "records_collected": inserted,
-            "status": "completed",
-            "arena": _ARENA,
-            "tier": tier,
-        }
-    except SoftTimeLimitExceeded:
-        logger.error(
-            "common_crawl: collect_by_actors timed out after 10 minutes — run=%s",
-            collection_run_id,
+    count = len(records)
+
+    # Persist collected records to the database.
+    from issue_observatory.workers._task_helpers import persist_collected_records
+
+    inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+
+    # Fallback: if in-memory counters lost track, use the actual DB count.
+    if inserted == 0:
+        from issue_observatory.workers._task_helpers import (
+            count_run_platform_records,
         )
-        _update_task_status(
-            collection_run_id,
-            _PLATFORM,
-            "failed",
-            error_message="Collection timed out after 10 minutes",
+
+        db_count = count_run_platform_records(collection_run_id, "common_crawl")
+        if db_count > 0:
+            logger.info(
+                "common_crawl: in-memory counter=0 but DB has %d records — using DB count",
+                db_count,
+            )
+            inserted = db_count
+
+    logger.info(
+        "common_crawl: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
+        collection_run_id,
+        count,
+        inserted,
+        skipped,
+    )
+
+    # --- Record collection attempt metadata ---
+    if date_from and date_to:
+        from issue_observatory.workers._task_helpers import (
+            record_collection_attempts_batch,
         )
-        return {"status": "failed", "error": "timeout", "arena": _ARENA}
+
+        record_collection_attempts_batch(
+            platform="common_crawl",
+            collection_run_id=collection_run_id,
+            query_design_id=query_design_id,
+            inputs=actor_ids,
+            input_type="actor",
+            date_from=date_from,
+            date_to=date_to,
+            records_returned=inserted,
+            per_input_counts=collector.per_input_counts,
+        )
+
+    _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="web",
+        platform="common_crawl",
+        status="completed",
+        records_collected=inserted,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+
+    return {
+        "records_collected": inserted,
+        "status": "completed",
+        "arena": _ARENA,
+        "tier": tier,
+    }
 
 
 @celery_app.task(

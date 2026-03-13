@@ -546,5 +546,34 @@ function liveSchedulePanel(runId, initialStatus) {
         },
     };
 }
+
+// Listen for HTMX showFlash events (e.g. after cancel) and display a confirmation banner.
+document.body.addEventListener('showFlash', function(evt) {
+    const detail = evt.detail || {};
+    const level = detail.level || 'info';
+    const message = detail.message || '';
+    if (!message) return;
+
+    const colors = {
+        success: 'bg-green-50 border-green-300 text-green-800',
+        error:   'bg-red-50 border-red-300 text-red-800',
+        warning: 'bg-yellow-50 border-yellow-300 text-yellow-800',
+        info:    'bg-blue-50 border-blue-300 text-blue-800',
+    };
+
+    const banner = document.createElement('div');
+    banner.className = 'flex items-center gap-3 border rounded-md px-4 py-3 text-sm mb-4 ' + (colors[level] || colors.info);
+    banner.innerHTML = '<p class="flex-1">' + message.replace(/</g, '&lt;') + '</p>'
+        + '<button onclick="this.parentElement.remove()" class="opacity-60 hover:opacity-100 flex-shrink-0" aria-label="Dismiss">'
+        + '<svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">'
+        + '<path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg></button>';
+
+    // Insert at top of content area
+    const content = document.querySelector('.max-w-5xl') || document.querySelector('main') || document.body;
+    content.insertBefore(banner, content.firstChild);
+
+    // Auto-dismiss after 10 seconds
+    setTimeout(() => { if (banner.parentElement) banner.remove(); }, 10000);
+});
 </script>
 {% endblock %}

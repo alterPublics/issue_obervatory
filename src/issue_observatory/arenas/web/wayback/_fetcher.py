@@ -14,7 +14,7 @@ Provides:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -125,7 +125,7 @@ async def fetch_cdx_page(
 
     try:
         data = response.json()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("wayback: JSON parse error: %s — skipping page.", exc)
         return [], None
 
@@ -144,7 +144,7 @@ async def fetch_cdx_page(
     entries: list[dict[str, Any]] = []
     for row in data_rows:
         if len(row) == len(field_names):
-            entries.append(dict(zip(field_names, row)))
+            entries.append(dict(zip(field_names, row, strict=False)))
 
     return entries, next_resume_key
 
@@ -168,7 +168,7 @@ def format_wb_timestamp(value: datetime | str | None) -> str | None:
         try:
             dt = datetime.strptime(value, fmt)
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             return dt.strftime("%Y%m%d%H%M%S")
         except ValueError:
             continue
@@ -191,7 +191,7 @@ def parse_wb_timestamp(timestamp: str | None) -> str | None:
         return None
     try:
         dt = datetime.strptime(timestamp, "%Y%m%d%H%M%S")
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
         return dt.isoformat()
     except ValueError:
         logger.debug("wayback: could not parse timestamp '%s'", timestamp)
@@ -215,5 +215,5 @@ def extract_domain(url: str | None) -> str | None:
         if hostname.startswith("www."):
             hostname = hostname[4:]
         return hostname or None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None

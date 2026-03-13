@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -24,7 +24,6 @@ import httpx
 
 from issue_observatory.arenas.web.common_crawl.config import (
     CC_INDEX_BASE_URL,
-    CC_MAX_RECORDS_PER_PAGE,
 )
 from issue_observatory.core.exceptions import ArenaCollectionError, ArenaRateLimitError
 
@@ -105,7 +104,7 @@ async def fetch_index_page(
             entry = json.loads(line)
             if isinstance(entry, dict):
                 entries.append(entry)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.debug(
                 "common_crawl: JSON parse error on line: %s — %s", line[:80], exc
             )
@@ -173,7 +172,7 @@ def format_cc_timestamp(value: datetime | str | None) -> str | None:
         try:
             dt = datetime.strptime(value, fmt)
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             return dt.strftime("%Y%m%d%H%M%S")
         except ValueError:
             continue
@@ -196,7 +195,7 @@ def parse_cc_timestamp(timestamp: str | None) -> str | None:
         return None
     try:
         dt = datetime.strptime(timestamp, "%Y%m%d%H%M%S")
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
         return dt.isoformat()
     except ValueError:
         logger.debug("common_crawl: could not parse timestamp '%s'", timestamp)
@@ -254,5 +253,5 @@ def extract_domain(url: str | None) -> str | None:
         if hostname.startswith("www."):
             hostname = hostname[4:]
         return hostname or None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None

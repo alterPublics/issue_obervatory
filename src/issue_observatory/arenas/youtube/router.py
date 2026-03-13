@@ -314,8 +314,9 @@ async def estimate_credits(
         max_results=max_results,
     )
 
-    from issue_observatory.arenas.youtube.config import DAILY_QUOTA_PER_KEY  # noqa: PLC0415
-    import math  # noqa: PLC0415
+    import math
+
+    from issue_observatory.arenas.youtube.config import DAILY_QUOTA_PER_KEY
 
     keys_required = math.ceil(estimated_units / DAILY_QUOTA_PER_KEY) if estimated_units > 0 else 1
 

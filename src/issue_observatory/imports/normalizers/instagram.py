@@ -10,7 +10,7 @@ The adapter handles both formats and maps to IO's schema.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -69,7 +69,7 @@ class InstagramNormalizer:
         published_at = None
         if taken_at:
             try:
-                published_at = datetime.fromtimestamp(int(taken_at), tz=timezone.utc)
+                published_at = datetime.fromtimestamp(int(taken_at), tz=UTC)
             except (ValueError, TypeError) as exc:
                 logger.warning(
                     "instagram.timestamp_parse_error",

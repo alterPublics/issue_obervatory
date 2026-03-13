@@ -1,0 +1,1774 @@
+{
+  "test_params": {
+    "target_url": "https://www.facebook.com/stemhalsboe",
+    "date_from": "02-28-2026",
+    "date_to": "03-10-2026",
+    "num_posts": 100,
+    "dataset_id": "gd_lkaxegm826bjpoo9m5"
+  },
+  "api_calls": [
+    {
+      "timestamp": "2026-03-11T11:20:31.176995+00:00",
+      "method": "POST",
+      "url": "https://api.brightdata.com/datasets/v3/trigger?dataset_id=gd_lkaxegm826bjpoo9m5&include_errors=true",
+      "status": 200,
+      "detail": "payload_size=1"
+    },
+    {
+      "timestamp": "2026-03-11T11:20:31.317930+00:00",
+      "method": "GET",
+      "url": "https://api.brightdata.com/datasets/v3/progress/sd_mmly6ph7h1ns06pg7",
+      "status": 200,
+      "detail": "status=running attempt=1/40"
+    },
+    {
+      "timestamp": "2026-03-11T11:21:01.680554+00:00",
+      "method": "GET",
+      "url": "https://api.brightdata.com/datasets/v3/progress/sd_mmly6ph7h1ns06pg7",
+      "status": 200,
+      "detail": "status=running attempt=2/40"
+    },
+    {
+      "timestamp": "2026-03-11T11:21:32.017718+00:00",
+      "method": "GET",
+      "url": "https://api.brightdata.com/datasets/v3/progress/sd_mmly6ph7h1ns06pg7",
+      "status": 200,
+      "detail": "status=running attempt=3/40"
+    },
+    {
+      "timestamp": "2026-03-11T11:22:02.361922+00:00",
+      "method": "GET",
+      "url": "https://api.brightdata.com/datasets/v3/progress/sd_mmly6ph7h1ns06pg7",
+      "status": 200,
+      "detail": "status=ready attempt=4/40"
+    },
+    {
+      "timestamp": "2026-03-11T11:22:02.914735+00:00",
+      "method": "GET",
+      "url": "https://api.brightdata.com/datasets/v3/snapshot/sd_mmly6ph7h1ns06pg7?format=json",
+      "status": 200,
+      "detail": "content_length=98257"
+    }
+  ],
+  "summary": {
+    "total_api_calls": 6,
+    "trigger_calls": 1,
+    "poll_calls": 4,
+    "download_calls": 1,
+    "total_raw_items": 16,
+    "valid_posts": 16,
+    "error_records": 0,
+    "elapsed_seconds": 92.3,
+    "estimated_cost_usd": 0.024
+  },
+  "date_range": {
+    "earliest": "2026-02-28T09:46:16.000Z",
+    "latest": "2026-03-10T20:39:22.000Z"
+  },
+  "raw_items": [
+    {
+      "url": "https://www.facebook.com/reel/1823943701631690/",
+      "post_id": "1312387197380765",
+      "user_url": "https://www.facebook.com/stemhalsboe",
+      "user_username_raw": "Ane Halsboe-J\u00f8rgensen",
+      "content": "Frihed og ansvar er ikke kun for de liberale. Tak for gaven, S\u00f3lbj\u00f8rg :)",
+      "date_posted": "2026-03-10T20:39:22.000Z",
+      "num_comments": 32,
+      "num_shares": 18,
+      "num_likes_type": {
+        "type": "Like",
+        "num": 72
+      },
+      "page_name": "Ane Halsboe-J\u00f8rgensen",
+      "profile_id": "100058284901788",
+      "page_intro": "Hvis du vil skrive til mig som skatteminister, kan du g\u00f8re det til ministeren@skm.dk",
+      "page_category": "Politician",
+      "page_logo": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "page_external_website": "anehalsboe.dk",
+      "page_followers": 9200,
+      "page_is_verified": true,
+      "attachments": [
+        {
+          "id": "1823943701631690",
+          "type": "Video",
+          "url": "https://scontent.fruh4-3.fna.fbcdn.net/v/t15.5256-10/649392661_2829713824042480_393595107585649862_n.jpg?stp=dst-jpg_p296x100_tt6&_nc_cat=109&ccb=1-7&_nc_sid=5fad0e&_nc_ohc=5ZBcb667sWgQ7kNvwHg9Iff&_nc_oc=Adm1QWhrO4VbJab4_hCR0FH5Dp8kDVUTI_zbv7j9FRjiRK5MdsV-MGNgUDRLJT3FFZ4&_nc_zt=23&_nc_ht=scontent.fruh4-3.fna&_nc_gid=M54yn1VxUdtyJqYlwa1ZsQ&_nc_ss=8&oh=00_AfwyE8Im5zShiaCvLekd3NXjnn3mROYIkgkVkRAKkDlSdw&oe=69B71BE4",
+          "video_length": "16498",
+          "attachment_url": "https://www.facebook.com/reel/1823943701631690/",
+          "video_url": "https://video.fruh4-4.fna.fbcdn.net/o1/v/t2/f2/m366/AQOsUnbyIVYcI5X4Y2_1nzoD23ZP0-jMcFmmmJEnNmyWq6lmGHE1YrKfp1ise4Xpd0Jvvus_FXJmF6bQghAJGvR8mFfFurt0cEJuWX8CGR1ZrQ.mp4?_nc_cat=104&_nc_oc=Adn9rMq817uWaynM8yCw7FKLxuyn7senpu2627rh7DqkwcR2zp436l4Rbvw8-iE4ttE&_nc_sid=5e9851&_nc_ht=video.fruh4-4.fna.fbcdn.net&_nc_ohc=zUy1HjXyvycQ7kNvwHzBHIy&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5GQUNFQk9PSy4uQzMuNzIwLmRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHAiLCJ4cHZfYXNzZXRfaWQiOjkyODExNTYwOTk0MTY0NCwiYXNzZXRfYWdlX2RheXMiOjAsInZpX3VzZWNhc2VfaWQiOjEwMTIyLCJkdXJhdGlvbl9zIjoxNiwid2F0Y2hfdGltZV9zIjo2NDYyMCwidXJsZ2VuX3NvdXJjZSI6Ind3dyJ9&ccb=17-1&vs=67fbe749be540f48&_nc_vs=HBksFQIYRWZiX2VwaGVtZXJhbC85QzRGNkVGNzk2NjY4NEM4MTIyMkU5RTMwOEE5MDlBM19tdF8xX3ZpZGVvX2Rhc2hpbml0Lm1wNBUAAsgBEgAVAhhAZmJfcGVybWFuZW50Lzk2NDE0NTk1NDNCOUU1NzEzRTA5RUE5NDJCOTNERUJBX2F1ZGlvX2Rhc2hpbml0Lm1wNBUCAsgBEgAoABgAGwKIB3VzZV9vaWwBMRJwcm9ncmVzc2l2ZV9yZWNpcGUBMRUAACaY2u2TuIemAxUCKAJDMywXQDCAAAAAAAAYGWRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHARAHUCZZSeAQA&_nc_gid=M54yn1VxUdtyJqYlwa1ZsQ&_nc_ss=8&_nc_zt=28&oh=00_AfwWAYBNFU8cdLIya_9BW48AMeRTVua0REFAIlCm7ATVHQ&oe=69B73CE0&bitrate=1303143&tag=dash_h264-basic-gen2_720p",
+          "thumbnail_url": "https://scontent.fruh4-3.fna.fbcdn.net/v/t15.5256-10/649392661_2829713824042480_393595107585649862_n.jpg?stp=dst-jpg_s960x960_tt6&_nc_cat=109&ccb=1-7&_nc_sid=50ce42&_nc_ohc=5ZBcb667sWgQ7kNvwHg9Iff&_nc_oc=Adm1QWhrO4VbJab4_hCR0FH5Dp8kDVUTI_zbv7j9FRjiRK5MdsV-MGNgUDRLJT3FFZ4&_nc_zt=23&_nc_ht=scontent.fruh4-3.fna&_nc_gid=M54yn1VxUdtyJqYlwa1ZsQ&_nc_ss=8&oh=00_AfzOuF_lOQmm2EfhuCbSNzVcpB2zyutWhzucV6FHCHQmZQ&oe=69B71BE4"
+        }
+      ],
+      "post_external_image": null,
+      "page_url": "https://www.facebook.com/stemhalsboe",
+      "header_image": "https://scontent.fruh4-5.fna.fbcdn.net/v/t39.30808-6/475824394_1010398804246274_1263933418973300654_n.jpg?_nc_cat=110&ccb=1-7&_nc_sid=2a1932&_nc_ohc=7iYcApzG4vwQ7kNvwHFQ1ay&_nc_oc=AdkdBrH9a6PjbEYvNuLmY7Lcad_GIhlgK-atKlIbgKZHdGoxxhM4pIX8YvmsxGNPIxg&_nc_zt=23&_nc_ht=scontent.fruh4-5.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_Afwur_Ln9UU-aZsXu5eqna0Jnw1cUHygUpA96SXJYCIYdg&oe=69B739A0",
+      "avatar_image_url": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "profile_handle": "stemhalsboe",
+      "is_sponsored": false,
+      "shortcode": "1312387197380765",
+      "video_view_count": 4224,
+      "likes": 113,
+      "post_type": "Reel",
+      "following": 60,
+      "link_description_text": null,
+      "count_reactions_type": [
+        {
+          "type": "Like",
+          "reaction_count": 72
+        },
+        {
+          "type": "Haha",
+          "reaction_count": 21
+        },
+        {
+          "type": "Love",
+          "reaction_count": 10
+        },
+        {
+          "type": "Angry",
+          "reaction_count": 9
+        },
+        {
+          "type": "Wow",
+          "reaction_count": 1
+        }
+      ],
+      "is_page": true,
+      "page_phone": null,
+      "page_email": "ane.halsboe@ft.dk",
+      "page_creation_time": "2010-10-20T00:00:00.000Z",
+      "page_reviews_score": null,
+      "page_reviewers_amount": null,
+      "page_price_range": null,
+      "about": [
+        {
+          "type": "INFLUENCER CATEGORY",
+          "value": "Page \u00b7 Politician",
+          "link": null
+        },
+        {
+          "type": "PROFILE EMAIL",
+          "value": "ane.halsboe@ft.dk",
+          "link": null
+        },
+        {
+          "type": "WEBSITE",
+          "value": "anehalsboe.dk",
+          "link": "http://www.anehalsboe.dk/"
+        }
+      ],
+      "active_ads_urls": [],
+      "delegate_page_id": "169938849689771",
+      "privacy_and_legal_info": "Jeg modererer min Facebook-side for at sikre en konstruktiv debat - se mere p\u00e5 http://bit.ly/principper",
+      "play_count": 10452,
+      "timestamp": "2026-03-11T11:21:46.416Z",
+      "input": {
+        "url": "https://www.facebook.com/stemhalsboe",
+        "num_of_posts": 100,
+        "start_date": "02-28-2026",
+        "end_date": "03-10-2026"
+      }
+    },
+    {
+      "url": "https://www.facebook.com/reel/908058988516587/",
+      "post_id": "1312197104066441",
+      "user_url": "https://www.facebook.com/stemhalsboe",
+      "user_username_raw": "Ane Halsboe-J\u00f8rgensen",
+      "content": "Zig-zag i Venstre. \n\nI Socialdemokratiet st\u00e5r vi fast: Det skal stoppe, at landbruget henter folk i Afrika til en uhyre lav l\u00f8n.",
+      "date_posted": "2026-03-10T14:36:10.000Z",
+      "num_comments": 110,
+      "num_shares": 7,
+      "num_likes_type": {
+        "type": "Like",
+        "num": 118
+      },
+      "page_name": "Ane Halsboe-J\u00f8rgensen",
+      "profile_id": "100058284901788",
+      "page_intro": "Hvis du vil skrive til mig som skatteminister, kan du g\u00f8re det til ministeren@skm.dk",
+      "page_category": "Politician",
+      "page_logo": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "page_external_website": "anehalsboe.dk",
+      "page_followers": 9200,
+      "page_is_verified": true,
+      "attachments": [
+        {
+          "id": "908058988516587",
+          "type": "Video",
+          "url": "https://scontent.fruh4-2.fna.fbcdn.net/v/t15.5256-10/650381029_2155462891888892_8170955305432457744_n.jpg?stp=dst-jpg_p296x100_tt6&_nc_cat=107&ccb=1-7&_nc_sid=5fad0e&_nc_ohc=-GSenFit0v8Q7kNvwGuwI4i&_nc_oc=AdlSg6WdHauN9zIi_hxG6Lyu25vaRChvxMmM53OhruDZVNQdejEDiJ4WCfU72XRSItY&_nc_zt=23&_nc_ht=scontent.fruh4-2.fna&_nc_gid=p9VVYc08p0tCQ40muFpsrQ&_nc_ss=8&oh=00_Afxk24inNyPiFHDEtQBJJG5ezlks-aX9YWJWE0NBAf5YSg&oe=69B73646",
+          "video_length": "28626",
+          "attachment_url": "https://www.facebook.com/reel/908058988516587/",
+          "video_url": "https://video.fruh4-2.fna.fbcdn.net/o1/v/t2/f2/m366/AQOOJZ1lp-DBqqKFQjAfoysLOqmFmekZV_L9RB96fc550Nj_ggEMhR4_IPKoil3HC_NusU7km73ICuo7mQa6n7-6Ea-zA4HzX-AbdUaoQWZlKg.mp4?_nc_cat=101&_nc_oc=Adm3PaCcHCVYF8FLbEf2o-1mHS1xM_btlzFPOTc8SDiiSApV2w4Os_ZkCqKWK-cAt1M&_nc_sid=5e9851&_nc_ht=video.fruh4-2.fna.fbcdn.net&_nc_ohc=DTOoX_OhU2MQ7kNvwGBewLQ&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5GQUNFQk9PSy4uQzMuNzIwLmRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHAiLCJ4cHZfYXNzZXRfaWQiOjkyOTc5NjAzMzEyMTI2MywiYXNzZXRfYWdlX2RheXMiOjAsInZpX3VzZWNhc2VfaWQiOjEwMTIyLCJkdXJhdGlvbl9zIjoyOCwidXJsZ2VuX3NvdXJjZSI6Ind3dyJ9&ccb=17-1&vs=b17e01b62190ab90&_nc_vs=HBksFQIYRWZiX2VwaGVtZXJhbC9GNTRFQTI4MTZCQTNDMzczMjQzREFGRUQ1Q0Q5NzRBOV9tdF8xX3ZpZGVvX2Rhc2hpbml0Lm1wNBUAAsgBEgAVAhhAZmJfcGVybWFuZW50Lzg0NDdFNDI5QUMxQzRFNjZFRkZCNTM3NEY4ODkyMzlGX2F1ZGlvX2Rhc2hpbml0Lm1wNBUCAsgBEgAoABgAGwKIB3VzZV9vaWwBMRJwcm9ncmVzc2l2ZV9yZWNpcGUBMRUAACber6SkoOmmAxUCKAJDMywXQDyiDEm6XjUYGWRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHARAHUCZZSeAQA&_nc_gid=p9VVYc08p0tCQ40muFpsrQ&_nc_ss=8&_nc_zt=28&oh=00_AfzLoC8MfDjwphkYvM2JQmndVVbkVGFLiVtyeaKn4uww9Q&oe=69B72D97&bitrate=1050260&tag=dash_h264-basic-gen2_720p",
+          "thumbnail_url": "https://scontent.fruh4-2.fna.fbcdn.net/v/t15.5256-10/650381029_2155462891888892_8170955305432457744_n.jpg?stp=dst-jpg_s960x960_tt6&_nc_cat=107&ccb=1-7&_nc_sid=50ce42&_nc_ohc=-GSenFit0v8Q7kNvwGuwI4i&_nc_oc=AdlSg6WdHauN9zIi_hxG6Lyu25vaRChvxMmM53OhruDZVNQdejEDiJ4WCfU72XRSItY&_nc_zt=23&_nc_ht=scontent.fruh4-2.fna&_nc_gid=p9VVYc08p0tCQ40muFpsrQ&_nc_ss=8&oh=00_AfywkX-96-0FOmBbwazf0UEzZX8pMAblq1xCmDtfdP3Miw&oe=69B73646"
+        }
+      ],
+      "post_external_image": null,
+      "page_url": "https://www.facebook.com/stemhalsboe",
+      "header_image": "https://scontent.fruh4-5.fna.fbcdn.net/v/t39.30808-6/475824394_1010398804246274_1263933418973300654_n.jpg?_nc_cat=110&ccb=1-7&_nc_sid=2a1932&_nc_ohc=7iYcApzG4vwQ7kNvwHFQ1ay&_nc_oc=AdkdBrH9a6PjbEYvNuLmY7Lcad_GIhlgK-atKlIbgKZHdGoxxhM4pIX8YvmsxGNPIxg&_nc_zt=23&_nc_ht=scontent.fruh4-5.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_Afwur_Ln9UU-aZsXu5eqna0Jnw1cUHygUpA96SXJYCIYdg&oe=69B739A0",
+      "avatar_image_url": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "profile_handle": "stemhalsboe",
+      "is_sponsored": false,
+      "shortcode": "1312197104066441",
+      "video_view_count": 5185,
+      "likes": 242,
+      "post_type": "Reel",
+      "following": 60,
+      "link_description_text": null,
+      "count_reactions_type": [
+        {
+          "type": "Like",
+          "reaction_count": 118
+        },
+        {
+          "type": "Haha",
+          "reaction_count": 96
+        },
+        {
+          "type": "Angry",
+          "reaction_count": 19
+        },
+        {
+          "type": "Love",
+          "reaction_count": 4
+        },
+        {
+          "type": "Care",
+          "reaction_count": 4
+        },
+        {
+          "type": "Wow",
+          "reaction_count": 1
+        }
+      ],
+      "is_page": true,
+      "page_phone": null,
+      "page_email": "ane.halsboe@ft.dk",
+      "page_creation_time": "2010-10-20T00:00:00.000Z",
+      "page_reviews_score": null,
+      "page_reviewers_amount": null,
+      "page_price_range": null,
+      "about": [
+        {
+          "type": "INFLUENCER CATEGORY",
+          "value": "Page \u00b7 Politician",
+          "link": null
+        },
+        {
+          "type": "PROFILE EMAIL",
+          "value": "ane.halsboe@ft.dk",
+          "link": null
+        },
+        {
+          "type": "WEBSITE",
+          "value": "anehalsboe.dk",
+          "link": "http://www.anehalsboe.dk/"
+        }
+      ],
+      "active_ads_urls": [],
+      "delegate_page_id": "169938849689771",
+      "privacy_and_legal_info": "Jeg modererer min Facebook-side for at sikre en konstruktiv debat - se mere p\u00e5 http://bit.ly/principper",
+      "play_count": 14642,
+      "timestamp": "2026-03-11T11:21:46.416Z",
+      "input": {
+        "url": "https://www.facebook.com/stemhalsboe",
+        "num_of_posts": 100,
+        "start_date": "02-28-2026",
+        "end_date": "03-10-2026"
+      }
+    },
+    {
+      "url": "https://www.facebook.com/stemhalsboe/posts/pfbid0XRhAxUPZRQUZh21DXNorRCkEYSAg3DHXWLb9zamQSeYCjztQFXavKpyBZqVp9fV8l",
+      "post_id": "1311742000778618",
+      "user_url": "https://www.facebook.com/stemhalsboe",
+      "user_username_raw": "Ane Halsboe-J\u00f8rgensen",
+      "content": "Kampgejst hos dette gode hold af socialdemokrater i Jammerbugt her til aften. Helt klar til de sidste to ugers valgkamp\ud83c\udf39\ud83d\udc4f",
+      "date_posted": "2026-03-09T22:41:56.000Z",
+      "num_comments": 26,
+      "num_shares": 6,
+      "num_likes_type": {
+        "type": "Like",
+        "num": 156
+      },
+      "page_name": "Ane Halsboe-J\u00f8rgensen",
+      "profile_id": "100058284901788",
+      "page_intro": "Hvis du vil skrive til mig som skatteminister, kan du g\u00f8re det til ministeren@skm.dk",
+      "page_category": "Politician",
+      "page_logo": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "page_external_website": "anehalsboe.dk",
+      "page_followers": 9200,
+      "page_is_verified": true,
+      "attachments": [
+        {
+          "id": "1311741297445355",
+          "type": "Photo",
+          "url": "https://scontent.fruh4-1.fna.fbcdn.net/v/t39.30808-6/649423855_1311741300778688_5817203521132887744_n.jpg?stp=cp6_dst-jpg_p526x296_tt6&_nc_cat=106&ccb=1-7&_nc_sid=7b2446&_nc_ohc=NVPESK40TAcQ7kNvwHmo-XG&_nc_oc=AdkfhPlusHm0NT9RT7Otpg7kPqDqkEodqbt8Qxct8olTzafvd6Odddh9yyf_a9FyeC8&_nc_zt=23&_nc_ht=scontent.fruh4-1.fna&_nc_gid=p9VVYc08p0tCQ40muFpsrQ&_nc_ss=8&oh=00_AfyCzCGGEgjpuevvXBrIstFrMGr7eYeltXcRyxVOChxpIg&oe=69B728EF",
+          "video_url": null,
+          "thumbnail_url": null
+        }
+      ],
+      "post_external_image": null,
+      "page_url": "https://www.facebook.com/stemhalsboe",
+      "header_image": "https://scontent.fruh4-5.fna.fbcdn.net/v/t39.30808-6/475824394_1010398804246274_1263933418973300654_n.jpg?_nc_cat=110&ccb=1-7&_nc_sid=2a1932&_nc_ohc=7iYcApzG4vwQ7kNvwHFQ1ay&_nc_oc=AdkdBrH9a6PjbEYvNuLmY7Lcad_GIhlgK-atKlIbgKZHdGoxxhM4pIX8YvmsxGNPIxg&_nc_zt=23&_nc_ht=scontent.fruh4-5.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_Afwur_Ln9UU-aZsXu5eqna0Jnw1cUHygUpA96SXJYCIYdg&oe=69B739A0",
+      "avatar_image_url": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "profile_handle": "stemhalsboe",
+      "is_sponsored": false,
+      "shortcode": "1311742000778618",
+      "likes": 207,
+      "post_image": "https://scontent.fruh4-1.fna.fbcdn.net/v/t39.30808-6/649423855_1311741300778688_5817203521132887744_n.jpg?stp=cp6_dst-jpg_p526x296_tt6&_nc_cat=106&ccb=1-7&_nc_sid=7b2446&_nc_ohc=NVPESK40TAcQ7kNvwHmo-XG&_nc_oc=AdkfhPlusHm0NT9RT7Otpg7kPqDqkEodqbt8Qxct8olTzafvd6Odddh9yyf_a9FyeC8&_nc_zt=23&_nc_ht=scontent.fruh4-1.fna&_nc_gid=p9VVYc08p0tCQ40muFpsrQ&_nc_ss=8&oh=00_AfyCzCGGEgjpuevvXBrIstFrMGr7eYeltXcRyxVOChxpIg&oe=69B728EF",
+      "post_type": "Post",
+      "following": 60,
+      "link_description_text": null,
+      "count_reactions_type": [
+        {
+          "type": "Like",
+          "reaction_count": 156
+        },
+        {
+          "type": "Haha",
+          "reaction_count": 32
+        },
+        {
+          "type": "Love",
+          "reaction_count": 15
+        },
+        {
+          "type": "Angry",
+          "reaction_count": 3
+        },
+        {
+          "type": "Care",
+          "reaction_count": 1
+        }
+      ],
+      "is_page": true,
+      "page_phone": null,
+      "page_email": "ane.halsboe@ft.dk",
+      "page_creation_time": "2010-10-20T00:00:00.000Z",
+      "page_reviews_score": null,
+      "page_reviewers_amount": null,
+      "page_price_range": null,
+      "about": [
+        {
+          "type": "INFLUENCER CATEGORY",
+          "value": "Page \u00b7 Politician",
+          "link": null
+        },
+        {
+          "type": "PROFILE EMAIL",
+          "value": "ane.halsboe@ft.dk",
+          "link": null
+        },
+        {
+          "type": "WEBSITE",
+          "value": "anehalsboe.dk",
+          "link": "http://www.anehalsboe.dk/"
+        }
+      ],
+      "active_ads_urls": [],
+      "delegate_page_id": "169938849689771",
+      "privacy_and_legal_info": "Jeg modererer min Facebook-side for at sikre en konstruktiv debat - se mere p\u00e5 http://bit.ly/principper",
+      "play_count": null,
+      "timestamp": "2026-03-11T11:21:46.416Z",
+      "input": {
+        "url": "https://www.facebook.com/stemhalsboe",
+        "num_of_posts": 100,
+        "start_date": "02-28-2026",
+        "end_date": "03-10-2026"
+      }
+    },
+    {
+      "url": "https://www.facebook.com/reel/1238819738386476/",
+      "post_id": "1311573504128801",
+      "user_url": "https://www.facebook.com/stemhalsboe",
+      "user_username_raw": "Ane Halsboe-J\u00f8rgensen",
+      "content": "Spr\u00f8jteforbud nu.",
+      "date_posted": "2026-03-09T16:42:53.000Z",
+      "num_comments": 240,
+      "num_shares": 30,
+      "num_likes_type": {
+        "type": "Like",
+        "num": 247
+      },
+      "page_name": "Ane Halsboe-J\u00f8rgensen",
+      "profile_id": "100058284901788",
+      "page_intro": "Hvis du vil skrive til mig som skatteminister, kan du g\u00f8re det til ministeren@skm.dk",
+      "page_category": "Politician",
+      "page_logo": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "page_external_website": "anehalsboe.dk",
+      "page_followers": 9200,
+      "page_is_verified": true,
+      "attachments": [
+        {
+          "id": "1238819738386476",
+          "type": "Video",
+          "url": "https://scontent.fruh4-2.fna.fbcdn.net/v/t15.5256-10/650202993_802145218982328_4768757155329051673_n.jpg?stp=dst-jpg_p296x100_tt6&_nc_cat=101&ccb=1-7&_nc_sid=5fad0e&_nc_ohc=0vyY_37ZrAMQ7kNvwH4fgx4&_nc_oc=AdkIsFq4mafDedD5KRZ5BZBur_HS5DJtCZRFiXRPXxzr5Buuyeo9o1tMYBFxNKxhXuU&_nc_zt=23&_nc_ht=scontent.fruh4-2.fna&_nc_gid=p9VVYc08p0tCQ40muFpsrQ&_nc_ss=8&oh=00_Afz_7lvqQzq8OUY7uOwUWpmTN5cVL9-HsFskG5n2duI69Q&oe=69B7188C",
+          "video_length": "7567",
+          "attachment_url": "https://www.facebook.com/reel/1238819738386476/",
+          "video_url": "https://video.fruh4-4.fna.fbcdn.net/o1/v/t2/f2/m366/AQPM2yyns0s256o5my4yIgEMNOtughA9ItOL8-Fsh2umHSkERtsm2-izWSyn-Dtoq3ybcdZibihYiFq7Njni8QHLt3j1GXptGON_yBqH_404Vw.mp4?_nc_cat=104&_nc_oc=AdmtXPzXQLVDpGUGgH0uMDXy1zVhkUiFSnTjKddgx_j3AggiGsBzUmDzQhxO49xTTvY&_nc_sid=5e9851&_nc_ht=video.fruh4-4.fna.fbcdn.net&_nc_ohc=2b2ICXnUoQUQ7kNvwHG_Alq&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5GQUNFQk9PSy4uQzMuNzIwLmRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHAiLCJ4cHZfYXNzZXRfaWQiOjE4OTY3MDYyOTQzMDE4MjgsImFzc2V0X2FnZV9kYXlzIjoxLCJ2aV91c2VjYXNlX2lkIjoxMDEyMiwiZHVyYXRpb25fcyI6NywidXJsZ2VuX3NvdXJjZSI6Ind3dyJ9&ccb=17-1&vs=f9a01e91d09d345a&_nc_vs=HBksFQIYRWZiX2VwaGVtZXJhbC8wQzQyRjcyQkYzODU5QjA2OEFDNjhEQkMwMDQ3RDM5Rl9tdF8xX3ZpZGVvX2Rhc2hpbml0Lm1wNBUAAsgBEgAVAhhAZmJfcGVybWFuZW50Lzg5NEIyMDBGRDNFM0NEQzdGOUI4NUUyMDAwRjg0MUJCX2F1ZGlvX2Rhc2hpbml0Lm1wNBUCAsgBEgAoABgAGwKIB3VzZV9vaWwBMRJwcm9ncmVzc2l2ZV9yZWNpcGUBMRUAACaIktKO68LeBhUCKAJDMywXQB5DlYEGJN0YGWRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHARAHUCZZSeAQA&_nc_gid=p9VVYc08p0tCQ40muFpsrQ&_nc_ss=8&_nc_zt=28&oh=00_AfxV8SzFx7HS_ChpmGdmH4MQOSJDFDwdz1ee0HGwBjKx7A&oe=69B71BAC&bitrate=3369986&tag=dash_h264-basic-gen2_720p",
+          "thumbnail_url": "https://scontent.fruh4-2.fna.fbcdn.net/v/t15.5256-10/650202993_802145218982328_4768757155329051673_n.jpg?stp=dst-jpg_s960x960_tt6&_nc_cat=101&ccb=1-7&_nc_sid=50ce42&_nc_ohc=0vyY_37ZrAMQ7kNvwH4fgx4&_nc_oc=AdkIsFq4mafDedD5KRZ5BZBur_HS5DJtCZRFiXRPXxzr5Buuyeo9o1tMYBFxNKxhXuU&_nc_zt=23&_nc_ht=scontent.fruh4-2.fna&_nc_gid=p9VVYc08p0tCQ40muFpsrQ&_nc_ss=8&oh=00_Afz318tExflE2oT0h8vpXFp1UQrlgtOOSqv_PI-uLZYUJQ&oe=69B7188C"
+        }
+      ],
+      "post_external_image": null,
+      "page_url": "https://www.facebook.com/stemhalsboe",
+      "header_image": "https://scontent.fruh4-5.fna.fbcdn.net/v/t39.30808-6/475824394_1010398804246274_1263933418973300654_n.jpg?_nc_cat=110&ccb=1-7&_nc_sid=2a1932&_nc_ohc=7iYcApzG4vwQ7kNvwHFQ1ay&_nc_oc=AdkdBrH9a6PjbEYvNuLmY7Lcad_GIhlgK-atKlIbgKZHdGoxxhM4pIX8YvmsxGNPIxg&_nc_zt=23&_nc_ht=scontent.fruh4-5.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_Afwur_Ln9UU-aZsXu5eqna0Jnw1cUHygUpA96SXJYCIYdg&oe=69B739A0",
+      "avatar_image_url": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "profile_handle": "stemhalsboe",
+      "is_sponsored": false,
+      "shortcode": "1311573504128801",
+      "video_view_count": 18211,
+      "likes": 431,
+      "post_type": "Reel",
+      "following": 60,
+      "link_description_text": null,
+      "count_reactions_type": [
+        {
+          "type": "Like",
+          "reaction_count": 247
+        },
+        {
+          "type": "Haha",
+          "reaction_count": 137
+        },
+        {
+          "type": "Angry",
+          "reaction_count": 37
+        },
+        {
+          "type": "Love",
+          "reaction_count": 8
+        },
+        {
+          "type": "Care",
+          "reaction_count": 1
+        },
+        {
+          "type": "Sad",
+          "reaction_count": 1
+        }
+      ],
+      "is_page": true,
+      "page_phone": null,
+      "page_email": "ane.halsboe@ft.dk",
+      "page_creation_time": "2010-10-20T00:00:00.000Z",
+      "page_reviews_score": null,
+      "page_reviewers_amount": null,
+      "page_price_range": null,
+      "about": [
+        {
+          "type": "INFLUENCER CATEGORY",
+          "value": "Page \u00b7 Politician",
+          "link": null
+        },
+        {
+          "type": "PROFILE EMAIL",
+          "value": "ane.halsboe@ft.dk",
+          "link": null
+        },
+        {
+          "type": "WEBSITE",
+          "value": "anehalsboe.dk",
+          "link": "http://www.anehalsboe.dk/"
+        }
+      ],
+      "active_ads_urls": [],
+      "delegate_page_id": "169938849689771",
+      "privacy_and_legal_info": "Jeg modererer min Facebook-side for at sikre en konstruktiv debat - se mere p\u00e5 http://bit.ly/principper",
+      "play_count": 53650,
+      "timestamp": "2026-03-11T11:21:46.416Z",
+      "input": {
+        "url": "https://www.facebook.com/stemhalsboe",
+        "num_of_posts": 100,
+        "start_date": "02-28-2026",
+        "end_date": "03-10-2026"
+      }
+    },
+    {
+      "url": "https://www.facebook.com/stemhalsboe/posts/pfbid0Dc8QfBwPVdh5G6egSmn2fAtL8kxZrLgWrww7YZPjWiTFjpPoKjgKQ2sUMu6gbphzl",
+      "post_id": "1310972227522262",
+      "user_url": "https://www.facebook.com/stemhalsboe",
+      "user_username_raw": "Ane Halsboe-J\u00f8rgensen",
+      "content": "\ud83d\udc4f\ud83d\udc4f\ud83d\udc4f",
+      "date_posted": "2026-03-08T19:50:51.000Z",
+      "num_comments": 32,
+      "num_shares": 5,
+      "num_likes_type": {
+        "type": "Like",
+        "num": 95
+      },
+      "page_name": "Ane Halsboe-J\u00f8rgensen",
+      "profile_id": "100058284901788",
+      "page_intro": "Hvis du vil skrive til mig som skatteminister, kan du g\u00f8re det til ministeren@skm.dk",
+      "page_category": "Politician",
+      "page_logo": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "page_external_website": "anehalsboe.dk",
+      "page_followers": 9200,
+      "page_is_verified": true,
+      "attachments": [
+        {
+          "id": "1310972194188932",
+          "type": "Photo",
+          "url": "https://scontent.fruh4-6.fna.fbcdn.net/v/t39.30808-6/649940954_1310972197522265_587958447223204685_n.jpg?stp=dst-jpg_s640x640_tt6&_nc_cat=111&ccb=1-7&_nc_sid=7b2446&_nc_ohc=V7vozdOHmWAQ7kNvwGEEjgm&_nc_oc=AdkmTh_DOu4O1aIdj5BP8NoltdC_t_SCTnpcDqoXM3PhzgskpfecKzIXb5cz7aJ7fMU&_nc_zt=23&_nc_ht=scontent.fruh4-6.fna&_nc_gid=1-DPzBbAO3-Kq9-5sD3k_w&_nc_ss=8&oh=00_AfxuQO4OPGJs7CCtGQ9a4_PVRCUW8Tew0M89WLGVYACSGw&oe=69B711AC",
+          "video_url": null,
+          "thumbnail_url": null
+        }
+      ],
+      "post_external_image": null,
+      "page_url": "https://www.facebook.com/stemhalsboe",
+      "header_image": "https://scontent.fruh4-5.fna.fbcdn.net/v/t39.30808-6/475824394_1010398804246274_1263933418973300654_n.jpg?_nc_cat=110&ccb=1-7&_nc_sid=2a1932&_nc_ohc=7iYcApzG4vwQ7kNvwHFQ1ay&_nc_oc=AdkdBrH9a6PjbEYvNuLmY7Lcad_GIhlgK-atKlIbgKZHdGoxxhM4pIX8YvmsxGNPIxg&_nc_zt=23&_nc_ht=scontent.fruh4-5.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_Afwur_Ln9UU-aZsXu5eqna0Jnw1cUHygUpA96SXJYCIYdg&oe=69B739A0",
+      "avatar_image_url": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "profile_handle": "stemhalsboe",
+      "is_sponsored": false,
+      "shortcode": "1310972227522262",
+      "likes": 134,
+      "post_image": "https://scontent.fruh4-6.fna.fbcdn.net/v/t39.30808-6/649940954_1310972197522265_587958447223204685_n.jpg?stp=dst-jpg_s640x640_tt6&_nc_cat=111&ccb=1-7&_nc_sid=7b2446&_nc_ohc=V7vozdOHmWAQ7kNvwGEEjgm&_nc_oc=AdkmTh_DOu4O1aIdj5BP8NoltdC_t_SCTnpcDqoXM3PhzgskpfecKzIXb5cz7aJ7fMU&_nc_zt=23&_nc_ht=scontent.fruh4-6.fna&_nc_gid=1-DPzBbAO3-Kq9-5sD3k_w&_nc_ss=8&oh=00_AfxuQO4OPGJs7CCtGQ9a4_PVRCUW8Tew0M89WLGVYACSGw&oe=69B711AC",
+      "post_type": "Post",
+      "following": 60,
+      "link_description_text": null,
+      "count_reactions_type": [
+        {
+          "type": "Like",
+          "reaction_count": 95
+        },
+        {
+          "type": "Haha",
+          "reaction_count": 33
+        },
+        {
+          "type": "Love",
+          "reaction_count": 4
+        },
+        {
+          "type": "Angry",
+          "reaction_count": 2
+        }
+      ],
+      "is_page": true,
+      "page_phone": null,
+      "page_email": "ane.halsboe@ft.dk",
+      "page_creation_time": "2010-10-20T00:00:00.000Z",
+      "page_reviews_score": null,
+      "page_reviewers_amount": null,
+      "page_price_range": null,
+      "about": [
+        {
+          "type": "INFLUENCER CATEGORY",
+          "value": "Page \u00b7 Politician",
+          "link": null
+        },
+        {
+          "type": "PROFILE EMAIL",
+          "value": "ane.halsboe@ft.dk",
+          "link": null
+        },
+        {
+          "type": "WEBSITE",
+          "value": "anehalsboe.dk",
+          "link": "http://www.anehalsboe.dk/"
+        }
+      ],
+      "active_ads_urls": [],
+      "delegate_page_id": "169938849689771",
+      "privacy_and_legal_info": "Jeg modererer min Facebook-side for at sikre en konstruktiv debat - se mere p\u00e5 http://bit.ly/principper",
+      "play_count": null,
+      "timestamp": "2026-03-11T11:21:46.416Z",
+      "input": {
+        "url": "https://www.facebook.com/stemhalsboe",
+        "num_of_posts": 100,
+        "start_date": "02-28-2026",
+        "end_date": "03-10-2026"
+      }
+    },
+    {
+      "url": "https://www.facebook.com/reel/1478846360431266/",
+      "post_id": "1310803680872450",
+      "user_url": "https://www.facebook.com/stemhalsboe",
+      "user_username_raw": "Ane Halsboe-J\u00f8rgensen",
+      "content": "\u201cG\u00e5 hjem og tag en Panodil\u201d\nS\u00e5dan m\u00f8des for mange kvinder, n\u00e5r de ops\u00f8ger en l\u00e6ge. Vi ved for lidt om kvindesygdomme som fx endometriose. Vi g\u00f8r for lidt for kvinders helbred efter en graviditet. Og kvinders overgangsalder er fortsat alt for tabuiseret. Tak for en fantastisk formiddag med inspirerende og modige stemmer.",
+      "date_posted": "2026-03-08T14:54:14.000Z",
+      "num_comments": 31,
+      "num_shares": 12,
+      "num_likes_type": {
+        "type": "Like",
+        "num": 185
+      },
+      "page_name": "Ane Halsboe-J\u00f8rgensen",
+      "profile_id": "100058284901788",
+      "page_intro": "Hvis du vil skrive til mig som skatteminister, kan du g\u00f8re det til ministeren@skm.dk",
+      "page_category": "Politician",
+      "page_logo": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "page_external_website": "anehalsboe.dk",
+      "page_followers": 9200,
+      "page_is_verified": true,
+      "attachments": [
+        {
+          "id": "1478846360431266",
+          "type": "Video",
+          "url": "https://scontent.fruh4-3.fna.fbcdn.net/v/t15.5256-10/648461309_1185971086750374_6279737474252523049_n.jpg?stp=dst-jpg_p296x100_tt6&_nc_cat=109&ccb=1-7&_nc_sid=5fad0e&_nc_ohc=k2d_WjqOPLgQ7kNvwG4MPUF&_nc_oc=AdnXvaBZ9Oj70uooyMtiJY1Dma3EY3ZNGwghdc3yh6b5MH29DTvMxJm07ckp8JpgiTI&_nc_zt=23&_nc_ht=scontent.fruh4-3.fna&_nc_gid=1-DPzBbAO3-Kq9-5sD3k_w&_nc_ss=8&oh=00_AfyvAcPHIGPVSZWZrzzE0BgT9gw0MlZB3mua9W5bzH3ABQ&oe=69B72F7D",
+          "video_length": "32577",
+          "attachment_url": "https://www.facebook.com/reel/1478846360431266/",
+          "video_url": "https://video.fruh4-5.fna.fbcdn.net/o1/v/t2/f2/m366/AQOl3JvFgSI7iYXvr4ghS3kKqq9MiXk0pV3Htr0zcBYyamsRroFuqijKJn90OJSFHKCQM8NztGiKpo3vJr2D4AcCivun0XZT72mRw_nAX1FczQ.mp4?_nc_cat=110&_nc_oc=AdkLGjgRIna9Oj0afaEfMjR8YtOPLPKacBinacDYwoXcT2uQVPS6VRS1AtQ2Wsy9CQw&_nc_sid=5e9851&_nc_ht=video.fruh4-5.fna.fbcdn.net&_nc_ohc=BXYO2FHIaekQ7kNvwGUOLEo&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5GQUNFQk9PSy4uQzMuNzIwLmRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHAiLCJ4cHZfYXNzZXRfaWQiOjE2NzIzODcxNjcyNjQxNzYsImFzc2V0X2FnZV9kYXlzIjoyLCJ2aV91c2VjYXNlX2lkIjoxMDEyMiwiZHVyYXRpb25fcyI6MzIsInVybGdlbl9zb3VyY2UiOiJ3d3cifQ%3D%3D&ccb=17-1&vs=b25b764309c12157&_nc_vs=HBksFQIYRWZiX2VwaGVtZXJhbC8yMTREODMwMzMyMUJFMzNGNkJEQzQ2NENDNkEwOUU5NF9tdF8xX3ZpZGVvX2Rhc2hpbml0Lm1wNBUAAsgBEgAVAhhAZmJfcGVybWFuZW50LzI3NDI5NUZEMEM4NTkyQzAyQ0M2RkNCNzI2N0EzQkEyX2F1ZGlvX2Rhc2hpbml0Lm1wNBUCAsgBEgAoABgAGwKIB3VzZV9vaWwBMRJwcm9ncmVzc2l2ZV9yZWNpcGUBMRUAACbg9sCw38H4BRUCKAJDMywXQEBMzMzMzM0YGWRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHARAHUCZZSeAQA&_nc_gid=1-DPzBbAO3-Kq9-5sD3k_w&_nc_ss=8&_nc_zt=28&oh=00_Afx-YTj9DRFpjf0jgzfCs3ux9RPJyY2Ycb6W_IxezDltdw&oe=69B73B4A&bitrate=1574487&tag=dash_h264-basic-gen2_720p",
+          "thumbnail_url": "https://scontent.fruh4-3.fna.fbcdn.net/v/t15.5256-10/648461309_1185971086750374_6279737474252523049_n.jpg?stp=dst-jpg_s960x960_tt6&_nc_cat=109&ccb=1-7&_nc_sid=50ce42&_nc_ohc=k2d_WjqOPLgQ7kNvwG4MPUF&_nc_oc=AdnXvaBZ9Oj70uooyMtiJY1Dma3EY3ZNGwghdc3yh6b5MH29DTvMxJm07ckp8JpgiTI&_nc_zt=23&_nc_ht=scontent.fruh4-3.fna&_nc_gid=1-DPzBbAO3-Kq9-5sD3k_w&_nc_ss=8&oh=00_Afx8O4uMBjBprOMC9yPQJ7VkrqN6A29g-KoBw5cqxGuSjw&oe=69B72F7D"
+        }
+      ],
+      "post_external_image": null,
+      "page_url": "https://www.facebook.com/stemhalsboe",
+      "header_image": "https://scontent.fruh4-5.fna.fbcdn.net/v/t39.30808-6/475824394_1010398804246274_1263933418973300654_n.jpg?_nc_cat=110&ccb=1-7&_nc_sid=2a1932&_nc_ohc=7iYcApzG4vwQ7kNvwHFQ1ay&_nc_oc=AdkdBrH9a6PjbEYvNuLmY7Lcad_GIhlgK-atKlIbgKZHdGoxxhM4pIX8YvmsxGNPIxg&_nc_zt=23&_nc_ht=scontent.fruh4-5.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_Afwur_Ln9UU-aZsXu5eqna0Jnw1cUHygUpA96SXJYCIYdg&oe=69B739A0",
+      "avatar_image_url": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "profile_handle": "stemhalsboe",
+      "is_sponsored": false,
+      "shortcode": "1310803680872450",
+      "video_view_count": 6047,
+      "likes": 248,
+      "post_type": "Reel",
+      "following": 60,
+      "link_description_text": null,
+      "count_reactions_type": [
+        {
+          "type": "Like",
+          "reaction_count": 185
+        },
+        {
+          "type": "Haha",
+          "reaction_count": 38
+        },
+        {
+          "type": "Love",
+          "reaction_count": 14
+        },
+        {
+          "type": "Angry",
+          "reaction_count": 9
+        },
+        {
+          "type": "Wow",
+          "reaction_count": 2
+        }
+      ],
+      "is_page": true,
+      "page_phone": null,
+      "page_email": "ane.halsboe@ft.dk",
+      "page_creation_time": "2010-10-20T00:00:00.000Z",
+      "page_reviews_score": null,
+      "page_reviewers_amount": null,
+      "page_price_range": null,
+      "about": [
+        {
+          "type": "INFLUENCER CATEGORY",
+          "value": "Page \u00b7 Politician",
+          "link": null
+        },
+        {
+          "type": "PROFILE EMAIL",
+          "value": "ane.halsboe@ft.dk",
+          "link": null
+        },
+        {
+          "type": "WEBSITE",
+          "value": "anehalsboe.dk",
+          "link": "http://www.anehalsboe.dk/"
+        }
+      ],
+      "active_ads_urls": [],
+      "delegate_page_id": "169938849689771",
+      "privacy_and_legal_info": "Jeg modererer min Facebook-side for at sikre en konstruktiv debat - se mere p\u00e5 http://bit.ly/principper",
+      "play_count": 10845,
+      "timestamp": "2026-03-11T11:21:46.416Z",
+      "input": {
+        "url": "https://www.facebook.com/stemhalsboe",
+        "num_of_posts": 100,
+        "start_date": "02-28-2026",
+        "end_date": "03-10-2026"
+      }
+    },
+    {
+      "url": "https://www.facebook.com/reel/1824196654922373/",
+      "post_id": "1310034450949373",
+      "user_url": "https://www.facebook.com/stemhalsboe",
+      "user_username_raw": "Ane Halsboe-J\u00f8rgensen",
+      "content": "Vi vil give bedre mulighed for tidligere tilbagetr\u00e6kning. Og fastfryse alderen p\u00e5 66 \u00e5r. Med 3000 kr. mere om m\u00e5neden. Fordi uligheden er for stor. Og gode \u00e5r p\u00e5 pension b\u00f8r v\u00e6re noget, alle kan se frem til efter et langt arbejdsliv.",
+      "date_posted": "2026-03-07T13:48:18.000Z",
+      "num_comments": 159,
+      "num_shares": 20,
+      "num_likes_type": {
+        "type": "Like",
+        "num": 147
+      },
+      "page_name": "Ane Halsboe-J\u00f8rgensen",
+      "profile_id": "100058284901788",
+      "page_intro": "Hvis du vil skrive til mig som skatteminister, kan du g\u00f8re det til ministeren@skm.dk",
+      "page_category": "Politician",
+      "page_logo": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "page_external_website": "anehalsboe.dk",
+      "page_followers": 9200,
+      "page_is_verified": true,
+      "attachments": [
+        {
+          "id": "1824196654922373",
+          "type": "Video",
+          "url": "https://scontent.fruh4-2.fna.fbcdn.net/v/t15.5256-10/647259166_2245668112627754_1850665355024753549_n.jpg?stp=dst-jpg_p296x100_tt6&_nc_cat=105&ccb=1-7&_nc_sid=5fad0e&_nc_ohc=RfZ1Jpkm1roQ7kNvwGM59F9&_nc_oc=AdlH6EUts0Q4wxt_rWlwIc6lSY2R5hWjV_F5yTDFxWPzaJQSrSiTn_OnRVe7NfAXs88&_nc_zt=23&_nc_ht=scontent.fruh4-2.fna&_nc_gid=1-DPzBbAO3-Kq9-5sD3k_w&_nc_ss=8&oh=00_Afw6nBZAvWu0ieQgKkp61klbzS-UwQxWY92efpvWFycbsQ&oe=69B72A3E",
+          "video_length": "36321",
+          "attachment_url": "https://www.facebook.com/reel/1824196654922373/",
+          "video_url": "https://video.fruh4-4.fna.fbcdn.net/o1/v/t2/f2/m366/AQO5b2-x3Rh0_tKOyNxBErrVvs9FG0fjVJtZoG-pMVs5EdQPo0QdRWU8oubscsxL4nhLRpeWZllVDwQsXLZ0snJ9UX9JC_Y2Lrmj_QK2Nq8bXA.mp4?_nc_cat=104&_nc_oc=AdlTI1Rls-9G-zzZBtE7J8J9GT_7sE9uDKCV5pjW19gx4PQbkIEQkKnBG6tnOeabVyw&_nc_sid=5e9851&_nc_ht=video.fruh4-4.fna.fbcdn.net&_nc_ohc=XVwUcmmrkx4Q7kNvwEPYCqr&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5GQUNFQk9PSy4uQzMuNzIwLmRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHAiLCJ4cHZfYXNzZXRfaWQiOjEwMjQ4NzcwOTk4ODgzNDMsImFzc2V0X2FnZV9kYXlzIjozLCJ2aV91c2VjYXNlX2lkIjoxMDEyMiwiZHVyYXRpb25fcyI6MzYsInVybGdlbl9zb3VyY2UiOiJ3d3cifQ%3D%3D&ccb=17-1&vs=83451d01e4e35b41&_nc_vs=HBksFQIYRWZiX2VwaGVtZXJhbC85NzRGNDY4NzRFMTk1NzA0RDhGM0IwOUJCQ0M5MEJBRV9tdF8xX3ZpZGVvX2Rhc2hpbml0Lm1wNBUAAsgBEgAVAhhAZmJfcGVybWFuZW50L0IyNDY4NzEzOUJEMjFBRTc0NTU2RjcyQUY5NEYyM0IzX2F1ZGlvX2Rhc2hpbml0Lm1wNBUCAsgBEgAoABgAGwKIB3VzZV9vaWwBMRJwcm9ncmVzc2l2ZV9yZWNpcGUBMRUAACauu9G32YfSAxUCKAJDMywXQEIqn752yLQYGWRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHARAHUCZZSeAQA&_nc_gid=1-DPzBbAO3-Kq9-5sD3k_w&_nc_ss=8&_nc_zt=28&oh=00_AfwSyUJTqp-1J_b-tH3AcIappz_arTthHGnQdM7K4aXKAg&oe=69B72394&bitrate=2124648&tag=dash_h264-basic-gen2_720p",
+          "thumbnail_url": "https://scontent.fruh4-2.fna.fbcdn.net/v/t15.5256-10/647259166_2245668112627754_1850665355024753549_n.jpg?stp=dst-jpg_s960x960_tt6&_nc_cat=105&ccb=1-7&_nc_sid=50ce42&_nc_ohc=RfZ1Jpkm1roQ7kNvwGM59F9&_nc_oc=AdlH6EUts0Q4wxt_rWlwIc6lSY2R5hWjV_F5yTDFxWPzaJQSrSiTn_OnRVe7NfAXs88&_nc_zt=23&_nc_ht=scontent.fruh4-2.fna&_nc_gid=1-DPzBbAO3-Kq9-5sD3k_w&_nc_ss=8&oh=00_AfxoOmWSSrVPF8FAi4vn7LiSwv3ugDdsUKov8wjciqqrjg&oe=69B72A3E"
+        }
+      ],
+      "post_external_image": null,
+      "page_url": "https://www.facebook.com/stemhalsboe",
+      "header_image": "https://scontent.fruh4-5.fna.fbcdn.net/v/t39.30808-6/475824394_1010398804246274_1263933418973300654_n.jpg?_nc_cat=110&ccb=1-7&_nc_sid=2a1932&_nc_ohc=7iYcApzG4vwQ7kNvwHFQ1ay&_nc_oc=AdkdBrH9a6PjbEYvNuLmY7Lcad_GIhlgK-atKlIbgKZHdGoxxhM4pIX8YvmsxGNPIxg&_nc_zt=23&_nc_ht=scontent.fruh4-5.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_Afwur_Ln9UU-aZsXu5eqna0Jnw1cUHygUpA96SXJYCIYdg&oe=69B739A0",
+      "avatar_image_url": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "profile_handle": "stemhalsboe",
+      "is_sponsored": false,
+      "shortcode": "1310034450949373",
+      "video_view_count": 7534,
+      "likes": 366,
+      "post_type": "Reel",
+      "following": 60,
+      "link_description_text": null,
+      "count_reactions_type": [
+        {
+          "type": "Haha",
+          "reaction_count": 185
+        },
+        {
+          "type": "Like",
+          "reaction_count": 147
+        },
+        {
+          "type": "Angry",
+          "reaction_count": 27
+        },
+        {
+          "type": "Love",
+          "reaction_count": 5
+        },
+        {
+          "type": "Wow",
+          "reaction_count": 1
+        },
+        {
+          "type": "Sad",
+          "reaction_count": 1
+        }
+      ],
+      "is_page": true,
+      "page_phone": null,
+      "page_email": "ane.halsboe@ft.dk",
+      "page_creation_time": "2010-10-20T00:00:00.000Z",
+      "page_reviews_score": null,
+      "page_reviewers_amount": null,
+      "page_price_range": null,
+      "about": [
+        {
+          "type": "INFLUENCER CATEGORY",
+          "value": "Page \u00b7 Politician",
+          "link": null
+        },
+        {
+          "type": "PROFILE EMAIL",
+          "value": "ane.halsboe@ft.dk",
+          "link": null
+        },
+        {
+          "type": "WEBSITE",
+          "value": "anehalsboe.dk",
+          "link": "http://www.anehalsboe.dk/"
+        }
+      ],
+      "active_ads_urls": [],
+      "delegate_page_id": "169938849689771",
+      "privacy_and_legal_info": "Jeg modererer min Facebook-side for at sikre en konstruktiv debat - se mere p\u00e5 http://bit.ly/principper",
+      "play_count": 16162,
+      "timestamp": "2026-03-11T11:21:46.416Z",
+      "input": {
+        "url": "https://www.facebook.com/stemhalsboe",
+        "num_of_posts": 100,
+        "start_date": "02-28-2026",
+        "end_date": "03-10-2026"
+      }
+    },
+    {
+      "url": "https://www.facebook.com/reel/1493143882460452/",
+      "post_id": "1308477011105117",
+      "user_url": "https://www.facebook.com/stemhalsboe",
+      "user_username_raw": "Ane Halsboe-J\u00f8rgensen",
+      "content": "Mere retf\u00e6rdig pension\u2764\ufe0f",
+      "date_posted": "2026-03-05T09:38:24.000Z",
+      "num_comments": 250,
+      "num_shares": 13,
+      "num_likes_type": {
+        "type": "Like",
+        "num": 233
+      },
+      "page_name": "Ane Halsboe-J\u00f8rgensen",
+      "profile_id": "100058284901788",
+      "page_intro": "Hvis du vil skrive til mig som skatteminister, kan du g\u00f8re det til ministeren@skm.dk",
+      "page_category": "Politician",
+      "page_logo": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "page_external_website": "anehalsboe.dk",
+      "page_followers": 9200,
+      "page_is_verified": true,
+      "attachments": [
+        {
+          "id": "1493143882460452",
+          "type": "Video",
+          "url": "https://scontent.fruh4-2.fna.fbcdn.net/v/t15.5256-10/644522150_3163519457166253_1768407486810546756_n.jpg?stp=dst-jpg_p296x100_tt6&_nc_cat=101&ccb=1-7&_nc_sid=5fad0e&_nc_ohc=oH3XPUU_nL4Q7kNvwHH9oVP&_nc_oc=AdkxjO5qvoXczz0ciBvvWNcoeguUkWFeP1j2jdfOxVE5Gmx9gJeJleqyuA9y06y7p4I&_nc_zt=23&_nc_ht=scontent.fruh4-2.fna&_nc_gid=gdCDTx2ByDZSnCtgnk19hA&_nc_ss=8&oh=00_Afz6d6b0xgUWbUwC7kRVmYc7S4hmB0kQ1Dg4_0mWwi7hdw&oe=69B71B2C",
+          "video_length": "25555",
+          "attachment_url": "https://www.facebook.com/reel/1493143882460452/",
+          "video_url": "https://video.fruh4-5.fna.fbcdn.net/o1/v/t2/f2/m366/AQMq2FYUwgVQgx6QFoK3V8wSiI9cllZozs5EzWrTAPk62UySw1r6WCB3NfCm6RLjh45snQ-UConEW5DJ6Npg470jq7ShCM6Zsuc9ILhnxQZ_ug.mp4?_nc_cat=100&_nc_oc=AdmwXwX2_ZUUNdadWib8MI0K9hY4-1Fm3wUPJl-jPKdva1fMnAiHJ94h-wAUaAUrY4g&_nc_sid=5e9851&_nc_ht=video.fruh4-5.fna.fbcdn.net&_nc_ohc=-oo6V56XydsQ7kNvwFbiDko&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5GQUNFQk9PSy4uQzMuNzIwLmRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHAiLCJ4cHZfYXNzZXRfaWQiOjQ0NjIwNjQwMjczNTUzOTcsImFzc2V0X2FnZV9kYXlzIjo2LCJ2aV91c2VjYXNlX2lkIjoxMDEyMiwiZHVyYXRpb25fcyI6MjUsInVybGdlbl9zb3VyY2UiOiJ3d3cifQ%3D%3D&ccb=17-1&vs=f2a501e9019754b0&_nc_vs=HBksFQIYRWZiX2VwaGVtZXJhbC8xNDQzQUIyMjJGN0JCOEEzODUyOENBOEQyQzMwNjQ5QV9tdF8xX3ZpZGVvX2Rhc2hpbml0Lm1wNBUAAsgBEgAVAhhAZmJfcGVybWFuZW50L0FGNEMzNjFCRUM0NjgxQUFGQzE1MTdBREY5Q0NCNTgwX2F1ZGlvX2Rhc2hpbml0Lm1wNBUCAsgBEgAoABgAGwKIB3VzZV9vaWwBMRJwcm9ncmVzc2l2ZV9yZWNpcGUBMRUAACaKpIbVp47tDxUCKAJDMywXQDmQ5WBBiTcYGWRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHARAHUCZZSeAQA&_nc_gid=gdCDTx2ByDZSnCtgnk19hA&_nc_ss=8&_nc_zt=28&oh=00_AfxOA_KEeAh8WjWXdkpPseyNL2tIiM8YuaslCjv7K3K46g&oe=69B7286C&bitrate=2309823&tag=dash_h264-basic-gen2_720p",
+          "thumbnail_url": "https://scontent.fruh4-2.fna.fbcdn.net/v/t15.5256-10/644522150_3163519457166253_1768407486810546756_n.jpg?stp=dst-jpg_s960x960_tt6&_nc_cat=101&ccb=1-7&_nc_sid=50ce42&_nc_ohc=oH3XPUU_nL4Q7kNvwHH9oVP&_nc_oc=AdkxjO5qvoXczz0ciBvvWNcoeguUkWFeP1j2jdfOxVE5Gmx9gJeJleqyuA9y06y7p4I&_nc_zt=23&_nc_ht=scontent.fruh4-2.fna&_nc_gid=gdCDTx2ByDZSnCtgnk19hA&_nc_ss=8&oh=00_AfxXl9TxY6j2nobGR6136pKr-0_lN0DndXHTza8tX9AY9Q&oe=69B71B2C"
+        }
+      ],
+      "post_external_image": null,
+      "page_url": "https://www.facebook.com/stemhalsboe",
+      "header_image": "https://scontent.fruh4-5.fna.fbcdn.net/v/t39.30808-6/475824394_1010398804246274_1263933418973300654_n.jpg?_nc_cat=110&ccb=1-7&_nc_sid=2a1932&_nc_ohc=7iYcApzG4vwQ7kNvwHFQ1ay&_nc_oc=AdkdBrH9a6PjbEYvNuLmY7Lcad_GIhlgK-atKlIbgKZHdGoxxhM4pIX8YvmsxGNPIxg&_nc_zt=23&_nc_ht=scontent.fruh4-5.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_Afwur_Ln9UU-aZsXu5eqna0Jnw1cUHygUpA96SXJYCIYdg&oe=69B739A0",
+      "avatar_image_url": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "profile_handle": "stemhalsboe",
+      "is_sponsored": false,
+      "shortcode": "1308477011105117",
+      "video_view_count": 6095,
+      "likes": 470,
+      "post_type": "Reel",
+      "following": 60,
+      "link_description_text": null,
+      "count_reactions_type": [
+        {
+          "type": "Like",
+          "reaction_count": 233
+        },
+        {
+          "type": "Haha",
+          "reaction_count": 173
+        },
+        {
+          "type": "Angry",
+          "reaction_count": 42
+        },
+        {
+          "type": "Love",
+          "reaction_count": 15
+        },
+        {
+          "type": "Care",
+          "reaction_count": 4
+        },
+        {
+          "type": "Wow",
+          "reaction_count": 3
+        }
+      ],
+      "is_page": true,
+      "page_phone": null,
+      "page_email": "ane.halsboe@ft.dk",
+      "page_creation_time": "2010-10-20T00:00:00.000Z",
+      "page_reviews_score": null,
+      "page_reviewers_amount": null,
+      "page_price_range": null,
+      "about": [
+        {
+          "type": "INFLUENCER CATEGORY",
+          "value": "Page \u00b7 Politician",
+          "link": null
+        },
+        {
+          "type": "PROFILE EMAIL",
+          "value": "ane.halsboe@ft.dk",
+          "link": null
+        },
+        {
+          "type": "WEBSITE",
+          "value": "anehalsboe.dk",
+          "link": "http://www.anehalsboe.dk/"
+        }
+      ],
+      "active_ads_urls": [],
+      "delegate_page_id": "169938849689771",
+      "privacy_and_legal_info": "Jeg modererer min Facebook-side for at sikre en konstruktiv debat - se mere p\u00e5 http://bit.ly/principper",
+      "play_count": 18597,
+      "timestamp": "2026-03-11T11:21:46.416Z",
+      "input": {
+        "url": "https://www.facebook.com/stemhalsboe",
+        "num_of_posts": 100,
+        "start_date": "02-28-2026",
+        "end_date": "03-10-2026"
+      }
+    },
+    {
+      "url": "https://www.facebook.com/reel/1491305332424929/",
+      "post_id": "1308375477781937",
+      "user_url": "https://www.facebook.com/stemhalsboe",
+      "user_username_raw": "Ane Halsboe-J\u00f8rgensen",
+      "content": "Venstre melder klart ud. De afviser et spr\u00f8jteforbud. Jeg forst\u00e5r det ikke. Vi skal passe p\u00e5 vores drikkevand. \n\nJa til spr\u00f8jteforbud ved vores drikkevand \ud83d\udeab\ud83c\udf31",
+      "date_posted": "2026-03-05T05:56:28.000Z",
+      "num_comments": 140,
+      "num_shares": 13,
+      "num_likes_type": {
+        "type": "Like",
+        "num": 194
+      },
+      "page_name": "Ane Halsboe-J\u00f8rgensen",
+      "profile_id": "100058284901788",
+      "page_intro": "Hvis du vil skrive til mig som skatteminister, kan du g\u00f8re det til ministeren@skm.dk",
+      "page_category": "Politician",
+      "page_logo": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "page_external_website": "anehalsboe.dk",
+      "page_followers": 9200,
+      "page_is_verified": true,
+      "attachments": [
+        {
+          "id": "1491305332424929",
+          "type": "Video",
+          "url": "https://scontent.fruh4-1.fna.fbcdn.net/v/t15.5256-10/645550871_1450774473427919_6583715194388799672_n.jpg?stp=dst-jpg_p296x100_tt6&_nc_cat=106&ccb=1-7&_nc_sid=5fad0e&_nc_ohc=Va_6HOPXqX4Q7kNvwHLSHBN&_nc_oc=Adk32Z_xEjwPzFOoAizEUzu1_MqOwBLZkrbiokkPYvz52vqU6V9cyG6I90AJ3pW6yqE&_nc_zt=23&_nc_ht=scontent.fruh4-1.fna&_nc_gid=gdCDTx2ByDZSnCtgnk19hA&_nc_ss=8&oh=00_AfwuL9AGIYkKmvu3pT8HIA8oj3LfXmFJLC3Y8Tc8si24tw&oe=69B7114C",
+          "video_length": "63066",
+          "attachment_url": "https://www.facebook.com/reel/1491305332424929/",
+          "video_url": "https://video.fruh4-5.fna.fbcdn.net/o1/v/t2/f2/m366/AQPviP2ToSK_VkISWoQoAK1Bq826qjpG9PN8LW0W_f5e-sRCUGDBjeED4o8OhS-qj5g1wenauZDglqkujXXDARF-gcy_efktus-smsOraDtfVw.mp4?_nc_cat=108&_nc_oc=Adlauu3P9PNvDB7SYiLvK9y08ExffJjMIoKkU-S53DqgEAjKb0BwjLjBoL0pRPKCeAA&_nc_sid=5e9851&_nc_ht=video.fruh4-5.fna.fbcdn.net&_nc_ohc=lFthfTCeaDkQ7kNvwHqInuP&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5GQUNFQk9PSy4uQzMuNzIwLmRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHAiLCJ4cHZfYXNzZXRfaWQiOjIwMTA5Mjc2MTY1MjM0ODIsImFzc2V0X2FnZV9kYXlzIjo2LCJ2aV91c2VjYXNlX2lkIjoxMDEyMiwiZHVyYXRpb25fcyI6NjMsInVybGdlbl9zb3VyY2UiOiJ3d3cifQ%3D%3D&ccb=17-1&vs=ebe4378cafee7bf3&_nc_vs=HBksFQIYRWZiX2VwaGVtZXJhbC8xRTRBQUFGRjRCNkVDMEMxODM3NkZGQkI3M0MzOTQ5Q19tdF8xX3ZpZGVvX2Rhc2hpbml0Lm1wNBUAAsgBEgAVAhhAZmJfcGVybWFuZW50Lzc2NDE3MTg2QjlCMDZDNTc1ODBGN0ZCRkEyQjk4MUEzX2F1ZGlvX2Rhc2hpbml0Lm1wNBUCAsgBEgAoABgAGwKIB3VzZV9vaWwBMRJwcm9ncmVzc2l2ZV9yZWNpcGUBMRUAACa084OksruSBxUCKAJDMywXQE-IcrAgxJwYGWRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHARAHUCZZSeAQA&_nc_gid=gdCDTx2ByDZSnCtgnk19hA&_nc_ss=8&_nc_zt=28&oh=00_Afyf1F4Li4TcvnZK582g-leojmDMIXnpQ8rMc7TgBleKMg&oe=69B727F0&bitrate=731791&tag=dash_h264-basic-gen2_720p",
+          "thumbnail_url": "https://scontent.fruh4-1.fna.fbcdn.net/v/t15.5256-10/645550871_1450774473427919_6583715194388799672_n.jpg?stp=dst-jpg_s960x960_tt6&_nc_cat=106&ccb=1-7&_nc_sid=50ce42&_nc_ohc=Va_6HOPXqX4Q7kNvwHLSHBN&_nc_oc=Adk32Z_xEjwPzFOoAizEUzu1_MqOwBLZkrbiokkPYvz52vqU6V9cyG6I90AJ3pW6yqE&_nc_zt=23&_nc_ht=scontent.fruh4-1.fna&_nc_gid=gdCDTx2ByDZSnCtgnk19hA&_nc_ss=8&oh=00_AfyUJLdEb2wvxYls90e3chtmc2ftT1kBv8VxD5vwddVhlA&oe=69B7114C"
+        }
+      ],
+      "post_external_image": null,
+      "page_url": "https://www.facebook.com/stemhalsboe",
+      "header_image": "https://scontent.fruh4-5.fna.fbcdn.net/v/t39.30808-6/475824394_1010398804246274_1263933418973300654_n.jpg?_nc_cat=110&ccb=1-7&_nc_sid=2a1932&_nc_ohc=7iYcApzG4vwQ7kNvwHFQ1ay&_nc_oc=AdkdBrH9a6PjbEYvNuLmY7Lcad_GIhlgK-atKlIbgKZHdGoxxhM4pIX8YvmsxGNPIxg&_nc_zt=23&_nc_ht=scontent.fruh4-5.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_Afwur_Ln9UU-aZsXu5eqna0Jnw1cUHygUpA96SXJYCIYdg&oe=69B739A0",
+      "avatar_image_url": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "profile_handle": "stemhalsboe",
+      "is_sponsored": false,
+      "shortcode": "1308375477781937",
+      "video_view_count": 3881,
+      "likes": 306,
+      "post_type": "Reel",
+      "following": 60,
+      "link_description_text": null,
+      "count_reactions_type": [
+        {
+          "type": "Like",
+          "reaction_count": 194
+        },
+        {
+          "type": "Haha",
+          "reaction_count": 87
+        },
+        {
+          "type": "Love",
+          "reaction_count": 13
+        },
+        {
+          "type": "Angry",
+          "reaction_count": 8
+        },
+        {
+          "type": "Care",
+          "reaction_count": 2
+        },
+        {
+          "type": "Wow",
+          "reaction_count": 2
+        }
+      ],
+      "is_page": true,
+      "page_phone": null,
+      "page_email": "ane.halsboe@ft.dk",
+      "page_creation_time": "2010-10-20T00:00:00.000Z",
+      "page_reviews_score": null,
+      "page_reviewers_amount": null,
+      "page_price_range": null,
+      "about": [
+        {
+          "type": "INFLUENCER CATEGORY",
+          "value": "Page \u00b7 Politician",
+          "link": null
+        },
+        {
+          "type": "PROFILE EMAIL",
+          "value": "ane.halsboe@ft.dk",
+          "link": null
+        },
+        {
+          "type": "WEBSITE",
+          "value": "anehalsboe.dk",
+          "link": "http://www.anehalsboe.dk/"
+        }
+      ],
+      "active_ads_urls": [],
+      "delegate_page_id": "169938849689771",
+      "privacy_and_legal_info": "Jeg modererer min Facebook-side for at sikre en konstruktiv debat - se mere p\u00e5 http://bit.ly/principper",
+      "play_count": 8557,
+      "timestamp": "2026-03-11T11:21:46.416Z",
+      "input": {
+        "url": "https://www.facebook.com/stemhalsboe",
+        "num_of_posts": 100,
+        "start_date": "02-28-2026",
+        "end_date": "03-10-2026"
+      }
+    },
+    {
+      "url": "https://www.facebook.com/stemhalsboe/posts/pfbid032YBwbToofvnhPxvg5QcjH8snRujBPqnfF8eWBbMx9hF6BBU7Gjgu5q6rGecyWggBl",
+      "post_id": "1307988237820661",
+      "user_url": "https://www.facebook.com/stemhalsboe",
+      "user_username_raw": "Ane Halsboe-J\u00f8rgensen",
+      "content": "Mor\u2764\ufe0f",
+      "date_posted": "2026-03-04T15:46:38.000Z",
+      "num_comments": 14,
+      "num_shares": 6,
+      "num_likes_type": {
+        "type": "Like",
+        "num": 134
+      },
+      "page_name": "Ane Halsboe-J\u00f8rgensen",
+      "profile_id": "100058284901788",
+      "page_intro": "Hvis du vil skrive til mig som skatteminister, kan du g\u00f8re det til ministeren@skm.dk",
+      "page_category": "Politician",
+      "page_logo": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "page_external_website": "anehalsboe.dk",
+      "page_followers": 9200,
+      "page_is_verified": true,
+      "original_post": {
+        "post_id": "UzpfSTE0NDExODI4OTI6MTAyNDMxODE0NDcyNTg5NTk6MTAyNDMxODE0NDcyNTg5NTk=",
+        "post_url": "https://www.facebook.com/aino.halsboe/posts/pfbid0f3Svy2epqVQQEJZKf2jvNPtNjGHEoq6GfE9p3ZoHCRBdU4E6AbDpvcbW5aZRfmxql",
+        "user_id": "pfbid02xKzj5XrqgNstiet65oneEjpKh1qgQ4jSBVftQikMbTfqN7Cw5yhXWVejrxM76cLZl",
+        "user_url": "https://www.facebook.com/aino.halsboe",
+        "user_name": "Aino Halsboe",
+        "user_avatar_image": "https://scontent.fruh4-3.fna.fbcdn.net/v/t1.6435-1/66595993_10220050116870156_5951753872484597760_n.jpg?stp=cp0_dst-jpg_s40x40_tt6&_nc_cat=109&ccb=1-7&_nc_sid=e99d92&_nc_ohc=jLNPL3FwovQQ7kNvwEQZ0_x&_nc_oc=Adl9BVTOVaa0O5AGKFxLG8sOEwDiP7o24clSChDoQz3K_eURtyKIWQlSP6G6eC0Xa5s&_nc_zt=24&_nc_ht=scontent.fruh4-3.fna&_nc_gid=gdCDTx2ByDZSnCtgnk19hA&_nc_ss=8&oh=00_AfwZJAcF4ZMJEH5aQGIg2v7IuEes0AVIdtbSn-jQR6zXiA&oe=69D8B190",
+        "date": "2026-03-04T15:38:17.000Z",
+        "content": "Hej derude. Er der nogen der har lyst til at dele en flot folder ud med min datter Ane i Fjerritslev eller omegn, s\u00e5 kontakt mig nede i kommentarfeltet eller send en besked. \n\nSolen skinner, og hun har masser af god politik og er godt opdraget\ud83d\ude0a\ud83c\udf39",
+        "attachments": [
+          {
+            "id": "10243181435538666",
+            "type": "Photo",
+            "url": "https://scontent.fruh4-1.fna.fbcdn.net/v/t39.30808-6/645445209_10243181435578667_7986995956038184836_n.jpg?stp=cp6_dst-jpg_p526x296_tt6&_nc_cat=106&ccb=1-7&_nc_sid=7b2446&_nc_ohc=NzYavG3MjrIQ7kNvwGezemJ&_nc_oc=Adkvi0p5ob4kd8725YirsAsBHKkeQiyqPnmBZ8C-WSyklbHJ_nQXpt3dyWAWUnz8NNw&_nc_zt=23&_nc_ht=scontent.fruh4-1.fna&_nc_gid=gdCDTx2ByDZSnCtgnk19hA&_nc_ss=8&oh=00_AfzUJwVWeHe-9QG5_cXwv_8PKZIE2Z-kqOALgOP9MqVUQA&oe=69B737CB"
+          }
+        ]
+      },
+      "post_external_image": null,
+      "page_url": "https://www.facebook.com/stemhalsboe",
+      "header_image": "https://scontent.fruh4-5.fna.fbcdn.net/v/t39.30808-6/475824394_1010398804246274_1263933418973300654_n.jpg?_nc_cat=110&ccb=1-7&_nc_sid=2a1932&_nc_ohc=7iYcApzG4vwQ7kNvwHFQ1ay&_nc_oc=AdkdBrH9a6PjbEYvNuLmY7Lcad_GIhlgK-atKlIbgKZHdGoxxhM4pIX8YvmsxGNPIxg&_nc_zt=23&_nc_ht=scontent.fruh4-5.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_Afwur_Ln9UU-aZsXu5eqna0Jnw1cUHygUpA96SXJYCIYdg&oe=69B739A0",
+      "avatar_image_url": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "profile_handle": "stemhalsboe",
+      "is_sponsored": false,
+      "shortcode": "1307988237820661",
+      "likes": 162,
+      "post_type": "Post",
+      "following": 60,
+      "link_description_text": null,
+      "count_reactions_type": [
+        {
+          "type": "Like",
+          "reaction_count": 134
+        },
+        {
+          "type": "Love",
+          "reaction_count": 20
+        },
+        {
+          "type": "Care",
+          "reaction_count": 4
+        },
+        {
+          "type": "Angry",
+          "reaction_count": 3
+        },
+        {
+          "type": "Haha",
+          "reaction_count": 1
+        }
+      ],
+      "is_page": true,
+      "page_phone": null,
+      "page_email": "ane.halsboe@ft.dk",
+      "page_creation_time": "2010-10-20T00:00:00.000Z",
+      "page_reviews_score": null,
+      "page_reviewers_amount": null,
+      "page_price_range": null,
+      "about": [
+        {
+          "type": "INFLUENCER CATEGORY",
+          "value": "Page \u00b7 Politician",
+          "link": null
+        },
+        {
+          "type": "PROFILE EMAIL",
+          "value": "ane.halsboe@ft.dk",
+          "link": null
+        },
+        {
+          "type": "WEBSITE",
+          "value": "anehalsboe.dk",
+          "link": "http://www.anehalsboe.dk/"
+        }
+      ],
+      "active_ads_urls": [],
+      "delegate_page_id": "169938849689771",
+      "privacy_and_legal_info": "Jeg modererer min Facebook-side for at sikre en konstruktiv debat - se mere p\u00e5 http://bit.ly/principper",
+      "play_count": null,
+      "timestamp": "2026-03-11T11:21:46.416Z",
+      "input": {
+        "url": "https://www.facebook.com/stemhalsboe",
+        "num_of_posts": 100,
+        "start_date": "02-28-2026",
+        "end_date": "03-10-2026"
+      }
+    },
+    {
+      "url": "https://www.facebook.com/reel/3013983005459437/",
+      "post_id": "1307836937835791",
+      "user_url": "https://www.facebook.com/stemhalsboe",
+      "user_username_raw": "Ane Halsboe-J\u00f8rgensen",
+      "content": "Det er s\u00e5 fantastisk, at vi kan \u00e5bne for vandhanen og f\u00e5 rent vand i Danmark. \n\nMen det kan vi kun blive ved med, hvis vi passer p\u00e5 det. \n\nI v\u00e6rste tilf\u00e6lde kan for meget nitrat i vandet give en \u00f8get risiko for at udvikle tarmkr\u00e6ft. Det er alvorligt. \n\nDerfor vil vi indf\u00f8re et totalt spr\u00f8jteforbud p\u00e5 s\u00e5rbare, grundvandsdannende omr\u00e5der for at beskytte vores drikkevand. \n\nLad os passe bedre p\u00e5 vandet, s\u00e5 man i fremtiden trygt kan drikke vand fra hanen.",
+      "date_posted": "2026-03-04T11:29:42.000Z",
+      "num_comments": 111,
+      "num_shares": 12,
+      "num_likes_type": {
+        "type": "Like",
+        "num": 215
+      },
+      "page_name": "Ane Halsboe-J\u00f8rgensen",
+      "profile_id": "100058284901788",
+      "page_intro": "Hvis du vil skrive til mig som skatteminister, kan du g\u00f8re det til ministeren@skm.dk",
+      "page_category": "Politician",
+      "page_logo": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "page_external_website": "anehalsboe.dk",
+      "page_followers": 9200,
+      "page_is_verified": true,
+      "attachments": [
+        {
+          "id": "3013983005459437",
+          "type": "Video",
+          "url": "https://scontent.fruh4-3.fna.fbcdn.net/v/t15.5256-10/644062921_912315178093553_541092853445146474_n.jpg?stp=dst-jpg_p296x100_tt6&_nc_cat=103&ccb=1-7&_nc_sid=5fad0e&_nc_ohc=x5_i3ma7qnQQ7kNvwEOl_ys&_nc_oc=Adk9P2APb_wkLcuBpZDsQKYZq8LGfCNAc_SKqN_JshjL9R8S_6I57q2G-OxB6o6g0oA&_nc_zt=23&_nc_ht=scontent.fruh4-3.fna&_nc_gid=hxYIjgDGEic1xEvNxUO_7w&_nc_ss=8&oh=00_AfwYP-2074FmJ4U9zwoXXHhCdWP8vVCQ2o6wAzoBzTRroQ&oe=69B73483",
+          "video_length": "19000",
+          "attachment_url": "https://www.facebook.com/reel/3013983005459437/",
+          "video_url": "https://video.fruh4-1.fna.fbcdn.net/o1/v/t2/f2/m366/AQOnBiCqiWVcGDfSkh9Mw3xnrf9_SXaX1MpOB-NUooXxDYWiCrW3it8EE_trQS526wEgfJBFEn0kzK0UprUlgvmTGxQJ2AMmS7jl7LvyqMMU2w.mp4?_nc_cat=106&_nc_oc=Adk1gsu6iohFsD44pS44_0KFQZeVPMHYC-GOm9OINcTs5D0Igf7nRZ3lDPl8IzcGDJQ&_nc_sid=5e9851&_nc_ht=video.fruh4-1.fna.fbcdn.net&_nc_ohc=wv6m86wh9S8Q7kNvwHGtUld&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5GQUNFQk9PSy4uQzMuNzIwLmRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHAiLCJ4cHZfYXNzZXRfaWQiOjQzMDY5MzA0NTk1ODMzMTIsImFzc2V0X2FnZV9kYXlzIjo2LCJ2aV91c2VjYXNlX2lkIjoxMDEyMiwiZHVyYXRpb25fcyI6MTksInVybGdlbl9zb3VyY2UiOiJ3d3cifQ%3D%3D&ccb=17-1&vs=e4c2625b5beee3bc&_nc_vs=HBksFQIYRWZiX2VwaGVtZXJhbC82MzQ1MDI3QzBCM0Y5OTJCQUEyM0REMTkzNERFNEM5MF9tdF8xX3ZpZGVvX2Rhc2hpbml0Lm1wNBUAAsgBEgAVAhhAZmJfcGVybWFuZW50LzMwNDBCNTFCNkUwMTI2QUU1MkUyQ0U4MTRDOTI0MUE3X2F1ZGlvX2Rhc2hpbml0Lm1wNBUCAsgBEgAoABgAGwKIB3VzZV9vaWwBMRJwcm9ncmVzc2l2ZV9yZWNpcGUBMRUAACagje3BrMimDxUCKAJDMywXQDMAAAAAAAAYGWRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHARAHUCZZSeAQA&_nc_gid=hxYIjgDGEic1xEvNxUO_7w&_nc_ss=8&_nc_zt=28&oh=00_Afy0rd89iePfsmIqEjKX-18i0-9icblH9c_bcjLwtvuS3Q&oe=69B71DCE&bitrate=2285868&tag=dash_h264-basic-gen2_720p",
+          "thumbnail_url": "https://scontent.fruh4-3.fna.fbcdn.net/v/t15.5256-10/644062921_912315178093553_541092853445146474_n.jpg?stp=dst-jpg_s960x960_tt6&_nc_cat=103&ccb=1-7&_nc_sid=50ce42&_nc_ohc=x5_i3ma7qnQQ7kNvwEOl_ys&_nc_oc=Adk9P2APb_wkLcuBpZDsQKYZq8LGfCNAc_SKqN_JshjL9R8S_6I57q2G-OxB6o6g0oA&_nc_zt=23&_nc_ht=scontent.fruh4-3.fna&_nc_gid=hxYIjgDGEic1xEvNxUO_7w&_nc_ss=8&oh=00_Afx1jLMtAb3J9IF_ihzeZG70eIFiMh_McNeCYqMSqyrd1Q&oe=69B73483"
+        }
+      ],
+      "post_external_image": null,
+      "page_url": "https://www.facebook.com/stemhalsboe",
+      "header_image": "https://scontent.fruh4-5.fna.fbcdn.net/v/t39.30808-6/475824394_1010398804246274_1263933418973300654_n.jpg?_nc_cat=110&ccb=1-7&_nc_sid=2a1932&_nc_ohc=7iYcApzG4vwQ7kNvwHFQ1ay&_nc_oc=AdkdBrH9a6PjbEYvNuLmY7Lcad_GIhlgK-atKlIbgKZHdGoxxhM4pIX8YvmsxGNPIxg&_nc_zt=23&_nc_ht=scontent.fruh4-5.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_Afwur_Ln9UU-aZsXu5eqna0Jnw1cUHygUpA96SXJYCIYdg&oe=69B739A0",
+      "avatar_image_url": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "profile_handle": "stemhalsboe",
+      "is_sponsored": false,
+      "shortcode": "1307836937835791",
+      "video_view_count": 8790,
+      "likes": 338,
+      "post_type": "Reel",
+      "following": 60,
+      "link_description_text": null,
+      "count_reactions_type": [
+        {
+          "type": "Like",
+          "reaction_count": 215
+        },
+        {
+          "type": "Haha",
+          "reaction_count": 78
+        },
+        {
+          "type": "Angry",
+          "reaction_count": 29
+        },
+        {
+          "type": "Love",
+          "reaction_count": 9
+        },
+        {
+          "type": "Care",
+          "reaction_count": 4
+        },
+        {
+          "type": "Wow",
+          "reaction_count": 2
+        },
+        {
+          "type": "Sad",
+          "reaction_count": 1
+        }
+      ],
+      "is_page": true,
+      "page_phone": null,
+      "page_email": "ane.halsboe@ft.dk",
+      "page_creation_time": "2010-10-20T00:00:00.000Z",
+      "page_reviews_score": null,
+      "page_reviewers_amount": null,
+      "page_price_range": null,
+      "about": [
+        {
+          "type": "INFLUENCER CATEGORY",
+          "value": "Page \u00b7 Politician",
+          "link": null
+        },
+        {
+          "type": "PROFILE EMAIL",
+          "value": "ane.halsboe@ft.dk",
+          "link": null
+        },
+        {
+          "type": "WEBSITE",
+          "value": "anehalsboe.dk",
+          "link": "http://www.anehalsboe.dk/"
+        }
+      ],
+      "active_ads_urls": [],
+      "delegate_page_id": "169938849689771",
+      "privacy_and_legal_info": "Jeg modererer min Facebook-side for at sikre en konstruktiv debat - se mere p\u00e5 http://bit.ly/principper",
+      "play_count": 20675,
+      "timestamp": "2026-03-11T11:21:46.416Z",
+      "input": {
+        "url": "https://www.facebook.com/stemhalsboe",
+        "num_of_posts": 100,
+        "start_date": "02-28-2026",
+        "end_date": "03-10-2026"
+      }
+    },
+    {
+      "url": "https://www.facebook.com/reel/3376614495833052/",
+      "post_id": "1306659587953526",
+      "user_url": "https://www.facebook.com/stemhalsboe",
+      "user_username_raw": "Ane Halsboe-J\u00f8rgensen",
+      "content": "Lavere boligskat. Betalt af en skat p\u00e5 formuer over 50 mio. kr. for et \u00e6gtepar. \n\nFordi vi \u00f8nsker en bedre balance \u2764\ufe0f",
+      "date_posted": "2026-03-02T20:16:35.000Z",
+      "num_comments": 117,
+      "num_shares": 12,
+      "num_likes_type": {
+        "type": "Like",
+        "num": 160
+      },
+      "page_name": "Ane Halsboe-J\u00f8rgensen",
+      "profile_id": "100058284901788",
+      "page_intro": "Hvis du vil skrive til mig som skatteminister, kan du g\u00f8re det til ministeren@skm.dk",
+      "page_category": "Politician",
+      "page_logo": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "page_external_website": "anehalsboe.dk",
+      "page_followers": 9200,
+      "page_is_verified": true,
+      "attachments": [
+        {
+          "id": "3376614495833052",
+          "type": "Video",
+          "url": "https://scontent.fruh4-2.fna.fbcdn.net/v/t15.5256-10/644502931_869816669378257_7901222928987646949_n.jpg?stp=dst-jpg_p296x100_tt6&_nc_cat=101&ccb=1-7&_nc_sid=5fad0e&_nc_ohc=rhC01NIKQXsQ7kNvwFiuL4V&_nc_oc=AdmokU-547ktLz1qs1GEMxX7PZ_zW7oPVxyD1qkmq0zECBYVbaAoLINWfa_QBOYU19Q&_nc_zt=23&_nc_ht=scontent.fruh4-2.fna&_nc_gid=hxYIjgDGEic1xEvNxUO_7w&_nc_ss=8&oh=00_AfxLcamirYB_MCBQn1b-LBHQiaQfzCXAhfrdPYt1pFCDDQ&oe=69B73CC3",
+          "video_length": "29599",
+          "attachment_url": "https://www.facebook.com/reel/3376614495833052/",
+          "video_url": "https://video.fruh4-4.fna.fbcdn.net/o1/v/t2/f2/m366/AQNU63U-oOSEzJLuQfGr5GJHLjKRabWtLXjhRvU-TG28OCYEbAYTRQLQwov_L9uUXC7X4duys2KYDU0oUfG4tJSAS_O_CUNJtE7tZ4oH25zC0Q.mp4?_nc_cat=104&_nc_oc=Adkv5CGKKJhBhdrSxqI4tka6HlA37m9eqNh_r86pD-KLVhkizorSl1mHEwtCTKe0AUk&_nc_sid=5e9851&_nc_ht=video.fruh4-4.fna.fbcdn.net&_nc_ohc=ka-ekHKK6wsQ7kNvwFuLX8k&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5GQUNFQk9PSy4uQzMuNzIwLmRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHAiLCJ4cHZfYXNzZXRfaWQiOjcyMTI2NzY3NzYyMTQ1NiwiYXNzZXRfYWdlX2RheXMiOjgsInZpX3VzZWNhc2VfaWQiOjEwMTIyLCJkdXJhdGlvbl9zIjoyOSwidXJsZ2VuX3NvdXJjZSI6Ind3dyJ9&ccb=17-1&vs=e6445759b22bb66b&_nc_vs=HBksFQIYRWZiX2VwaGVtZXJhbC9BNjQ5RUJDRkQxQzM3ODI1MjAzRjVCNEQzRTlCMzFBMl9tdF8xX3ZpZGVvX2Rhc2hpbml0Lm1wNBUAAsgBEgAVAhhAZmJfcGVybWFuZW50LzFGNEY5NURCRDREQjdDNjYyOEUwQkYwRDhBQjQxMzlDX2F1ZGlvX2Rhc2hpbml0Lm1wNBUCAsgBEgAoABgAGwKIB3VzZV9vaWwBMRJwcm9ncmVzc2l2ZV9yZWNpcGUBMRUAACags7P7pv_HAhUCKAJDMywXQD2ZmZmZmZoYGWRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHARAHUCZZSeAQA&_nc_gid=hxYIjgDGEic1xEvNxUO_7w&_nc_ss=8&_nc_zt=28&oh=00_AfxQdKp3Hk4AKGwUEyJUdnRZTKZ-tjMriiNOpLXtR_oPLg&oe=69B724D0&bitrate=1984551&tag=dash_h264-basic-gen2_720p",
+          "thumbnail_url": "https://scontent.fruh4-2.fna.fbcdn.net/v/t15.5256-10/644502931_869816669378257_7901222928987646949_n.jpg?stp=dst-jpg_s960x960_tt6&_nc_cat=101&ccb=1-7&_nc_sid=50ce42&_nc_ohc=rhC01NIKQXsQ7kNvwFiuL4V&_nc_oc=AdmokU-547ktLz1qs1GEMxX7PZ_zW7oPVxyD1qkmq0zECBYVbaAoLINWfa_QBOYU19Q&_nc_zt=23&_nc_ht=scontent.fruh4-2.fna&_nc_gid=hxYIjgDGEic1xEvNxUO_7w&_nc_ss=8&oh=00_Afw0Aatjg-MYD2yAqEdPKf7mXVtO2L6dneRwlA7ELaVnSg&oe=69B73CC3"
+        }
+      ],
+      "post_external_image": null,
+      "page_url": "https://www.facebook.com/stemhalsboe",
+      "header_image": "https://scontent.fruh4-5.fna.fbcdn.net/v/t39.30808-6/475824394_1010398804246274_1263933418973300654_n.jpg?_nc_cat=110&ccb=1-7&_nc_sid=2a1932&_nc_ohc=7iYcApzG4vwQ7kNvwHFQ1ay&_nc_oc=AdkdBrH9a6PjbEYvNuLmY7Lcad_GIhlgK-atKlIbgKZHdGoxxhM4pIX8YvmsxGNPIxg&_nc_zt=23&_nc_ht=scontent.fruh4-5.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_Afwur_Ln9UU-aZsXu5eqna0Jnw1cUHygUpA96SXJYCIYdg&oe=69B739A0",
+      "avatar_image_url": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "profile_handle": "stemhalsboe",
+      "is_sponsored": false,
+      "shortcode": "1306659587953526",
+      "video_view_count": 11222,
+      "likes": 365,
+      "post_type": "Reel",
+      "following": 60,
+      "link_description_text": null,
+      "count_reactions_type": [
+        {
+          "type": "Like",
+          "reaction_count": 160
+        },
+        {
+          "type": "Haha",
+          "reaction_count": 144
+        },
+        {
+          "type": "Angry",
+          "reaction_count": 49
+        },
+        {
+          "type": "Love",
+          "reaction_count": 8
+        },
+        {
+          "type": "Care",
+          "reaction_count": 2
+        },
+        {
+          "type": "Wow",
+          "reaction_count": 1
+        },
+        {
+          "type": "Sad",
+          "reaction_count": 1
+        }
+      ],
+      "is_page": true,
+      "page_phone": null,
+      "page_email": "ane.halsboe@ft.dk",
+      "page_creation_time": "2010-10-20T00:00:00.000Z",
+      "page_reviews_score": null,
+      "page_reviewers_amount": null,
+      "page_price_range": null,
+      "about": [
+        {
+          "type": "INFLUENCER CATEGORY",
+          "value": "Page \u00b7 Politician",
+          "link": null
+        },
+        {
+          "type": "PROFILE EMAIL",
+          "value": "ane.halsboe@ft.dk",
+          "link": null
+        },
+        {
+          "type": "WEBSITE",
+          "value": "anehalsboe.dk",
+          "link": "http://www.anehalsboe.dk/"
+        }
+      ],
+      "active_ads_urls": [],
+      "delegate_page_id": "169938849689771",
+      "privacy_and_legal_info": "Jeg modererer min Facebook-side for at sikre en konstruktiv debat - se mere p\u00e5 http://bit.ly/principper",
+      "play_count": 22913,
+      "timestamp": "2026-03-11T11:21:46.416Z",
+      "input": {
+        "url": "https://www.facebook.com/stemhalsboe",
+        "num_of_posts": 100,
+        "start_date": "02-28-2026",
+        "end_date": "03-10-2026"
+      }
+    },
+    {
+      "url": "https://www.facebook.com/reel/4046955925594987/",
+      "post_id": "1305713671381451",
+      "user_url": "https://www.facebook.com/stemhalsboe",
+      "user_username_raw": "Ane Halsboe-J\u00f8rgensen",
+      "content": "For\u00e5r! \ud83d\ude0d",
+      "date_posted": "2026-03-01T15:52:01.000Z",
+      "num_comments": 66,
+      "num_shares": 10,
+      "num_likes_type": {
+        "type": "Like",
+        "num": 151
+      },
+      "page_name": "Ane Halsboe-J\u00f8rgensen",
+      "profile_id": "100058284901788",
+      "page_intro": "Hvis du vil skrive til mig som skatteminister, kan du g\u00f8re det til ministeren@skm.dk",
+      "page_category": "Politician",
+      "page_logo": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "page_external_website": "anehalsboe.dk",
+      "page_followers": 9200,
+      "page_is_verified": true,
+      "attachments": [
+        {
+          "id": "4046955925594987",
+          "type": "Video",
+          "url": "https://scontent.fruh4-1.fna.fbcdn.net/v/t15.5256-10/645476315_890640597149739_133720440528282483_n.jpg?stp=dst-jpg_p296x100_tt6&_nc_cat=106&ccb=1-7&_nc_sid=5fad0e&_nc_ohc=jufU0T0r_W0Q7kNvwFux5qC&_nc_oc=Adn7vltwADrUMR-zTfYbsWRolxsHxTSyOvxvjY9yEtJ84GeEvgfJUwveDwIESpfXR28&_nc_zt=23&_nc_ht=scontent.fruh4-1.fna&_nc_gid=hxYIjgDGEic1xEvNxUO_7w&_nc_ss=8&oh=00_AfzWxrrYrqCylhWBFnDn5pe6pnklBLEr4Zz3hRORen3J1Q&oe=69B70D0C",
+          "video_length": "30875",
+          "attachment_url": "https://www.facebook.com/reel/4046955925594987/",
+          "video_url": "https://video.fruh4-6.fna.fbcdn.net/o1/v/t2/f2/m366/AQNr82A0ONpSkEl8iMAxeees9hdHdW6URaq4bJcHhFoB0MlIcMAGSMKaj12Y9uLUS8QLfoUt399dxDtlkbF3GWZ4NxWvLtMENaw3ljp9ky_tbQ.mp4?_nc_cat=111&_nc_oc=AdkOJWAzwBO7J8c-Jp7V7FxMpGmkftImO6XS6bzddNieX0A-XwWokWyLTH6RkEMXXpk&_nc_sid=5e9851&_nc_ht=video.fruh4-6.fna.fbcdn.net&_nc_ohc=-gd6sTiLR24Q7kNvwFhPuvr&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5GQUNFQk9PSy4uQzMuNzIwLmRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHAiLCJ4cHZfYXNzZXRfaWQiOjEyMjg2NTg4MjI3NjgwNDksImFzc2V0X2FnZV9kYXlzIjo5LCJ2aV91c2VjYXNlX2lkIjoxMDEyMiwiZHVyYXRpb25fcyI6MzAsInVybGdlbl9zb3VyY2UiOiJ3d3cifQ%3D%3D&ccb=17-1&vs=c7570a815e0d5816&_nc_vs=HBksFQIYRWZiX2VwaGVtZXJhbC82OTRBQjM0NzJBMkMyQTc1OTAyMTNGRjBFRUM3RTA4RV9tdF8xX3ZpZGVvX2Rhc2hpbml0Lm1wNBUAAsgBEgAVAhhAZmJfcGVybWFuZW50L0I0NDJFOEE2QThBNzkxQzVEQzMyQTZFNTM0Q0IzMUI5X2F1ZGlvX2Rhc2hpbml0Lm1wNBUCAsgBEgAoABgAGwKIB3VzZV9vaWwBMRJwcm9ncmVzc2l2ZV9yZWNpcGUBMRUAACbilvPKrd2uBBUCKAJDMywXQD7mZmZmZmYYGWRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHARAHUCZZSeAQA&_nc_gid=hxYIjgDGEic1xEvNxUO_7w&_nc_ss=8&_nc_zt=28&oh=00_AfxDNVP59FTSp9tmXtSAkKwMnlGZrR33uBohCYzcYiBTaQ&oe=69B70721&bitrate=1879279&tag=dash_h264-basic-gen2_720p",
+          "thumbnail_url": "https://scontent.fruh4-1.fna.fbcdn.net/v/t15.5256-10/645476315_890640597149739_133720440528282483_n.jpg?stp=dst-jpg_s960x960_tt6&_nc_cat=106&ccb=1-7&_nc_sid=50ce42&_nc_ohc=jufU0T0r_W0Q7kNvwFux5qC&_nc_oc=Adn7vltwADrUMR-zTfYbsWRolxsHxTSyOvxvjY9yEtJ84GeEvgfJUwveDwIESpfXR28&_nc_zt=23&_nc_ht=scontent.fruh4-1.fna&_nc_gid=hxYIjgDGEic1xEvNxUO_7w&_nc_ss=8&oh=00_Afy8onxtiRpgv8nx4RYGnj7eScAWi40TbWh2fpM-62A-Kg&oe=69B70D0C"
+        }
+      ],
+      "post_external_image": null,
+      "page_url": "https://www.facebook.com/stemhalsboe",
+      "header_image": "https://scontent.fruh4-5.fna.fbcdn.net/v/t39.30808-6/475824394_1010398804246274_1263933418973300654_n.jpg?_nc_cat=110&ccb=1-7&_nc_sid=2a1932&_nc_ohc=7iYcApzG4vwQ7kNvwHFQ1ay&_nc_oc=AdkdBrH9a6PjbEYvNuLmY7Lcad_GIhlgK-atKlIbgKZHdGoxxhM4pIX8YvmsxGNPIxg&_nc_zt=23&_nc_ht=scontent.fruh4-5.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_Afwur_Ln9UU-aZsXu5eqna0Jnw1cUHygUpA96SXJYCIYdg&oe=69B739A0",
+      "avatar_image_url": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "profile_handle": "stemhalsboe",
+      "is_sponsored": false,
+      "shortcode": "1305713671381451",
+      "video_view_count": 2973,
+      "likes": 248,
+      "post_type": "Reel",
+      "following": 60,
+      "link_description_text": null,
+      "count_reactions_type": [
+        {
+          "type": "Like",
+          "reaction_count": 151
+        },
+        {
+          "type": "Haha",
+          "reaction_count": 57
+        },
+        {
+          "type": "Angry",
+          "reaction_count": 20
+        },
+        {
+          "type": "Love",
+          "reaction_count": 15
+        },
+        {
+          "type": "Care",
+          "reaction_count": 4
+        },
+        {
+          "type": "Wow",
+          "reaction_count": 1
+        }
+      ],
+      "is_page": true,
+      "page_phone": null,
+      "page_email": "ane.halsboe@ft.dk",
+      "page_creation_time": "2010-10-20T00:00:00.000Z",
+      "page_reviews_score": null,
+      "page_reviewers_amount": null,
+      "page_price_range": null,
+      "about": [
+        {
+          "type": "INFLUENCER CATEGORY",
+          "value": "Page \u00b7 Politician",
+          "link": null
+        },
+        {
+          "type": "PROFILE EMAIL",
+          "value": "ane.halsboe@ft.dk",
+          "link": null
+        },
+        {
+          "type": "WEBSITE",
+          "value": "anehalsboe.dk",
+          "link": "http://www.anehalsboe.dk/"
+        }
+      ],
+      "active_ads_urls": [],
+      "delegate_page_id": "169938849689771",
+      "privacy_and_legal_info": "Jeg modererer min Facebook-side for at sikre en konstruktiv debat - se mere p\u00e5 http://bit.ly/principper",
+      "play_count": 7552,
+      "timestamp": "2026-03-11T11:21:46.416Z",
+      "input": {
+        "url": "https://www.facebook.com/stemhalsboe",
+        "num_of_posts": 100,
+        "start_date": "02-28-2026",
+        "end_date": "03-10-2026"
+      }
+    },
+    {
+      "url": "https://www.facebook.com/reel/1211924281086695/",
+      "post_id": "1305451498074335",
+      "user_url": "https://www.facebook.com/stemhalsboe",
+      "user_username_raw": "Ane Halsboe-J\u00f8rgensen",
+      "content": "Har du f\u00e5et nej i banken til at l\u00e5ne til et hus uden for de st\u00f8rste byer? S\u00e5 skriv til mig. Jeg vil meget gerne h\u00f8re din historie. \n\nJeg synes, vi skal g\u00f8re noget ved det her problem. Det pr\u00e6senterer jeg et forslag til i dag. \n\nSe med senere i dag\ud83d\udc4f",
+      "date_posted": "2026-03-01T08:42:24.000Z",
+      "num_comments": 165,
+      "num_shares": 21,
+      "num_likes_type": {
+        "type": "Like",
+        "num": 201
+      },
+      "page_name": "Ane Halsboe-J\u00f8rgensen",
+      "profile_id": "100058284901788",
+      "page_intro": "Hvis du vil skrive til mig som skatteminister, kan du g\u00f8re det til ministeren@skm.dk",
+      "page_category": "Politician",
+      "page_logo": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "page_external_website": "anehalsboe.dk",
+      "page_followers": 9200,
+      "page_is_verified": true,
+      "attachments": [
+        {
+          "id": "1211924281086695",
+          "type": "Video",
+          "url": "https://scontent.fruh4-3.fna.fbcdn.net/v/t15.5256-10/645621167_948354177909624_6231920979120470307_n.jpg?stp=dst-jpg_p296x100_tt6&_nc_cat=103&ccb=1-7&_nc_sid=5fad0e&_nc_ohc=DHceKfyMIggQ7kNvwETVjtu&_nc_oc=AdkeJ3SAnci6fzenrJ3TvBBWul3X7Qw4Q3xwj-Qd72gGLB8ghUCfEJe8UNU_nUBbbQU&_nc_zt=23&_nc_ht=scontent.fruh4-3.fna&_nc_gid=9j2Gj2pvPkLrGo0trm-55Q&_nc_ss=8&oh=00_AfyM8eosBBMw9SYc0YsiIqkcN7JadnfEhcmdX4LEHY2WFw&oe=69B71448",
+          "video_length": "28088",
+          "attachment_url": "https://www.facebook.com/reel/1211924281086695/",
+          "video_url": "https://video.fruh4-2.fna.fbcdn.net/o1/v/t2/f2/m366/AQNu4dcG8LMXvTkyiUIiWc7aKjD2xEdkF5zcI041whb3oEmDEl3dfyvYObMYKpV99X9n2vdTA_JqGsthF4EFGdHWG41nsNPqNgKE9XsQozKM8w.mp4?_nc_cat=105&_nc_oc=AdkfsOykPbtz2isr8TjsVVEEEBzLzkr9cbPwT0K-pGv_iiO-Cgh7HcX0BlYTyi50mU8&_nc_sid=5e9851&_nc_ht=video.fruh4-2.fna.fbcdn.net&_nc_ohc=b93BBspd36cQ7kNvwG-THlm&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5GQUNFQk9PSy4uQzMuNzIwLmRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHAiLCJ4cHZfYXNzZXRfaWQiOjM4OTg0NjUwMzY5NTM0NTYsImFzc2V0X2FnZV9kYXlzIjoxMCwidmlfdXNlY2FzZV9pZCI6MTAxMjIsImR1cmF0aW9uX3MiOjI4LCJ1cmxnZW5fc291cmNlIjoid3d3In0%3D&ccb=17-1&vs=b9caa81498e841c5&_nc_vs=HBksFQIYRWZiX2VwaGVtZXJhbC9FQzQ2QTgxMUUzREMyMUExM0E5NjVFNzJFNTZFMjc4Ml9tdF8xX3ZpZGVvX2Rhc2hpbml0Lm1wNBUAAsgBEgAVAhhAZmJfcGVybWFuZW50LzU2NDUwMDdBRkZBMDhBRDc2MzAwNjgzOEM4MTQyMDhGX2F1ZGlvX2Rhc2hpbml0Lm1wNBUCAsgBEgAoABgAGwKIB3VzZV9vaWwBMRJwcm9ncmVzc2l2ZV9yZWNpcGUBMRUAACbgnZP7w-jsDRUCKAJDMywXQDwZmZmZmZoYGWRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHARAHUCZZSeAQA&_nc_gid=9j2Gj2pvPkLrGo0trm-55Q&_nc_ss=8&_nc_zt=28&oh=00_AfxVyDjSk_EGnQFEjNoIItk_yHWTIkKIrTRQe3C-snTE1Q&oe=69B714CF&bitrate=1536325&tag=dash_h264-basic-gen2_720p",
+          "thumbnail_url": "https://scontent.fruh4-3.fna.fbcdn.net/v/t15.5256-10/645621167_948354177909624_6231920979120470307_n.jpg?stp=dst-jpg_s960x960_tt6&_nc_cat=103&ccb=1-7&_nc_sid=50ce42&_nc_ohc=DHceKfyMIggQ7kNvwETVjtu&_nc_oc=AdkeJ3SAnci6fzenrJ3TvBBWul3X7Qw4Q3xwj-Qd72gGLB8ghUCfEJe8UNU_nUBbbQU&_nc_zt=23&_nc_ht=scontent.fruh4-3.fna&_nc_gid=9j2Gj2pvPkLrGo0trm-55Q&_nc_ss=8&oh=00_AfzfA2A1v_I77q6WF1uRfd2hm0MHPUWhu1M0ITKS6Ii_Zg&oe=69B71448"
+        }
+      ],
+      "post_external_image": null,
+      "page_url": "https://www.facebook.com/stemhalsboe",
+      "header_image": "https://scontent.fruh4-5.fna.fbcdn.net/v/t39.30808-6/475824394_1010398804246274_1263933418973300654_n.jpg?_nc_cat=110&ccb=1-7&_nc_sid=2a1932&_nc_ohc=7iYcApzG4vwQ7kNvwHFQ1ay&_nc_oc=AdkdBrH9a6PjbEYvNuLmY7Lcad_GIhlgK-atKlIbgKZHdGoxxhM4pIX8YvmsxGNPIxg&_nc_zt=23&_nc_ht=scontent.fruh4-5.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_Afwur_Ln9UU-aZsXu5eqna0Jnw1cUHygUpA96SXJYCIYdg&oe=69B739A0",
+      "avatar_image_url": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "profile_handle": "stemhalsboe",
+      "is_sponsored": false,
+      "shortcode": "1305451498074335",
+      "video_view_count": 7471,
+      "likes": 314,
+      "post_type": "Reel",
+      "following": 60,
+      "link_description_text": null,
+      "count_reactions_type": [
+        {
+          "type": "Like",
+          "reaction_count": 201
+        },
+        {
+          "type": "Haha",
+          "reaction_count": 84
+        },
+        {
+          "type": "Angry",
+          "reaction_count": 16
+        },
+        {
+          "type": "Love",
+          "reaction_count": 11
+        },
+        {
+          "type": "Care",
+          "reaction_count": 1
+        },
+        {
+          "type": "Wow",
+          "reaction_count": 1
+        }
+      ],
+      "is_page": true,
+      "page_phone": null,
+      "page_email": "ane.halsboe@ft.dk",
+      "page_creation_time": "2010-10-20T00:00:00.000Z",
+      "page_reviews_score": null,
+      "page_reviewers_amount": null,
+      "page_price_range": null,
+      "about": [
+        {
+          "type": "INFLUENCER CATEGORY",
+          "value": "Page \u00b7 Politician",
+          "link": null
+        },
+        {
+          "type": "PROFILE EMAIL",
+          "value": "ane.halsboe@ft.dk",
+          "link": null
+        },
+        {
+          "type": "WEBSITE",
+          "value": "anehalsboe.dk",
+          "link": "http://www.anehalsboe.dk/"
+        }
+      ],
+      "active_ads_urls": [],
+      "delegate_page_id": "169938849689771",
+      "privacy_and_legal_info": "Jeg modererer min Facebook-side for at sikre en konstruktiv debat - se mere p\u00e5 http://bit.ly/principper",
+      "play_count": 16885,
+      "timestamp": "2026-03-11T11:21:46.416Z",
+      "input": {
+        "url": "https://www.facebook.com/stemhalsboe",
+        "num_of_posts": 100,
+        "start_date": "02-28-2026",
+        "end_date": "03-10-2026"
+      }
+    },
+    {
+      "url": "https://www.facebook.com/stemhalsboe/posts/pfbid0CkYgsBHi1hoyBGpoGUWLDBrH1Dem1NCjLDkdh28c7G3pbwQ6vkQ7tYX43R7WyWxul",
+      "post_id": "1305037764782375",
+      "user_url": "https://www.facebook.com/stemhalsboe",
+      "user_username_raw": "Ane Halsboe-J\u00f8rgensen",
+      "content": "Respekt for jer mange frivillige fra alle partier, der har v\u00e6ret afsted i dag. Tak \ud83d\ude4f \ud83c\udf39\n\n(Sidste billede er bel\u00f8nningen: Min mors m\u00f8rbrad i fad)",
+      "date_posted": "2026-02-28T19:26:01.000Z",
+      "num_comments": 37,
+      "num_shares": 8,
+      "num_likes_type": {
+        "type": "Like",
+        "num": 224
+      },
+      "page_name": "Ane Halsboe-J\u00f8rgensen",
+      "profile_id": "100058284901788",
+      "page_intro": "Hvis du vil skrive til mig som skatteminister, kan du g\u00f8re det til ministeren@skm.dk",
+      "page_category": "Politician",
+      "page_logo": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "page_external_website": "anehalsboe.dk",
+      "page_followers": 9200,
+      "page_is_verified": true,
+      "attachments": [
+        {
+          "id": "1305037554782396",
+          "type": "Photo",
+          "url": "https://scontent.fruh4-1.fna.fbcdn.net/v/t39.30808-6/643930511_1305037558115729_1299916603137145509_n.jpg?stp=cp6_dst-jpg_tt6&_nc_cat=106&ccb=1-7&_nc_sid=7b2446&_nc_ohc=_FbClWtfyvkQ7kNvwGlvggr&_nc_oc=AdkW9iMWKrc30gi89i9EviHLlJtbb5xsaD1N7u-x-e3aoYbtxT74a94ZfkU0XLQTsfk&_nc_zt=23&_nc_ht=scontent.fruh4-1.fna&_nc_gid=9j2Gj2pvPkLrGo0trm-55Q&_nc_ss=8&oh=00_Afy_wrbEJuCnBIjf3i0LWWrD-V6HOGeehOQQyWFklwIc1g&oe=69B73165",
+          "attachment_url": "https://www.facebook.com/photo.php?fbid=1305037554782396&set=a.230095258943303&type=3",
+          "video_url": null,
+          "thumbnail_url": null
+        },
+        {
+          "id": "1305037578115727",
+          "type": "Photo",
+          "url": "https://scontent.fruh4-5.fna.fbcdn.net/v/t39.30808-6/643923979_1305037581449060_3121292432750173558_n.jpg?_nc_cat=108&ccb=1-7&_nc_sid=7b2446&_nc_ohc=VyBzKnpiLiQQ7kNvwGUbiTP&_nc_oc=AdkfqoxsnSp2hXVG3WR71-w25P96cuFHD0mIrz7f6w8gRXZDXer9yvtGaR4I3bwBbnk&_nc_zt=23&_nc_ht=scontent.fruh4-5.fna&_nc_gid=9j2Gj2pvPkLrGo0trm-55Q&_nc_ss=8&oh=00_Afw-SS_iaL3YGEeVttt9vUWk9ahMsJr7bQEDkqF17hw18A&oe=69B70D10",
+          "attachment_url": "https://www.facebook.com/photo.php?fbid=1305037578115727&set=a.230095258943303&type=3",
+          "video_url": null,
+          "thumbnail_url": null
+        },
+        {
+          "id": "1305037628115722",
+          "type": "Photo",
+          "url": "https://scontent.fruh4-2.fna.fbcdn.net/v/t39.30808-6/645827884_1305037634782388_8605126550852466891_n.jpg?stp=cp6_dst-jpg_tt6&_nc_cat=105&ccb=1-7&_nc_sid=7b2446&_nc_ohc=CEu3F07st74Q7kNvwFp2Qsq&_nc_oc=Adl0swJp_fqOMBOMLOu8z2juarsa5O0u6HtuYwbugWRjXS69kZSeWY_qFONWbkBGP1g&_nc_zt=23&_nc_ht=scontent.fruh4-2.fna&_nc_gid=9j2Gj2pvPkLrGo0trm-55Q&_nc_ss=8&oh=00_AfwmPbrdPw_gdLsQZ7OqcXf3ulLDTsDTwGtNCg1cbKfUYA&oe=69B70EA4",
+          "attachment_url": "https://www.facebook.com/photo.php?fbid=1305037628115722&set=a.230095258943303&type=3",
+          "video_url": null,
+          "thumbnail_url": null
+        },
+        {
+          "id": "1305037671449051",
+          "type": "Photo",
+          "url": "https://scontent.fruh4-1.fna.fbcdn.net/v/t39.30808-6/643952616_1305037674782384_5498637687548887190_n.jpg?stp=cp6_dst-jpg_tt6&_nc_cat=106&ccb=1-7&_nc_sid=7b2446&_nc_ohc=W6FUXQ5N_D8Q7kNvwE96wjv&_nc_oc=Adk9fyuo0trqbhpoEaIn99gXJFQIBxO041JFBKKZAbT17jIOqJHjv2MEMCLA7oL12GM&_nc_zt=23&_nc_ht=scontent.fruh4-1.fna&_nc_gid=9j2Gj2pvPkLrGo0trm-55Q&_nc_ss=8&oh=00_Afz5CV4tZPt88f_9e5J2rGyqZZzXqaDaewn5J8aOiaNw6A&oe=69B73AD0",
+          "attachment_url": "https://www.facebook.com/photo.php?fbid=1305037671449051&set=a.230095258943303&type=3",
+          "video_url": null,
+          "thumbnail_url": null
+        },
+        {
+          "id": "1305037711449047",
+          "type": "Photo",
+          "url": "https://scontent.fruh4-2.fna.fbcdn.net/v/t39.30808-6/645758217_1305037718115713_2506383379905536511_n.jpg?stp=cp6_dst-jpg_tt6&_nc_cat=107&ccb=1-7&_nc_sid=7b2446&_nc_ohc=HqlE3clYC4EQ7kNvwFiJ6KJ&_nc_oc=AdmL3B5-IGGZ1Z1neR3ioKNQ6RBnp4UN0ip3MuIfJwdtzEN7fTPUOEVLdhRaHFPRWcc&_nc_zt=23&_nc_ht=scontent.fruh4-2.fna&_nc_gid=9j2Gj2pvPkLrGo0trm-55Q&_nc_ss=8&oh=00_Afx9mHh9imwU5pMfdKU4Ohak413yNJwVRlRMDFb_nvXJnQ&oe=69B73885",
+          "attachment_url": "https://www.facebook.com/photo.php?fbid=1305037711449047&set=a.230095258943303&type=3",
+          "video_url": null,
+          "thumbnail_url": null
+        }
+      ],
+      "post_external_image": null,
+      "page_url": "https://www.facebook.com/stemhalsboe",
+      "header_image": "https://scontent.fruh4-5.fna.fbcdn.net/v/t39.30808-6/475824394_1010398804246274_1263933418973300654_n.jpg?_nc_cat=110&ccb=1-7&_nc_sid=2a1932&_nc_ohc=7iYcApzG4vwQ7kNvwHFQ1ay&_nc_oc=AdkdBrH9a6PjbEYvNuLmY7Lcad_GIhlgK-atKlIbgKZHdGoxxhM4pIX8YvmsxGNPIxg&_nc_zt=23&_nc_ht=scontent.fruh4-5.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_Afwur_Ln9UU-aZsXu5eqna0Jnw1cUHygUpA96SXJYCIYdg&oe=69B739A0",
+      "avatar_image_url": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "profile_handle": "stemhalsboe",
+      "is_sponsored": false,
+      "shortcode": "1305037764782375",
+      "likes": 284,
+      "post_image": "https://scontent.fruh4-1.fna.fbcdn.net/v/t39.30808-6/643930511_1305037558115729_1299916603137145509_n.jpg?stp=cp6_dst-jpg_tt6&_nc_cat=106&ccb=1-7&_nc_sid=7b2446&_nc_ohc=_FbClWtfyvkQ7kNvwGlvggr&_nc_oc=AdkW9iMWKrc30gi89i9EviHLlJtbb5xsaD1N7u-x-e3aoYbtxT74a94ZfkU0XLQTsfk&_nc_zt=23&_nc_ht=scontent.fruh4-1.fna&_nc_gid=9j2Gj2pvPkLrGo0trm-55Q&_nc_ss=8&oh=00_Afy_wrbEJuCnBIjf3i0LWWrD-V6HOGeehOQQyWFklwIc1g&oe=69B73165",
+      "post_type": "Post",
+      "following": 60,
+      "link_description_text": null,
+      "count_reactions_type": [
+        {
+          "type": "Like",
+          "reaction_count": 224
+        },
+        {
+          "type": "Haha",
+          "reaction_count": 38
+        },
+        {
+          "type": "Love",
+          "reaction_count": 18
+        },
+        {
+          "type": "Angry",
+          "reaction_count": 4
+        }
+      ],
+      "is_page": true,
+      "page_phone": null,
+      "page_email": "ane.halsboe@ft.dk",
+      "page_creation_time": "2010-10-20T00:00:00.000Z",
+      "page_reviews_score": null,
+      "page_reviewers_amount": null,
+      "page_price_range": null,
+      "about": [
+        {
+          "type": "INFLUENCER CATEGORY",
+          "value": "Page \u00b7 Politician",
+          "link": null
+        },
+        {
+          "type": "PROFILE EMAIL",
+          "value": "ane.halsboe@ft.dk",
+          "link": null
+        },
+        {
+          "type": "WEBSITE",
+          "value": "anehalsboe.dk",
+          "link": "http://www.anehalsboe.dk/"
+        }
+      ],
+      "active_ads_urls": [],
+      "delegate_page_id": "169938849689771",
+      "privacy_and_legal_info": "Jeg modererer min Facebook-side for at sikre en konstruktiv debat - se mere p\u00e5 http://bit.ly/principper",
+      "play_count": null,
+      "timestamp": "2026-03-11T11:21:46.416Z",
+      "input": {
+        "url": "https://www.facebook.com/stemhalsboe",
+        "num_of_posts": 100,
+        "start_date": "02-28-2026",
+        "end_date": "03-10-2026"
+      }
+    },
+    {
+      "url": "https://www.facebook.com/reel/888303904038597/",
+      "post_id": "1304686231484195",
+      "user_url": "https://www.facebook.com/stemhalsboe",
+      "user_username_raw": "Ane Halsboe-J\u00f8rgensen",
+      "content": "\u201cDe mest h\u00e5rdtarbejdende\u201d\n\nJeg har stor respekt for alle, der g\u00e5r p\u00e5 arbejde og passer deres ting. Uanset om de tjener over 2,6 mio om \u00e5ret og dermed betaler top-top skat. Eller om de passer nattevagten p\u00e5 det lokale plejehjem. Begge arbejder helt sikkert h\u00e5rdt. \n\nJeg er \u00e6rlig talt helt uenig med Liberal Alliances kandidat her.",
+      "date_posted": "2026-02-28T09:46:16.000Z",
+      "num_comments": 45,
+      "num_shares": 6,
+      "num_likes_type": {
+        "type": "Like",
+        "num": 84
+      },
+      "page_name": "Ane Halsboe-J\u00f8rgensen",
+      "profile_id": "100058284901788",
+      "page_intro": "Hvis du vil skrive til mig som skatteminister, kan du g\u00f8re det til ministeren@skm.dk",
+      "page_category": "Politician",
+      "page_logo": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "page_external_website": "anehalsboe.dk",
+      "page_followers": 9200,
+      "page_is_verified": true,
+      "attachments": [
+        {
+          "id": "888303904038597",
+          "type": "Video",
+          "url": "https://scontent.fruh4-2.fna.fbcdn.net/v/t15.5256-10/640879149_1948845465842763_6448893867549851852_n.jpg?stp=dst-jpg_p296x100_tt6&_nc_cat=101&ccb=1-7&_nc_sid=5fad0e&_nc_ohc=lITiqPhbbD4Q7kNvwEWzJDY&_nc_oc=AdlBhxZsuTuB6a-ixoBablr3_0yCxFcCwr-RSnMbmUjOgONrO7BoOuGIpfc2WLM72GE&_nc_zt=23&_nc_ht=scontent.fruh4-2.fna&_nc_gid=9j2Gj2pvPkLrGo0trm-55Q&_nc_ss=8&oh=00_AfwPMhBA5vkJi8_k7GweTYNIxyFgWncroKNgbk4i2m1dVA&oe=69B718C2",
+          "video_length": "16740",
+          "attachment_url": "https://www.facebook.com/reel/888303904038597/",
+          "video_url": "https://video.fruh4-5.fna.fbcdn.net/o1/v/t2/f2/m366/AQORl8pXHABfY9XUB27wys5U3DMZFkmNwVjhUU2TkfhvNESdOv4FkyQ78jY6jP4ifjj4kqQ0D95QPvJ0I1-rfnTAY-tU3zmkRoMW9TtLezfCKA.mp4?_nc_cat=108&_nc_oc=AdlJHagtrd4qDieYCoH7wOo2oeEqWFgjoH-_TCnjGhnZ3jQoBZVCcaSwtGiCqTp-s5w&_nc_sid=5e9851&_nc_ht=video.fruh4-5.fna.fbcdn.net&_nc_ohc=8Bd7MHDZKkQQ7kNvwEAxP2p&efg=eyJ2ZW5jb2RlX3RhZyI6Inhwdl9wcm9ncmVzc2l2ZS5GQUNFQk9PSy4uQzMuNzIwLmRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHAiLCJ4cHZfYXNzZXRfaWQiOjE2NTgzNTUwMjU2MDEwOTUsImFzc2V0X2FnZV9kYXlzIjoxMSwidmlfdXNlY2FzZV9pZCI6MTAxMjIsImR1cmF0aW9uX3MiOjE2LCJ1cmxnZW5fc291cmNlIjoid3d3In0%3D&ccb=17-1&vs=31381144b75dcb5&_nc_vs=HBksFQIYRWZiX2VwaGVtZXJhbC84NzQwN0IyRjMxMTc2OENBQkY1NTM0NjU0MkE3NzNCNV9tdF8xX3ZpZGVvX2Rhc2hpbml0Lm1wNBUAAsgBEgAVAhhAZmJfcGVybWFuZW50LzlBNDlFMzAwNkVDNEI5RjREMjdBOEI2QjI1RjQ0NEI4X2F1ZGlvX2Rhc2hpbml0Lm1wNBUCAsgBEgAoABgAGwKIB3VzZV9vaWwBMRJwcm9ncmVzc2l2ZV9yZWNpcGUBMRUAACaOibPj-5DyBRUCKAJDMywXQDC7peNT988YGWRhc2hfaDI2NC1iYXNpYy1nZW4yXzcyMHARAHUCZZSeAQA&_nc_gid=9j2Gj2pvPkLrGo0trm-55Q&_nc_ss=8&_nc_zt=28&oh=00_AfyuysFbd_X3RsIhuk_h4Z99WrkvEnseycUfChUDL9d-NQ&oe=69B72768&bitrate=908494&tag=dash_h264-basic-gen2_720p",
+          "thumbnail_url": "https://scontent.fruh4-2.fna.fbcdn.net/v/t15.5256-10/640879149_1948845465842763_6448893867549851852_n.jpg?stp=dst-jpg_s960x960_tt6&_nc_cat=101&ccb=1-7&_nc_sid=50ce42&_nc_ohc=lITiqPhbbD4Q7kNvwEWzJDY&_nc_oc=AdlBhxZsuTuB6a-ixoBablr3_0yCxFcCwr-RSnMbmUjOgONrO7BoOuGIpfc2WLM72GE&_nc_zt=23&_nc_ht=scontent.fruh4-2.fna&_nc_gid=9j2Gj2pvPkLrGo0trm-55Q&_nc_ss=8&oh=00_AfwQN0EKyj-jYSx5B0xtx8oQUfkwbnJl426bz8UNbzPNXQ&oe=69B718C2"
+        }
+      ],
+      "post_external_image": null,
+      "page_url": "https://www.facebook.com/stemhalsboe",
+      "header_image": "https://scontent.fruh4-5.fna.fbcdn.net/v/t39.30808-6/475824394_1010398804246274_1263933418973300654_n.jpg?_nc_cat=110&ccb=1-7&_nc_sid=2a1932&_nc_ohc=7iYcApzG4vwQ7kNvwHFQ1ay&_nc_oc=AdkdBrH9a6PjbEYvNuLmY7Lcad_GIhlgK-atKlIbgKZHdGoxxhM4pIX8YvmsxGNPIxg&_nc_zt=23&_nc_ht=scontent.fruh4-5.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_Afwur_Ln9UU-aZsXu5eqna0Jnw1cUHygUpA96SXJYCIYdg&oe=69B739A0",
+      "avatar_image_url": "https://scontent.fruh4-4.fna.fbcdn.net/v/t39.30808-1/310924095_524056846213808_9028386921895129057_n.jpg?stp=dst-jpg_s200x200_tt6&_nc_cat=104&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wRa7ekVPCVcQ7kNvwEpOGxd&_nc_oc=AdkZayX2owqfE0Ee65IRQMf1n9LVYUbHY8LdRRgs0ubb34Qt88GHaA5n_hiIgkJ0mP8&_nc_zt=24&_nc_ht=scontent.fruh4-4.fna&_nc_gid=nEC67rhAh0_Up1MIlmb19Q&_nc_ss=8&oh=00_AfxLv7pL4XoMNAhsgZ7r4O3EndNtwIlEyq8fHrQqX9hQ6w&oe=69B73AF6",
+      "profile_handle": "stemhalsboe",
+      "is_sponsored": false,
+      "shortcode": "1304686231484195",
+      "video_view_count": 3938,
+      "likes": 120,
+      "post_type": "Reel",
+      "following": 60,
+      "link_description_text": null,
+      "count_reactions_type": [
+        {
+          "type": "Like",
+          "reaction_count": 84
+        },
+        {
+          "type": "Haha",
+          "reaction_count": 26
+        },
+        {
+          "type": "Love",
+          "reaction_count": 5
+        },
+        {
+          "type": "Angry",
+          "reaction_count": 3
+        },
+        {
+          "type": "Care",
+          "reaction_count": 1
+        },
+        {
+          "type": "Wow",
+          "reaction_count": 1
+        }
+      ],
+      "is_page": true,
+      "page_phone": null,
+      "page_email": "ane.halsboe@ft.dk",
+      "page_creation_time": "2010-10-20T00:00:00.000Z",
+      "page_reviews_score": null,
+      "page_reviewers_amount": null,
+      "page_price_range": null,
+      "about": [
+        {
+          "type": "INFLUENCER CATEGORY",
+          "value": "Page \u00b7 Politician",
+          "link": null
+        },
+        {
+          "type": "PROFILE EMAIL",
+          "value": "ane.halsboe@ft.dk",
+          "link": null
+        },
+        {
+          "type": "WEBSITE",
+          "value": "anehalsboe.dk",
+          "link": "http://www.anehalsboe.dk/"
+        }
+      ],
+      "active_ads_urls": [],
+      "delegate_page_id": "169938849689771",
+      "privacy_and_legal_info": "Jeg modererer min Facebook-side for at sikre en konstruktiv debat - se mere p\u00e5 http://bit.ly/principper",
+      "play_count": 11406,
+      "timestamp": "2026-03-11T11:21:46.416Z",
+      "input": {
+        "url": "https://www.facebook.com/stemhalsboe",
+        "num_of_posts": 100,
+        "start_date": "02-28-2026",
+        "end_date": "03-10-2026"
+      }
+    }
+  ]
+}

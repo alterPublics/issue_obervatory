@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
@@ -31,6 +31,24 @@ if TYPE_CHECKING:
     from issue_observatory.core.models.project import Project
     from issue_observatory.core.models.users import User
     from issue_observatory.core.models.zeeschuimer_import import ZeeschuimerImport
+
+# Source list config keys per arena, used during migration and merging.
+SOURCE_LIST_KEYS: dict[str, str] = {
+    "rss": "custom_feeds",
+    "telegram": "custom_channels",
+    "reddit": "custom_subreddits",
+    "discord": "custom_channel_ids",
+    "wikipedia": "seed_articles",
+    "facebook": "custom_pages",
+    "instagram": "custom_profiles",
+    "bluesky": "custom_accounts",
+    "x_twitter": "custom_accounts",
+    "youtube": "custom_channels",
+    "tiktok": "custom_accounts",
+    "threads": "custom_accounts",
+    "gab": "custom_accounts",
+    "domain_crawler": "target_domains",
+}
 
 
 class QueryDesign(Base):
@@ -65,7 +83,7 @@ class QueryDesign(Base):
         sa.String(200),
         nullable=False,
     )
-    description: Mapped[Optional[str]] = mapped_column(
+    description: Mapped[str | None] = mapped_column(
         sa.Text,
         nullable=True,
     )
@@ -112,7 +130,7 @@ class QueryDesign(Base):
     )
     # Self-referential FK to track cloning lineage (IP2-051).
     # ON DELETE SET NULL so that deleting a parent does not cascade to clones.
-    parent_design_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    parent_design_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("query_designs.id", ondelete="SET NULL"),
         nullable=True,
@@ -120,7 +138,7 @@ class QueryDesign(Base):
     )
     # Optional FK to Project for organizational grouping (R-06).
     # ON DELETE SET NULL so that deleting a project detaches designs but doesn't delete them.
-    project_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("projects.id", ondelete="SET NULL"),
         nullable=True,
@@ -133,7 +151,7 @@ class QueryDesign(Base):
         foreign_keys=[owner_id],
         back_populates="query_designs",
     )
-    project: Mapped[Optional[Project]] = relationship(
+    project: Mapped[Project | None] = relationship(
         "Project",
         foreign_keys=[project_id],
         back_populates="query_designs",
@@ -146,7 +164,7 @@ class QueryDesign(Base):
     actor_lists: Mapped[list[ActorList]] = relationship(
         "ActorList",
         back_populates="query_design",
-        cascade="all, delete-orphan",
+        cascade="all, delete",
     )
     collection_runs: Mapped[list[CollectionRun]] = relationship(
         "CollectionRun",
@@ -278,6 +296,17 @@ class SearchTerm(Base):
             "parent_term_id",
             "override_arena",
         ),
+        # Prevent duplicate terms within the same query design and group.
+        # COALESCE maps NULL group_id to a sentinel UUID so that two terms
+        # with NULL group_id are still treated as duplicates.
+        sa.Index(
+            "uq_search_term_per_design",
+            "query_design_id",
+            "term",
+            sa.text("COALESCE(group_id, '00000000-0000-0000-0000-000000000000')"),
+            unique=True,
+            postgresql_where=sa.text("parent_term_id IS NULL"),
+        ),
         sa.CheckConstraint(
             "(parent_term_id IS NULL AND override_arena IS NULL) "
             "OR (parent_term_id IS NOT NULL AND override_arena IS NOT NULL)",
@@ -309,37 +338,48 @@ class ActorList(Base):
         primary_key=True,
         server_default=sa.text("gen_random_uuid()"),
     )
-    query_design_id: Mapped[uuid.UUID] = mapped_column(
+    query_design_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        sa.ForeignKey("query_designs.id", ondelete="CASCADE"),
-        nullable=False,
+        sa.ForeignKey("query_designs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=True,
         index=True,
     )
     name: Mapped[str] = mapped_column(
         sa.String(200),
         nullable=False,
     )
-    description: Mapped[Optional[str]] = mapped_column(
+    description: Mapped[str | None] = mapped_column(
         sa.Text,
         nullable=True,
     )
-    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
-    sampling_method: Mapped[Optional[str]] = mapped_column(
+    sampling_method: Mapped[str | None] = mapped_column(
         sa.String(50),
         nullable=True,
     )
 
     # Relationships
-    query_design: Mapped[QueryDesign] = relationship(
+    query_design: Mapped[QueryDesign | None] = relationship(
         "QueryDesign",
         back_populates="actor_lists",
     )
-    creator: Mapped[Optional[User]] = relationship(
+    project: Mapped[Project | None] = relationship(
+        "Project",
+        foreign_keys=[project_id],
+        back_populates="actor_lists",
+    )
+    creator: Mapped[User | None] = relationship(
         "User",
         foreign_keys=[created_by],
     )

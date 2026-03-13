@@ -32,13 +32,13 @@ import time
 from typing import Any
 
 from issue_observatory.arenas.twitch.collector import TwitchCollector
+from issue_observatory.config.settings import get_settings
 from issue_observatory.core.credential_pool import CredentialPool
+from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
 )
-from issue_observatory.config.settings import get_settings
-from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -68,23 +68,24 @@ def _update_task_status(
         error_message: Error description for failed updates.
     """
     try:
-        from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+        from issue_observatory.core.database import get_sync_session
 
         with get_sync_session() as session:
-            from sqlalchemy import text  # noqa: PLC0415
+            from sqlalchemy import text
 
             session.execute(
                 text(
                     """
                     UPDATE collection_tasks
                     SET status = :status,
-                        records_collected = :records_collected,
+                        records_collected = GREATEST(records_collected, :records_collected),
                         error_message = :error_message,
                         completed_at = CASE WHEN :status IN ('completed', 'failed')
                                             THEN NOW() ELSE completed_at END,
                         started_at   = CASE WHEN :status = 'running' AND started_at IS NULL
                                             THEN NOW() ELSE started_at END
                     WHERE collection_run_id = :run_id AND arena = :arena
+                        AND status != 'cancelled'
                     """
                 ),
                 {
@@ -96,7 +97,7 @@ def _update_task_status(
                 },
             )
             session.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "twitch: failed to update collection_tasks status to '%s': %s",
             status,
@@ -148,7 +149,7 @@ def twitch_collect_terms(
         ArenaRateLimitError: Triggers automatic retry with exponential backoff.
         ArenaCollectionError: Marks the task as FAILED in Celery.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
+    from issue_observatory.arenas.base import Tier
 
     _settings = get_settings()
     _redis_url = _settings.redis_url
@@ -193,8 +194,13 @@ def twitch_collect_terms(
     credential_pool = CredentialPool()
     collector = TwitchCollector(credential_pool=credential_pool)
 
+    from issue_observatory.workers._task_helpers import make_batch_sink
+
+    sink = make_batch_sink(collection_run_id, query_design_id)
+    collector.configure_batch_persistence(sink=sink, batch_size=100, collection_run_id=collection_run_id)
+
     try:
-        records = asyncio.run(
+        remaining = asyncio.run(
             collector.collect_by_terms(
                 terms=terms,
                 tier=tier_enum,
@@ -224,26 +230,51 @@ def twitch_collect_terms(
         )
         raise
 
-    count = len(records)
+    fallback_inserted, fallback_skipped = 0, 0
+    if remaining:
+        from issue_observatory.workers._task_helpers import (
+            persist_collected_records,
+        )
+
+        fallback_inserted, fallback_skipped = persist_collected_records(
+            remaining, collection_run_id, query_design_id
+        )
+    inserted = collector.batch_stats["inserted"] + fallback_inserted
+
+    # Fallback: if in-memory counters lost track, use the actual DB count.
+    if inserted == 0:
+        from issue_observatory.workers._task_helpers import (
+            count_run_platform_records,
+        )
+
+        db_count = count_run_platform_records(collection_run_id, "twitch")
+        if db_count > 0:
+            logger.info(
+                "twitch: in-memory counter=0 but DB has %d records — using DB count",
+                db_count,
+            )
+            inserted = db_count
+
     logger.info(
-        "twitch: collect_by_terms completed — run=%s records=%d",
+        "twitch: collect_by_terms completed — run=%s emitted=%d inserted=%d",
         collection_run_id,
-        count,
+        collector.batch_stats["emitted"],
+        inserted,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
         arena="social_media",
         platform="twitch",
         status="completed",
-        records_collected=count,
+        records_collected=inserted,
         error_message=None,
         elapsed_seconds=elapsed_since(_task_start),
     )
 
     return {
-        "records_collected": count,
+        "records_collected": inserted,
         "status": "completed",
         "arena": _ARENA,
         "tier": tier,
@@ -290,7 +321,7 @@ def twitch_collect_actors(
         ArenaRateLimitError: Triggers automatic retry.
         ArenaCollectionError: Marks the task as FAILED.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
+    from issue_observatory.arenas.base import Tier
 
     _settings = get_settings()
     _redis_url = _settings.redis_url
@@ -335,8 +366,13 @@ def twitch_collect_actors(
     credential_pool = CredentialPool()
     collector = TwitchCollector(credential_pool=credential_pool)
 
+    from issue_observatory.workers._task_helpers import make_batch_sink
+
+    sink = make_batch_sink(collection_run_id, query_design_id)
+    collector.configure_batch_persistence(sink=sink, batch_size=100, collection_run_id=collection_run_id)
+
     try:
-        records = asyncio.run(
+        remaining = asyncio.run(
             collector.collect_by_actors(
                 actor_ids=actor_ids,
                 tier=tier_enum,
@@ -367,26 +403,51 @@ def twitch_collect_actors(
         )
         raise
 
-    count = len(records)
+    fallback_inserted, fallback_skipped = 0, 0
+    if remaining:
+        from issue_observatory.workers._task_helpers import (
+            persist_collected_records,
+        )
+
+        fallback_inserted, fallback_skipped = persist_collected_records(
+            remaining, collection_run_id, query_design_id
+        )
+    inserted = collector.batch_stats["inserted"] + fallback_inserted
+
+    # Fallback: if in-memory counters lost track, use the actual DB count.
+    if inserted == 0:
+        from issue_observatory.workers._task_helpers import (
+            count_run_platform_records,
+        )
+
+        db_count = count_run_platform_records(collection_run_id, "twitch")
+        if db_count > 0:
+            logger.info(
+                "twitch: in-memory counter=0 but DB has %d records — using DB count",
+                db_count,
+            )
+            inserted = db_count
+
     logger.info(
-        "twitch: collect_by_actors completed — run=%s records=%d",
+        "twitch: collect_by_actors completed — run=%s emitted=%d inserted=%d",
         collection_run_id,
-        count,
+        collector.batch_stats["emitted"],
+        inserted,
     )
-    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=count)
+    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
     publish_task_update(
         redis_url=_redis_url,
         run_id=collection_run_id,
         arena="social_media",
         platform="twitch",
         status="completed",
-        records_collected=count,
+        records_collected=inserted,
         error_message=None,
         elapsed_seconds=elapsed_since(_task_start),
     )
 
     return {
-        "records_collected": count,
+        "records_collected": inserted,
         "status": "completed",
         "arena": _ARENA,
         "tier": tier,

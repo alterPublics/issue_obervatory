@@ -23,7 +23,7 @@ os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test_observatory")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 
-from issue_observatory.api.routes.query_designs import _render_actor_list_item  # noqa: E402
+from issue_observatory.api.routes.query_designs import _render_actor_list_item
 
 
 def test_render_actor_list_item_includes_presences_link() -> None:

@@ -16,19 +16,19 @@ for provenance tracking.
 from __future__ import annotations
 
 __all__ = [
-    "ZeeschuimerProcessor",
-    "LinkedInNormalizer",
-    "TwitterNormalizer",
     "InstagramNormalizer",
-    "TikTokNormalizer",
+    "LinkedInNormalizer",
     "ThreadsNormalizer",
+    "TikTokNormalizer",
+    "TwitterNormalizer",
+    "ZeeschuimerProcessor",
 ]
 
-from issue_observatory.imports.zeeschuimer import ZeeschuimerProcessor
 from issue_observatory.imports.normalizers import (
-    LinkedInNormalizer,
-    TwitterNormalizer,
     InstagramNormalizer,
-    TikTokNormalizer,
+    LinkedInNormalizer,
     ThreadsNormalizer,
+    TikTokNormalizer,
+    TwitterNormalizer,
 )
+from issue_observatory.imports.zeeschuimer import ZeeschuimerProcessor

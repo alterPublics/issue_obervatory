@@ -319,7 +319,7 @@ class TestCloneQueryDesign:
         as the original.  Member copying is not tested here because members
         require pre-existing Actor rows (integration with the actors table).
         """
-        from sqlalchemy import select as _select  # noqa: PLC0415
+        from sqlalchemy import select as _select
 
         headers = await _login(client, test_user.email, TEST_PASSWORD)
         design = await _create_query_design(db_session, test_user, name="Design with actors")

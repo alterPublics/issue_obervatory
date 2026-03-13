@@ -41,7 +41,6 @@ from issue_observatory.core.credential_pool import (
 )
 from issue_observatory.core.exceptions import ArenaAuthError, ArenaRateLimitError
 
-
 # ---------------------------------------------------------------------------
 # Helper: build a pool with Redis pre-wired via an AsyncMock
 # ---------------------------------------------------------------------------

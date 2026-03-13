@@ -24,6 +24,9 @@
     {# Arena / platform name #}
     <td class="px-6 py-3 text-sm font-medium text-gray-900 whitespace-nowrap">
         {{ task.platform | default(task.arena | default('—')) }}
+        {% if (task.arena | default('')) is string and (task.arena | default('')).endswith('_comments') %}
+            <span class="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-700">Comments</span>
+        {% endif %}
     </td>
 
     {# Status indicator #}

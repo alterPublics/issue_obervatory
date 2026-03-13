@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import re
-import uuid
 
 # ---------------------------------------------------------------------------
 # Env bootstrap — must happen before any application module imports.

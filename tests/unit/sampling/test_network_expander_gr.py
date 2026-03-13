@@ -32,8 +32,7 @@ os.environ.setdefault(
     "CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA=="
 )
 
-from issue_observatory.sampling.network_expander import NetworkExpander  # noqa: E402
-
+from issue_observatory.sampling.network_expander import NetworkExpander
 
 # ---------------------------------------------------------------------------
 # Helpers

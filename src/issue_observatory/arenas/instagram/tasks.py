@@ -19,9 +19,8 @@ Retry policy:
 - ``NoCredentialAvailableError`` immediately marks the task as FAILED.
 
 Time limits:
-- ``time_limit=1800`` (30 minutes hard limit) because Bright Data Web Scraper API
-  delivery can take 5-20 minutes.
-- ``soft_time_limit=1500`` (25 minutes soft limit sending SIGTERM first).
+- No fixed time limit. Records persist incrementally via the batch sink and
+  stale_run_cleanup handles any stuck tasks.
 
 All task arguments are JSON-serializable.
 """
@@ -33,17 +32,15 @@ import logging
 import time
 from typing import Any
 
-from celery.exceptions import SoftTimeLimitExceeded
-
 from issue_observatory.arenas.instagram.collector import InstagramCollector
+from issue_observatory.config.settings import get_settings
 from issue_observatory.core.credential_pool import CredentialPool
+from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
     NoCredentialAvailableError,
 )
-from issue_observatory.config.settings import get_settings
-from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -84,23 +81,24 @@ def _update_task_status(
         error_message: Error description (for failed updates).
     """
     try:
-        from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+        from issue_observatory.core.database import get_sync_session
 
         with get_sync_session() as session:
-            from sqlalchemy import text  # noqa: PLC0415
+            from sqlalchemy import text
 
             session.execute(
                 text(
                     """
                     UPDATE collection_tasks
                     SET status = :status,
-                        records_collected = :records_collected,
+                        records_collected = GREATEST(records_collected, :records_collected),
                         error_message = :error_message,
                         completed_at = CASE WHEN :status IN ('completed', 'failed')
                                             THEN NOW() ELSE completed_at END,
                         started_at   = CASE WHEN :status = 'running' AND started_at IS NULL
                                             THEN NOW() ELSE started_at END
                     WHERE collection_run_id = :run_id AND arena = :arena
+                        AND status != 'cancelled'
                     """
                 ),
                 {
@@ -112,7 +110,7 @@ def _update_task_status(
                 },
             )
             session.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "instagram: failed to update collection_tasks to '%s': %s",
             status,
@@ -130,7 +128,7 @@ def _update_task_status(
     bind=True,
     max_retries=0,
     acks_late=True,
-    time_limit=60,
+    # No fixed time limit — records persist incrementally and stale_run_cleanup handles stuck tasks.
 )
 def instagram_collect_terms(
     self: Any,
@@ -204,8 +202,7 @@ def instagram_collect_terms(
     retry_backoff=True,
     retry_backoff_max=900,
     acks_late=True,
-    time_limit=1800,
-    soft_time_limit=1500,
+    # No fixed time limit — records persist incrementally and stale_run_cleanup handles stuck tasks.
 )
 def instagram_collect_actors(
     self: Any,
@@ -245,7 +242,7 @@ def instagram_collect_actors(
         ArenaCollectionError: Marks the task as FAILED.
         NoCredentialAvailableError: Marks the task as FAILED immediately.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
+    from issue_observatory.arenas.base import Tier
 
     _settings = get_settings()
     _redis_url = _settings.redis_url
@@ -270,9 +267,26 @@ def instagram_collect_actors(
             elapsed_seconds=elapsed_since(_task_start),
         )
 
+        from issue_observatory.workers._task_helpers import make_batch_sink
+
         credential_pool = CredentialPool()
         collector = InstagramCollector(credential_pool=credential_pool)
         tier_enum = Tier(tier)
+        sink = make_batch_sink(collection_run_id, query_design_id)
+        collector.configure_batch_persistence(sink=sink, batch_size=100, collection_run_id=collection_run_id)
+
+        # Normalize URLs before coverage check so keys match BD's format.
+        from issue_observatory.arenas.instagram.collector import (
+            _normalize_profile_url,
+        )
+        from issue_observatory.workers._task_helpers import (
+            clear_url_errors,
+            get_suppressed_urls,
+            record_url_errors,
+            run_with_tier_fallback,
+        )
+
+        normalized_actor_ids = [_normalize_profile_url(aid) for aid in actor_ids]
 
         # Check if force_recollect is set (opt-out from coverage check)
         force_recollect = _extra.get("force_recollect", False)
@@ -281,9 +295,9 @@ def instagram_collect_actors(
         effective_date_from = date_from
         effective_date_to = date_to
         if not force_recollect and date_from and date_to:
-            from datetime import datetime as _dt  # noqa: PLC0415
+            from datetime import datetime as _dt
 
-            from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
+            from issue_observatory.core.coverage_checker import (
                 check_existing_coverage,
             )
 
@@ -291,7 +305,7 @@ def instagram_collect_actors(
                 platform=_PLATFORM,
                 date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
                 date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
-                actor_ids=actor_ids,
+                actor_ids=normalized_actor_ids,
             )
             if not gaps:
                 logger.info(
@@ -299,7 +313,7 @@ def instagram_collect_actors(
                     "will reindex existing records only.",
                     collection_run_id,
                 )
-                from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+                from issue_observatory.workers._task_helpers import (
                     reindex_existing_records,
                 )
 
@@ -307,7 +321,7 @@ def instagram_collect_actors(
                     platform=_PLATFORM,
                     collection_run_id=collection_run_id,
                     query_design_id=query_design_id,
-                    actor_ids=actor_ids,
+                    actor_ids=normalized_actor_ids,
                     date_from=date_from,
                     date_to=date_to,
                 )
@@ -342,16 +356,60 @@ def instagram_collect_actors(
                 collection_run_id,
             )
 
-        try:
-            records = asyncio.run(
-                collector.collect_by_actors(
-                    actor_ids=actor_ids,
-                    tier=tier_enum,
-                    date_from=effective_date_from,
-                    date_to=effective_date_to,
-                    max_results=max_results,
-                )
+        # Suppress dead/errored URLs to avoid wasting Bright Data credits.
+        suppressed = get_suppressed_urls(_PLATFORM, normalized_actor_ids)
+        if suppressed:
+            original_count = len(normalized_actor_ids)
+            normalized_actor_ids = [u for u in normalized_actor_ids if u not in suppressed]
+            logger.info(
+                "instagram: suppressed %d/%d dead/errored URLs for run=%s",
+                len(suppressed),
+                original_count,
+                collection_run_id,
             )
+            if not normalized_actor_ids:
+                logger.info(
+                    "instagram: ALL URLs suppressed — completing with 0 records for run=%s",
+                    collection_run_id,
+                )
+                _update_task_status(
+                    collection_run_id, _PLATFORM, "completed", records_collected=0
+                )
+                publish_task_update(
+                    redis_url=_redis_url,
+                    run_id=collection_run_id,
+                    arena=_ARENA,
+                    platform=_PLATFORM,
+                    status="completed",
+                    records_collected=0,
+                    error_message=None,
+                    elapsed_seconds=elapsed_since(_task_start),
+                )
+                return {
+                    "records_collected": 0,
+                    "status": "completed",
+                    "arena": _ARENA,
+                    "platform": _PLATFORM,
+                    "tier": tier,
+                    "all_urls_suppressed": True,
+                }
+
+        try:
+            remaining, used_tier = run_with_tier_fallback(
+                collector=collector,
+                collect_method="collect_by_actors",
+                kwargs={
+                    "actor_ids": normalized_actor_ids,
+                    "tier": tier_enum,
+                    "date_from": effective_date_from,
+                    "date_to": effective_date_to,
+                    "max_results": max_results,
+                },
+                requested_tier_str=tier,
+                platform=_PLATFORM,
+                task_logger=logger,
+            )
+            tier = used_tier  # update for reporting
         except NoCredentialAvailableError as exc:
             msg = f"instagram: no credential available for tier={tier}: {exc}"
             logger.error(msg)
@@ -391,15 +449,39 @@ def instagram_collect_actors(
             )
             raise
 
-        count = len(records)
+        # Track Bright Data error records and clear recovered URLs.
+        bd_errors = collector.brightdata_errors
+        if bd_errors:
+            record_url_errors(_PLATFORM, bd_errors)
+        # URLs that produced valid data are no longer dead — clear suppression.
+        errored_urls = {e["url"] for e in bd_errors}
+        successful_urls = [u for u in normalized_actor_ids if u not in errored_urls]
+        if successful_urls:
+            clear_url_errors(_PLATFORM, successful_urls)
 
         # Persist collected records to the database.
-        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+        from issue_observatory.workers._task_helpers import (
             persist_collected_records,
             record_collection_attempts_batch,
         )
 
-        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+        fallback_inserted, fallback_skipped = 0, 0
+        if remaining:
+            fallback_inserted, fallback_skipped = persist_collected_records(
+                remaining, collection_run_id, query_design_id
+            )
+        inserted = collector.batch_stats["inserted"] + fallback_inserted
+        skipped = collector.batch_stats["skipped"] + fallback_skipped
+
+        # Fallback: if in-memory counters lost track, use the actual DB count.
+        if inserted == 0:
+            from issue_observatory.workers._task_helpers import (
+                count_run_platform_records,
+            )
+            db_count = count_run_platform_records(collection_run_id, "instagram")
+            if db_count > 0:
+                logger.info("instagram: in-memory counter=0 but DB has %d records — using DB count", db_count)
+                inserted = db_count
 
         # Record successful collection attempts for future pre-checks.
         if date_from and date_to:
@@ -407,17 +489,18 @@ def instagram_collect_actors(
                 platform=_PLATFORM,
                 collection_run_id=collection_run_id,
                 query_design_id=query_design_id,
-                inputs=actor_ids,
+                inputs=normalized_actor_ids,
                 input_type="actor",
                 date_from=date_from,
                 date_to=date_to,
                 records_returned=inserted,
+                per_input_counts=collector.per_input_counts,
             )
 
         logger.info(
-            "instagram: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
+            "instagram: collect_by_actors completed — run=%s emitted=%d inserted=%d skipped=%d",
             collection_run_id,
-            count,
+            collector.batch_stats["emitted"],
             inserted,
             skipped,
         )
@@ -439,18 +522,225 @@ def instagram_collect_actors(
             "platform": _PLATFORM,
             "tier": tier,
         }
-    except SoftTimeLimitExceeded:
-        logger.error(
-            "instagram: collect_by_actors timed out — run=%s",
+    except Exception as exc:
+        msg = f"instagram: unexpected error for run={collection_run_id}: {type(exc).__name__}: {exc}"
+        logger.error(msg, exc_info=True)
+
+        # Salvage coverage: if batch sink persisted records before the crash,
+        # record the attempt so subsequent runs don't re-trigger Bright Data.
+        salvaged_count = 0
+        try:
+            from issue_observatory.workers._task_helpers import (
+                count_run_platform_records,
+                record_collection_attempts_batch,
+            )
+
+            salvaged_count = count_run_platform_records(collection_run_id, "instagram")
+            if salvaged_count > 0 and date_from and date_to:
+                logger.info(
+                    "instagram: salvaging coverage for %d persisted records on failure",
+                    salvaged_count,
+                )
+                record_collection_attempts_batch(
+                    platform=_PLATFORM,
+                    collection_run_id=collection_run_id,
+                    query_design_id=query_design_id,
+                    inputs=normalized_actor_ids,
+                    input_type="actor",
+                    date_from=date_from,
+                    date_to=date_to,
+                    records_returned=salvaged_count,
+                    per_input_counts=collector.per_input_counts,
+                )
+        except Exception:
+            logger.warning("instagram: failed to salvage coverage on failure", exc_info=True)
+
+        _update_task_status(
+            collection_run_id, _PLATFORM, "failed",
+            records_collected=salvaged_count,
+            error_message=msg[:500],
+        )
+        publish_task_update(
+            redis_url=_settings.redis_url,
+            run_id=collection_run_id,
+            arena=_ARENA,
+            platform=_PLATFORM,
+            status="failed",
+            records_collected=salvaged_count,
+            error_message=msg[:500],
+            elapsed_seconds=elapsed_since(_task_start),
+        )
+        raise
+
+
+@celery_app.task(
+    name="issue_observatory.arenas.instagram.tasks.collect_comments",
+    bind=True,
+    max_retries=2,
+    autoretry_for=(ArenaRateLimitError,),
+    retry_backoff=True,
+    retry_backoff_max=900,
+    acks_late=True,
+)
+def instagram_collect_comments(
+    self: Any,
+    query_design_id: str,
+    collection_run_id: str,
+    post_ids: list[dict],
+    tier: str = "medium",
+    max_comments_per_post: int = 200,
+    depth: int = 0,
+    **_extra: Any,
+) -> dict[str, Any]:
+    """Collect comments for Instagram posts via Bright Data.
+
+    Wraps :meth:`InstagramCollector.collect_comments` as a Celery task.
+    Each entry in *post_ids* must be a dict with a ``url`` key pointing to
+    an Instagram post URL. Comments are collected in a single Bright Data
+    trigger/poll/download cycle.
+
+    Args:
+        query_design_id: UUID string of the owning query design.
+        collection_run_id: UUID string of the owning collection run.
+        post_ids: List of dicts with ``url`` key (Instagram post URLs).
+        tier: Tier string — ``"medium"`` (Bright Data, default).
+        max_comments_per_post: Maximum comments to request per post.
+        depth: Unused — Bright Data returns a flat comment list.
+        **_extra: Extra keyword arguments from the orchestration layer.
+            Silently ignored.
+
+    Returns:
+        Dict with ``records_collected``, ``status``, ``arena``, ``platform``, ``tier``.
+
+    Raises:
+        ArenaRateLimitError: Triggers automatic retry (max 2, backoff ≤ 900s).
+        ArenaCollectionError: Marks the task as FAILED.
+        NoCredentialAvailableError: Marks the task as FAILED immediately.
+    """
+    from issue_observatory.arenas.base import Tier
+
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+    _arena_label = "instagram_comments"
+
+    try:
+        logger.info(
+            "instagram: collect_comments started — run=%s tier=%s posts=%d",
             collection_run_id,
+            tier,
+            len(post_ids),
+        )
+        _update_task_status(collection_run_id, _arena_label, "running")
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena=_ARENA,
+            platform=_arena_label,
+            status="running",
+            records_collected=0,
+            error_message=None,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
+
+        from issue_observatory.workers._task_helpers import (
+            make_batch_sink,
+            persist_collected_records,
+        )
+
+        credential_pool = CredentialPool()
+        collector = InstagramCollector(credential_pool=credential_pool)
+        tier_enum = Tier(tier)
+
+        sink = make_batch_sink(collection_run_id, query_design_id)
+        collector.configure_batch_persistence(
+            sink=sink, batch_size=100, collection_run_id=collection_run_id
+        )
+
+        records = asyncio.run(
+            collector.collect_comments(
+                post_ids=post_ids,
+                tier=tier_enum,
+                max_comments_per_post=max_comments_per_post,
+                depth=depth,
+            )
+        )
+
+        inserted, skipped = 0, 0
+        if records:
+            inserted, skipped = persist_collected_records(
+                records, collection_run_id, query_design_id
+            )
+
+        logger.info(
+            "instagram: collect_comments completed — run=%s inserted=%d skipped=%d",
+            collection_run_id,
+            inserted,
+            skipped,
         )
         _update_task_status(
-            collection_run_id,
-            _PLATFORM,
-            "failed",
-            error_message="Collection timed out",
+            collection_run_id, _arena_label, "completed", records_collected=inserted
         )
-        return {"status": "failed", "error": "timeout", "arena": _ARENA}
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena=_ARENA,
+            platform=_arena_label,
+            status="completed",
+            records_collected=inserted,
+            error_message=None,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
+        return {
+            "records_collected": inserted,
+            "status": "completed",
+            "arena": _ARENA,
+            "platform": _arena_label,
+            "tier": tier,
+        }
+    except NoCredentialAvailableError as exc:
+        msg = f"instagram: no credential available for comments tier={tier}: {exc}"
+        logger.error(msg)
+        _update_task_status(
+            collection_run_id, _arena_label, "failed", error_message=msg
+        )
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena=_ARENA,
+            platform=_arena_label,
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
+        raise ArenaCollectionError(msg, arena=_ARENA, platform=_arena_label) from exc
+    except ArenaRateLimitError:
+        logger.warning(
+            "instagram: rate limited on collect_comments for run=%s — will retry.",
+            collection_run_id,
+        )
+        raise
+    except Exception as exc:
+        msg = (
+            f"instagram: collect_comments unexpected error for run={collection_run_id}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        logger.error(msg, exc_info=True)
+        _update_task_status(
+            collection_run_id, _arena_label, "failed", error_message=msg[:500]
+        )
+        publish_task_update(
+            redis_url=_settings.redis_url,
+            run_id=collection_run_id,
+            arena=_ARENA,
+            platform=_arena_label,
+            status="failed",
+            records_collected=0,
+            error_message=msg[:500],
+            elapsed_seconds=elapsed_since(_task_start),
+        )
+        raise
 
 
 @celery_app.task(

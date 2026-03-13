@@ -21,7 +21,7 @@
 {% set design = design | default({}) %}
 {% set terms = terms | default([]) %}
 {% set actors = actors | default([]) %}
-{% set parent_design_id = parent_design_id | default(design.parent_design_id | default(None)) %}
+{% set parent_design_id = (parent_design_id | default(design.parent_design_id | default(None))) | string if (parent_design_id | default(design.parent_design_id | default(None))) else None %}
 {% set parent_design_name = parent_design_name | default(design.parent_design_name | default(None)) %}
 
 <div class="max-w-4xl mx-auto space-y-6" x-data="queryEditor()">
@@ -98,8 +98,8 @@
         </svg>
         <div class="flex-1">
             <p class="text-sm text-blue-800">
-                Start by giving your query design a name and description. After saving, you can add
-                search terms, actors, and configure arenas on the edit page.
+                Start by giving your query design a name and description, then add
+                search terms, source lists, and configure arenas below. All changes are saved automatically.
             </p>
         </div>
         <button type="button" @click="dismissed = true"
@@ -120,6 +120,7 @@
         <form method="POST"
               {% if is_edit %}
               action="/query-designs/{{ design_id }}/update"
+              x-data="metadataAutoSave('{{ design_id }}')"
               {% else %}
               action="/query-designs/form"
               {% endif %}
@@ -204,7 +205,7 @@
                         <option value="ru" {% if design.language | default('') == 'ru' %}selected{% endif %}>Russian (ru)</option>
                     </select>
                     <p class="text-xs text-gray-400 mt-1">
-                        Set additional languages in the "Languages" panel below after saving.
+                        Set additional languages in the "Languages" panel below.
                     </p>
                 </div>
 
@@ -222,12 +223,24 @@
             </div>
             {% else %}
             <div class="pt-4 border-t border-gray-200 mt-5 flex items-center justify-between">
-                <a href="/query-designs/{{ design_id }}"
-                   class="text-sm text-gray-500 hover:text-gray-700">Cancel</a>
-                <button type="submit"
-                        class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
-                    Save Changes
-                </button>
+                <a href="{% if project_id | default('') %}/projects/{{ project_id }}{% else %}/query-designs{% endif %}"
+                   class="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700">
+                    <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                         stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+                    </svg>
+                    Back to {% if project_id | default('') %}Project{% else %}Query Designs{% endif %}
+                </a>
+                <div class="flex items-center gap-2">
+                    <span x-show="metaSaved" x-cloak
+                          x-transition:enter="transition ease-out duration-150"
+                          x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+                          x-transition:leave="transition ease-in duration-300"
+                          x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+                          class="text-xs text-green-600 font-medium">Saved</span>
+                    <span x-show="metaSaving" x-cloak class="text-xs text-gray-400">Saving...</span>
+                    <span x-show="metaError" x-cloak class="text-xs text-red-500" x-text="metaError"></span>
+                </div>
             </div>
             {% endif %}
         </form>
@@ -255,6 +268,16 @@
                         :class="bulkMode ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'">
                     <span x-text="bulkMode ? 'Single Term' : 'Bulk Add'"></span>
                 </button>
+                {% if is_edit %}
+                <button type="button"
+                        hx-delete="/query-designs/{{ design_id }}/terms"
+                        hx-target="#terms-list"
+                        hx-swap="outerHTML"
+                        hx-confirm="Remove ALL search terms from this design? This cannot be undone."
+                        class="text-xs font-medium rounded px-2 py-1 bg-red-50 text-red-600 hover:bg-red-100 transition-colors">
+                    Remove All
+                </button>
+                {% endif %}
                 <span class="text-xs text-gray-400" id="term-count">{{ terms | length }} term{% if terms | length != 1 %}s{% endif %}</span>
             </div>
         </div>
@@ -727,247 +750,22 @@
     </div>
     {% endif %}
 
-    {# Actor list panel #}
-    <div class="bg-white rounded-lg shadow p-6">
-        <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4">
+    {# Actor tracking note — source lists have replaced the old Actor List panel #}
+    <div class="bg-white rounded-lg shadow p-4">
+        <div class="flex items-start gap-3">
+            <svg class="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+            </svg>
             <div>
-                <h2 class="text-sm font-semibold text-gray-900">Actor List</h2>
-                <p class="text-xs text-gray-400 mt-0.5">Specific accounts or people to track across arenas</p>
-            </div>
-            <span class="text-xs text-gray-400" id="actor-count">{{ actors | length }} actor{% if actors | length != 1 %}s{% endif %}</span>
-        </div>
-
-        {# Add actor form with bulk import toggle #}
-        <div x-data="{ bulkMode: false }" class="mb-4">
-            {# Toggle between single and bulk #}
-            <div class="flex items-center gap-2 mb-3">
-                <button type="button"
-                        @click="bulkMode = false"
-                        :class="!bulkMode ? 'bg-gray-200 text-gray-900' : 'text-gray-500 hover:text-gray-700'"
-                        class="px-3 py-1.5 text-xs font-medium rounded transition-colors">
-                    Single Add
-                </button>
-                <button type="button"
-                        @click="bulkMode = true"
-                        :class="bulkMode ? 'bg-gray-200 text-gray-900' : 'text-gray-500 hover:text-gray-700'"
-                        class="px-3 py-1.5 text-xs font-medium rounded transition-colors">
-                    Bulk Add
-                </button>
-            </div>
-
-            {# Single actor form #}
-            <form x-show="!bulkMode"
-                  hx-post="/query-designs/{{ design_id }}/actors"
-                  hx-target="#actors-list"
-                  hx-swap="beforeend"
-                  hx-on::after-request="if(event.detail.successful){ this.reset(); document.getElementById('new-actor-input').focus(); }"
-                  class="flex gap-2">
-                <select name="actor_type"
-                        class="border border-gray-300 rounded px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white flex-shrink-0">
-                    <option value="person">Person</option>
-                    <option value="organization">Organization</option>
-                    <option value="political_party">Political party</option>
-                    <option value="educational_institution">Educational institution</option>
-                    <option value="teachers_union">Teachers' union</option>
-                    <option value="think_tank">Think tank</option>
-                    <option value="media_outlet">Media outlet</option>
-                    <option value="government_body">Government body</option>
-                    <option value="ngo">NGO</option>
-                    <option value="company">Company</option>
-                    <option value="unknown">Unknown</option>
-                </select>
-                <input type="text"
-                       id="new-actor-input"
-                       name="name"
-                       required
-                       placeholder="Actor name or handle..."
-                       autocomplete="off"
-                       class="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                <button type="submit"
-                        class="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded hover:bg-gray-200 transition-colors flex-shrink-0">
-                    <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                         stroke="currentColor" stroke-width="2" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-                    </svg>
-                    Add
-                </button>
-            </form>
-
-            {# Bulk actor import panel #}
-            <div x-show="bulkMode" x-data="bulkActorImport()" class="space-y-3">
-                <div>
-                    <textarea x-model="bulkInput"
-                              id="bulk-actors-input"
-                              rows="8"
-                              placeholder="Enter actors, one per line. Supports two formats:&#10;&#10;Simple (defaults to person type):&#10;Lars Løkke Rasmussen&#10;Mette Frederiksen&#10;&#10;Structured (name | type):&#10;Lars Løkke Rasmussen | person&#10;Socialdemokratiet | political_party&#10;DR | media_outlet&#10;&#10;Empty lines and lines starting with # are ignored."
-                              class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono"></textarea>
-                </div>
-
-                {# Action buttons and status #}
-                <div class="flex items-center gap-3">
-                    <button type="button"
-                            @click="bulkInput = ''; bulkError = null"
-                            :disabled="!bulkInput.trim() || importing"
-                            class="px-3 py-2 text-sm text-gray-600 hover:text-gray-800 transition-colors disabled:opacity-50">
-                        Clear
-                    </button>
-
-                    <button type="button"
-                            @click="submitBulkActors()"
-                            :disabled="!bulkInput.trim() || importing"
-                            class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                        <svg x-show="importing" class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg"
-                             fill="none" viewBox="0 0 24 24" aria-hidden="true">
-                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                        </svg>
-                        <span x-show="!importing">Import Actors</span>
-                        <span x-show="importing">Importing...</span>
-                    </button>
-
-                    <div class="flex-1"></div>
-
-                    {# Status messages #}
-                    <span x-show="bulkSuccess" x-cloak
-                          x-transition:enter="transition ease-out duration-150"
-                          x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-                          x-transition:leave="transition ease-in duration-300"
-                          x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
-                          class="text-sm text-green-700 font-medium"
-                          x-text="bulkSuccess"></span>
-                    <span x-show="bulkError" x-cloak class="text-sm text-red-600" x-text="bulkError"></span>
-                </div>
-            </div>
-
-            {# Format help text #}
-            <div x-show="bulkMode" class="rounded-md bg-blue-50 border border-blue-100 px-3 py-2.5 text-xs text-blue-900 space-y-1.5">
-                <p class="font-semibold">Two input formats supported:</p>
-                <div class="pl-3 space-y-1">
-                    <p><span class="font-medium">Simple:</span> One actor name per line (defaults to "person" type)</p>
-                    <p><span class="font-medium">Structured:</span> <code class="bg-blue-100 px-1 rounded">name | type</code></p>
-                </div>
-                <p class="pt-1"><span class="font-medium">Valid types:</span> person, organization, political_party, educational_institution, teachers_union, think_tank, media_outlet, government_body, ngo, company, unknown</p>
-                <p class="pt-1"><span class="font-medium">Example:</span></p>
-                <div class="pl-3 font-mono text-xs bg-blue-100 rounded px-2 py-1.5 space-y-0.5">
-                    <p>Lars Løkke Rasmussen | person</p>
-                    <p>Socialdemokratiet | political_party</p>
-                    <p>DR | media_outlet</p>
-                    <p>Undervisningsministeriet | government_body</p>
-                </div>
-                <p class="pt-1 text-blue-700">Lines starting with <code class="bg-blue-100 px-1 rounded">#</code> are ignored as comments. Empty lines are skipped.</p>
+                <p class="text-sm font-medium text-gray-900">Tracking specific accounts?</p>
+                <p class="text-xs text-gray-500 mt-0.5">
+                    Add accounts directly in each platform's source list below.
+                    To discover new accounts via snowball sampling, use the
+                    <a href="/actors" class="text-blue-600 hover:text-blue-800 underline">Actor Workbench</a>.
+                </p>
             </div>
         </div>
-
-        {# Actors list #}
-        {% if actors %}
-        <ul class="space-y-1.5" id="actors-list">
-            {% for actor in actors %}
-            <li id="actor-{{ actor.id }}"
-                class="flex items-center justify-between gap-3 py-2 px-3 rounded-md bg-gray-50 border border-gray-200 group">
-                <div class="flex items-center gap-2 min-w-0">
-                    {# Type badge #}
-                    {% set atype = actor.type | default('account') %}
-                    {% if atype == 'person' %}
-                        <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 flex-shrink-0">Person</span>
-                    {% elif atype == 'organisation' %}
-                        <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700 flex-shrink-0">Org</span>
-                    {% elif atype == 'media_outlet' %}
-                        <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700 flex-shrink-0">Media</span>
-                    {% else %}
-                        <span class="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600 flex-shrink-0">Account</span>
-                    {% endif %}
-                    <span class="text-sm text-gray-900 font-medium truncate">{{ actor.name | default('') }}</span>
-                    {% if actor.actor_id is defined %}
-                    <a href="/actors/{{ actor.actor_id }}"
-                       class="text-xs text-blue-500 hover:text-blue-700 flex-shrink-0"
-                       title="View actor profile">Profile</a>
-                    <span class="text-gray-300 flex-shrink-0">|</span>
-                    {# YF-16: Inline expandable presence form #}
-                    <button type="button"
-                            onclick="document.getElementById('presence-form-{{ actor.id }}').style.display = document.getElementById('presence-form-{{ actor.id }}').style.display === 'none' ? 'block' : 'none'"
-                            class="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 hover:underline flex-shrink-0"
-                            title="Add platform presence inline">
-                        <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                             stroke="currentColor" stroke-width="2" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-                        </svg>
-                        Add presence
-                    </button>
-                    {% endif %}
-                </div>
-                <button type="button"
-                        hx-delete="/query-designs/{{ design_id }}/actors/{{ actor.id }}"
-                        hx-target="#actor-{{ actor.id }}"
-                        hx-swap="outerHTML"
-                        hx-confirm="Remove '{{ actor.name | default('') }}' from this actor list?"
-                        class="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50"
-                        aria-label="Remove actor">
-                    <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                         stroke="currentColor" stroke-width="2" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round"
-                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                    </svg>
-                </button>
-            </li>
-            {# YF-16: Inline presence form (hidden by default) #}
-            {% if actor.actor_id is defined %}
-            <li id="presence-form-{{ actor.id }}"
-                style="display: none;"
-                class="bg-blue-50 border border-blue-200 rounded-md p-3 ml-8 mt-1 mb-2">
-                <form hx-post="/actors/{{ actor.actor_id }}/presences"
-                      hx-on::after-request="if(event.detail.successful){ this.reset(); document.getElementById('presence-form-{{ actor.id }}').style.display = 'none'; }"
-                      class="flex items-end gap-2">
-                    <div class="flex-1 grid grid-cols-2 gap-2">
-                        <div>
-                            <label class="block text-xs font-medium text-gray-700 mb-1">Platform</label>
-                            <select name="platform" required
-                                    class="w-full border border-gray-300 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white">
-                                <option value="">Select...</option>
-                                <option value="bluesky">Bluesky</option>
-                                <option value="reddit">Reddit</option>
-                                <option value="youtube">YouTube</option>
-                                <option value="telegram">Telegram</option>
-                                <option value="tiktok">TikTok</option>
-                                <option value="twitter">Twitter/X</option>
-                                <option value="facebook">Facebook</option>
-                                <option value="instagram">Instagram</option>
-                                <option value="gab">Gab</option>
-                                <option value="linkedin">LinkedIn (manual import only)</option>
-                                <option value="threads">Threads</option>
-                                <option value="other">Other</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-medium text-gray-700 mb-1">Username</label>
-                            <input type="text" name="username" required
-                                   placeholder="@handle or channel ID"
-                                   class="w-full border border-gray-300 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
-                        </div>
-                    </div>
-                    <button type="submit"
-                            class="inline-flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded hover:bg-blue-700 transition-colors flex-shrink-0">
-                        <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                             stroke="currentColor" stroke-width="2" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
-                        </svg>
-                        Add
-                    </button>
-                    <button type="button"
-                            onclick="document.getElementById('presence-form-{{ actor.id }}').style.display = 'none'"
-                            class="text-xs text-gray-500 hover:text-gray-700 px-2 py-1.5">
-                        Cancel
-                    </button>
-                </form>
-            </li>
-            {% endif %}
-            {% endfor %}
-        </ul>
-        {% else %}
-        <ul class="space-y-1.5" id="actors-list"></ul>
-        <p class="text-sm text-gray-400 text-center py-6">
-            No actors in this list. Add specific accounts or people to track above.
-        </p>
-        {% endif %}
     </div>
 
     {#
@@ -1105,7 +903,7 @@
                         {# Enable/disable toggle #}
                         <td class="py-3 pr-4">
                             <button type="button"
-                                    @click="toggleArena(arena); scheduleEstimate()"
+                                    @click="toggleArena(arena); scheduleEstimate(); scheduleSaveConfig()"
                                     :class="arena.enabled
                                         ? 'bg-blue-600'
                                         : 'bg-gray-200'"
@@ -1133,7 +931,7 @@
                                                :name="'tier_' + arena.id"
                                                :value="t"
                                                x-model="arena.tier"
-                                               @change="scheduleEstimate()"
+                                               @change="scheduleEstimate(); scheduleSaveConfig()"
                                                :disabled="!arena.enabled || !arena.supportedTiers.includes(t)"
                                                class="text-blue-600 focus:ring-blue-500">
                                         <span class="text-xs capitalize"
@@ -1170,8 +968,9 @@
             </div>
         </div>
 
-        {# Save arena config button with success feedback #}
-        <div class="mt-4 flex items-center justify-end gap-3">
+        {# Auto-save feedback for arena config #}
+        <div class="mt-4 flex items-center justify-end gap-2">
+            <span x-show="_saving" x-cloak class="text-xs text-gray-400">Saving...</span>
             <span x-show="_saved"
                   x-cloak
                   x-transition:enter="transition ease-out duration-150"
@@ -1180,25 +979,14 @@
                   x-transition:leave="transition ease-in duration-300"
                   x-transition:leave-start="opacity-100"
                   x-transition:leave-end="opacity-0"
-                  class="text-sm text-green-700 font-medium">
+                  class="text-xs text-green-600 font-medium">
                 Saved
             </span>
             <span x-show="_saveError"
                   x-cloak
-                  class="text-sm text-red-600">
+                  class="text-xs text-red-500">
                 Save failed — please try again.
             </span>
-            <button type="button"
-                    @click="saveConfig()"
-                    :disabled="_saving"
-                    class="inline-flex items-center gap-2 px-4 py-2 bg-gray-800 text-white text-sm font-medium rounded-md hover:bg-gray-700 transition-colors disabled:opacity-50">
-                <svg x-show="_saving" class="animate-spin w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg"
-                     fill="none" viewBox="0 0 24 24" aria-hidden="true">
-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                </svg>
-                Save Arena Config
-            </button>
         </div>
 
         {# YF-02: Info box about source-list arenas #}
@@ -1218,40 +1006,22 @@
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
                             </svg>
                             Config
-                        </span> need you to specify which sources to monitor. Configure them in the panels below (Telegram, Reddit, RSS, Discord, Wikipedia).
-                        Facebook and Instagram are actor-only arenas: keyword search is not supported. Add Facebook pages/groups and Instagram profiles
-                        in the <a href="/actors" class="underline">Actor Directory</a> to collect from them.
+                        </span> need you to specify which sources to monitor. Configure them in the panels below.
+                        For actor-only arenas (Facebook, Instagram), source lists are the primary way to specify which accounts to collect from.
+                        For dual-mode arenas (Bluesky, X/Twitter, YouTube, etc.), keyword search and account source lists work together.
+                        Discovered accounts can also be ported into these lists from the <a href="/actors" class="underline">Actor Workbench</a>.
                     </p>
                 </div>
             </div>
         </div>
     </div>
 
-    {#
-        GR-01 through GR-05 / YF-02 — Per-arena custom source panels + multi-language selector.
-
-        These panels are only rendered in edit mode (design_id is required for
-        PATCH /query-designs/{design_id}/arena-config/{arena_name} calls).
-
-        Each panel:
-          - Is collapsed by default; expands on "Configure" click.
-          - Uses Alpine.js for show/hide and local list state.
-          - Uses HTMX PATCH to persist changes (routes added by Core Engineer).
-          - Sends JSON via hx-vals (Alpine-serialised) or a hidden form field.
-          - Shows only when the relevant arena is enabled in arenaConfigGrid.
-
-        Arena enabled detection: each panel reads window.__arenaEnabled(name)
-        which is populated by the arenaConfigGrid Alpine component via a tiny
-        bridge set during init().  If the function is unavailable the panel is
-        shown unconditionally so researchers can still configure it even before
-        the grid loads.
-    #}
 
     {# ------------------------------------------------------------------ #}
     {# GR-05 — Multi-language selector                                    #}
     {# ------------------------------------------------------------------ #}
     <div class="bg-white rounded-lg shadow p-6"
-         x-data="languageSelector('{{ design_id }}', {{ ((design.arenas_config or {}).get('global', {}).get('languages', ['da'])) | tojson }})">
+         x-data='languageSelector("{{ design_id }}", {{ ((design.arenas_config or {}).get("global", {}).get("languages", ["da"])) | tojson }})'>
 
         <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
              @click="open = !open">
@@ -1323,733 +1093,25 @@
         </div>
     </div>
 
-    {# ------------------------------------------------------------------ #}
-    {# GR-01 — RSS: custom feeds panel                                    #}
-    {# ------------------------------------------------------------------ #}
-    <div id="config-rss_feeds" class="bg-white rounded-lg shadow p-6"
-         x-data="arenaSourcePanel(
-             '{{ design_id }}',
-             'rss',
-             'custom_feeds',
-             {{ ((design.arenas_config or {}).get('rss', {}).get('custom_feeds', [])) | tojson }}
-         )">
-
-        <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
-             @click="open = !open">
-            <div class="flex-1">
-                <div class="flex items-center gap-2">
-                    <h2 class="text-sm font-semibold text-gray-900">RSS — Custom Feeds</h2>
-                    <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600"
-                          title="Source-list arena requiring configuration">
-                        <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                             stroke="currentColor" stroke-width="2" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round"
-                                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                        </svg>
-                        Requires setup
-                    </span>
-                </div>
-                <p class="text-xs text-gray-400 mt-0.5">Additional RSS/Atom feeds beyond the 30+ Danish defaults</p>
-            </div>
-            <div class="flex items-center gap-2">
-                <span x-show="items.length > 0"
-                      class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700"
-                      x-text="items.length + ' custom'"></span>
-                <svg class="w-4 h-4 text-gray-400 transition-transform"
-                     :class="open ? 'rotate-180' : ''"
-                     xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                     stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
-                </svg>
-            </div>
-        </div>
-
-        <div x-show="open"
-             x-transition:enter="transition ease-out duration-150"
-             x-transition:enter-start="opacity-0 -translate-y-1"
-             x-transition:enter-end="opacity-100 translate-y-0"
-             x-transition:leave="transition ease-in duration-100"
-             x-transition:leave-start="opacity-100 translate-y-0"
-             x-transition:leave-end="opacity-0 -translate-y-1">
-            <p class="text-xs text-gray-500 mb-3">
-                Add news feeds beyond the 30+ Danish defaults — e.g., <code class="bg-gray-100 px-1 rounded">https://sermitsiaq.ag/rss</code>,
-                <code class="bg-gray-100 px-1 rounded">https://knr.gl/da/rss.xml</code>.
-                Paste the full feed URL including <code class="bg-gray-100 px-1 rounded">https://</code>.
-            </p>
-
-            {# Add input row #}
-            <div class="flex gap-2 mb-4">
-                <input type="url"
-                       x-model="newItem"
-                       @keydown.enter.prevent="addItem()"
-                       placeholder="https://example.com/feed.xml"
-                       class="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                <button type="button"
-                        @click="addItem()"
-                        :disabled="!newItem.trim() || saving"
-                        class="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded hover:bg-gray-200 transition-colors disabled:opacity-50 flex-shrink-0">
-                    <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                         stroke="currentColor" stroke-width="2" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-                    </svg>
-                    Add Feed
-                </button>
-            </div>
-
-            {# Items list #}
-            <ul class="space-y-1.5 mb-3" x-show="items.length > 0">
-                <template x-for="(item, idx) in items" :key="idx">
-                    <li class="flex items-center justify-between gap-3 py-2 px-3 rounded-md bg-gray-50 border border-gray-200 group">
-                        <span class="text-sm text-gray-800 font-mono truncate" x-text="item"></span>
-                        <button type="button"
-                                @click="removeItem(idx)"
-                                :disabled="saving"
-                                class="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-30"
-                                aria-label="Remove feed">
-                            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                                 stroke="currentColor" stroke-width="2" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round"
-                                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                            </svg>
-                        </button>
-                    </li>
-                </template>
-            </ul>
-            <p x-show="items.length === 0" class="text-sm text-gray-400 text-center py-3">
-                No custom feeds added. The default Danish RSS feed list will be used.
-            </p>
-
-            <div class="flex items-center gap-3 pt-2 border-t border-gray-100">
-                <span x-show="savedOk" x-cloak
-                      x-transition:enter="transition ease-out duration-150"
-                      x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-                      x-transition:leave="transition ease-in duration-300"
-                      x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
-                      class="text-sm text-green-700 font-medium">Saved</span>
-                <span x-show="saveError" x-cloak class="text-sm text-red-600" x-text="saveError"></span>
-            </div>
-
-            {# YF-12: RSS feed list preview #}
-            <div class="mt-4 pt-4 border-t border-gray-100">
-                <div x-data="rssFeedViewer()" x-init="loadFeeds()">
-                    <div class="flex items-center justify-between mb-2">
-                        <h3 class="text-xs font-semibold text-gray-700">Default Danish RSS Feeds</h3>
-                        <span x-show="feeds.length > 0"
-                              class="text-xs text-gray-400"
-                              x-text="filteredFeeds.length + ' of ' + feeds.length + ' feeds'"></span>
-                    </div>
-
-                    {# Search input #}
-                    <div class="mb-2">
-                        <div class="relative">
-                            <svg class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none"
-                                 xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                                 stroke="currentColor" stroke-width="2" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0"/>
-                            </svg>
-                            <input type="text"
-                                   x-model="searchQuery"
-                                   placeholder="Search feeds by outlet name or URL..."
-                                   class="w-full pl-7 pr-3 py-1.5 text-xs border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-blue-400 focus:border-transparent">
-                        </div>
-                    </div>
-
-                    {# Feed list #}
-                    <div x-show="loading" class="text-xs text-gray-400 italic py-3 text-center">
-                        Loading feeds...
-                    </div>
-                    <div x-show="!loading && feeds.length === 0" class="text-xs text-gray-400 italic py-3 text-center">
-                        No feeds available
-                    </div>
-                    <div x-show="!loading && feeds.length > 0" class="max-h-64 overflow-y-auto border border-gray-200 rounded">
-                        <table class="min-w-full text-xs">
-                            <thead class="bg-gray-50 sticky top-0">
-                                <tr>
-                                    <th class="text-left px-2 py-1.5 text-xs font-medium text-gray-500">Outlet</th>
-                                    <th class="text-left px-2 py-1.5 text-xs font-medium text-gray-500">Feed URL</th>
-                                </tr>
-                            </thead>
-                            <tbody class="bg-white divide-y divide-gray-100">
-                                <template x-for="feed in filteredFeeds" :key="feed.key">
-                                    <tr class="hover:bg-gray-50">
-                                        <td class="px-2 py-1.5 text-gray-700 font-medium whitespace-nowrap" x-text="feed.name"></td>
-                                        <td class="px-2 py-1.5">
-                                            <a :href="feed.url" target="_blank" rel="noopener noreferrer"
-                                               class="text-blue-600 hover:text-blue-800 hover:underline font-mono text-xs truncate block max-w-xs"
-                                               :title="feed.url"
-                                               x-text="feed.url">
-                                            </a>
-                                        </td>
-                                    </tr>
-                                </template>
-                            </tbody>
-                        </table>
-                    </div>
-                    <div x-show="!loading && feeds.length > 0 && filteredFeeds.length === 0" class="text-xs text-gray-400 italic py-3 text-center border border-gray-200 rounded">
-                        No feeds match your search
-                    </div>
-                </div>
+    {# Source lists are now managed at the project level #}
+    {% if is_edit and design.project_id %}
+    <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <div class="flex items-start gap-3">
+            <svg class="w-5 h-5 text-blue-500 mt-0.5 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                 stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <div>
+                <h3 class="text-sm font-semibold text-blue-900">Source lists have moved</h3>
+                <p class="text-sm text-blue-700 mt-1">
+                    Custom source lists (RSS feeds, social accounts, subreddits, etc.) are now configured at the 
+                    <a href="/projects/{{ design.project_id }}" class="font-medium underline hover:text-blue-900">project level</a>.
+                    All query designs in the same project share the same source lists.
+                </p>
             </div>
         </div>
     </div>
-
-    {# ------------------------------------------------------------------ #}
-    {# GR-02 — Telegram: custom channels panel                            #}
-    {# ------------------------------------------------------------------ #}
-    <div id="config-telegram" class="bg-white rounded-lg shadow p-6"
-         x-data="arenaSourcePanel(
-             '{{ design_id }}',
-             'telegram',
-             'custom_channels',
-             {{ ((design.arenas_config or {}).get('telegram', {}).get('custom_channels', [])) | tojson }}
-         )">
-
-        <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
-             @click="open = !open">
-            <div class="flex-1">
-                <div class="flex items-center gap-2">
-                    <h2 class="text-sm font-semibold text-gray-900">Telegram — Custom Channels</h2>
-                    <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600"
-                          title="Source-list arena requiring configuration">
-                        <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                             stroke="currentColor" stroke-width="2" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round"
-                                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                        </svg>
-                        Requires setup
-                    </span>
-                </div>
-                <p class="text-xs text-gray-400 mt-0.5">Additional public channels to monitor beyond default Danish channels</p>
-            </div>
-            <div class="flex items-center gap-2">
-                <span x-show="items.length > 0"
-                      class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700"
-                      x-text="items.length + ' custom'"></span>
-                <svg class="w-4 h-4 text-gray-400 transition-transform"
-                     :class="open ? 'rotate-180' : ''"
-                     xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                     stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
-                </svg>
-            </div>
-        </div>
-
-        <div x-show="open"
-             x-transition:enter="transition ease-out duration-150"
-             x-transition:enter-start="opacity-0 -translate-y-1"
-             x-transition:enter-end="opacity-100 translate-y-0"
-             x-transition:leave="transition ease-in duration-100"
-             x-transition:leave-start="opacity-100 translate-y-0"
-             x-transition:leave-end="opacity-0 -translate-y-1">
-            <p class="text-xs text-gray-500 mb-3">
-                Enter the public channel username without the <code class="bg-gray-100 px-1 rounded">@</code> prefix —
-                e.g., <code class="bg-gray-100 px-1 rounded">gronlandnyt</code>,
-                <code class="bg-gray-100 px-1 rounded">naalakkersuisut</code>.
-                The channel must be public and accessible without an invite link.
-            </p>
-
-            <div class="flex gap-2 mb-4">
-                <input type="text"
-                       x-model="newItem"
-                       @keydown.enter.prevent="addItem()"
-                       placeholder="channel_username"
-                       autocomplete="off"
-                       class="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                <button type="button"
-                        @click="addItem()"
-                        :disabled="!newItem.trim() || saving"
-                        class="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded hover:bg-gray-200 transition-colors disabled:opacity-50 flex-shrink-0">
-                    <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                         stroke="currentColor" stroke-width="2" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-                    </svg>
-                    Add Channel
-                </button>
-            </div>
-
-            <ul class="space-y-1.5 mb-3" x-show="items.length > 0">
-                <template x-for="(item, idx) in items" :key="idx">
-                    <li class="flex items-center justify-between gap-3 py-2 px-3 rounded-md bg-gray-50 border border-gray-200 group">
-                        <span class="text-sm text-gray-800 font-mono truncate"
-                              x-text="'@' + item"></span>
-                        <button type="button"
-                                @click="removeItem(idx)"
-                                :disabled="saving"
-                                class="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-30"
-                                aria-label="Remove channel">
-                            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                                 stroke="currentColor" stroke-width="2" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round"
-                                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                            </svg>
-                        </button>
-                    </li>
-                </template>
-            </ul>
-            <p x-show="items.length === 0" class="text-sm text-gray-400 text-center py-3">
-                No custom channels added. Only channels discovered via keyword search will be monitored.
-            </p>
-
-            <div class="flex items-center gap-3 pt-2 border-t border-gray-100">
-                <span x-show="savedOk" x-cloak
-                      x-transition:enter="transition ease-out duration-150"
-                      x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-                      x-transition:leave="transition ease-in duration-300"
-                      x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
-                      class="text-sm text-green-700 font-medium">Saved</span>
-                <span x-show="saveError" x-cloak class="text-sm text-red-600" x-text="saveError"></span>
-            </div>
-        </div>
-    </div>
-
-    {# ------------------------------------------------------------------ #}
-    {# GR-03 — Reddit: custom subreddits panel                            #}
-    {# ------------------------------------------------------------------ #}
-    <div id="config-reddit" class="bg-white rounded-lg shadow p-6"
-         x-data="arenaSourcePanel(
-             '{{ design_id }}',
-             'reddit',
-             'custom_subreddits',
-             {{ ((design.arenas_config or {}).get('reddit', {}).get('custom_subreddits', [])) | tojson }}
-         )">
-
-        <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
-             @click="open = !open">
-            <div class="flex-1">
-                <div class="flex items-center gap-2">
-                    <h2 class="text-sm font-semibold text-gray-900">Reddit — Custom Subreddits</h2>
-                    <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600"
-                          title="Source-list arena requiring configuration">
-                        <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                             stroke="currentColor" stroke-width="2" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round"
-                                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                        </svg>
-                        Requires setup
-                    </span>
-                </div>
-                <p class="text-xs text-gray-400 mt-0.5">Additional subreddits beyond r/Denmark, r/danish, r/copenhagen, r/aarhus, r/dkpolitik</p>
-            </div>
-            <div class="flex items-center gap-2">
-                <span x-show="items.length > 0"
-                      class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700"
-                      x-text="items.length + ' custom'"></span>
-                <svg class="w-4 h-4 text-gray-400 transition-transform"
-                     :class="open ? 'rotate-180' : ''"
-                     xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                     stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
-                </svg>
-            </div>
-        </div>
-
-        <div x-show="open"
-             x-transition:enter="transition ease-out duration-150"
-             x-transition:enter-start="opacity-0 -translate-y-1"
-             x-transition:enter-end="opacity-100 translate-y-0"
-             x-transition:leave="transition ease-in duration-100"
-             x-transition:leave-start="opacity-100 translate-y-0"
-             x-transition:leave-end="opacity-0 -translate-y-1">
-            <p class="text-xs text-gray-500 mb-3">
-                Enter the subreddit name without the <code class="bg-gray-100 px-1 rounded">r/</code> prefix —
-                e.g., <code class="bg-gray-100 px-1 rounded">Greenland</code>,
-                <code class="bg-gray-100 px-1 rounded">Denmark</code>,
-                <code class="bg-gray-100 px-1 rounded">scandinavia</code>.
-                All posts matching your search terms will be collected from these subreddits.
-            </p>
-
-            <div class="flex gap-2 mb-4">
-                <div class="flex items-center border border-gray-300 rounded overflow-hidden flex-1 focus-within:ring-2 focus-within:ring-blue-500">
-                    <span class="px-2 text-sm text-gray-400 bg-gray-50 border-r border-gray-300 select-none">r/</span>
-                    <input type="text"
-                           x-model="newItem"
-                           @keydown.enter.prevent="addItem()"
-                           placeholder="subreddit_name"
-                           autocomplete="off"
-                           class="flex-1 px-3 py-2 text-sm focus:outline-none bg-white">
-                </div>
-                <button type="button"
-                        @click="addItem()"
-                        :disabled="!newItem.trim() || saving"
-                        class="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded hover:bg-gray-200 transition-colors disabled:opacity-50 flex-shrink-0">
-                    <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                         stroke="currentColor" stroke-width="2" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-                    </svg>
-                    Add Subreddit
-                </button>
-            </div>
-
-            <ul class="space-y-1.5 mb-3" x-show="items.length > 0">
-                <template x-for="(item, idx) in items" :key="idx">
-                    <li class="flex items-center justify-between gap-3 py-2 px-3 rounded-md bg-gray-50 border border-gray-200 group">
-                        <span class="text-sm text-gray-800 font-mono truncate"
-                              x-text="'r/' + item"></span>
-                        <button type="button"
-                                @click="removeItem(idx)"
-                                :disabled="saving"
-                                class="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-30"
-                                aria-label="Remove subreddit">
-                            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                                 stroke="currentColor" stroke-width="2" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round"
-                                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                            </svg>
-                        </button>
-                    </li>
-                </template>
-            </ul>
-            <p x-show="items.length === 0" class="text-sm text-gray-400 text-center py-3">
-                No custom subreddits added. Only keyword search results will be collected.
-            </p>
-
-            <div class="flex items-center gap-3 pt-2 border-t border-gray-100">
-                <span x-show="savedOk" x-cloak
-                      x-transition:enter="transition ease-out duration-150"
-                      x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-                      x-transition:leave="transition ease-in duration-300"
-                      x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
-                      class="text-sm text-green-700 font-medium">Saved</span>
-                <span x-show="saveError" x-cloak class="text-sm text-red-600" x-text="saveError"></span>
-            </div>
-        </div>
-    </div>
-
-    {# ------------------------------------------------------------------ #}
-    {# GR-04a — Discord: custom channel IDs panel                         #}
-    {# ------------------------------------------------------------------ #}
-    <div id="config-discord" class="bg-white rounded-lg shadow p-6"
-         x-data="arenaSourcePanel(
-             '{{ design_id }}',
-             'discord',
-             'custom_channel_ids',
-             {{ ((design.arenas_config or {}).get('discord', {}).get('custom_channel_ids', [])) | tojson }}
-         )">
-
-        <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
-             @click="open = !open">
-            <div class="flex-1">
-                <div class="flex items-center gap-2">
-                    <h2 class="text-sm font-semibold text-gray-900">Discord — Custom Channel IDs</h2>
-                    <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600"
-                          title="Source-list arena requiring configuration">
-                        <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                             stroke="currentColor" stroke-width="2" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round"
-                                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                        </svg>
-                        Requires setup
-                    </span>
-                </div>
-                <p class="text-xs text-gray-400 mt-0.5">Specific Discord channels to monitor (requires Bot Token credentials)</p>
-            </div>
-            <div class="flex items-center gap-2">
-                <span x-show="items.length > 0"
-                      class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700"
-                      x-text="items.length + ' channel' + (items.length === 1 ? '' : 's')"></span>
-                <svg class="w-4 h-4 text-gray-400 transition-transform"
-                     :class="open ? 'rotate-180' : ''"
-                     xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                     stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
-                </svg>
-            </div>
-        </div>
-
-        <div x-show="open"
-             x-transition:enter="transition ease-out duration-150"
-             x-transition:enter-start="opacity-0 -translate-y-1"
-             x-transition:enter-end="opacity-100 translate-y-0"
-             x-transition:leave="transition ease-in duration-100"
-             x-transition:leave-start="opacity-100 translate-y-0"
-             x-transition:leave-end="opacity-0 -translate-y-1">
-            <p class="text-xs text-gray-500 mb-3">
-                Enter the Discord channel snowflake ID (a long numeric string) — e.g.,
-                <code class="bg-gray-100 px-1 rounded">1234567890123456789</code>.
-                Enable Developer Mode in Discord (User Settings &rarr; Advanced) then right-click any
-                channel and choose "Copy Channel ID". The bot must already be a member of the server.
-            </p>
-
-            <div class="flex gap-2 mb-4">
-                <input type="text"
-                       x-model="newItem"
-                       @keydown.enter.prevent="addItem()"
-                       placeholder="1234567890123456789"
-                       inputmode="numeric"
-                       pattern="[0-9]*"
-                       autocomplete="off"
-                       class="flex-1 border border-gray-300 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                <button type="button"
-                        @click="addItem()"
-                        :disabled="!newItem.trim() || saving"
-                        class="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded hover:bg-gray-200 transition-colors disabled:opacity-50 flex-shrink-0">
-                    <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                         stroke="currentColor" stroke-width="2" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-                    </svg>
-                    Add Channel
-                </button>
-            </div>
-
-            <ul class="space-y-1.5 mb-3" x-show="items.length > 0">
-                <template x-for="(item, idx) in items" :key="idx">
-                    <li class="flex items-center justify-between gap-3 py-2 px-3 rounded-md bg-gray-50 border border-gray-200 group">
-                        <span class="text-sm text-gray-800 font-mono truncate" x-text="item"></span>
-                        <button type="button"
-                                @click="removeItem(idx)"
-                                :disabled="saving"
-                                class="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-30"
-                                aria-label="Remove channel ID">
-                            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                                 stroke="currentColor" stroke-width="2" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round"
-                                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                            </svg>
-                        </button>
-                    </li>
-                </template>
-            </ul>
-            <p x-show="items.length === 0" class="text-sm text-gray-400 text-center py-3">
-                No channel IDs added. Add at least one channel ID for the Discord arena to collect data.
-            </p>
-
-            <div class="flex items-center gap-3 pt-2 border-t border-gray-100">
-                <span x-show="savedOk" x-cloak
-                      x-transition:enter="transition ease-out duration-150"
-                      x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-                      x-transition:leave="transition ease-in duration-300"
-                      x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
-                      class="text-sm text-green-700 font-medium">Saved</span>
-                <span x-show="saveError" x-cloak class="text-sm text-red-600" x-text="saveError"></span>
-            </div>
-        </div>
-    </div>
-
-    {# ------------------------------------------------------------------ #}
-    {# GR-04b — Wikipedia: custom seed articles panel                     #}
-    {# ------------------------------------------------------------------ #}
-    <div id="config-wikipedia" class="bg-white rounded-lg shadow p-6"
-         x-data="arenaSourcePanel(
-             '{{ design_id }}',
-             'wikipedia',
-             'seed_articles',
-             {{ ((design.arenas_config or {}).get('wikipedia', {}).get('seed_articles', [])) | tojson }}
-         )">
-
-        <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
-             @click="open = !open">
-            <div class="flex-1">
-                <div class="flex items-center gap-2">
-                    <h2 class="text-sm font-semibold text-gray-900">Wikipedia — Seed Articles</h2>
-                    <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600"
-                          title="Source-list arena requiring configuration">
-                        <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                             stroke="currentColor" stroke-width="2" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round"
-                                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                        </svg>
-                        Requires setup
-                    </span>
-                </div>
-                <p class="text-xs text-gray-400 mt-0.5">Wikipedia articles to monitor for editorial attention signals</p>
-            </div>
-            <div class="flex items-center gap-2">
-                <span x-show="items.length > 0"
-                      class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700"
-                      x-text="items.length + ' article' + (items.length === 1 ? '' : 's')"></span>
-                <svg class="w-4 h-4 text-gray-400 transition-transform"
-                     :class="open ? 'rotate-180' : ''"
-                     xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                     stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
-                </svg>
-            </div>
-        </div>
-
-        <div x-show="open"
-             x-transition:enter="transition ease-out duration-150"
-             x-transition:enter-start="opacity-0 -translate-y-1"
-             x-transition:enter-end="opacity-100 translate-y-0"
-             x-transition:leave="transition ease-in duration-100"
-             x-transition:leave-start="opacity-100 translate-y-0"
-             x-transition:leave-end="opacity-0 -translate-y-1">
-            <p class="text-xs text-gray-500 mb-3">
-                Enter the Wikipedia article title exactly as it appears in the URL — e.g.,
-                <code class="bg-gray-100 px-1 rounded">Gronland</code> (Danish),
-                <code class="bg-gray-100 px-1 rounded">Greenland</code> (English),
-                <code class="bg-gray-100 px-1 rounded">Kalaallit_Nunaat</code> (Greenlandic).
-                The arena will fetch article text and follow internal links for context mapping.
-            </p>
-
-            <div class="flex gap-2 mb-4">
-                <input type="text"
-                       x-model="newItem"
-                       @keydown.enter.prevent="addItem()"
-                       placeholder="Article_Title"
-                       autocomplete="off"
-                       class="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                <button type="button"
-                        @click="addItem()"
-                        :disabled="!newItem.trim() || saving"
-                        class="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded hover:bg-gray-200 transition-colors disabled:opacity-50 flex-shrink-0">
-                    <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                         stroke="currentColor" stroke-width="2" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-                    </svg>
-                    Add Article
-                </button>
-            </div>
-
-            <ul class="space-y-1.5 mb-3" x-show="items.length > 0">
-                <template x-for="(item, idx) in items" :key="idx">
-                    <li class="flex items-center justify-between gap-3 py-2 px-3 rounded-md bg-gray-50 border border-gray-200 group">
-                        <a :href="'https://en.wikipedia.org/wiki/' + encodeURIComponent(item)"
-                           target="_blank"
-                           rel="noopener noreferrer"
-                           class="text-sm text-blue-600 hover:text-blue-800 font-mono truncate"
-                           x-text="item"></a>
-                        <button type="button"
-                                @click="removeItem(idx)"
-                                :disabled="saving"
-                                class="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-30"
-                                aria-label="Remove article">
-                            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                                 stroke="currentColor" stroke-width="2" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round"
-                                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                            </svg>
-                        </button>
-                    </li>
-                </template>
-            </ul>
-            <p x-show="items.length === 0" class="text-sm text-gray-400 text-center py-3">
-                No seed articles added. The Wikipedia arena will use your search terms as article titles.
-            </p>
-
-            <div class="flex items-center gap-3 pt-2 border-t border-gray-100">
-                <span x-show="savedOk" x-cloak
-                      x-transition:enter="transition ease-out duration-150"
-                      x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-                      x-transition:leave="transition ease-in duration-300"
-                      x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
-                      class="text-sm text-green-700 font-medium">Saved</span>
-                <span x-show="saveError" x-cloak class="text-sm text-red-600" x-text="saveError"></span>
-            </div>
-        </div>
-    </div>
-
-    {# ------------------------------------------------------------------ #}
-    {# Domain Crawler — custom target domains panel                        #}
-    {# ------------------------------------------------------------------ #}
-    <div id="config-domain-crawler" class="bg-white rounded-lg shadow p-6"
-         x-data="arenaSourcePanel(
-             '{{ design_id }}',
-             'domain_crawler',
-             'target_domains',
-             {{ ((design.arenas_config or {}).get('domain_crawler', {}).get('target_domains', [])) | tojson }}
-         )">
-
-        <div class="flex items-center justify-between border-b border-gray-200 pb-3 mb-4 cursor-pointer"
-             @click="open = !open">
-            <div class="flex-1">
-                <div class="flex items-center gap-2">
-                    <h2 class="text-sm font-semibold text-gray-900">Domain Crawler — Target Domains</h2>
-                    <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600"
-                          title="Source-list arena requiring configuration">
-                        <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                             stroke="currentColor" stroke-width="2" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round"
-                                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                        </svg>
-                        Optional
-                    </span>
-                </div>
-                <p class="text-xs text-gray-400 mt-0.5">Additional web domains to crawl beyond the 13 default Danish news sites</p>
-            </div>
-            <div class="flex items-center gap-2">
-                <span x-show="items.length > 0"
-                      class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700"
-                      x-text="items.length + ' custom'"></span>
-                <svg class="w-4 h-4 text-gray-400 transition-transform"
-                     :class="open ? 'rotate-180' : ''"
-                     xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                     stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
-                </svg>
-            </div>
-        </div>
-
-        <div x-show="open"
-             x-transition:enter="transition ease-out duration-150"
-             x-transition:enter-start="opacity-0 -translate-y-1"
-             x-transition:enter-end="opacity-100 translate-y-0"
-             x-transition:leave="transition ease-in duration-100"
-             x-transition:leave-start="opacity-100 translate-y-0"
-             x-transition:leave-end="opacity-0 -translate-y-1">
-            <p class="text-xs text-gray-500 mb-3">
-                Enter bare domain names without <code class="bg-gray-100 px-1 rounded">https://</code> —
-                e.g., <code class="bg-gray-100 px-1 rounded">sermitsiaq.ag</code>,
-                <code class="bg-gray-100 px-1 rounded">knr.gl</code>.
-                The crawler fetches each domain's front page, discovers article links, and extracts full text.
-                Default domains (DR, TV2, Politiken, Berlingske, etc.) are always included.
-            </p>
-
-            <div class="flex gap-2 mb-4">
-                <input type="text"
-                       x-model="newItem"
-                       @keydown.enter.prevent="addItem()"
-                       placeholder="example.dk"
-                       autocomplete="off"
-                       class="flex-1 border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                <button type="button"
-                        @click="addItem()"
-                        :disabled="!newItem.trim() || saving"
-                        class="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded hover:bg-gray-200 transition-colors disabled:opacity-50 flex-shrink-0">
-                    <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                         stroke="currentColor" stroke-width="2" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-                    </svg>
-                    Add Domain
-                </button>
-            </div>
-
-            <ul class="space-y-1.5 mb-3" x-show="items.length > 0">
-                <template x-for="(item, idx) in items" :key="idx">
-                    <li class="flex items-center justify-between gap-3 py-2 px-3 rounded-md bg-gray-50 border border-gray-200 group">
-                        <a :href="'https://' + item"
-                           target="_blank"
-                           rel="noopener noreferrer"
-                           class="text-sm text-blue-600 hover:text-blue-800 font-mono truncate"
-                           x-text="item"></a>
-                        <button type="button"
-                                @click="removeItem(idx)"
-                                :disabled="saving"
-                                class="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-30"
-                                aria-label="Remove domain">
-                            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                                 stroke="currentColor" stroke-width="2" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round"
-                                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                            </svg>
-                        </button>
-                    </li>
-                </template>
-            </ul>
-            <p x-show="items.length === 0" class="text-sm text-gray-400 text-center py-3">
-                No custom domains added. The 13 default Danish news sites will still be crawled.
-            </p>
-
-            <div class="flex items-center gap-3 pt-2 border-t border-gray-100">
-                <span x-show="savedOk" x-cloak
-                      x-transition:enter="transition ease-out duration-150"
-                      x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-                      x-transition:leave="transition ease-in duration-300"
-                      x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
-                      class="text-sm text-green-700 font-medium">Saved</span>
-                <span x-show="saveError" x-cloak class="text-sm text-red-600" x-text="saveError"></span>
-            </div>
-        </div>
-    </div>
+    {% endif %}
 
     {% endif %}{# /is_edit #}
 
@@ -2077,7 +1139,7 @@
  *   GET  /query-designs/{id}/arena-config → { arenas: [{id, enabled, tier}] }
  *   POST /query-designs/{id}/arena-config → 200
  */
-function arenaConfigGrid(defaultTier) {
+window.arenaConfigGrid = function arenaConfigGrid(defaultTier) {
     return {
         arenas: [],
         _estimateTimer: null,
@@ -2164,11 +1226,13 @@ function arenaConfigGrid(defaultTier) {
         enableAll() {
             this.arenas.forEach(a => { a.enabled = true; });
             this.scheduleEstimate();
+            this.scheduleSaveConfig();
         },
 
         disableAll() {
             this.arenas.forEach(a => { a.enabled = false; });
             this.scheduleEstimate();
+            this.scheduleSaveConfig();
         },
 
         scheduleEstimate() {
@@ -2195,6 +1259,11 @@ function arenaConfigGrid(defaultTier) {
          */
         unsupportedTierTitle(arena) {
             return 'This arena only supports ' + arena.supportedTiers.join(', ') + ' tier(s)';
+        },
+
+        scheduleSaveConfig() {
+            clearTimeout(this._saveConfigTimer);
+            this._saveConfigTimer = setTimeout(() => { this.saveConfig(); }, 600);
         },
 
         async saveConfig() {
@@ -2233,7 +1302,7 @@ function arenaConfigGrid(defaultTier) {
  * Convert a snake_case platform_name to a human-readable label.
  * Falls back gracefully for unknown platforms.
  */
-function _arenaLabel(arenaName) {
+window._arenaLabel = function _arenaLabel(arenaName) {
     const labels = {
         'google_search':       'Google Search',
         'google_autocomplete': 'Google Autocomplete',
@@ -2253,15 +1322,94 @@ function _arenaLabel(arenaName) {
 /**
  * Alpine component for the query design editor.
  * Term add/remove is handled by HTMX; this component provides local state.
+ * Wrapped in alpine:init because the deferred Alpine CDN script hasn't
+ * executed yet when this inline <script> runs during body parsing.
  */
-Alpine.data('queryEditor', () => ({
-    init() {
-        const input = document.getElementById('new-term-input');
-        if (input) {
-            setTimeout(() => input.focus(), 100);
-        }
-    },
-}));
+document.addEventListener('alpine:init', () => {
+    Alpine.data('queryEditor', () => ({
+        init() {
+            const input = document.getElementById('new-term-input');
+            if (input) {
+                setTimeout(() => input.focus(), 100);
+            }
+        },
+    }));
+});
+
+/**
+ * Alpine component for auto-saving metadata fields (name, description, language, etc.)
+ * on every change with debounce. Uses PUT /query-designs/{id} JSON API.
+ */
+window.metadataAutoSave = function metadataAutoSave(designId) {
+    let _timer = null;
+    return {
+        metaSaving: false,
+        metaSaved: false,
+        metaError: null,
+
+        init() {
+            const form = this.$el;
+            // Listen for input/change on all form fields
+            form.addEventListener('input', () => this._scheduleAutoSave());
+            form.addEventListener('change', () => this._scheduleAutoSave());
+            // Prevent traditional form submission in edit mode
+            form.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this._doSave();
+            });
+        },
+
+        _scheduleAutoSave() {
+            clearTimeout(_timer);
+            _timer = setTimeout(() => this._doSave(), 800);
+        },
+
+        async _doSave() {
+            this.metaSaving = true;
+            this.metaError = null;
+            this.metaSaved = false;
+
+            const form = this.$el;
+            const payload = {};
+            const name = form.querySelector('[name="name"]')?.value?.trim();
+            const description = form.querySelector('[name="description"]')?.value?.trim();
+            const language = form.querySelector('[name="language"]')?.value;
+            const defaultTier = form.querySelector('[name="default_tier"]')?.value;
+            const localeCountry = form.querySelector('[name="locale_country"]')?.value;
+            const visibility = form.querySelector('[name="visibility"]')?.value;
+
+            if (name !== undefined && name !== null) payload.name = name;
+            if (description !== undefined && description !== null) payload.description = description;
+            if (language) payload.language = language;
+            if (defaultTier) payload.default_tier = defaultTier;
+            if (localeCountry) payload.locale_country = localeCountry;
+            if (visibility) payload.visibility = visibility;
+
+            // Don't save if name is empty (required field)
+            if (!payload.name) {
+                this.metaSaving = false;
+                return;
+            }
+
+            try {
+                const resp = await fetch('/query-designs/' + designId, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify(payload),
+                });
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                this.metaSaved = true;
+                setTimeout(() => { this.metaSaved = false; }, 3000);
+            } catch (err) {
+                console.warn('metadataAutoSave failed:', err);
+                this.metaError = 'Save failed';
+            } finally {
+                this.metaSaving = false;
+            }
+        },
+    };
+}
 
 /**
  * Alpine component that manages visual group headers in the terms list.
@@ -2275,7 +1423,7 @@ Alpine.data('queryEditor', () => ({
  * and re-renders headers.  A future endpoint (PATCH /terms/{id}/group) could
  * persist the rename.
  */
-function termGroupManager() {
+window.termGroupManager = function termGroupManager() {
     return {
         _observer: null,
 
@@ -2457,104 +1605,13 @@ function termGroupManager() {
  * Global helper called by the HTMX afterRequest handler to trigger a
  * group header rebuild after a new term is appended.
  */
-function rebuildGroups() {
+window.rebuildGroups = function rebuildGroups() {
     const list = document.getElementById('terms-list');
     if (!list) return;
     // Dispatch a synthetic mutation-like event that the Alpine observer picks up.
     // Since Alpine's MutationObserver already handles this, this is a no-op safety
     // call for cases where the observer fires before the DOM settles.
     list.dispatchEvent(new Event('terms:updated', { bubbles: true }));
-}
-
-// ---------------------------------------------------------------------------
-// GR-01 through GR-04 — Generic arena source panel component
-// ---------------------------------------------------------------------------
-//
-// Shared Alpine component used by all per-arena custom source panels
-// (RSS custom feeds, Telegram custom channels, Reddit custom subreddits,
-//  Discord custom channel IDs, Wikipedia seed articles).
-//
-// Parameters:
-//   designId  — query design UUID (from Jinja)
-//   arenaName — arena identifier matching the PATCH route segment
-//               (e.g. 'rss', 'telegram', 'reddit', 'discord', 'wikipedia')
-//   fieldName — JSONB key to store the list under within the arena's config
-//               (e.g. 'custom_feeds', 'custom_channels', 'seed_articles')
-//   initial   — Array of existing values loaded from arenas_config (Jinja-serialised)
-//
-// PATCH endpoint contract (added by Core Engineer):
-//   PATCH /query-designs/{design_id}/arena-config/{arena_name}
-//   Content-Type: application/json
-//   Body: { "<fieldName>": ["val1", "val2", ...] }
-//   Success: 200 JSON { "<fieldName>": [...] }
-//
-// ---------------------------------------------------------------------------
-function arenaSourcePanel(designId, arenaName, fieldName, initial) {
-    return {
-        open: false,
-        items: Array.isArray(initial) ? [...initial] : [],
-        newItem: '',
-        saving: false,
-        savedOk: false,
-        saveError: null,
-        _savedTimer: null,
-
-        /**
-         * Add the current newItem value to the list and persist immediately.
-         * Trims whitespace; no-op if empty or already present.
-         */
-        addItem() {
-            const val = this.newItem.trim();
-            if (!val) return;
-            // Prevent duplicates (case-insensitive).
-            if (this.items.some(i => i.toLowerCase() === val.toLowerCase())) {
-                this.newItem = '';
-                return;
-            }
-            this.items.push(val);
-            this.newItem = '';
-            this._persist();
-        },
-
-        /**
-         * Remove item at the given index and persist immediately.
-         * @param {number} idx
-         */
-        removeItem(idx) {
-            this.items.splice(idx, 1);
-            this._persist();
-        },
-
-        /**
-         * PATCH the arena config to the backend.
-         * Sends { fieldName: items } as JSON.
-         */
-        async _persist() {
-            this.saving = true;
-            this.saveError = null;
-            clearTimeout(this._savedTimer);
-            try {
-                const resp = await fetch(
-                    `/query-designs/${designId}/arena-config/${arenaName}`,
-                    {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ [fieldName]: [...this.items] }),
-                    }
-                );
-                if (!resp.ok) {
-                    const detail = await resp.json().catch(() => ({}));
-                    throw new Error(detail.detail || `HTTP ${resp.status}`);
-                }
-                this.savedOk = true;
-                this._savedTimer = setTimeout(() => { this.savedOk = false; }, 3000);
-            } catch (err) {
-                this.saveError = 'Save failed: ' + err.message;
-            } finally {
-                this.saving = false;
-            }
-        },
-    };
 }
 
 // ---------------------------------------------------------------------------
@@ -2568,7 +1625,7 @@ function arenaSourcePanel(designId, arenaName, fieldName, initial) {
 //   Success: 200 JSON { "languages": [...] }
 //
 // ---------------------------------------------------------------------------
-function languageSelector(designId, initial) {
+window.languageSelector = function languageSelector(designId, initial) {
     return {
         open: false,
         // All available language options in display order.
@@ -2643,83 +1700,6 @@ function languageSelector(designId, initial) {
 }
 
 // ---------------------------------------------------------------------------
-// YF-12 — RSS Feed Preview Component
-// ---------------------------------------------------------------------------
-//
-// Displays the list of default Danish RSS feeds with search filtering.
-// Fetches feed data from GET /api/arenas/rss-feeds/feeds.
-//
-// ---------------------------------------------------------------------------
-function rssFeedViewer() {
-    return {
-        feeds: [],
-        searchQuery: '',
-        loading: false,
-        error: null,
-
-        async loadFeeds() {
-            this.loading = true;
-            this.error = null;
-            try {
-                const resp = await fetch('/api/arenas/rss-feeds/feeds', {
-                    credentials: 'include',
-                });
-                if (!resp.ok) {
-                    throw new Error(`HTTP ${resp.status}`);
-                }
-                const data = await resp.json();
-                // Transform the feeds dict into an array
-                this.feeds = Object.entries(data.feeds || {}).map(([key, url]) => ({
-                    key: key,
-                    name: this.formatOutletName(key),
-                    url: url
-                }));
-            } catch (err) {
-                this.error = 'Failed to load feeds: ' + err.message;
-                console.error('rssFeedViewer: loadFeeds error', err);
-            } finally {
-                this.loading = false;
-            }
-        },
-
-        /**
-         * Convert feed key to human-readable outlet name.
-         * Examples:
-         *   "dr_allenyheder" -> "DR AllNyheder"
-         *   "tv2_nyheder" -> "TV2 Nyheder"
-         *   "politiken_seneste" -> "Politiken Seneste"
-         */
-        formatOutletName(key) {
-            return key
-                .split('_')
-                .map((part, idx) => {
-                    if (idx === 0) {
-                        // First part is outlet abbreviation - keep uppercase
-                        return part.toUpperCase();
-                    }
-                    // Subsequent parts - capitalize first letter
-                    return part.charAt(0).toUpperCase() + part.slice(1);
-                })
-                .join(' ');
-        },
-
-        /**
-         * Filter feeds by search query (matches outlet name or URL).
-         */
-        get filteredFeeds() {
-            if (!this.searchQuery.trim()) {
-                return this.feeds;
-            }
-            const q = this.searchQuery.toLowerCase();
-            return this.feeds.filter(feed =>
-                feed.name.toLowerCase().includes(q) ||
-                feed.url.toLowerCase().includes(q)
-            );
-        },
-    };
-}
-
-// ---------------------------------------------------------------------------
 // YF-01 — Per-arena search term scoping
 // ---------------------------------------------------------------------------
 //
@@ -2740,7 +1720,7 @@ function rssFeedViewer() {
  * Lines starting with # are treated as comments and skipped.
  * Empty lines are ignored.
  */
-function bulkActorImport() {
+window.bulkActorImport = function bulkActorImport() {
     return {
         bulkInput: '',
         importing: false,
@@ -2884,7 +1864,7 @@ function bulkActorImport() {
  * Lines starting with # are treated as comments and skipped.
  * Empty lines are ignored.
  */
-function bulkTermImporter() {
+window.bulkTermImporter = function bulkTermImporter() {
     return {
         bulkMode: false,
         bulkInput: '',
@@ -3009,7 +1989,7 @@ function bulkTermImporter() {
     };
 }
 
-function termArenaSelector() {
+window.termArenaSelector = function termArenaSelector() {
     return {
         arenaOpen: false,
         availableArenas: [],

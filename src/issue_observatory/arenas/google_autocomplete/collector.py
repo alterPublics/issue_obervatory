@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -34,8 +34,8 @@ from issue_observatory.arenas.google_autocomplete.config import (
     DANISH_PARAMS,
     FREE_AUTOCOMPLETE_URL,
     GOOGLE_AUTOCOMPLETE_TIERS,
-    SERPER_AUTOCOMPLETE_URL,
     SERPAPI_AUTOCOMPLETE_URL,
+    SERPER_AUTOCOMPLETE_URL,
 )
 from issue_observatory.arenas.registry import register
 from issue_observatory.config.tiers import TierConfig
@@ -45,6 +45,7 @@ from issue_observatory.core.exceptions import (
     ArenaRateLimitError,
     NoCredentialAvailableError,
 )
+from issue_observatory.core.language_utils import resolve_google_params, resolve_language_label
 from issue_observatory.core.normalizer import Normalizer
 
 logger = logging.getLogger(__name__)
@@ -156,6 +157,10 @@ class GoogleAutocompleteCollector(ArenaCollector):
             max_results if max_results is not None else tier_config.max_results_per_run
         )
 
+        # Resolve locale parameters for this collection run.
+        self._locale_params = resolve_google_params(language_filter)
+        self._language_label = resolve_language_label(language_filter)
+
         # Autocomplete does not support boolean group syntax — flatten all
         # group terms into a single deduplicated list of individual queries.
         if term_groups is not None:
@@ -173,11 +178,11 @@ class GoogleAutocompleteCollector(ArenaCollector):
         if tier != Tier.FREE:
             cred = await self._acquire_credential(tier)
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         async with self._build_http_client() as client:
             for term in effective_terms:
-                if len(all_records) >= effective_max:
+                if self._total_emitted >= effective_max:
                     break
                 try:
                     records = await self._collect_term(
@@ -193,15 +198,16 @@ class GoogleAutocompleteCollector(ArenaCollector):
                             error=ArenaRateLimitError("rate limit hit"),
                         )
                     raise
-                all_records.extend(records)
+                self._emit_many(records)
+                self._flush()
 
         logger.info(
             "google_autocomplete: collected %d suggestions for %d terms at tier=%s",
-            len(all_records),
+            self._total_emitted,
             len(effective_terms),
             tier.value,
         )
-        return all_records[:effective_max]
+        return list(self._batch_buffer)
 
     async def collect_by_actors(
         self,
@@ -271,7 +277,7 @@ class GoogleAutocompleteCollector(ArenaCollector):
         enriched["text_content"] = enriched.get("suggestion", "")
         # title = the input query that triggered the suggestion (per brief).
         enriched["title"] = enriched.get("query", "")
-        enriched["language"] = "da"
+        enriched["language"] = getattr(self, "_language_label", "da")
         # No URL associated with an autocomplete suggestion.
         enriched["url"] = None
         # Autocomplete suggestions are produced by Google.
@@ -279,7 +285,7 @@ class GoogleAutocompleteCollector(ArenaCollector):
         enriched["author_display_name"] = "Google"
 
         # Deterministic platform_id: hash(query + suggestion + minute-bucket).
-        minute_bucket = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M")
+        minute_bucket = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M")
         id_input = f"{enriched.get('query', '')}:{enriched.get('suggestion', '')}:{minute_bucket}"
         enriched["id"] = hashlib.sha256(id_input.encode("utf-8")).hexdigest()
 
@@ -309,7 +315,7 @@ class GoogleAutocompleteCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
             ``arena``, ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -323,7 +329,16 @@ class GoogleAutocompleteCollector(ArenaCollector):
                     params={"q": "test", "client": "firefox", **DANISH_PARAMS},
                 )
                 response.raise_for_status()
-                data = response.json()
+                # Google often returns Latin-1 encoded text (e.g. Danish "å")
+                # which response.json() fails to decode as UTF-8.
+                import json as _json
+
+                charset = response.charset_encoding or "utf-8"
+                try:
+                    text_body = response.content.decode(charset)
+                except (UnicodeDecodeError, LookupError):
+                    text_body = response.content.decode("latin-1")
+                data = _json.loads(text_body)
                 # Validate expected response format: ["query", [...suggestions...]]
                 if not isinstance(data, list) or len(data) < 2:
                     return {
@@ -462,6 +477,7 @@ class GoogleAutocompleteCollector(ArenaCollector):
                 platform=self.platform_name,
             ) from exc
 
+        locale = getattr(self, "_locale_params", DANISH_PARAMS)
         records: list[dict[str, Any]] = []
         for rank, suggestion_item in enumerate(raw_suggestions):
             # Handle both plain strings and dict items with relevance scores
@@ -477,8 +493,8 @@ class GoogleAutocompleteCollector(ArenaCollector):
                 "query": term,
                 "rank": rank,
                 "tier": tier_str,
-                "gl": DANISH_PARAMS["gl"],
-                "hl": DANISH_PARAMS["hl"],
+                "gl": locale.get("gl", ""),
+                "hl": locale.get("hl", "da"),
             }
             if relevance is not None:
                 raw_item["relevance"] = relevance
@@ -508,15 +524,16 @@ class GoogleAutocompleteCollector(ArenaCollector):
             httpx.HTTPStatusError: On non-2xx response.
             httpx.RequestError: On connection failure.
         """
+        locale = getattr(self, "_locale_params", DANISH_PARAMS)
         response = await client.get(
             FREE_AUTOCOMPLETE_URL,
-            params={"q": term, "client": "firefox", **DANISH_PARAMS},
+            params={"q": term, "client": "firefox", **locale},
         )
         response.raise_for_status()
         # Google's autocomplete API often returns Latin-1 encoded text
         # (e.g. Danish "å" as 0xe5) which response.json() fails to decode
         # as UTF-8. Decode with charset from headers, falling back to latin-1.
-        import json as _json  # noqa: PLC0415
+        import json as _json
 
         charset = response.charset_encoding or "utf-8"
         try:
@@ -551,7 +568,8 @@ class GoogleAutocompleteCollector(ArenaCollector):
             httpx.HTTPStatusError: On non-2xx response.
             httpx.RequestError: On connection failure.
         """
-        payload = {"q": term, **DANISH_PARAMS}
+        locale = getattr(self, "_locale_params", DANISH_PARAMS)
+        payload = {"q": term, **locale}
         headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
         response = await client.post(SERPER_AUTOCOMPLETE_URL, json=payload, headers=headers)
         response.raise_for_status()
@@ -587,11 +605,12 @@ class GoogleAutocompleteCollector(ArenaCollector):
             httpx.HTTPStatusError: On non-2xx response.
             httpx.RequestError: On connection failure.
         """
+        locale = getattr(self, "_locale_params", DANISH_PARAMS)
         params = {
             "engine": "google_autocomplete",
             "q": term,
             "api_key": api_key,
-            **DANISH_PARAMS,
+            **locale,
         }
         response = await client.get(SERPAPI_AUTOCOMPLETE_URL, params=params)
         response.raise_for_status()

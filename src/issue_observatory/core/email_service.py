@@ -42,7 +42,6 @@ from __future__ import annotations
 import logging
 import uuid
 from functools import lru_cache
-from typing import Optional
 
 import structlog
 
@@ -67,13 +66,13 @@ class EmailService:
             cached settings singleton if omitted.
     """
 
-    def __init__(self, settings: Optional[Settings] = None) -> None:
+    def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
         self._mail: object = None  # FastMail instance or None
 
         if self._settings.smtp_host:
             try:
-                from fastapi_mail import ConnectionConfig, FastMail  # noqa: PLC0415
+                from fastapi_mail import ConnectionConfig, FastMail
 
                 config = ConnectionConfig(
                     MAIL_USERNAME=self._settings.smtp_username or "",
@@ -246,7 +245,7 @@ class EmailService:
             body: Plain-text message body.
         """
         try:
-            from fastapi_mail import MessageSchema, MessageType  # noqa: PLC0415
+            from fastapi_mail import MessageSchema, MessageType
 
             message = MessageSchema(
                 subject=subject,
@@ -255,7 +254,7 @@ class EmailService:
                 subtype=MessageType.plain,
             )
             await self._mail.send_message(message)  # type: ignore[union-attr]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _stdlib_logger.warning(
                 "email_service: failed to send email to %s subject=%r: %s",
                 recipient,

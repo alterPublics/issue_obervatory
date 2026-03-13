@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -33,6 +33,8 @@ from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.tiktok.config import (
+    TIKTOK_COMMENT_FIELDS,
+    TIKTOK_COMMENT_URL,
     TIKTOK_DATE_FORMAT,
     TIKTOK_MAX_COUNT,
     TIKTOK_MAX_DATE_RANGE_DAYS,
@@ -56,6 +58,7 @@ from issue_observatory.core.exceptions import (
     ArenaRateLimitError,
     NoCredentialAvailableError,
 )
+from issue_observatory.core.language_utils import resolve_tiktok_region
 from issue_observatory.core.normalizer import Normalizer
 
 logger = logging.getLogger(__name__)
@@ -89,6 +92,9 @@ class TikTokCollector(ArenaCollector):
     platform_name: str = "tiktok"
     supported_tiers: list[Tier] = [Tier.FREE]
     temporal_mode: TemporalMode = TemporalMode.HISTORICAL
+    supports_actor_collection: bool = True
+    source_list_config_key: str | None = "custom_accounts"
+    source_list_daily_chunk_size: int | None = 100
 
     def __init__(
         self,
@@ -134,8 +140,9 @@ class TikTokCollector(ArenaCollector):
             max_results: Cap on total records. Defaults to tier max.
             term_groups: Optional boolean AND/OR groups.  Each group issues a
                 separate query with terms space-joined.
-            language_filter: Not used — TikTok's ``region_code: "DK"`` filter
-                provides implicit language scoping.
+            language_filter: Optional language codes.  The first code
+                determines ``region_code`` filter.  English and other global
+                languages omit the region filter.
 
         Returns:
             List of normalized content record dicts.
@@ -164,6 +171,9 @@ class TikTokCollector(ArenaCollector):
         cred = await self._get_credential()
         token = await self._get_access_token(cred)
 
+        # Resolve region code for this collection run.
+        self._region_code = resolve_tiktok_region(language_filter)
+
         # Build effective terms list from groups or plain terms.
         if term_groups is not None:
             effective_terms: list[str] = [
@@ -174,51 +184,70 @@ class TikTokCollector(ArenaCollector):
         else:
             effective_terms = list(terms)
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
+        skipped_terms: list[str] = []
         async with self._build_http_client() as client:
             for term in effective_terms:
-                if len(all_records) >= effective_max:
+                if self._total_emitted >= effective_max:
                     break
-                remaining = effective_max - len(all_records)
-                for window_start, window_end in _split_date_windows(
-                    start_dt, end_dt, TIKTOK_MAX_DATE_RANGE_DAYS
-                ):
-                    if len(all_records) >= effective_max:
-                        break
-                    records = await self._search_videos(
-                        client=client,
-                        token=token,
-                        cred_id=cred["id"],
-                        query={
-                            "and": [
-                                {
-                                    "operation": "IN",
-                                    "field_name": "region_code",
-                                    "field_values": [TIKTOK_REGION_CODE],
-                                },
-                                {
-                                    "operation": "EQ",
-                                    "field_name": "keyword",
-                                    "field_values": [term],
-                                },
-                            ]
-                        },
-                        start_date=window_start.strftime(TIKTOK_DATE_FORMAT),
-                        end_date=window_end.strftime(TIKTOK_DATE_FORMAT),
-                        max_results=remaining,
-                        search_term=term,
+                remaining = effective_max - self._total_emitted
+                term_count = 0
+                try:
+                    for window_start, window_end in _split_date_windows(
+                        start_dt, end_dt, TIKTOK_MAX_DATE_RANGE_DAYS
+                    ):
+                        if self._total_emitted >= effective_max:
+                            break
+                        region = getattr(self, "_region_code", TIKTOK_REGION_CODE)
+                        query_conditions: list[dict[str, Any]] = []
+                        if region is not None:
+                            query_conditions.append({
+                                "operation": "IN",
+                                "field_name": "region_code",
+                                "field_values": [region],
+                            })
+                        query_conditions.append({
+                            "operation": "EQ",
+                            "field_name": "keyword",
+                            "field_values": [term],
+                        })
+                        window_count = await self._search_videos(
+                            client=client,
+                            token=token,
+                            cred_id=cred["id"],
+                            query={"and": query_conditions},
+                            start_date=window_start.strftime(TIKTOK_DATE_FORMAT),
+                            end_date=window_end.strftime(TIKTOK_DATE_FORMAT),
+                            max_results=remaining,
+                            search_term=term,
+                        )
+                        term_count += window_count
+                        self._flush()
+                        remaining = effective_max - self._total_emitted
+                except (ArenaCollectionError, ArenaRateLimitError) as exc:
+                    logger.warning(
+                        "tiktok: skipping term %r — %s", term, exc,
                     )
-                    all_records.extend(records)
-                    remaining = effective_max - len(all_records)
+                    skipped_terms.append(term)
+                    continue
+                self._record_input_count(term, term_count)
 
         await self._release_credential(cred)
+        self._flush()
+        if skipped_terms:
+            logger.warning(
+                "tiktok: skipped %d/%d terms due to errors: %s",
+                len(skipped_terms),
+                len(effective_terms),
+                skipped_terms,
+            )
         logger.info(
             "tiktok: collected %d videos for %d terms",
-            len(all_records),
+            self._total_emitted,
             len(terms),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     async def collect_by_actors(
         self,
@@ -267,45 +296,64 @@ class TikTokCollector(ArenaCollector):
         cred = await self._get_credential()
         token = await self._get_access_token(cred)
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
+        skipped_actors: list[str] = []
         async with self._build_http_client() as client:
             for username in actor_ids:
-                if len(all_records) >= effective_max:
+                if self._total_emitted >= effective_max:
                     break
-                remaining = effective_max - len(all_records)
-                for window_start, window_end in _split_date_windows(
-                    start_dt, end_dt, TIKTOK_MAX_DATE_RANGE_DAYS
-                ):
-                    if len(all_records) >= effective_max:
-                        break
-                    records = await self._search_videos(
-                        client=client,
-                        token=token,
-                        cred_id=cred["id"],
-                        query={
-                            "and": [
-                                {
-                                    "operation": "EQ",
-                                    "field_name": "username",
-                                    "field_values": [username],
-                                },
-                            ]
-                        },
-                        start_date=window_start.strftime(TIKTOK_DATE_FORMAT),
-                        end_date=window_end.strftime(TIKTOK_DATE_FORMAT),
-                        max_results=remaining,
+                remaining = effective_max - self._total_emitted
+                actor_count = 0
+                try:
+                    for window_start, window_end in _split_date_windows(
+                        start_dt, end_dt, TIKTOK_MAX_DATE_RANGE_DAYS
+                    ):
+                        if self._total_emitted >= effective_max:
+                            break
+                        window_count = await self._search_videos(
+                            client=client,
+                            token=token,
+                            cred_id=cred["id"],
+                            query={
+                                "and": [
+                                    {
+                                        "operation": "EQ",
+                                        "field_name": "username",
+                                        "field_values": [username],
+                                    },
+                                ]
+                            },
+                            start_date=window_start.strftime(TIKTOK_DATE_FORMAT),
+                            end_date=window_end.strftime(TIKTOK_DATE_FORMAT),
+                            max_results=remaining,
+                        )
+                        actor_count += window_count
+                        self._flush()
+                        remaining = effective_max - self._total_emitted
+                except (ArenaCollectionError, ArenaRateLimitError) as exc:
+                    logger.warning(
+                        "tiktok: skipping actor %r — %s", username, exc,
                     )
-                    all_records.extend(records)
-                    remaining = effective_max - len(all_records)
+                    skipped_actors.append(username)
+                    continue
+                self._record_input_count(username, actor_count)
 
         await self._release_credential(cred)
+        self._flush()
+        if skipped_actors:
+            logger.warning(
+                "tiktok: skipped %d/%d actors due to errors: %s",
+                len(skipped_actors),
+                len(actor_ids),
+                skipped_actors,
+            )
         logger.info(
             "tiktok: collected %d videos for %d actors",
-            len(all_records),
+            self._total_emitted,
             len(actor_ids),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     def get_tier_config(self, tier: Tier) -> TierConfig | None:
         """Return the tier configuration for this arena.
@@ -368,9 +416,13 @@ class TikTokCollector(ArenaCollector):
         # create_time is a Unix timestamp integer.
         create_time = raw_item.get("create_time")
 
-        # Set language based on region_code (DK = Danish)
+        # Set language based on region_code.
         region_code = raw_item.get("region_code", "")
-        language = "da" if region_code == "DK" else None
+        # Reverse lookup: find language for the region code.
+        from issue_observatory.core.language_utils import LANGUAGE_COUNTRY_MAP
+
+        _country_to_lang = {v: k for k, v in LANGUAGE_COUNTRY_MAP.items() if v}
+        language = _country_to_lang.get(region_code)
 
         flat: dict[str, Any] = {
             "id": video_id,
@@ -486,7 +538,7 @@ class TikTokCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
             ``arena``, ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -496,7 +548,7 @@ class TikTokCollector(ArenaCollector):
             cred = await self._get_credential()
             token = await self._get_access_token(cred)
             # Use a date 7 days ago to avoid TikTok's data freshness lag
-            health_check_date = (datetime.now(tz=timezone.utc) - timedelta(days=7)).strftime(
+            health_check_date = (datetime.now(tz=UTC) - timedelta(days=7)).strftime(
                 TIKTOK_DATE_FORMAT
             )
             async with self._build_http_client() as client:
@@ -559,7 +611,7 @@ class TikTokCollector(ArenaCollector):
         """Return an ``httpx.AsyncClient`` for use as a context manager."""
         if self._http_client is not None:
             return self._http_client  # type: ignore[return-value]
-        return httpx.AsyncClient(timeout=30.0)
+        return httpx.AsyncClient(timeout=60.0)
 
     async def _get_credential(self) -> dict[str, Any]:
         """Acquire a TikTok credential from the pool.
@@ -732,6 +784,8 @@ class TikTokCollector(ArenaCollector):
             ArenaAuthError: On HTTP 401 (expired token detected).
             ArenaCollectionError: On other non-2xx responses.
         """
+        import asyncio as _asyncio
+
         await self._wait_for_rate_limit(cred_id)
 
         # TikTok Research API requires 'fields' parameter in URL query string,
@@ -741,43 +795,88 @@ class TikTokCollector(ArenaCollector):
             separator = "&" if "?" in url else "?"
             request_url = f"{url}{separator}fields={fields}"
 
-        try:
-            response = await client.post(
-                request_url,
-                json=body,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-            )
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 429:
-                retry_after = float(exc.response.headers.get("Retry-After", 60))
-                raise ArenaRateLimitError(
-                    "tiktok: 429 rate limit — daily quota may be exhausted",
-                    retry_after=retry_after,
+        max_retries = 3
+        retry_delay = 30.0
+        last_exc: Exception | None = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = await client.post(
+                    request_url,
+                    json=body,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 429:
+                    retry_after = float(exc.response.headers.get("Retry-After", 60))
+                    raise ArenaRateLimitError(
+                        "tiktok: 429 rate limit — daily quota may be exhausted",
+                        retry_after=retry_after,
+                        arena=self.arena_name,
+                        platform=self.platform_name,
+                    ) from exc
+                if exc.response.status_code == 401:
+                    raise ArenaAuthError(
+                        "tiktok: 401 unauthorized — access token may have expired",
+                        arena=self.arena_name,
+                        platform=self.platform_name,
+                    ) from exc
+                # Retry on 5xx server errors
+                if exc.response.status_code >= 500 and attempt < max_retries:
+                    resp_body = exc.response.text[:500] if exc.response else "no body"
+                    logger.warning(
+                        "tiktok: HTTP %s on attempt %d/%d — retrying in %ds — response=%s",
+                        exc.response.status_code,
+                        attempt,
+                        max_retries,
+                        int(retry_delay),
+                        resp_body,
+                    )
+                    last_exc = exc
+                    await _asyncio.sleep(retry_delay)
+                    continue
+                resp_body = exc.response.text[:500] if exc.response else "no body"
+                logger.error(
+                    "tiktok: HTTP %s from Research API — url=%s body=%s response=%s",
+                    exc.response.status_code,
+                    request_url,
+                    body,
+                    resp_body,
+                )
+                raise ArenaCollectionError(
+                    f"tiktok: HTTP {exc.response.status_code} from Research API: {resp_body}",
                     arena=self.arena_name,
                     platform=self.platform_name,
                 ) from exc
-            if exc.response.status_code == 401:
-                raise ArenaAuthError(
-                    "tiktok: 401 unauthorized — access token may have expired",
+            except httpx.RequestError as exc:
+                if attempt < max_retries:
+                    logger.warning(
+                        "tiktok: connection error on attempt %d/%d — retrying in %ds — %s",
+                        attempt,
+                        max_retries,
+                        int(retry_delay),
+                        exc,
+                    )
+                    last_exc = exc
+                    await _asyncio.sleep(retry_delay)
+                    continue
+                raise ArenaCollectionError(
+                    f"tiktok: connection error: {exc}",
                     arena=self.arena_name,
                     platform=self.platform_name,
                 ) from exc
-            raise ArenaCollectionError(
-                f"tiktok: HTTP {exc.response.status_code} from Research API",
-                arena=self.arena_name,
-                platform=self.platform_name,
-            ) from exc
-        except httpx.RequestError as exc:
-            raise ArenaCollectionError(
-                f"tiktok: connection error: {exc}",
-                arena=self.arena_name,
-                platform=self.platform_name,
-            ) from exc
+
+        # All retries exhausted (should only reach here for 5xx/connection errors)
+        raise ArenaCollectionError(
+            f"tiktok: failed after {max_retries} retries: {last_exc}",
+            arena=self.arena_name,
+            platform=self.platform_name,
+        )
 
     async def _search_videos(
         self,
@@ -789,12 +888,13 @@ class TikTokCollector(ArenaCollector):
         end_date: str,
         max_results: int,
         search_term: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> int:
         """Paginate through video query results for a single query+date window.
 
         Uses ``cursor`` and ``search_id`` for pagination. The ``search_id``
         from the first response must be passed unchanged on all subsequent
-        pages to maintain result set consistency.
+        pages to maintain result set consistency.  Records are emitted
+        incrementally via ``_emit()`` for batch persistence during pagination.
 
         Args:
             client: Shared HTTP client.
@@ -804,16 +904,17 @@ class TikTokCollector(ArenaCollector):
             start_date: Start date string (YYYYMMDD).
             end_date: End date string (YYYYMMDD).
             max_results: Maximum records to retrieve.
+            search_term: Optional search term for ``search_terms_matched``.
 
         Returns:
-            List of normalized records.
+            Number of records emitted.
         """
-        records: list[dict[str, Any]] = []
+        collected = 0
         cursor: int = 0
         search_id: str | None = None
 
-        while len(records) < max_results:
-            page_size = min(TIKTOK_MAX_COUNT, max_results - len(records))
+        while collected < max_results:
+            page_size = min(TIKTOK_MAX_COUNT, max_results - collected)
             body: dict[str, Any] = {
                 "query": query,
                 "start_date": start_date,
@@ -848,19 +949,235 @@ class TikTokCollector(ArenaCollector):
                 search_id = response_data.get("search_id")
 
             for video in videos:
-                if len(records) >= max_results:
+                if collected >= max_results:
                     break
                 # Mark video with the search term if provided
                 if search_term:
                     video["_search_term"] = search_term
-                records.append(self.normalize(video))
+                self._emit(self.normalize(video))
+                collected += 1
 
             has_more = response_data.get("has_more", False)
             cursor = response_data.get("cursor", 0)
             if not has_more or not cursor:
                 break
 
+        return collected
+
+    async def collect_comments(
+        self,
+        post_ids: list[dict[str, Any]],
+        tier: Tier,
+        max_comments_per_post: int = 50,
+        depth: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Collect comments for TikTok videos.
+
+        Uses ``POST /v2/research/video/comment/list/`` (shares 1K req/day quota
+        with the video search endpoint). Only top-level and first-level reply
+        comments are available via this endpoint; ``depth`` is accepted for API
+        consistency but ignored because TikTok does not expose deeper nesting.
+
+        Args:
+            post_ids: List of dicts with a ``platform_id`` key containing the
+                TikTok video ID string.
+            tier: Operational tier. Only FREE is valid; all other values are
+                silently coerced to FREE.
+            max_comments_per_post: Maximum comments to retrieve per video.
+                Capped to 100 per request (TikTok API limit). Pagination is
+                used when ``max_comments_per_post > 100``.
+            depth: Unused. TikTok's comment endpoint returns all available
+                comment levels (top-level + replies) in a single flat list;
+                client-side depth filtering is not needed.
+
+        Returns:
+            List of normalized comment records conforming to the universal
+            content record schema.
+
+        Raises:
+            ArenaRateLimitError: On HTTP 429 from the Research API.
+            ArenaAuthError: On credential rejection (HTTP 401).
+            ArenaCollectionError: On other unrecoverable API errors.
+            NoCredentialAvailableError: When no credential is in the pool.
+        """
+        if tier != Tier.FREE:
+            logger.warning(
+                "tiktok: tier=%s requested for collect_comments but only FREE is available. "
+                "Proceeding with FREE tier.",
+                tier.value,
+            )
+
+        if not post_ids:
+            logger.debug("tiktok: collect_comments called with empty post_ids list")
+            return []
+
+        cred = await self._get_credential()
+        token = await self._get_access_token(cred)
+
+        all_records: list[dict[str, Any]] = []
+
+        async with self._build_http_client() as client:
+            for post in post_ids:
+                video_id = str(post.get("platform_id", ""))
+                if not video_id:
+                    logger.warning(
+                        "tiktok: collect_comments skipping entry with missing platform_id: %r",
+                        post,
+                    )
+                    continue
+
+                try:
+                    post_records = await self._fetch_comments_for_video(
+                        client=client,
+                        token=token,
+                        cred_id=cred["id"],
+                        video_id=video_id,
+                        max_comments=max_comments_per_post,
+                    )
+                    all_records.extend(post_records)
+                except (ArenaCollectionError, ArenaRateLimitError) as exc:
+                    logger.warning(
+                        "tiktok: skipping comments for video_id=%r — %s",
+                        video_id,
+                        exc,
+                    )
+                    continue
+
+        await self._release_credential(cred)
+        logger.info(
+            "tiktok: collect_comments completed — %d comments from %d videos",
+            len(all_records),
+            len(post_ids),
+        )
+        return all_records
+
+    async def _fetch_comments_for_video(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        cred_id: str,
+        video_id: str,
+        max_comments: int,
+    ) -> list[dict[str, Any]]:
+        """Paginate through comments for a single video.
+
+        Issues one or more POST requests to the comment list endpoint,
+        accumulating up to ``max_comments`` normalized records.  Pagination
+        uses the ``cursor`` value returned in each response.
+
+        Args:
+            client: Shared HTTP client.
+            token: Bearer access token.
+            cred_id: Credential ID used for rate-limit key scoping.
+            video_id: TikTok video ID string.
+            max_comments: Maximum number of comments to collect for this video.
+
+        Returns:
+            List of normalized comment record dicts.
+        """
+        records: list[dict[str, Any]] = []
+        cursor: int | None = None
+
+        while len(records) < max_comments:
+            page_size = min(TIKTOK_MAX_COUNT, max_comments - len(records))
+            body: dict[str, Any] = {
+                "video_id": int(video_id),
+                "max_count": page_size,
+            }
+            if cursor is not None:
+                body["cursor"] = cursor
+
+            data = await self._make_request(
+                client,
+                TIKTOK_COMMENT_URL,
+                body,
+                token,
+                cred_id,
+                fields=TIKTOK_COMMENT_FIELDS,
+            )
+
+            # Surface API-level errors embedded in the response body.
+            api_error = data.get("error")
+            if api_error and api_error.get("code") not in (0, None, "ok"):
+                logger.warning(
+                    "tiktok: API error fetching comments for video_id=%s: code=%s msg=%s",
+                    video_id,
+                    api_error.get("code"),
+                    api_error.get("message"),
+                )
+                break
+
+            response_data = data.get("data", {})
+            comments = response_data.get("comments", [])
+            if not comments:
+                break
+
+            for comment in comments:
+                if len(records) >= max_comments:
+                    break
+                raw = {
+                    "content_type": "comment",
+                    "platform_id": str(comment.get("id", "")),
+                    "text_content": comment.get("text"),
+                    "published_at": comment.get("create_time"),
+                    "likes_count": comment.get("like_count"),
+                    "reply_count": comment.get("reply_count"),
+                    "author_platform_id": None,
+                    "parent_post_id": video_id,
+                    "parent_comment_id": comment.get("parent_comment_id"),
+                    "url": None,
+                }
+                records.append(self._normalize_comment(raw))
+
+            has_more = response_data.get("has_more", False)
+            cursor = response_data.get("cursor")
+            if not has_more or cursor is None:
+                break
+
         return records
+
+    def _normalize_comment(self, raw: dict[str, Any]) -> dict[str, Any]:
+        """Normalize a raw TikTok comment dict to the universal content schema.
+
+        TikTok comments do not carry an author username from the comment
+        endpoint, so ``author_platform_id`` and ``author_display_name`` are
+        set to ``None``.  The ``url`` field is also ``None`` because TikTok
+        does not provide direct permalink URLs for individual comments.
+
+        Args:
+            raw: Raw comment dict as assembled in ``_fetch_comments_for_video``.
+
+        Returns:
+            Dict conforming to the ``content_records`` universal schema.
+        """
+        flat: dict[str, Any] = {
+            "id": raw.get("platform_id"),
+            "platform_id": raw.get("platform_id"),
+            "content_type": "comment",
+            "text_content": raw.get("text_content"),
+            "title": None,
+            "url": None,
+            "language": None,
+            "published_at": raw.get("published_at"),
+            "author_platform_id": None,
+            "author_display_name": None,
+            "like_count": raw.get("likes_count"),
+            "reply_count": raw.get("reply_count"),
+            "parent_post_id": raw.get("parent_post_id"),
+            "parent_comment_id": raw.get("parent_comment_id"),
+        }
+
+        normalized = self._normalizer.normalize(
+            raw_item=flat,
+            platform=self.platform_name,
+            arena=self.arena_name,
+            collection_tier="free",
+            search_terms_matched=[],
+        )
+        # Parent linkage is already in raw_metadata via the normalizer's
+        # passthrough of the flat dict.  Do NOT add top-level keys that
+        # don't exist as content_records columns — that breaks INSERT.
+        return normalized
 
     async def fetch_user_info(
         self, username: str, token: str, cred_id: str
@@ -908,7 +1225,7 @@ def _resolve_date_window(
     Returns:
         Tuple of (start_datetime, end_datetime) in UTC.
     """
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     end_dt = _parse_dt(date_to) if date_to is not None else now
     start_dt = (
         _parse_dt(date_from)
@@ -929,7 +1246,7 @@ def _parse_dt(value: datetime | str) -> datetime:
     """
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
+            return value.replace(tzinfo=UTC)
         return value
     # String parsing
     for fmt in (
@@ -942,7 +1259,7 @@ def _parse_dt(value: datetime | str) -> datetime:
         try:
             dt = datetime.strptime(value, fmt)
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             return dt
         except ValueError:
             continue

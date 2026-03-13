@@ -55,7 +55,7 @@ async def store_volume_spikes(
         spikes: Non-empty list of :class:`~issue_observatory.analysis.alerting.VolumeSpike`
             objects to persist.
     """
-    import json  # noqa: PLC0415
+    import json
 
     spike_payload = json.dumps([s.to_dict() for s in spikes])
 
@@ -212,7 +212,7 @@ async def send_volume_spike_alert(
 
     body = "\n".join(lines)
 
-    await email_svc._send(  # noqa: SLF001 — intentional access to internal helper
+    await email_svc._send(
         recipient=user_email,
         subject=subject,
         body=body,

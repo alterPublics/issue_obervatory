@@ -6,16 +6,15 @@ and edge cases (empty body, NUL bytes, oversized content, trafilatura absent).
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
+from issue_observatory.scraper.config import MAX_CONTENT_BYTES
 from issue_observatory.scraper.content_extractor import (
     ExtractedContent,
     extract_from_html,
 )
-from issue_observatory.scraper.config import MAX_CONTENT_BYTES
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

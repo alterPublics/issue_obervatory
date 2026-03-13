@@ -20,15 +20,13 @@ All tests mock the SQLAlchemy AsyncSession.  No live database is required.
 
 from __future__ import annotations
 
-import logging
 import uuid
-from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from issue_observatory.core.retention_service import RetentionService
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -268,9 +266,9 @@ class TestEnforceRetention:
         with patch(
             "issue_observatory.core.retention_service.logger"
         ) as mock_logger:
-            before = datetime.now(tz=timezone.utc) - timedelta(days=retention_days)
+            before = datetime.now(tz=UTC) - timedelta(days=retention_days)
             await service.enforce_retention(db, retention_days=retention_days)
-            after = datetime.now(tz=timezone.utc) - timedelta(days=retention_days)
+            after = datetime.now(tz=UTC) - timedelta(days=retention_days)
 
             extra = mock_logger.info.call_args.kwargs.get("extra", {})
             threshold = datetime.fromisoformat(extra["threshold_date"])

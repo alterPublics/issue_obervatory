@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -231,6 +231,7 @@ class UrlScraperCollector(ArenaCollector):
                 self.arena_name, tier, matched_terms,
             )
             matched_records.append(normalized)
+            self._flush()
 
         logger.info(
             "url_scraper: collect_by_terms — %d/%d URLs matched terms.",
@@ -302,6 +303,7 @@ class UrlScraperCollector(ArenaCollector):
                     self.arena_name, tier, [],
                 )
             )
+            self._flush()
 
         logger.info(
             "url_scraper: collect_by_actors — %d records from %d URLs.",
@@ -360,7 +362,7 @@ class UrlScraperCollector(ArenaCollector):
             Dict with ``status``, ``arena``, ``platform``, ``checked_at``,
             ``scraper_module``, ``trafilatura``, and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -385,7 +387,7 @@ class UrlScraperCollector(ArenaCollector):
                     respect_robots=True,
                     robots_cache=robots_cache,
                 )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {
                 **base, "status": "down",
                 "detail": f"HTTP fetch failed: {exc}",
@@ -491,7 +493,7 @@ class UrlScraperCollector(ArenaCollector):
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_records: list[dict[str, Any]] = []
-        for domain, result in zip(domain_groups.keys(), results):
+        for domain, result in zip(domain_groups.keys(), results, strict=False):
             if isinstance(result, Exception):
                 logger.error("url_scraper: error processing domain '%s': %s", domain, result)
                 continue
@@ -562,7 +564,7 @@ class UrlScraperCollector(ArenaCollector):
                 respect_robots=True,
                 robots_cache=robots_cache,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("url_scraper: unexpected error fetching '%s': %s", url, exc)
             return _make_failure_record(
                 source_url=url, final_url=url,
@@ -608,7 +610,7 @@ class UrlScraperCollector(ArenaCollector):
         if fetch_result.html:
             try:
                 extracted = extract_from_html(fetch_result.html, final_url)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("url_scraper: extraction error for '%s': %s", url, exc)
 
         return {
@@ -640,7 +642,7 @@ class UrlScraperCollector(ArenaCollector):
             success, or ``None`` if unavailable.
         """
         try:
-            from issue_observatory.scraper.playwright_fetcher import (  # noqa: PLC0415
+            from issue_observatory.scraper.playwright_fetcher import (
                 fetch_url_playwright,
             )
 
@@ -648,6 +650,6 @@ class UrlScraperCollector(ArenaCollector):
         except ImportError:
             logger.warning("url_scraper: Playwright not installed for '%s'.", url)
             return None
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("url_scraper: Playwright error for '%s': %s", url, exc)
             return None

@@ -61,7 +61,7 @@ async def suggest_subreddits(
         ArenaAuthError: When the OAuth credentials are rejected.
         ArenaCollectionError: On other unrecoverable API errors.
     """
-    import asyncprawcore.exceptions  # noqa: PLC0415
+    import asyncprawcore.exceptions
 
     if limit < 1:
         limit = 20

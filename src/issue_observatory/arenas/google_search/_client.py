@@ -18,9 +18,8 @@ import httpx
 
 from issue_observatory.arenas.google_search.config import (
     DANISH_PARAMS,
-    MAX_RESULTS_PER_PAGE,
-    SERPER_API_URL,
     SERPAPI_URL,
+    SERPER_API_URL,
 )
 from issue_observatory.core.exceptions import (
     ArenaAuthError,
@@ -44,6 +43,7 @@ async def fetch_serper(
     rate_limiter: Any = None,
     arena_name: str = "google_search",
     platform_name: str = "google",
+    locale_params: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch one page of Serper.dev organic results.
 
@@ -58,6 +58,8 @@ async def fetch_serper(
         rate_limiter: Optional :class:`RateLimiter` instance.
         arena_name: Arena identifier for rate-limiter keying.
         platform_name: Platform identifier for error messages.
+        locale_params: Locale parameters (e.g. ``{"gl": "dk", "hl": "da"}``).
+            Defaults to :data:`DANISH_PARAMS`.
 
     Returns:
         List of raw organic result dicts from the Serper.dev response.
@@ -67,9 +69,10 @@ async def fetch_serper(
         ArenaAuthError: On HTTP 401 or 403.
         ArenaCollectionError: On other non-2xx HTTP responses or network errors.
     """
+    effective_params = locale_params if locale_params is not None else DANISH_PARAMS
     payload: dict[str, Any] = {
         "q": term,
-        **DANISH_PARAMS,
+        **effective_params,
         "num": num,
         "page": page,
     }
@@ -79,7 +82,7 @@ async def fetch_serper(
     }
 
     if rate_limiter is not None:
-        from issue_observatory.workers.rate_limiter import rate_limited_request  # noqa: PLC0415
+        from issue_observatory.workers.rate_limiter import rate_limited_request
 
         async with rate_limited_request(rate_limiter, arena=arena_name, provider=PROVIDER_SERPER):
             return await _post_serper(client, payload, headers, arena_name, platform_name)
@@ -153,6 +156,7 @@ async def fetch_serpapi(
     rate_limiter: Any = None,
     arena_name: str = "google_search",
     platform_name: str = "google",
+    locale_params: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch one page of SerpAPI organic results.
 
@@ -167,6 +171,8 @@ async def fetch_serpapi(
         rate_limiter: Optional :class:`RateLimiter` instance.
         arena_name: Arena identifier for rate-limiter keying.
         platform_name: Platform identifier for error messages.
+        locale_params: Locale parameters (e.g. ``{"gl": "dk", "hl": "da"}``).
+            Defaults to :data:`DANISH_PARAMS`.
 
     Returns:
         List of raw organic result dicts from the SerpAPI response.
@@ -176,9 +182,10 @@ async def fetch_serpapi(
         ArenaAuthError: On HTTP 401 or 403.
         ArenaCollectionError: On other non-2xx HTTP responses or network errors.
     """
+    effective_params = locale_params if locale_params is not None else DANISH_PARAMS
     params: dict[str, Any] = {
         "q": term,
-        **DANISH_PARAMS,
+        **effective_params,
         "num": num,
         "start": start,
         "api_key": api_key,
@@ -187,7 +194,7 @@ async def fetch_serpapi(
     }
 
     if rate_limiter is not None:
-        from issue_observatory.workers.rate_limiter import rate_limited_request  # noqa: PLC0415
+        from issue_observatory.workers.rate_limiter import rate_limited_request
 
         async with rate_limited_request(
             rate_limiter, arena=arena_name, provider=PROVIDER_SERPAPI

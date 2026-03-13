@@ -29,7 +29,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -43,13 +43,13 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.google_search.collector import GoogleSearchCollector  # noqa: E402
-from issue_observatory.arenas.google_search.config import (  # noqa: E402
-    SERPER_API_URL,
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.google_search.collector import GoogleSearchCollector
+from issue_observatory.arenas.google_search.config import (
     SERPAPI_URL,
+    SERPER_API_URL,
 )
-from issue_observatory.core.exceptions import (  # noqa: E402
+from issue_observatory.core.exceptions import (
     ArenaAuthError,
     ArenaRateLimitError,
     NoCredentialAvailableError,
@@ -269,7 +269,7 @@ class TestCollectByTermsMedium:
         self, caplog: Any
     ) -> None:
         """collect_by_terms(FREE) returns [] and logs a warning (no HTTP call made)."""
-        import logging  # noqa: PLC0415
+        import logging
 
         pool = _make_serper_pool()
         collector = GoogleSearchCollector(credential_pool=pool)

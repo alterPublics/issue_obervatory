@@ -21,15 +21,15 @@ Note on import order:
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import Annotated, AsyncGenerator, Optional
+from typing import Annotated
 
 import redis.asyncio as aioredis
 from fastapi import Depends, HTTPException, status
 
 from issue_observatory.config.settings import get_settings
 from issue_observatory.core.models.users import User
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers that resolve the FastAPIUsers instance at call time
@@ -49,7 +49,7 @@ def _current_user_dep(*, active: bool, optional: bool):  # type: ignore[return]
     Returns:
         A FastAPI ``Depends``-compatible callable.
     """
-    from issue_observatory.api.routes.auth import fastapi_users  # noqa: PLC0415
+    from issue_observatory.api.routes.auth import fastapi_users
 
     return fastapi_users.current_user(active=active, optional=optional)
 
@@ -103,10 +103,10 @@ async def get_current_active_user(
 
 async def get_optional_user(
     user: Annotated[
-        Optional[User],
+        User | None,
         Depends(_current_user_dep(active=True, optional=True)),
     ],
-) -> Optional[User]:
+) -> User | None:
     """Return the current active user, or ``None`` if unauthenticated.
 
     Used on public-facing routes where authentication is not required but
@@ -238,12 +238,12 @@ class PaginationParams:
         page_size: Number of records to return per page (1–200).
     """
 
-    cursor: Optional[str]
+    cursor: str | None
     page_size: int
 
 
 def get_pagination(
-    cursor: Optional[str] = None,
+    cursor: str | None = None,
     page_size: int = 50,
 ) -> PaginationParams:
     """Parse and validate cursor-pagination query parameters.

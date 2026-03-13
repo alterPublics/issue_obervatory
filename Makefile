@@ -12,11 +12,12 @@ CELERY_APP := issue_observatory.workers.celery_app
 
 ## run: Start the FastAPI development server with auto-reload
 run:
-	$(UVICORN) $(APP_MODULE) --reload --host 0.0.0.0 --port 8011
+	$(UVICORN) $(APP_MODULE) --reload --host 0.0.0.0 --port 8022
 
-## worker: Start a Celery worker
+## worker: Start a Celery worker (capped at 8 to avoid DB connection exhaustion)
+WORKER_CONCURRENCY := $(shell python3 -c "import os; print(min(8, int(os.cpu_count() * 0.8)))")
 worker:
-	$(CELERY) -A $(CELERY_APP) worker --loglevel=info --concurrency=4
+	$(CELERY) -A $(CELERY_APP) worker --loglevel=info --concurrency=$(WORKER_CONCURRENCY)
 
 ## beat: Start Celery Beat scheduler
 beat:

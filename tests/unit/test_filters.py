@@ -15,10 +15,8 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-
-import pytest
 
 # ---------------------------------------------------------------------------
 # Env bootstrap
@@ -28,7 +26,7 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.analysis._filters import (  # noqa: E402
+from issue_observatory.analysis._filters import (
     build_content_filters,
     build_content_where,
 )
@@ -106,8 +104,8 @@ class TestBuildContentFilters:
     def test_duplicate_exclusion_always_present_with_all_filters(self) -> None:
         """Duplicate exclusion clause is present when all filter args are supplied."""
         params: dict[str, Any] = {}
-        date_from = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        date_to = datetime(2026, 1, 31, tzinfo=timezone.utc)
+        date_from = datetime(2026, 1, 1, tzinfo=UTC)
+        date_to = datetime(2026, 1, 31, tzinfo=UTC)
         clauses = build_content_filters(
             uuid.uuid4(), uuid.uuid4(), "news_media", "bluesky", date_from, date_to, params
         )
@@ -132,7 +130,7 @@ class TestBuildContentFilters:
     def test_date_from_adds_published_at_gte_clause(self) -> None:
         """date_from adds a published_at >= :date_from clause."""
         params: dict[str, Any] = {}
-        date_from = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        date_from = datetime(2026, 1, 1, tzinfo=UTC)
         clauses = build_content_filters(None, None, None, None, date_from, None, params)
         combined = " ".join(clauses)
         assert "published_at >= :date_from" in combined
@@ -141,7 +139,7 @@ class TestBuildContentFilters:
     def test_date_to_adds_published_at_lte_clause(self) -> None:
         """date_to adds a published_at <= :date_to clause."""
         params: dict[str, Any] = {}
-        date_to = datetime(2026, 1, 31, tzinfo=timezone.utc)
+        date_to = datetime(2026, 1, 31, tzinfo=UTC)
         clauses = build_content_filters(None, None, None, None, None, date_to, params)
         combined = " ".join(clauses)
         assert "published_at <= :date_to" in combined
@@ -151,8 +149,8 @@ class TestBuildContentFilters:
         """date_from and date_to together yield three clauses: two dates plus
         the duplicate exclusion."""
         params: dict[str, Any] = {}
-        date_from = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        date_to = datetime(2026, 1, 31, tzinfo=timezone.utc)
+        date_from = datetime(2026, 1, 1, tzinfo=UTC)
+        date_to = datetime(2026, 1, 31, tzinfo=UTC)
         clauses = build_content_filters(None, None, None, None, date_from, date_to, params)
         assert len(clauses) == 3
 
@@ -236,8 +234,8 @@ class TestBuildContentWhere:
     def test_date_range_predicates_present_in_where_clause(self) -> None:
         """date_from and date_to generate appropriate predicates in the WHERE clause."""
         params: dict[str, Any] = {}
-        date_from = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        date_to = datetime(2026, 1, 31, tzinfo=timezone.utc)
+        date_from = datetime(2026, 1, 1, tzinfo=UTC)
+        date_to = datetime(2026, 1, 31, tzinfo=UTC)
         result = build_content_where(None, None, None, None, date_from, date_to, params)
         assert "published_at >=" in result
         assert "published_at <=" in result

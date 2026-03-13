@@ -26,9 +26,8 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.api.routes.analysis import filtered_export, suggested_terms  # noqa: E402
-from issue_observatory.core.models.users import User  # noqa: E402
-
+from issue_observatory.api.routes.analysis import filtered_export, suggested_terms
+from issue_observatory.core.models.users import User
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -34,13 +34,13 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.threads.collector import ThreadsCollector  # noqa: E402
-from issue_observatory.arenas.threads.config import (  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.threads.collector import ThreadsCollector
+from issue_observatory.arenas.threads.config import (
     THREADS_API_BASE,
     THREADS_ME_ENDPOINT,
 )
-from issue_observatory.core.exceptions import ArenaRateLimitError  # noqa: E402
+from issue_observatory.core.exceptions import ArenaRateLimitError
 
 # ---------------------------------------------------------------------------
 # Fixture paths

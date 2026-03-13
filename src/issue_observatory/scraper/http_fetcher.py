@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import urllib.parse
 import urllib.robotparser
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import httpx
 
@@ -85,7 +85,7 @@ def _is_allowed_by_robots(
     rp.set_url(robots_url)
     try:
         rp.read()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("scraper: robots.txt fetch failed for %s: %s — allowing", origin, exc)
         robots_cache[cache_key] = True
         return True
@@ -225,7 +225,7 @@ async def fetch_url(
     # Decode response body
     try:
         html = response.text
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("scraper: decode error for %s: %s", url, exc)
         return FetchResult(
             html=None,

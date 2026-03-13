@@ -36,7 +36,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -106,6 +106,8 @@ class WikipediaCollector(ArenaCollector):
     platform_name: str = "wikipedia"
     supported_tiers: list[Tier] = [Tier.FREE]
     temporal_mode: TemporalMode = TemporalMode.FORWARD_ONLY
+    source_list_config_key: str | None = "seed_articles"
+    supports_actor_collection: bool = True
 
     def __init__(
         self,
@@ -197,13 +199,13 @@ class WikipediaCollector(ArenaCollector):
             return []
 
         semaphore = asyncio.Semaphore(_MAX_CONCURRENT_REQUESTS)
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
         seen_platform_ids: set[str] = set()
 
         async with self._build_http_client() as client:
             for project in wiki_projects:
                 for query in search_queries:
-                    if len(all_records) >= effective_max:
+                    if self._total_emitted >= effective_max:
                         break
 
                     # Step 1: discover articles.
@@ -225,35 +227,37 @@ class WikipediaCollector(ArenaCollector):
                         client, article_titles, project, date_from, date_to, semaphore
                     )
                     for rev in revisions:
-                        if len(all_records) >= effective_max:
+                        if self._total_emitted >= effective_max:
                             break
                         pid = rev.get("platform_id", "")
                         if pid in seen_platform_ids:
                             continue
                         seen_platform_ids.add(pid)
-                        all_records.append(self.normalize(rev))
+                        self._emit(self.normalize(rev))
 
                     # Step 3: collect pageviews (optional).
-                    if INCLUDE_PAGEVIEWS and len(all_records) < effective_max:
+                    if INCLUDE_PAGEVIEWS and self._total_emitted < effective_max:
                         pv_start, pv_end = _resolve_pageview_date_range(date_from, date_to)
                         for title in article_titles:
-                            if len(all_records) >= effective_max:
+                            if self._total_emitted >= effective_max:
                                 break
                             pv_records = await self._get_pageviews(
                                 client, title, project, pv_start, pv_end, semaphore
                             )
                             for pv in pv_records:
-                                if len(all_records) >= effective_max:
+                                if self._total_emitted >= effective_max:
                                     break
                                 pid = pv.get("platform_id", "")
                                 if pid in seen_platform_ids:
                                     continue
                                 seen_platform_ids.add(pid)
-                                all_records.append(self.normalize(pv))
+                                self._emit(self.normalize(pv))
+
+                    self._flush()
 
                 # GR-04: collect revisions (and pageviews) for researcher-supplied
                 # seed articles directly — bypassing the search step.
-                if extra_seed_articles and len(all_records) < effective_max:
+                if extra_seed_articles and self._total_emitted < effective_max:
                     seed_titles = [t for t in extra_seed_articles if t and t.strip()]
                     if seed_titles:
                         logger.info(
@@ -265,38 +269,39 @@ class WikipediaCollector(ArenaCollector):
                             client, seed_titles, project, date_from, date_to, semaphore
                         )
                         for rev in seed_revisions:
-                            if len(all_records) >= effective_max:
+                            if self._total_emitted >= effective_max:
                                 break
                             pid = rev.get("platform_id", "")
                             if pid in seen_platform_ids:
                                 continue
                             seen_platform_ids.add(pid)
-                            all_records.append(self.normalize(rev))
+                            self._emit(self.normalize(rev))
 
-                        if INCLUDE_PAGEVIEWS and len(all_records) < effective_max:
+                        if INCLUDE_PAGEVIEWS and self._total_emitted < effective_max:
                             pv_start, pv_end = _resolve_pageview_date_range(date_from, date_to)
                             for title in seed_titles:
-                                if len(all_records) >= effective_max:
+                                if self._total_emitted >= effective_max:
                                     break
                                 pv_records = await self._get_pageviews(
                                     client, title, project, pv_start, pv_end, semaphore
                                 )
                                 for pv in pv_records:
-                                    if len(all_records) >= effective_max:
+                                    if self._total_emitted >= effective_max:
                                         break
                                     pid = pv.get("platform_id", "")
                                     if pid in seen_platform_ids:
                                         continue
                                     seen_platform_ids.add(pid)
-                                    all_records.append(self.normalize(pv))
+                                    self._emit(self.normalize(pv))
 
+        self._flush()
         logger.info(
             "wikipedia: collect_by_terms — %d records for %d terms on %s",
-            len(all_records),
+            self._total_emitted,
             len(search_queries),
             wiki_projects,
         )
-        return all_records
+        return list(self._batch_buffer)
 
     async def collect_by_actors(
         self,
@@ -335,33 +340,35 @@ class WikipediaCollector(ArenaCollector):
         effective_max = max_results if max_results is not None else DEFAULT_MAX_RESULTS
 
         semaphore = asyncio.Semaphore(_MAX_CONCURRENT_REQUESTS)
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
         seen_platform_ids: set[str] = set()
 
         async with self._build_http_client() as client:
             for project in DEFAULT_WIKI_PROJECTS:
                 for username in actor_ids:
-                    if len(all_records) >= effective_max:
+                    if self._total_emitted >= effective_max:
                         break
                     contribs = await self._get_user_contribs(
                         client, username, project, date_from, date_to,
-                        effective_max - len(all_records), semaphore,
+                        effective_max - self._total_emitted, semaphore,
                     )
                     for contrib in contribs:
-                        if len(all_records) >= effective_max:
+                        if self._total_emitted >= effective_max:
                             break
                         pid = contrib.get("platform_id", "")
                         if pid in seen_platform_ids:
                             continue
                         seen_platform_ids.add(pid)
-                        all_records.append(self.normalize(contrib))
+                        self._emit(self.normalize(contrib))
+                    self._flush()
 
+        self._flush()
         logger.info(
             "wikipedia: collect_by_actors — %d records for %d actors",
-            len(all_records),
+            self._total_emitted,
             len(actor_ids),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     def get_tier_config(self, tier: Tier) -> TierConfig:
         """Return tier configuration for the Wikipedia arena.
@@ -427,7 +434,7 @@ class WikipediaCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"down"``), ``arena``,
             ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(tz=timezone.utc).isoformat()
+        checked_at = datetime.now(tz=UTC).isoformat()
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -461,7 +468,7 @@ class WikipediaCollector(ArenaCollector):
             }
         except httpx.RequestError as exc:
             return {**base, "status": "down", "detail": f"Connection error: {exc}"}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {**base, "status": "down", "detail": f"Unexpected error: {exc}"}
 
     # ------------------------------------------------------------------
@@ -1001,7 +1008,7 @@ class WikipediaCollector(ArenaCollector):
                         exc.response.headers.get("Retry-After", 60)
                     )
                     raise ArenaRateLimitError(
-                        f"wikipedia: rate limited by Wikimedia API (HTTP 429)",
+                        "wikipedia: rate limited by Wikimedia API (HTTP 429)",
                         retry_after=retry_after,
                         arena="reference",
                         platform="wikipedia",
@@ -1114,7 +1121,7 @@ def _to_mediawiki_timestamp(value: datetime | str | None) -> str | None:
         return None
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
+            value = value.replace(tzinfo=UTC)
         return value.strftime("%Y-%m-%dT%H:%M:%SZ")
     if isinstance(value, str):
         value = value.strip()
@@ -1146,9 +1153,9 @@ def _resolve_pageview_date_range(
     Returns:
         Tuple of ``(start_str, end_str)`` in ``YYYYMMDD`` format.
     """
-    from datetime import timedelta  # noqa: PLC0415
+    from datetime import timedelta
 
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
 
     if date_to is not None:
         end_dt = _parse_date_to_datetime(date_to)
@@ -1176,7 +1183,7 @@ def _parse_date_to_datetime(value: datetime | str) -> datetime:
     """
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
+            return value.replace(tzinfo=UTC)
         return value
     # String parsing.
     for fmt in (
@@ -1188,10 +1195,10 @@ def _parse_date_to_datetime(value: datetime | str) -> datetime:
         try:
             dt = datetime.strptime(str(value).strip(), fmt)
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             return dt
         except ValueError:
             continue
     # Fall back to now if parsing fails.
     logger.warning("wikipedia: could not parse date '%s', defaulting to now", value)
-    return datetime.now(tz=timezone.utc)
+    return datetime.now(tz=UTC)

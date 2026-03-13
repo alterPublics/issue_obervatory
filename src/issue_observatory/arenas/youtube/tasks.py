@@ -39,8 +39,6 @@ import logging
 import time
 from typing import Any
 
-from celery.exceptions import SoftTimeLimitExceeded
-
 from issue_observatory.arenas.youtube.collector import YouTubeCollector
 from issue_observatory.config.settings import get_settings
 from issue_observatory.core.credential_pool import CredentialPool
@@ -88,19 +86,19 @@ def _update_task_status(
         skipped_actor_detail: List of dicts with actor_id, reason, error.
     """
     try:
-        from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+        from issue_observatory.core.database import get_sync_session
 
         with get_sync_session() as session:
-            import json  # noqa: PLC0415
+            import json
 
-            from sqlalchemy import text  # noqa: PLC0415
+            from sqlalchemy import text
 
             session.execute(
                 text(
                     """
                     UPDATE collection_tasks
                     SET status            = :status,
-                        records_collected = :records_collected,
+                        records_collected = GREATEST(records_collected, :records_collected),
                         error_message     = :error_message,
                         actors_skipped    = :actors_skipped,
                         skipped_actor_detail = :skipped_actor_detail,
@@ -127,7 +125,7 @@ def _update_task_status(
                 },
             )
             session.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "youtube: failed to update collection_tasks status to '%s': %s",
             status,
@@ -148,8 +146,7 @@ def _update_task_status(
     retry_backoff=True,
     retry_backoff_max=600,  # cap backoff at 10 minutes
     acks_late=True,
-    soft_time_limit=600,
-    time_limit=720,
+    # No fixed time limit — records persist incrementally and stale_run_cleanup handles stuck tasks.
 )
 def youtube_collect_terms(
     self: Any,
@@ -191,7 +188,7 @@ def youtube_collect_terms(
         ArenaCollectionError: Marks the task as FAILED in Celery.
         NoCredentialAvailableError: All API keys exhausted — task fails.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
+    from issue_observatory.arenas.base import Tier
 
     _settings = get_settings()
     _redis_url = _settings.redis_url
@@ -236,6 +233,10 @@ def youtube_collect_terms(
 
         credential_pool = CredentialPool()
         collector = YouTubeCollector(credential_pool=credential_pool)
+        from issue_observatory.workers._task_helpers import make_batch_sink
+
+        sink = make_batch_sink(collection_run_id, query_design_id, terms=terms)
+        collector.configure_batch_persistence(sink=sink, batch_size=100, collection_run_id=collection_run_id)
 
         # Check if force_recollect is set (opt-out from coverage check)
         force_recollect = _extra.get("force_recollect", False)
@@ -244,9 +245,9 @@ def youtube_collect_terms(
         effective_date_from = date_from
         effective_date_to = date_to
         if not force_recollect and date_from and date_to:
-            from datetime import datetime as _dt  # noqa: PLC0415
+            from datetime import datetime as _dt
 
-            from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
+            from issue_observatory.core.coverage_checker import (
                 check_existing_coverage,
             )
 
@@ -262,7 +263,7 @@ def youtube_collect_terms(
                     "will reindex existing records only.",
                     collection_run_id,
                 )
-                from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+                from issue_observatory.workers._task_helpers import (
                     reindex_existing_records,
                 )
 
@@ -305,7 +306,7 @@ def youtube_collect_terms(
             )
 
         try:
-            records = asyncio.run(
+            remaining = asyncio.run(
                 collector.collect_by_terms(
                     terms=terms,
                     tier=tier_enum,
@@ -355,16 +356,30 @@ def youtube_collect_terms(
             )
             raise
 
-        count = len(records)
-
-        # Persist collected records to the database.
-        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+        # Persist any records not yet flushed by the sink (fallback path).
+        from issue_observatory.workers._task_helpers import (
             persist_collected_records,
             record_collection_attempts_batch,
             reindex_existing_records,
         )
 
-        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+        fallback_inserted, fallback_skipped = 0, 0
+        if remaining:
+            fallback_inserted, fallback_skipped = persist_collected_records(
+                remaining, collection_run_id, query_design_id
+            )
+        inserted = collector.batch_stats["inserted"] + fallback_inserted
+        skipped = collector.batch_stats["skipped"] + fallback_skipped
+
+        # Fallback: if in-memory counters lost track, use the actual DB count.
+        if inserted == 0:
+            from issue_observatory.workers._task_helpers import (
+                count_run_platform_records,
+            )
+            db_count = count_run_platform_records(collection_run_id, "youtube")
+            if db_count > 0:
+                logger.info("youtube: in-memory counter=0 but DB has %d records — using DB count", db_count)
+                inserted = db_count
 
         # Link existing records from other runs that match these terms/dates.
         linked = reindex_existing_records(
@@ -387,13 +402,14 @@ def youtube_collect_terms(
                 date_from=date_from,
                 date_to=date_to,
                 records_returned=inserted,
+                per_input_counts=collector.per_input_counts,
             )
 
         logger.info(
-            "youtube: collect_by_terms completed — run=%s records=%d inserted=%d "
+            "youtube: collect_by_terms completed — run=%s emitted=%d inserted=%d "
             "skipped=%d linked=%d",
             collection_run_id,
-            count,
+            collector.batch_stats["emitted"],
             inserted,
             skipped,
             linked,
@@ -417,18 +433,21 @@ def youtube_collect_terms(
             "platform": _PLATFORM,
             "tier": tier,
         }
-    except SoftTimeLimitExceeded:
-        logger.error(
-            "youtube: collect_by_terms timed out after 10 minutes — run=%s",
-            collection_run_id,
+    except Exception as exc:
+        msg = f"youtube: unexpected error for run={collection_run_id}: {type(exc).__name__}: {exc}"
+        logger.error(msg, exc_info=True)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg[:500])
+        publish_task_update(
+            redis_url=get_settings().redis_url,
+            run_id=collection_run_id,
+            arena=_ARENA,
+            platform=_PLATFORM,
+            status="failed",
+            records_collected=0,
+            error_message=msg[:500],
+            elapsed_seconds=0,
         )
-        _update_task_status(
-            collection_run_id,
-            _PLATFORM,
-            "failed",
-            error_message="Collection timed out after 10 minutes",
-        )
-        return {"status": "failed", "error": "timeout", "arena": _ARENA}
+        raise
 
 
 @celery_app.task(
@@ -439,8 +458,7 @@ def youtube_collect_terms(
     retry_backoff=True,
     retry_backoff_max=600,
     acks_late=True,
-    soft_time_limit=600,
-    time_limit=720,
+    # No fixed time limit — records persist incrementally and stale_run_cleanup handles stuck tasks.
 )
 def youtube_collect_actors(
     self: Any,
@@ -477,7 +495,7 @@ def youtube_collect_actors(
         ArenaCollectionError: Marks the task as FAILED in Celery.
         NoCredentialAvailableError: All API keys exhausted — task fails.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
+    from issue_observatory.arenas.base import Tier
 
     _settings = get_settings()
     _redis_url = _settings.redis_url
@@ -522,6 +540,10 @@ def youtube_collect_actors(
 
         credential_pool = CredentialPool()
         collector = YouTubeCollector(credential_pool=credential_pool)
+        from issue_observatory.workers._task_helpers import make_batch_sink
+
+        sink = make_batch_sink(collection_run_id, query_design_id)
+        collector.configure_batch_persistence(sink=sink, batch_size=100, collection_run_id=collection_run_id)
 
         # Check if force_recollect is set (opt-out from coverage check)
         force_recollect = _extra.get("force_recollect", False)
@@ -530,9 +552,9 @@ def youtube_collect_actors(
         effective_date_from = date_from
         effective_date_to = date_to
         if not force_recollect and date_from and date_to:
-            from datetime import datetime as _dt  # noqa: PLC0415
+            from datetime import datetime as _dt
 
-            from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
+            from issue_observatory.core.coverage_checker import (
                 check_existing_coverage,
             )
 
@@ -548,7 +570,7 @@ def youtube_collect_actors(
                     "will reindex existing records only.",
                     collection_run_id,
                 )
-                from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+                from issue_observatory.workers._task_helpers import (
                     reindex_existing_records,
                 )
 
@@ -591,7 +613,7 @@ def youtube_collect_actors(
             )
 
         try:
-            records = asyncio.run(
+            remaining = asyncio.run(
                 collector.collect_by_actors(
                     actor_ids=actor_ids,
                     tier=tier_enum,
@@ -637,16 +659,30 @@ def youtube_collect_actors(
             )
             raise
 
-        count = len(records)
-
-        # Persist collected records to the database.
-        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+        # Persist any records not yet flushed by the sink (fallback path).
+        from issue_observatory.workers._task_helpers import (
             persist_collected_records,
             record_collection_attempts_batch,
             reindex_existing_records,
         )
 
-        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+        fallback_inserted, fallback_skipped = 0, 0
+        if remaining:
+            fallback_inserted, fallback_skipped = persist_collected_records(
+                remaining, collection_run_id, query_design_id
+            )
+        inserted = collector.batch_stats["inserted"] + fallback_inserted
+        skipped = collector.batch_stats["skipped"] + fallback_skipped
+
+        # Fallback: if in-memory counters lost track, use the actual DB count.
+        if inserted == 0:
+            from issue_observatory.workers._task_helpers import (
+                count_run_platform_records,
+            )
+            db_count = count_run_platform_records(collection_run_id, "youtube")
+            if db_count > 0:
+                logger.info("youtube: in-memory counter=0 but DB has %d records — using DB count", db_count)
+                inserted = db_count
 
         # Link existing records from other runs that match these actors/dates.
         linked = reindex_existing_records(
@@ -669,14 +705,15 @@ def youtube_collect_actors(
                 date_from=date_from,
                 date_to=date_to,
                 records_returned=inserted,
+                per_input_counts=collector.per_input_counts,
             )
 
         skipped_actors = collector.skipped_actors
         logger.info(
-            "youtube: collect_by_actors completed — run=%s records=%d inserted=%d "
+            "youtube: collect_by_actors completed — run=%s emitted=%d inserted=%d "
             "dupes_skipped=%d actors_skipped=%d linked=%d",
             collection_run_id,
-            count,
+            collector.batch_stats["emitted"],
             inserted,
             skipped,
             len(skipped_actors),
@@ -709,18 +746,21 @@ def youtube_collect_actors(
             "tier": tier,
             "actors_skipped": len(skipped_actors),
         }
-    except SoftTimeLimitExceeded:
-        logger.error(
-            "youtube: collect_by_actors timed out after 10 minutes — run=%s",
-            collection_run_id,
+    except Exception as exc:
+        msg = f"youtube: unexpected error for run={collection_run_id}: {type(exc).__name__}: {exc}"
+        logger.error(msg, exc_info=True)
+        _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg[:500])
+        publish_task_update(
+            redis_url=get_settings().redis_url,
+            run_id=collection_run_id,
+            arena=_ARENA,
+            platform=_PLATFORM,
+            status="failed",
+            records_collected=0,
+            error_message=msg[:500],
+            elapsed_seconds=0,
         )
-        _update_task_status(
-            collection_run_id,
-            _PLATFORM,
-            "failed",
-            error_message="Collection timed out after 10 minutes",
-        )
-        return {"status": "failed", "error": "timeout", "arena": _ARENA}
+        raise
 
 
 @celery_app.task(
@@ -745,3 +785,247 @@ def youtube_health_check() -> dict[str, Any]:
         "youtube: health_check status=%s", result.get("status", "unknown")
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Comments collection task
+# ---------------------------------------------------------------------------
+
+_COMMENTS_ARENA = "youtube_comments"
+
+
+@celery_app.task(
+    name="issue_observatory.arenas.youtube.tasks.collect_comments",
+    bind=True,
+    max_retries=5,
+    autoretry_for=(ArenaRateLimitError,),
+    retry_backoff=True,
+    retry_backoff_max=600,
+    acks_late=True,
+)
+def youtube_collect_comments(
+    self: Any,
+    query_design_id: str,
+    collection_run_id: str,
+    post_ids: list[dict],
+    tier: str = "free",
+    max_comments_per_post: int = 100,
+    depth: int = 0,
+    **_extra: Any,
+) -> dict[str, Any]:
+    """Collect comments for a list of YouTube videos via ``commentThreads.list``.
+
+    For each video in ``post_ids`` the task calls ``collect_comments()`` on a
+    :class:`YouTubeCollector` instance, paginating with ``nextPageToken`` until
+    ``max_comments_per_post`` is reached.  When ``depth=1`` replies from each
+    thread's ``replies.comments`` list are included at no extra API cost.
+
+    On quota exhaustion (``ArenaRateLimitError``) the task is automatically
+    retried up to ``max_retries=5`` times with exponential back-off capped at
+    10 minutes.  Each retry constructs a fresh :class:`CredentialPool` so that
+    a different API key is used for the next attempt.
+
+    Args:
+        query_design_id: UUID string of the owning query design.
+        collection_run_id: UUID string of the owning collection run.
+        post_ids: List of dicts each containing ``"platform_id"`` (YouTube
+            video ID string).
+        tier: Tier string — only ``"free"`` is valid for YouTube.
+        max_comments_per_post: Maximum comment threads to collect per video.
+        depth: Reply depth — ``0`` = top-level only, ``1`` = include replies.
+
+    Returns:
+        Dict with:
+        - ``records_collected`` (int): Number of normalized records saved.
+        - ``status`` (str): ``"completed"`` or ``"failed"``.
+        - ``arena`` (str): ``"youtube_comments"``.
+        - ``platform`` (str): ``"youtube"``.
+        - ``tier`` (str): The tier used.
+
+    Raises:
+        ArenaRateLimitError: Triggers automatic retry with credential rotation.
+        ArenaCollectionError: Marks the task as FAILED in Celery.
+        NoCredentialAvailableError: All API keys exhausted — task fails.
+    """
+    from issue_observatory.arenas.base import Tier
+
+    _settings = get_settings()
+    _redis_url = _settings.redis_url
+    _task_start = time.monotonic()
+
+    try:
+        logger.info(
+            "youtube: collect_comments started — run=%s videos=%d tier=%s depth=%d",
+            collection_run_id,
+            len(post_ids),
+            tier,
+            depth,
+        )
+        _update_task_status(collection_run_id, _COMMENTS_ARENA, "running")
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena=_COMMENTS_ARENA,
+            platform=_PLATFORM,
+            status="running",
+            records_collected=0,
+            error_message=None,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
+
+        try:
+            tier_enum = Tier(tier)
+        except ValueError:
+            msg = f"youtube: invalid tier '{tier}'. Valid values: free, medium, premium."
+            logger.error(msg)
+            _update_task_status(
+                collection_run_id, _COMMENTS_ARENA, "failed", error_message=msg
+            )
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena=_COMMENTS_ARENA,
+                platform=_PLATFORM,
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise ArenaCollectionError(msg, arena=_COMMENTS_ARENA, platform=_PLATFORM)
+
+        credential_pool = CredentialPool()
+        collector = YouTubeCollector(credential_pool=credential_pool)
+        from issue_observatory.workers._task_helpers import make_batch_sink
+
+        sink = make_batch_sink(collection_run_id, query_design_id)
+        collector.configure_batch_persistence(
+            sink=sink, batch_size=100, collection_run_id=collection_run_id
+        )
+
+        try:
+            comment_records = asyncio.run(
+                collector.collect_comments(
+                    post_ids=post_ids,
+                    tier=tier_enum,
+                    max_comments_per_post=max_comments_per_post,
+                    depth=depth,
+                )
+            )
+        except NoCredentialAvailableError as exc:
+            msg = f"youtube: all API keys exhausted during collect_comments: {exc}"
+            logger.critical(msg)
+            _update_task_status(
+                collection_run_id, _COMMENTS_ARENA, "failed", error_message=msg
+            )
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena=_COMMENTS_ARENA,
+                platform=_PLATFORM,
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
+        except ArenaRateLimitError:
+            logger.warning(
+                "youtube: quota exhausted on collect_comments run=%s — will retry.",
+                collection_run_id,
+            )
+            raise
+        except ArenaCollectionError as exc:
+            msg = str(exc)
+            logger.error(
+                "youtube: collection error during collect_comments run=%s: %s",
+                collection_run_id,
+                msg,
+            )
+            _update_task_status(
+                collection_run_id, _COMMENTS_ARENA, "failed", error_message=msg
+            )
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena=_COMMENTS_ARENA,
+                platform=_PLATFORM,
+                status="failed",
+                records_collected=0,
+                error_message=msg,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            raise
+
+        # Persist any records not yet flushed by the sink (fallback path).
+        from issue_observatory.workers._task_helpers import (
+            persist_collected_records,
+        )
+
+        fallback_inserted, _fallback_skipped = 0, 0
+        if comment_records:
+            fallback_inserted, _fallback_skipped = persist_collected_records(
+                comment_records, collection_run_id, query_design_id
+            )
+        inserted = collector.batch_stats["inserted"] + fallback_inserted
+
+        # Fallback: if in-memory counters lost track, use the actual DB count.
+        if inserted == 0 and comment_records:
+            from issue_observatory.workers._task_helpers import (
+                count_run_platform_records,
+            )
+
+            db_count = count_run_platform_records(collection_run_id, _PLATFORM)
+            if db_count > 0:
+                logger.info(
+                    "youtube: collect_comments in-memory counter=0 but DB has %d records",
+                    db_count,
+                )
+                inserted = db_count
+
+        logger.info(
+            "youtube: collect_comments completed — run=%s inserted=%d videos=%d",
+            collection_run_id,
+            inserted,
+            len(post_ids),
+        )
+        _update_task_status(
+            collection_run_id, _COMMENTS_ARENA, "completed", records_collected=inserted
+        )
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena=_COMMENTS_ARENA,
+            platform=_PLATFORM,
+            status="completed",
+            records_collected=inserted,
+            error_message=None,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
+
+        return {
+            "records_collected": inserted,
+            "status": "completed",
+            "arena": _COMMENTS_ARENA,
+            "platform": _PLATFORM,
+            "tier": tier,
+        }
+    except Exception as exc:
+        msg = (
+            f"youtube: unexpected error in collect_comments run={collection_run_id}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        logger.error(msg, exc_info=True)
+        _update_task_status(
+            collection_run_id, _COMMENTS_ARENA, "failed", error_message=msg[:500]
+        )
+        publish_task_update(
+            redis_url=get_settings().redis_url,
+            run_id=collection_run_id,
+            arena=_COMMENTS_ARENA,
+            platform=_PLATFORM,
+            status="failed",
+            records_collected=0,
+            error_message=msg[:500],
+            elapsed_seconds=0,
+        )
+        raise

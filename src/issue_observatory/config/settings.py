@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
-from typing import Optional
 
 from pydantic import EmailStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -176,24 +175,24 @@ class Settings(BaseSettings):
     # CORS
     # ------------------------------------------------------------------
 
-    allowed_origins: list[str] = ["http://localhost:8011"]
+    allowed_origins: list[str] = ["*"]
     """Origins permitted by the CORS middleware.  Extend for production domains."""
 
     # ------------------------------------------------------------------
     # SMTP / email notifications
     # ------------------------------------------------------------------
 
-    smtp_host: Optional[str] = None
+    smtp_host: str | None = None
     """SMTP server hostname.  When ``None``, email notifications are disabled
     and all ``EmailService`` send methods silently no-op."""
 
     smtp_port: int = 587
     """SMTP server port.  587 is the standard submission port for STARTTLS."""
 
-    smtp_username: Optional[str] = None
+    smtp_username: str | None = None
     """SMTP authentication username.  Leave ``None`` for open relays."""
 
-    smtp_password: Optional[str] = None
+    smtp_password: str | None = None
     """SMTP authentication password.  Leave ``None`` for open relays."""
 
     smtp_from_address: str = "noreply@observatory.local"
@@ -295,7 +294,7 @@ class Settings(BaseSettings):
         # Attempt to instantiate a Fernet cipher with this key.
         # If the key is malformed, Fernet() will raise an exception.
         try:
-            from cryptography.fernet import Fernet  # noqa: PLC0415
+            from cryptography.fernet import Fernet
 
             Fernet(v.encode("utf-8") if isinstance(v, str) else v)
         except Exception as e:

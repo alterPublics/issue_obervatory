@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
@@ -58,13 +58,13 @@ class CollectionRun(Base):
         primary_key=True,
         server_default=sa.text("gen_random_uuid()"),
     )
-    query_design_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    query_design_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("query_designs.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
-    project_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("projects.id", ondelete="SET NULL"),
         nullable=True,
@@ -91,27 +91,27 @@ class CollectionRun(Base):
         nullable=False,
         server_default=sa.text("'free'"),
     )
-    started_at: Mapped[Optional[datetime]] = mapped_column(
+    started_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )
-    completed_at: Mapped[Optional[datetime]] = mapped_column(
+    completed_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )
-    suspended_at: Mapped[Optional[datetime]] = mapped_column(
+    suspended_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )
-    date_from: Mapped[Optional[datetime]] = mapped_column(
+    date_from: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )
-    date_to: Mapped[Optional[datetime]] = mapped_column(
+    date_to: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )
-    arenas_config: Mapped[Optional[dict]] = mapped_column(
+    arenas_config: Mapped[dict | None] = mapped_column(
         JSONB,
         nullable=True,
         server_default=sa.text("'{}'"),
@@ -126,7 +126,7 @@ class CollectionRun(Base):
         nullable=False,
         server_default=sa.text("0"),
     )
-    error_log: Mapped[Optional[str]] = mapped_column(
+    error_log: Mapped[str | None] = mapped_column(
         sa.Text,
         nullable=True,
     )
@@ -137,11 +137,11 @@ class CollectionRun(Base):
     )
 
     # Relationships
-    query_design: Mapped[Optional[QueryDesign]] = relationship(
+    query_design: Mapped[QueryDesign | None] = relationship(
         "QueryDesign",
         back_populates="collection_runs",
     )
-    project: Mapped[Optional[Project]] = relationship(
+    project: Mapped[Project | None] = relationship(
         "Project",
         back_populates="collection_runs",
     )
@@ -206,20 +206,20 @@ class CollectionTask(Base):
         server_default=sa.text("'pending'"),
         index=True,
     )
-    celery_task_id: Mapped[Optional[str]] = mapped_column(
+    celery_task_id: Mapped[str | None] = mapped_column(
         sa.String(200),
         nullable=True,
     )
-    credential_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    credential_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("api_credentials.id", ondelete="SET NULL"),
         nullable=True,
     )
-    started_at: Mapped[Optional[datetime]] = mapped_column(
+    started_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )
-    completed_at: Mapped[Optional[datetime]] = mapped_column(
+    completed_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )
@@ -233,7 +233,7 @@ class CollectionTask(Base):
         nullable=False,
         server_default=sa.text("0"),
     )
-    error_message: Mapped[Optional[str]] = mapped_column(
+    error_message: Mapped[str | None] = mapped_column(
         sa.Text,
         nullable=True,
     )
@@ -242,11 +242,11 @@ class CollectionTask(Base):
         nullable=False,
         server_default=sa.text("0"),
     )
-    skipped_actor_detail: Mapped[Optional[dict]] = mapped_column(
+    skipped_actor_detail: Mapped[dict | None] = mapped_column(
         JSONB,
         nullable=True,
     )
-    rate_limit_state: Mapped[Optional[dict]] = mapped_column(
+    rate_limit_state: Mapped[dict | None] = mapped_column(
         JSONB,
         nullable=True,
         server_default=sa.text("'{}'"),
@@ -257,7 +257,7 @@ class CollectionTask(Base):
         "CollectionRun",
         back_populates="tasks",
     )
-    credential: Mapped[Optional[ApiCredential]] = relationship(
+    credential: Mapped[ApiCredential | None] = relationship(
         "ApiCredential",
         foreign_keys=[credential_id],
     )
@@ -292,13 +292,13 @@ class CreditTransaction(Base):
         primary_key=True,
         server_default=sa.text("gen_random_uuid()"),
     )
-    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
-    collection_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    collection_run_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("collection_runs.id", ondelete="SET NULL"),
         nullable=True,
@@ -330,17 +330,17 @@ class CreditTransaction(Base):
         server_default=sa.text("NOW()"),
         index=True,
     )
-    description: Mapped[Optional[str]] = mapped_column(
+    description: Mapped[str | None] = mapped_column(
         sa.Text,
         nullable=True,
     )
 
     # Relationships
-    user: Mapped[Optional[User]] = relationship(
+    user: Mapped[User | None] = relationship(
         "User",
         back_populates="credit_transactions",
     )
-    collection_run: Mapped[Optional[CollectionRun]] = relationship(
+    collection_run: Mapped[CollectionRun | None] = relationship(
         "CollectionRun",
         back_populates="credit_transactions",
     )

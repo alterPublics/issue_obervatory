@@ -36,10 +36,10 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.ritzau_via.collector import RitzauViaCollector  # noqa: E402
-from issue_observatory.arenas.ritzau_via.config import RITZAU_RELEASES_ENDPOINT  # noqa: E402
-from issue_observatory.core.exceptions import (  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.ritzau_via.collector import RitzauViaCollector
+from issue_observatory.arenas.ritzau_via.config import RITZAU_RELEASES_ENDPOINT
+from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
 )

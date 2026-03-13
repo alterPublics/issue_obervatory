@@ -26,16 +26,14 @@ import logging
 import time
 from typing import Any
 
-from celery.exceptions import SoftTimeLimitExceeded
-
 from issue_observatory.arenas.discord.collector import DiscordCollector
+from issue_observatory.config.settings import get_settings
 from issue_observatory.core.credential_pool import CredentialPool
+from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
 )
-from issue_observatory.config.settings import get_settings
-from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -65,23 +63,24 @@ def _update_task_status(
         error_message: Error description for failed updates.
     """
     try:
-        from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+        from issue_observatory.core.database import get_sync_session
 
         with get_sync_session() as session:
-            from sqlalchemy import text  # noqa: PLC0415
+            from sqlalchemy import text
 
             session.execute(
                 text(
                     """
                     UPDATE collection_tasks
                     SET status = :status,
-                        records_collected = :records_collected,
+                        records_collected = GREATEST(records_collected, :records_collected),
                         error_message = :error_message,
                         completed_at = CASE WHEN :status IN ('completed', 'failed')
                                             THEN NOW() ELSE completed_at END,
                         started_at   = CASE WHEN :status = 'running' AND started_at IS NULL
                                             THEN NOW() ELSE started_at END
                     WHERE collection_run_id = :run_id AND arena = :arena
+                        AND status != 'cancelled'
                     """
                 ),
                 {
@@ -93,7 +92,7 @@ def _update_task_status(
                 },
             )
             session.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "discord: failed to update collection_tasks status to '%s': %s",
             status,
@@ -119,8 +118,9 @@ def _load_arenas_config(query_design_id: str) -> dict:
         The ``arenas_config`` JSONB dict, or ``{}`` on failure.
     """
     try:
-        from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
-        from sqlalchemy import text  # noqa: PLC0415
+        from sqlalchemy import text
+
+        from issue_observatory.core.database import get_sync_session
 
         with get_sync_session() as session:
             row = session.execute(
@@ -129,7 +129,7 @@ def _load_arenas_config(query_design_id: str) -> dict:
             ).fetchone()
             if row and row[0]:
                 return dict(row[0])
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "discord: failed to load arenas_config for design %s: %s",
             query_design_id,
@@ -151,8 +151,7 @@ def _load_arenas_config(query_design_id: str) -> dict:
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
-    soft_time_limit=600,
-    time_limit=720,
+    # No fixed time limit — records persist incrementally and stale_run_cleanup handles stuck tasks.
 )
 def discord_collect_terms(
     self: Any,
@@ -192,223 +191,229 @@ def discord_collect_terms(
         ArenaRateLimitError: Triggers automatic retry with exponential backoff.
         ArenaCollectionError: Marks the task as FAILED in Celery.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
+    from issue_observatory.arenas.base import Tier
 
     _settings = get_settings()
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
+    logger.info(
+        "discord: collect_by_terms started — run=%s terms=%d channels=%s tier=%s",
+        collection_run_id,
+        len(terms),
+        len(channel_ids) if channel_ids else 0,
+        tier,
+    )
+    _update_task_status(collection_run_id, _ARENA, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="discord",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+
+    # GR-04: read researcher-configured extra channel IDs from arenas_config.
+    arenas_config = _load_arenas_config(query_design_id)
+    extra_channel_ids: list[str] | None = None
+    discord_config = arenas_config.get("discord") or {}
+    if isinstance(discord_config, dict):
+        raw_channels = discord_config.get("custom_channel_ids")
+        if isinstance(raw_channels, list) and raw_channels:
+            extra_channel_ids = [str(c) for c in raw_channels if c]
+
     try:
-        logger.info(
-            "discord: collect_by_terms started — run=%s terms=%d channels=%s tier=%s",
-            collection_run_id,
-            len(terms),
-            len(channel_ids) if channel_ids else 0,
-            tier,
-        )
-        _update_task_status(collection_run_id, _ARENA, "running")
+        tier_enum = Tier(tier)
+    except ValueError:
+        msg = f"discord: invalid tier '{tier}'. Only 'free' is supported."
+        logger.error(msg)
+        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="social_media",
             platform="discord",
-            status="running",
+            status="failed",
             records_collected=0,
-            error_message=None,
+            error_message=msg,
             elapsed_seconds=elapsed_since(_task_start),
         )
+        raise ArenaCollectionError(msg, arena=_ARENA, platform="discord")
 
-        # GR-04: read researcher-configured extra channel IDs from arenas_config.
-        arenas_config = _load_arenas_config(query_design_id)
-        extra_channel_ids: list[str] | None = None
-        discord_config = arenas_config.get("discord") or {}
-        if isinstance(discord_config, dict):
-            raw_channels = discord_config.get("custom_channel_ids")
-            if isinstance(raw_channels, list) and raw_channels:
-                extra_channel_ids = [str(c) for c in raw_channels if c]
+    from issue_observatory.workers._task_helpers import make_batch_sink
 
-        try:
-            tier_enum = Tier(tier)
-        except ValueError:
-            msg = f"discord: invalid tier '{tier}'. Only 'free' is supported."
-            logger.error(msg)
-            _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="social_media",
-                platform="discord",
-                status="failed",
-                records_collected=0,
-                error_message=msg,
-                elapsed_seconds=elapsed_since(_task_start),
-            )
-            raise ArenaCollectionError(msg, arena=_ARENA, platform="discord")
+    credential_pool = CredentialPool()
+    collector = DiscordCollector(credential_pool=credential_pool)
+    sink = make_batch_sink(collection_run_id, query_design_id)
+    collector.configure_batch_persistence(sink=sink, batch_size=100, collection_run_id=collection_run_id)
 
-        credential_pool = CredentialPool()
-        collector = DiscordCollector(credential_pool=credential_pool)
+    # Check if force_recollect is set (opt-out from coverage check)
+    force_recollect = _extra.get("force_recollect", False)
 
-        # Check if force_recollect is set (opt-out from coverage check)
-        force_recollect = _extra.get("force_recollect", False)
+    # Pre-collection coverage check: narrow date range to uncovered gaps
+    effective_date_from = date_from
+    effective_date_to = date_to
+    if not force_recollect and date_from and date_to:
+        from datetime import datetime as _dt
 
-        # Pre-collection coverage check: narrow date range to uncovered gaps
-        effective_date_from = date_from
-        effective_date_to = date_to
-        if not force_recollect and date_from and date_to:
-            from datetime import datetime as _dt  # noqa: PLC0415
-
-            from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
-                check_existing_coverage,
-            )
-
-            gaps = check_existing_coverage(
-                platform="discord",
-                date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
-                date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
-                terms=terms,
-            )
-            if not gaps:
-                logger.info(
-                    "discord: full coverage exists for run=%s — skipping API call, "
-                    "will reindex existing records only.",
-                    collection_run_id,
-                )
-                from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-                    reindex_existing_records,
-                )
-
-                linked = reindex_existing_records(
-                    platform="discord",
-                    collection_run_id=collection_run_id,
-                    query_design_id=query_design_id,
-                    terms=terms,
-                    date_from=date_from,
-                    date_to=date_to,
-                )
-                _update_task_status(
-                    collection_run_id, _ARENA, "completed", records_collected=0
-                )
-                publish_task_update(
-                    redis_url=_redis_url,
-                    run_id=collection_run_id,
-                    arena="social_media",
-                    platform="discord",
-                    status="completed",
-                    records_collected=0,
-                    error_message=None,
-                    elapsed_seconds=elapsed_since(_task_start),
-                )
-                return {
-                    "records_collected": 0,
-                    "records_linked": linked,
-                    "status": "completed",
-                    "arena": _ARENA,
-                    "tier": tier,
-                    "coverage_skip": True,
-                }
-            effective_date_from = gaps[0][0].isoformat()
-            effective_date_to = gaps[-1][1].isoformat()
-            logger.info(
-                "discord: narrowing collection to uncovered range %s — %s (run=%s)",
-                effective_date_from,
-                effective_date_to,
-                collection_run_id,
-            )
-
-        try:
-            records = asyncio.run(
-                collector.collect_by_terms(
-                    terms=terms,
-                    tier=tier_enum,
-                    date_from=effective_date_from,
-                    date_to=effective_date_to,
-                    max_results=max_results,
-                    channel_ids=channel_ids,
-                    extra_channel_ids=extra_channel_ids,
-                )
-            )
-        except ArenaRateLimitError:
-            logger.warning(
-                "discord: rate limited on collect_by_terms for run=%s — will retry.",
-                collection_run_id,
-            )
-            raise
-        except ArenaCollectionError as exc:
-            msg = str(exc)
-            logger.error("discord: collection error for run=%s: %s", collection_run_id, msg)
-            _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="social_media",
-                platform="discord",
-                status="failed",
-                records_collected=0,
-                error_message=msg,
-                elapsed_seconds=elapsed_since(_task_start),
-            )
-            raise
-
-        count = len(records)
-
-        # Persist collected records to the database.
-        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-            persist_collected_records,
-            record_collection_attempts_batch,
+        from issue_observatory.core.coverage_checker import (
+            check_existing_coverage,
         )
 
-        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+        gaps = check_existing_coverage(
+            platform="discord",
+            date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
+            date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
+            terms=terms,
+        )
+        if not gaps:
+            logger.info(
+                "discord: full coverage exists for run=%s — skipping API call, "
+                "will reindex existing records only.",
+                collection_run_id,
+            )
+            from issue_observatory.workers._task_helpers import (
+                reindex_existing_records,
+            )
 
-        # Record successful collection attempts for future pre-checks.
-        if date_from and date_to:
-            record_collection_attempts_batch(
+            linked = reindex_existing_records(
                 platform="discord",
                 collection_run_id=collection_run_id,
                 query_design_id=query_design_id,
-                inputs=terms,
-                input_type="term",
+                terms=terms,
                 date_from=date_from,
                 date_to=date_to,
-                records_returned=inserted,
             )
-
+            _update_task_status(
+                collection_run_id, _ARENA, "completed", records_collected=0
+            )
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="discord",
+                status="completed",
+                records_collected=0,
+                error_message=None,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            return {
+                "records_collected": 0,
+                "records_linked": linked,
+                "status": "completed",
+                "arena": _ARENA,
+                "tier": tier,
+                "coverage_skip": True,
+            }
+        effective_date_from = gaps[0][0].isoformat()
+        effective_date_to = gaps[-1][1].isoformat()
         logger.info(
-            "discord: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
+            "discord: narrowing collection to uncovered range %s — %s (run=%s)",
+            effective_date_from,
+            effective_date_to,
             collection_run_id,
-            count,
-            inserted,
-            skipped,
         )
-        _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+
+    try:
+        remaining = asyncio.run(
+            collector.collect_by_terms(
+                terms=terms,
+                tier=tier_enum,
+                date_from=effective_date_from,
+                date_to=effective_date_to,
+                max_results=max_results,
+                channel_ids=channel_ids,
+                extra_channel_ids=extra_channel_ids,
+            )
+        )
+    except ArenaRateLimitError:
+        logger.warning(
+            "discord: rate limited on collect_by_terms for run=%s — will retry.",
+            collection_run_id,
+        )
+        raise
+    except ArenaCollectionError as exc:
+        msg = str(exc)
+        logger.error("discord: collection error for run=%s: %s", collection_run_id, msg)
+        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="social_media",
             platform="discord",
-            status="completed",
-            records_collected=inserted,
-            error_message=None,
+            status="failed",
+            records_collected=0,
+            error_message=msg,
             elapsed_seconds=elapsed_since(_task_start),
         )
+        raise
 
-        return {
-            "records_collected": inserted,
-            "status": "completed",
-            "arena": _ARENA,
-            "tier": tier,
-        }
-    except SoftTimeLimitExceeded:
-        logger.error(
-            "discord: collect_by_terms timed out after 10 minutes — run=%s",
-            collection_run_id,
+    # Persist collected records to the database.
+    from issue_observatory.workers._task_helpers import (
+        persist_collected_records,
+        record_collection_attempts_batch,
+    )
+
+    fallback_inserted, fallback_skipped = 0, 0
+    if remaining:
+        fallback_inserted, fallback_skipped = persist_collected_records(
+            remaining, collection_run_id, query_design_id
         )
-        _update_task_status(
-            collection_run_id,
-            _ARENA,
-            "failed",
-            error_message="Collection timed out after 10 minutes",
+    inserted = collector.batch_stats["inserted"] + fallback_inserted
+    skipped = collector.batch_stats["skipped"] + fallback_skipped
+
+    # Fallback: if in-memory counters lost track, use the actual DB count.
+    if inserted == 0:
+        from issue_observatory.workers._task_helpers import (
+            count_run_platform_records,
         )
-        return {"status": "failed", "error": "timeout", "arena": _ARENA}
+        db_count = count_run_platform_records(collection_run_id, "discord")
+        if db_count > 0:
+            logger.info("discord: in-memory counter=0 but DB has %d records — using DB count", db_count)
+            inserted = db_count
+
+    # Record successful collection attempts for future pre-checks.
+    if date_from and date_to:
+        record_collection_attempts_batch(
+            platform="discord",
+            collection_run_id=collection_run_id,
+            query_design_id=query_design_id,
+            inputs=terms,
+            input_type="term",
+            date_from=date_from,
+            date_to=date_to,
+            records_returned=inserted,
+            per_input_counts=collector.per_input_counts,
+        )
+
+    logger.info(
+        "discord: collect_by_terms completed — run=%s emitted=%d inserted=%d skipped=%d",
+        collection_run_id,
+        collector.batch_stats["emitted"],
+        inserted,
+        skipped,
+    )
+    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="discord",
+        status="completed",
+        records_collected=inserted,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+
+    return {
+        "records_collected": inserted,
+        "status": "completed",
+        "arena": _ARENA,
+        "tier": tier,
+    }
 
 
 @celery_app.task(
@@ -419,8 +424,7 @@ def discord_collect_terms(
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
-    soft_time_limit=600,
-    time_limit=720,
+    # No fixed time limit — records persist incrementally and stale_run_cleanup handles stuck tasks.
 )
 def discord_collect_actors(
     self: Any,
@@ -456,213 +460,219 @@ def discord_collect_actors(
         ArenaRateLimitError: Triggers automatic retry.
         ArenaCollectionError: Marks the task as FAILED.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
+    from issue_observatory.arenas.base import Tier
 
     _settings = get_settings()
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
+    logger.info(
+        "discord: collect_by_actors started — run=%s actors=%d channels=%s tier=%s",
+        collection_run_id,
+        len(actor_ids),
+        len(channel_ids) if channel_ids else 0,
+        tier,
+    )
+    _update_task_status(collection_run_id, _ARENA, "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="discord",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+
     try:
-        logger.info(
-            "discord: collect_by_actors started — run=%s actors=%d channels=%s tier=%s",
-            collection_run_id,
-            len(actor_ids),
-            len(channel_ids) if channel_ids else 0,
-            tier,
-        )
-        _update_task_status(collection_run_id, _ARENA, "running")
+        tier_enum = Tier(tier)
+    except ValueError:
+        msg = f"discord: invalid tier '{tier}'. Only 'free' is supported."
+        logger.error(msg)
+        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="social_media",
             platform="discord",
-            status="running",
+            status="failed",
             records_collected=0,
-            error_message=None,
+            error_message=msg,
             elapsed_seconds=elapsed_since(_task_start),
         )
+        raise ArenaCollectionError(msg, arena=_ARENA, platform="discord")
 
-        try:
-            tier_enum = Tier(tier)
-        except ValueError:
-            msg = f"discord: invalid tier '{tier}'. Only 'free' is supported."
-            logger.error(msg)
-            _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="social_media",
-                platform="discord",
-                status="failed",
-                records_collected=0,
-                error_message=msg,
-                elapsed_seconds=elapsed_since(_task_start),
-            )
-            raise ArenaCollectionError(msg, arena=_ARENA, platform="discord")
+    from issue_observatory.workers._task_helpers import make_batch_sink
 
-        credential_pool = CredentialPool()
-        collector = DiscordCollector(credential_pool=credential_pool)
+    credential_pool = CredentialPool()
+    collector = DiscordCollector(credential_pool=credential_pool)
+    sink = make_batch_sink(collection_run_id, query_design_id)
+    collector.configure_batch_persistence(sink=sink, batch_size=100, collection_run_id=collection_run_id)
 
-        # Check if force_recollect is set (opt-out from coverage check)
-        force_recollect = _extra.get("force_recollect", False)
+    # Check if force_recollect is set (opt-out from coverage check)
+    force_recollect = _extra.get("force_recollect", False)
 
-        # Pre-collection coverage check: narrow date range to uncovered gaps
-        effective_date_from = date_from
-        effective_date_to = date_to
-        if not force_recollect and date_from and date_to:
-            from datetime import datetime as _dt  # noqa: PLC0415
+    # Pre-collection coverage check: narrow date range to uncovered gaps
+    effective_date_from = date_from
+    effective_date_to = date_to
+    if not force_recollect and date_from and date_to:
+        from datetime import datetime as _dt
 
-            from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
-                check_existing_coverage,
-            )
-
-            gaps = check_existing_coverage(
-                platform="discord",
-                date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
-                date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
-                actor_ids=actor_ids,
-            )
-            if not gaps:
-                logger.info(
-                    "discord: full coverage exists for run=%s — skipping API call, "
-                    "will reindex existing records only.",
-                    collection_run_id,
-                )
-                from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-                    reindex_existing_records,
-                )
-
-                linked = reindex_existing_records(
-                    platform="discord",
-                    collection_run_id=collection_run_id,
-                    query_design_id=query_design_id,
-                    actor_ids=actor_ids,
-                    date_from=date_from,
-                    date_to=date_to,
-                )
-                _update_task_status(
-                    collection_run_id, _ARENA, "completed", records_collected=0
-                )
-                publish_task_update(
-                    redis_url=_redis_url,
-                    run_id=collection_run_id,
-                    arena="social_media",
-                    platform="discord",
-                    status="completed",
-                    records_collected=0,
-                    error_message=None,
-                    elapsed_seconds=elapsed_since(_task_start),
-                )
-                return {
-                    "records_collected": 0,
-                    "records_linked": linked,
-                    "status": "completed",
-                    "arena": _ARENA,
-                    "tier": tier,
-                    "coverage_skip": True,
-                }
-            effective_date_from = gaps[0][0].isoformat()
-            effective_date_to = gaps[-1][1].isoformat()
-            logger.info(
-                "discord: narrowing collection to uncovered range %s — %s (run=%s)",
-                effective_date_from,
-                effective_date_to,
-                collection_run_id,
-            )
-
-        try:
-            records = asyncio.run(
-                collector.collect_by_actors(
-                    actor_ids=actor_ids,
-                    tier=tier_enum,
-                    date_from=effective_date_from,
-                    date_to=effective_date_to,
-                    max_results=max_results,
-                    channel_ids=channel_ids,
-                )
-            )
-        except ArenaRateLimitError:
-            logger.warning(
-                "discord: rate limited on collect_by_actors for run=%s — will retry.",
-                collection_run_id,
-            )
-            raise
-        except ArenaCollectionError as exc:
-            msg = str(exc)
-            logger.error("discord: collection error for run=%s: %s", collection_run_id, msg)
-            _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="social_media",
-                platform="discord",
-                status="failed",
-                records_collected=0,
-                error_message=msg,
-                elapsed_seconds=elapsed_since(_task_start),
-            )
-            raise
-
-        count = len(records)
-
-        # Persist collected records to the database.
-        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-            persist_collected_records,
-            record_collection_attempts_batch,
+        from issue_observatory.core.coverage_checker import (
+            check_existing_coverage,
         )
 
-        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
+        gaps = check_existing_coverage(
+            platform="discord",
+            date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
+            date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
+            actor_ids=actor_ids,
+        )
+        if not gaps:
+            logger.info(
+                "discord: full coverage exists for run=%s — skipping API call, "
+                "will reindex existing records only.",
+                collection_run_id,
+            )
+            from issue_observatory.workers._task_helpers import (
+                reindex_existing_records,
+            )
 
-        # Record successful collection attempts for future pre-checks.
-        if date_from and date_to:
-            record_collection_attempts_batch(
+            linked = reindex_existing_records(
                 platform="discord",
                 collection_run_id=collection_run_id,
                 query_design_id=query_design_id,
-                inputs=actor_ids,
-                input_type="actor",
+                actor_ids=actor_ids,
                 date_from=date_from,
                 date_to=date_to,
-                records_returned=inserted,
             )
-
+            _update_task_status(
+                collection_run_id, _ARENA, "completed", records_collected=0
+            )
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="discord",
+                status="completed",
+                records_collected=0,
+                error_message=None,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            return {
+                "records_collected": 0,
+                "records_linked": linked,
+                "status": "completed",
+                "arena": _ARENA,
+                "tier": tier,
+                "coverage_skip": True,
+            }
+        effective_date_from = gaps[0][0].isoformat()
+        effective_date_to = gaps[-1][1].isoformat()
         logger.info(
-            "discord: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
+            "discord: narrowing collection to uncovered range %s — %s (run=%s)",
+            effective_date_from,
+            effective_date_to,
             collection_run_id,
-            count,
-            inserted,
-            skipped,
         )
-        _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+
+    try:
+        remaining = asyncio.run(
+            collector.collect_by_actors(
+                actor_ids=actor_ids,
+                tier=tier_enum,
+                date_from=effective_date_from,
+                date_to=effective_date_to,
+                max_results=max_results,
+                channel_ids=channel_ids,
+            )
+        )
+    except ArenaRateLimitError:
+        logger.warning(
+            "discord: rate limited on collect_by_actors for run=%s — will retry.",
+            collection_run_id,
+        )
+        raise
+    except ArenaCollectionError as exc:
+        msg = str(exc)
+        logger.error("discord: collection error for run=%s: %s", collection_run_id, msg)
+        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="social_media",
             platform="discord",
-            status="completed",
-            records_collected=inserted,
-            error_message=None,
+            status="failed",
+            records_collected=0,
+            error_message=msg,
             elapsed_seconds=elapsed_since(_task_start),
         )
+        raise
 
-        return {
-            "records_collected": inserted,
-            "status": "completed",
-            "arena": _ARENA,
-            "tier": tier,
-        }
-    except SoftTimeLimitExceeded:
-        logger.error(
-            "discord: collect_by_actors timed out after 10 minutes — run=%s",
-            collection_run_id,
+    # Persist collected records to the database.
+    from issue_observatory.workers._task_helpers import (
+        persist_collected_records,
+        record_collection_attempts_batch,
+    )
+
+    fallback_inserted, fallback_skipped = 0, 0
+    if remaining:
+        fallback_inserted, fallback_skipped = persist_collected_records(
+            remaining, collection_run_id, query_design_id
         )
-        _update_task_status(
-            collection_run_id,
-            _ARENA,
-            "failed",
-            error_message="Collection timed out after 10 minutes",
+    inserted = collector.batch_stats["inserted"] + fallback_inserted
+    skipped = collector.batch_stats["skipped"] + fallback_skipped
+
+    # Fallback: if in-memory counters lost track, use the actual DB count.
+    if inserted == 0:
+        from issue_observatory.workers._task_helpers import (
+            count_run_platform_records,
         )
-        return {"status": "failed", "error": "timeout", "arena": _ARENA}
+        db_count = count_run_platform_records(collection_run_id, "discord")
+        if db_count > 0:
+            logger.info("discord: in-memory counter=0 but DB has %d records — using DB count", db_count)
+            inserted = db_count
+
+    # Record successful collection attempts for future pre-checks.
+    if date_from and date_to:
+        record_collection_attempts_batch(
+            platform="discord",
+            collection_run_id=collection_run_id,
+            query_design_id=query_design_id,
+            inputs=actor_ids,
+            input_type="actor",
+            date_from=date_from,
+            date_to=date_to,
+            records_returned=inserted,
+            per_input_counts=collector.per_input_counts,
+        )
+
+    logger.info(
+        "discord: collect_by_actors completed — run=%s emitted=%d inserted=%d skipped=%d",
+        collection_run_id,
+        collector.batch_stats["emitted"],
+        inserted,
+        skipped,
+    )
+    _update_task_status(collection_run_id, _ARENA, "completed", records_collected=inserted)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="discord",
+        status="completed",
+        records_collected=inserted,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+
+    return {
+        "records_collected": inserted,
+        "status": "completed",
+        "arena": _ARENA,
+        "tier": tier,
+    }
 
 
 @celery_app.task(

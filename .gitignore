@@ -65,3 +65,6 @@ src/issue_observatory/api/static/css/*.map
 
 # Design assets (reference images, mood boards)
 design/
+
+# Old CLAUDE.md backup
+CLAUDE.old.md

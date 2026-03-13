@@ -43,12 +43,11 @@ BLOCKING DEPENDENCY:
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Optional
+from typing import Annotated
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -118,7 +117,7 @@ async def _verify_design_ownership(
 async def list_codebooks(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    query_design_id: Optional[uuid.UUID] = Query(
+    query_design_id: uuid.UUID | None = Query(
         default=None,
         description="Filter to codebook entries for a specific query design. "
         "Omit to see all entries the user has access to (owned + global).",

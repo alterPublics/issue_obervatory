@@ -28,8 +28,7 @@ os.environ.setdefault(
     "CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA=="
 )
 
-from issue_observatory.analysis.alerting import VolumeSpike, detect_volume_spikes  # noqa: E402
-
+from issue_observatory.analysis.alerting import VolumeSpike, detect_volume_spikes
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -26,8 +26,6 @@ import logging
 import time
 from typing import Any
 
-from celery.exceptions import SoftTimeLimitExceeded
-
 from issue_observatory.arenas.google_autocomplete.collector import GoogleAutocompleteCollector
 from issue_observatory.config.settings import get_settings
 from issue_observatory.core.credential_pool import CredentialPool
@@ -66,23 +64,24 @@ def _update_task_status(
         error_message: Error description (for failed updates).
     """
     try:
-        from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+        from issue_observatory.core.database import get_sync_session
 
         with get_sync_session() as session:
-            from sqlalchemy import text  # noqa: PLC0415
+            from sqlalchemy import text
 
             session.execute(
                 text(
                     """
                     UPDATE collection_tasks
                     SET status = :status,
-                        records_collected = :records_collected,
+                        records_collected = GREATEST(records_collected, :records_collected),
                         error_message = :error_message,
                         completed_at = CASE WHEN :status IN ('completed', 'failed')
                                             THEN NOW() ELSE completed_at END,
                         started_at   = CASE WHEN :status = 'running' AND started_at IS NULL
                                             THEN NOW() ELSE started_at END
                     WHERE collection_run_id = :run_id AND arena = :arena
+                        AND status != 'cancelled'
                     """
                 ),
                 {
@@ -94,7 +93,7 @@ def _update_task_status(
                 },
             )
             session.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "google_autocomplete: failed to update collection_tasks to '%s': %s",
             status,
@@ -115,8 +114,7 @@ def _update_task_status(
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
-    soft_time_limit=600,
-    time_limit=720,
+    # No fixed time limit — records persist incrementally and stale_run_cleanup handles stuck tasks.
 )
 def google_autocomplete_collect_terms(
     self: Any,
@@ -152,147 +150,165 @@ def google_autocomplete_collect_terms(
         ArenaCollectionError: Marks the task as FAILED in Celery.
         NoCredentialAvailableError: Marks the task as FAILED in Celery.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
+    from issue_observatory.arenas.base import Tier
 
     _settings = get_settings()
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
+    logger.info(
+        "google_autocomplete: collect_by_terms started — run=%s terms=%d tier=%s",
+        collection_run_id,
+        len(terms),
+        tier,
+    )
+    _update_task_status(collection_run_id, "google_autocomplete", "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="google_autocomplete",
+        platform="google",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+
     try:
-        logger.info(
-            "google_autocomplete: collect_by_terms started — run=%s terms=%d tier=%s",
-            collection_run_id,
-            len(terms),
-            tier,
+        tier_enum = Tier(tier)
+    except ValueError:
+        msg = (
+            f"google_autocomplete: invalid tier '{tier}'. "
+            "Valid values: free, medium, premium."
         )
-        _update_task_status(collection_run_id, "google_autocomplete", "running")
+        logger.error(msg)
+        _update_task_status(collection_run_id, "google_autocomplete", "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="google_autocomplete",
             platform="google",
-            status="running",
+            status="failed",
             records_collected=0,
-            error_message=None,
+            error_message=msg,
             elapsed_seconds=elapsed_since(_task_start),
         )
+        raise ArenaCollectionError(msg, arena="google_autocomplete", platform="google")
 
-        try:
-            tier_enum = Tier(tier)
-        except ValueError:
-            msg = (
-                f"google_autocomplete: invalid tier '{tier}'. "
-                "Valid values: free, medium, premium."
-            )
-            logger.error(msg)
-            _update_task_status(collection_run_id, "google_autocomplete", "failed", error_message=msg)
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="google_autocomplete",
-                platform="google",
-                status="failed",
-                records_collected=0,
-                error_message=msg,
-                elapsed_seconds=elapsed_since(_task_start),
-            )
-            raise ArenaCollectionError(msg, arena="google_autocomplete", platform="google")
+    credential_pool = CredentialPool()
+    collector = GoogleAutocompleteCollector(credential_pool=credential_pool)
 
-        credential_pool = CredentialPool()
-        collector = GoogleAutocompleteCollector(credential_pool=credential_pool)
+    from issue_observatory.workers._task_helpers import make_batch_sink
 
-        try:
-            records = asyncio.run(
-                collector.collect_by_terms(
-                    terms=terms,
-                    tier=tier_enum,
-                    max_results=None,
-                    language_filter=language_filter,
-                )
-            )
-        except NoCredentialAvailableError as exc:
-            msg = f"google_autocomplete: no credential for tier={tier}: {exc}"
-            logger.error(msg)
-            _update_task_status(collection_run_id, "google_autocomplete", "failed", error_message=msg)
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="google_autocomplete",
-                platform="google",
-                status="failed",
-                records_collected=0,
-                error_message=msg,
-                elapsed_seconds=elapsed_since(_task_start),
-            )
-            raise
-        except ArenaRateLimitError:
-            logger.warning(
-                "google_autocomplete: rate limited on collect_by_terms for run=%s — will retry.",
-                collection_run_id,
-            )
-            raise
-        except ArenaCollectionError as exc:
-            msg = str(exc)
-            logger.error(
-                "google_autocomplete: collection error for run=%s: %s", collection_run_id, msg
-            )
-            _update_task_status(collection_run_id, "google_autocomplete", "failed", error_message=msg)
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="google_autocomplete",
-                platform="google",
-                status="failed",
-                records_collected=0,
-                error_message=msg,
-                elapsed_seconds=elapsed_since(_task_start),
-            )
-            raise
+    sink = make_batch_sink(collection_run_id, query_design_id)
+    collector.configure_batch_persistence(sink=sink, batch_size=100, collection_run_id=collection_run_id)
 
-        count = len(records)
+    from issue_observatory.workers._task_helpers import run_with_tier_fallback
 
-        # Persist collected records to the database.
-        from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
-
-        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id, terms=terms)
-        logger.info(
-            "google_autocomplete: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
-            collection_run_id,
-            count,
-            inserted,
-            skipped,
+    try:
+        remaining, used_tier = run_with_tier_fallback(
+            collector=collector,
+            collect_method="collect_by_terms",
+            kwargs={
+                "terms": terms,
+                "tier": tier_enum,
+                "max_results": None,
+                "language_filter": language_filter,
+            },
+            requested_tier_str=tier,
+            platform="google_autocomplete",
+            task_logger=logger,
         )
-        _update_task_status(
-            collection_run_id, "google_autocomplete", "completed", records_collected=inserted
-        )
+        tier = used_tier  # update for reporting
+    except NoCredentialAvailableError as exc:
+        msg = f"google_autocomplete: no credential for any supported tier (requested={tier}): {exc}"
+        logger.error(msg)
+        _update_task_status(collection_run_id, "google_autocomplete", "failed", error_message=msg)
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="google_autocomplete",
             platform="google",
-            status="completed",
-            records_collected=inserted,
-            error_message=None,
+            status="failed",
+            records_collected=0,
+            error_message=msg,
             elapsed_seconds=elapsed_since(_task_start),
         )
-        return {
-            "records_collected": inserted,
-            "status": "completed",
-            "arena": "google_autocomplete",
-            "tier": tier,
-        }
-    except SoftTimeLimitExceeded:
+        raise
+    except ArenaRateLimitError:
+        logger.warning(
+            "google_autocomplete: rate limited on collect_by_terms for run=%s — will retry.",
+            collection_run_id,
+        )
+        raise
+    except ArenaCollectionError as exc:
+        msg = str(exc)
         logger.error(
-            "google_autocomplete: collect_by_terms timed out after 10 minutes — run=%s",
-            collection_run_id,
+            "google_autocomplete: collection error for run=%s: %s", collection_run_id, msg
         )
-        _update_task_status(
-            collection_run_id,
-            "google_autocomplete",
-            "failed",
-            error_message="Collection timed out after 10 minutes",
+        _update_task_status(collection_run_id, "google_autocomplete", "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="google_autocomplete",
+            platform="google",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
         )
-        return {"status": "failed", "error": "timeout", "arena": "google_autocomplete"}
+        raise
+
+    from issue_observatory.workers._task_helpers import persist_collected_records
+
+    fallback_inserted, fallback_skipped = 0, 0
+    if remaining:
+        fallback_inserted, fallback_skipped = persist_collected_records(
+            remaining, collection_run_id, query_design_id, terms=terms
+        )
+    inserted = collector.batch_stats["inserted"] + fallback_inserted
+    skipped = collector.batch_stats["skipped"] + fallback_skipped
+
+    # Fallback: if in-memory counters lost track, use the actual DB count.
+    if inserted == 0:
+        from issue_observatory.workers._task_helpers import (
+            count_run_platform_records,
+        )
+
+        db_count = count_run_platform_records(collection_run_id, "google_autocomplete")
+        if db_count > 0:
+            logger.info(
+                "google_autocomplete: in-memory counter=0 but DB has %d records — using DB count",
+                db_count,
+            )
+            inserted = db_count
+
+    logger.info(
+        "google_autocomplete: collect_by_terms completed — run=%s emitted=%d inserted=%d skipped=%d",
+        collection_run_id,
+        collector.batch_stats["emitted"],
+        inserted,
+        skipped,
+    )
+    _update_task_status(
+        collection_run_id, "google_autocomplete", "completed", records_collected=inserted
+    )
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="google_autocomplete",
+        platform="google",
+        status="completed",
+        records_collected=inserted,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+    return {
+        "records_collected": inserted,
+        "status": "completed",
+        "arena": "google_autocomplete",
+        "tier": tier,
+    }
 
 
 @celery_app.task(

@@ -31,17 +31,15 @@ import logging
 import time
 from typing import Any
 
-from celery.exceptions import SoftTimeLimitExceeded
-
 from issue_observatory.arenas.ai_chat_search.collector import AiChatSearchCollector
+from issue_observatory.config.settings import get_settings
 from issue_observatory.core.credential_pool import CredentialPool
+from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
     NoCredentialAvailableError,
 )
-from issue_observatory.config.settings import get_settings
-from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -72,23 +70,24 @@ def _update_task_status(
         error_message: Error description for failed updates.
     """
     try:
-        from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+        from issue_observatory.core.database import get_sync_session
 
         with get_sync_session() as session:
-            from sqlalchemy import text  # noqa: PLC0415
+            from sqlalchemy import text
 
             session.execute(
                 text(
                     """
                     UPDATE collection_tasks
                     SET status = :status,
-                        records_collected = :records_collected,
+                        records_collected = GREATEST(records_collected, :records_collected),
                         error_message = :error_message,
                         completed_at = CASE WHEN :status IN ('completed', 'failed')
                                             THEN NOW() ELSE completed_at END,
                         started_at   = CASE WHEN :status = 'running' AND started_at IS NULL
                                             THEN NOW() ELSE started_at END
-                    WHERE collection_run_id = :run_id AND arena = :arena
+                    WHERE collection_run_id = :run_id AND platform = :platform
+                        AND status != 'cancelled'
                     """
                 ),
                 {
@@ -96,11 +95,11 @@ def _update_task_status(
                     "records_collected": records_collected,
                     "error_message": error_message,
                     "run_id": collection_run_id,
-                    "arena": arena,
+                    "platform": _PLATFORM,
                 },
             )
             session.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "ai_chat_search: failed to update collection_tasks status to '%s': %s",
             status,
@@ -121,8 +120,8 @@ def _update_task_status(
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
-    soft_time_limit=600,
-    time_limit=720,
+    # No fixed time limit — records persist incrementally per term,
+    # and stale_run_cleanup catches genuinely stuck tasks.
 )
 def ai_chat_search_collect_terms(
     self: Any,
@@ -160,7 +159,7 @@ def ai_chat_search_collect_terms(
         ArenaCollectionError: Marks the task as FAILED in Celery.
         NoCredentialAvailableError: Marks the task as FAILED in Celery.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
+    from issue_observatory.arenas.base import Tier
 
     _settings = get_settings()
     _redis_url = _settings.redis_url
@@ -225,8 +224,13 @@ def ai_chat_search_collect_terms(
         credential_pool = CredentialPool()
         collector = AiChatSearchCollector(credential_pool=credential_pool)
 
+        from issue_observatory.workers._task_helpers import make_batch_sink
+
+        sink = make_batch_sink(collection_run_id, query_design_id, terms=terms)
+        collector.configure_batch_persistence(sink=sink, batch_size=100, collection_run_id=collection_run_id)
+
         try:
-            records = asyncio.run(
+            remaining = asyncio.run(
                 collector.collect_by_terms(
                     terms=terms,
                     tier=tier_enum,
@@ -262,16 +266,36 @@ def ai_chat_search_collect_terms(
             )
             raise
 
-        count = len(records)
+        fallback_inserted, fallback_skipped = 0, 0
+        if remaining:
+            from issue_observatory.workers._task_helpers import (
+                persist_collected_records,
+            )
 
-        # Persist collected records to the database.
-        from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
+            fallback_inserted, fallback_skipped = persist_collected_records(
+                remaining, collection_run_id, query_design_id, terms=terms
+            )
+        inserted = collector.batch_stats["inserted"] + fallback_inserted
+        skipped = collector.batch_stats["skipped"] + fallback_skipped
 
-        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id, terms=terms)
+        # Fallback: if in-memory counters lost track, use the actual DB count.
+        if inserted == 0:
+            from issue_observatory.workers._task_helpers import (
+                count_run_platform_records,
+            )
+
+            db_count = count_run_platform_records(collection_run_id, "openrouter")
+            if db_count > 0:
+                logger.info(
+                    "ai_chat_search: in-memory counter=0 but DB has %d records — using DB count",
+                    db_count,
+                )
+                inserted = db_count
+
         logger.info(
-            "ai_chat_search: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
+            "ai_chat_search: collect_by_terms completed — run=%s emitted=%d inserted=%d skipped=%d",
             collection_run_id,
-            count,
+            collector.batch_stats["emitted"],
             inserted,
             skipped,
         )
@@ -295,18 +319,21 @@ def ai_chat_search_collect_terms(
             "arena": _ARENA,
             "tier": tier,
         }
-    except SoftTimeLimitExceeded:
-        logger.error(
-            "ai_chat_search: collect_by_terms timed out after 10 minutes — run=%s",
-            collection_run_id,
+    except Exception as exc:
+        msg = f"ai_chat_search: unexpected error for run={collection_run_id}: {type(exc).__name__}: {exc}"
+        logger.error(msg, exc_info=True)
+        _update_task_status(collection_run_id, _ARENA, "failed", error_message=msg[:500])
+        publish_task_update(
+            redis_url=get_settings().redis_url,
+            run_id=collection_run_id,
+            arena="ai_chat_search",
+            platform="openrouter",
+            status="failed",
+            records_collected=0,
+            error_message=msg[:500],
+            elapsed_seconds=0,
         )
-        _update_task_status(
-            collection_run_id,
-            _ARENA,
-            "failed",
-            error_message="Collection timed out after 10 minutes",
-        )
-        return {"status": "failed", "error": "timeout", "arena": _ARENA}
+        raise
 
 
 @celery_app.task(

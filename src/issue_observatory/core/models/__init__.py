@@ -14,14 +14,14 @@ All models are imported here so that:
 
 from __future__ import annotations
 
-from issue_observatory.core.models.base import Base, TimestampMixin, UserOwnedMixin
-from issue_observatory.core.models.annotations import ContentAnnotation, CodebookEntry
 from issue_observatory.core.models.actors import (
     Actor,
     ActorAlias,
     ActorListMember,
     ActorPlatformPresence,
 )
+from issue_observatory.core.models.annotations import CodebookEntry, ContentAnnotation
+from issue_observatory.core.models.base import Base, TimestampMixin, UserOwnedMixin
 from issue_observatory.core.models.collection import (
     CollectionRun,
     CollectionTask,
@@ -31,13 +31,14 @@ from issue_observatory.core.models.collection_attempts import CollectionAttempt
 from issue_observatory.core.models.content import UniversalContentRecord
 from issue_observatory.core.models.content_links import ContentRecordLink
 from issue_observatory.core.models.credentials import ApiCredential
+from issue_observatory.core.models.platform_url_errors import PlatformUrlError
 from issue_observatory.core.models.project import Project
-from issue_observatory.core.models.scraping import ScrapingJob
 from issue_observatory.core.models.query_design import (
     ActorList,
     QueryDesign,
     SearchTerm,
 )
+from issue_observatory.core.models.scraping import ScrapingJob
 from issue_observatory.core.models.users import (
     CreditAllocation,
     RefreshToken,
@@ -81,6 +82,8 @@ __all__ = [
     "ApiCredential",
     # Scraping
     "ScrapingJob",
+    # Platform URL errors
+    "PlatformUrlError",
     # Zeeschuimer imports
     "ZeeschuimerImport",
 ]

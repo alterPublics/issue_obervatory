@@ -261,13 +261,13 @@ Adjust this value if your Data Protection Impact Assessment (DPIA) specifies a d
 ### CORS
 
 ```
-ALLOWED_ORIGINS=["http://localhost:8011"]
+ALLOWED_ORIGINS=["http://localhost:8022"]
 ```
 
 Default: only localhost. For production, add your domain:
 
 ```
-ALLOWED_ORIGINS=["https://observatory.your-university.dk", "http://localhost:8011"]
+ALLOWED_ORIGINS=["https://observatory.your-university.dk", "http://localhost:8022"]
 ```
 
 ### Admin Bootstrap
@@ -432,7 +432,7 @@ DEFAULT_LOCALE_COUNTRY=dk
 DATA_RETENTION_DAYS=730
 
 # CORS allowed origins (add your production domain)
-ALLOWED_ORIGINS=["http://localhost:8011"]
+ALLOWED_ORIGINS=["http://localhost:8022"]
 
 # ------------------------------------------------------------------------------
 # ADMIN BOOTSTRAP (first-run only; leave empty to skip)
@@ -515,7 +515,7 @@ You should see containers for: `app`, `db` (PostgreSQL), `redis`, `minio`, `work
 ### Step 4: Verify the health endpoint
 
 ```bash
-curl http://localhost:8011/api/health
+curl http://localhost:8022/api/health
 ```
 
 A successful response looks like:
@@ -526,7 +526,7 @@ A successful response looks like:
 
 ### Step 5: Log in to the admin UI
 
-Open `http://localhost:8011` in your browser. If you set `FIRST_ADMIN_EMAIL` and `FIRST_ADMIN_PASSWORD`, log in with those credentials. Navigate to Admin > Credentials to begin adding arena API keys.
+Open `http://localhost:8022` in your browser. If you set `FIRST_ADMIN_EMAIL` and `FIRST_ADMIN_PASSWORD`, log in with those credentials. Navigate to Admin > Credentials to begin adding arena API keys.
 
 ### Common Issues
 

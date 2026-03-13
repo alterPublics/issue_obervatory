@@ -33,11 +33,11 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import structlog
-from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from issue_observatory.core.models.content import UniversalContentRecord
@@ -92,7 +92,7 @@ def compute_simhash(text_content: str) -> int:
     # Accumulate weight vector
     v: list[int] = [0] * _SIMHASH_BITS
     for token in tokens:
-        digest = hashlib.md5(token.encode("utf-8")).digest()  # noqa: S324
+        digest = hashlib.md5(token.encode("utf-8")).digest()
         # Take first 8 bytes as unsigned big-endian 64-bit integer.
         token_hash = int.from_bytes(digest[:8], byteorder="big", signed=False)
         for bit in range(_SIMHASH_BITS):
@@ -704,7 +704,7 @@ class DeduplicationService:
             - ``records_enriched`` (int): Total records updated.
         """
         # Lazy import to avoid a circular dependency at module load time.
-        from issue_observatory.analysis.enrichments.propagation_detector import (  # noqa: PLC0415
+        from issue_observatory.analysis.enrichments.propagation_detector import (
             PropagationEnricher,
         )
 
@@ -796,7 +796,7 @@ class DeduplicationService:
             # Run the propagation enricher.
             try:
                 enrichment_by_id = await enricher.enrich_cluster(member_records)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "dedup.propagation.enrichment_error",
                     cluster_id=cluster["canonical_id"],
@@ -916,7 +916,7 @@ class DeduplicationService:
             - ``records_enriched`` (int): Total records updated.
         """
         # Lazy import to avoid a circular dependency at module load time.
-        from issue_observatory.analysis.enrichments.coordination_detector import (  # noqa: PLC0415
+        from issue_observatory.analysis.enrichments.coordination_detector import (
             CoordinationDetector,
         )
 
@@ -971,14 +971,14 @@ class DeduplicationService:
             if value is None:
                 return None
             if isinstance(value, datetime):
-                return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+                return value.replace(tzinfo=UTC) if value.tzinfo is None else value
             if isinstance(value, str):
                 stripped = value.strip()
                 if not stripped:
                     return None
                 try:
                     parsed = datetime.fromisoformat(stripped)
-                    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+                    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
                 except ValueError:
                     return None
             return None
@@ -1041,7 +1041,7 @@ class DeduplicationService:
         records_enriched = 0
 
         for (member_ids, member_records), best_count in zip(
-            qualifying_clusters, cluster_best_counts
+            qualifying_clusters, cluster_best_counts, strict=False
         ):
             clusters_analysed += 1
             try:
@@ -1049,7 +1049,7 @@ class DeduplicationService:
                     member_records,
                     max_distinct_authors=max_distinct if max_distinct > 0 else None,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "dedup.coordination.enrichment_error",
                     cluster_id=member_records[0].get("near_duplicate_cluster_id"),

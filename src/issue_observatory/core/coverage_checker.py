@@ -48,7 +48,7 @@ Usage from arena Celery tasks::
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -72,13 +72,15 @@ def _get_covered_ranges_from_attempts(
 ) -> list[tuple[datetime, datetime]]:
     """Fast path: query the small ``collection_attempts`` metadata table.
 
-    Only considers recent, valid, successful attempts.  Returns empty list
-    when no qualifying attempts exist — the caller should then try the
-    slow fallback.
+    Considers recent, valid attempts — including zero-result attempts
+    (``records_returned = 0``), which represent legitimate coverage when
+    the API was queried successfully and returned nothing for that input.
+    Returns empty list when no qualifying attempts exist — the caller
+    should then try the slow fallback.
     """
-    from sqlalchemy import text  # noqa: PLC0415
+    from sqlalchemy import text
 
-    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+    from issue_observatory.core.database import get_sync_session
 
     if search_term:
         input_value = search_term
@@ -92,7 +94,7 @@ def _get_covered_ranges_from_attempts(
 
     clauses = [
         "platform = :platform",
-        "records_returned > 0",
+        "records_returned IS NOT NULL",
         "is_valid = TRUE",
         "attempted_at >= NOW() - CAST(:max_age AS interval)",
     ]
@@ -117,7 +119,7 @@ def _get_covered_ranges_from_attempts(
     with get_sync_session() as db:
         result = db.execute(
             text(
-                f"SELECT MIN(date_from), MAX(date_to) "  # noqa: S608
+                f"SELECT MIN(date_from), MAX(date_to) "
                 f"FROM collection_attempts WHERE {where}"
             ),
             params,
@@ -152,9 +154,9 @@ def _get_covered_ranges_from_content(
     Uses the ``@>`` operator for GIN-index-compatible term matching and
     the B-tree index on ``author_platform_id`` for actor matching.
     """
-    from sqlalchemy import text  # noqa: PLC0415
+    from sqlalchemy import text
 
-    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+    from issue_observatory.core.database import get_sync_session
 
     clauses = [
         "platform = :platform",
@@ -181,7 +183,7 @@ def _get_covered_ranges_from_content(
     with get_sync_session() as db:
         result = db.execute(
             text(
-                f"SELECT MIN(published_at), MAX(published_at) "  # noqa: S608
+                f"SELECT MIN(published_at), MAX(published_at) "
                 f"FROM content_records WHERE {where}"
             ),
             params,
@@ -217,9 +219,9 @@ def _backfill_attempt_from_fallback(
     ``records_returned = 1`` (we know data exists but don't have the exact
     count without an expensive COUNT query).
     """
-    from sqlalchemy import text  # noqa: PLC0415
+    from sqlalchemy import text
 
-    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+    from issue_observatory.core.database import get_sync_session
 
     if search_term:
         input_value = search_term
@@ -253,7 +255,7 @@ def _backfill_attempt_from_fallback(
                 },
             )
             db.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug(
             "coverage_checker: backfill attempt recording failed (non-critical): %s",
             exc,
@@ -304,12 +306,18 @@ def get_covered_ranges(
         return covered
 
     # Tier 2: slow fallback — scan content_records directly.
+    # Skip for actor coverage checks: finding a record by author_platform_id
+    # in content_records does NOT prove actor-based collection was performed —
+    # the record likely came from term-based search.  Backfilling a synthetic
+    # attempt would falsely block future collect_by_actors calls for this actor.
+    if actor_platform_id:
+        return []
+
     logger.debug(
-        "coverage_checker: no recent metadata for platform=%s term=%r actor=%r "
+        "coverage_checker: no recent metadata for platform=%s term=%r "
         "— falling back to content_records scan",
         platform,
         search_term,
-        actor_platform_id,
     )
     covered = _get_covered_ranges_from_content(
         platform=platform,
@@ -346,7 +354,10 @@ def compute_uncovered_ranges(
     """Compute date gaps not yet covered by existing records.
 
     Given a requested date range and a list of covered ranges, returns the
-    uncovered gaps.  Uses a 1-day buffer to account for partial daily coverage.
+    uncovered gaps.  Coverage boundaries are kept exact (no buffer) so the
+    last covered day is always re-collected on the next run.  This deliberate
+    overlap ensures posts published late in the day are not missed; content
+    deduplication (``content_hash`` ON CONFLICT) handles any duplicates.
 
     Args:
         requested_from: Start of the requested collection window.
@@ -367,24 +378,21 @@ def compute_uncovered_ranges(
     for cov_start, cov_end in sorted(covered_ranges):
         # Ensure both are tz-aware for comparison
         if cov_start.tzinfo is None:
-            cov_start = cov_start.replace(tzinfo=timezone.utc)
+            cov_start = cov_start.replace(tzinfo=UTC)
         if cov_end.tzinfo is None:
-            cov_end = cov_end.replace(tzinfo=timezone.utc)
+            cov_end = cov_end.replace(tzinfo=UTC)
         if cursor.tzinfo is None:
-            cursor = cursor.replace(tzinfo=timezone.utc)
+            cursor = cursor.replace(tzinfo=UTC)
 
-        # Add 1-day buffer to avoid re-fetching partial days
-        buffer = timedelta(days=1)
+        if cov_start > cursor:
+            gaps.append((cursor, cov_start))
 
-        if cov_start - buffer > cursor:
-            gaps.append((cursor, cov_start - buffer))
-
-        if cov_end + buffer > cursor:
-            cursor = cov_end + buffer
+        if cov_end > cursor:
+            cursor = cov_end
 
     req_to = requested_to
     if req_to.tzinfo is None:
-        req_to = req_to.replace(tzinfo=timezone.utc)
+        req_to = req_to.replace(tzinfo=UTC)
 
     if cursor < req_to:
         gaps.append((cursor, req_to))
@@ -425,9 +433,9 @@ def check_existing_coverage(
     """
     # Ensure tz-aware
     if date_from.tzinfo is None:
-        date_from = date_from.replace(tzinfo=timezone.utc)
+        date_from = date_from.replace(tzinfo=UTC)
     if date_to.tzinfo is None:
-        date_to = date_to.replace(tzinfo=timezone.utc)
+        date_to = date_to.replace(tzinfo=UTC)
 
     all_gaps: list[tuple[datetime, datetime]] = []
 

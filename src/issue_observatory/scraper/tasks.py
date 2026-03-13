@@ -31,7 +31,7 @@ import asyncio
 import json
 import logging
 import random
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -56,8 +56,9 @@ def _load_job(job_id: str) -> Any:
 
     Returns the raw dict of column values, or ``None`` if not found.
     """
-    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
-    from sqlalchemy import text  # noqa: PLC0415
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session
 
     with get_sync_session() as session:
         row = session.execute(
@@ -81,8 +82,9 @@ def _update_job(job_id: str, **kwargs: Any) -> None:
     """Update scraping_jobs columns in a best-effort synchronous write."""
     if not kwargs:
         return
-    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
-    from sqlalchemy import text  # noqa: PLC0415
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session
 
     set_clauses = ", ".join(f"{k} = :{k}" for k in kwargs)
     params = {"job_id": job_id, **kwargs}
@@ -93,14 +95,15 @@ def _update_job(job_id: str, **kwargs: Any) -> None:
                 params,
             )
             session.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("scraper: failed to update scraping_jobs(%s): %s", job_id, exc)
 
 
 def _increment_counter(job_id: str, column: str) -> None:
     """Atomically increment a progress counter column."""
-    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
-    from sqlalchemy import text  # noqa: PLC0415
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session
 
     try:
         with get_sync_session() as session:
@@ -111,7 +114,7 @@ def _increment_counter(job_id: str, column: str) -> None:
                 {"job_id": job_id},
             )
             session.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "scraper: failed to increment %s for job %s: %s", column, job_id, exc
         )
@@ -119,8 +122,9 @@ def _increment_counter(job_id: str, column: str) -> None:
 
 def _set_scrape_status_failed(record_id: str, published_at: Any) -> None:
     """Mark a content_record's scrape_status as 'failed'."""
-    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
-    from sqlalchemy import text  # noqa: PLC0415
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session
 
     try:
         with get_sync_session() as session:
@@ -136,7 +140,7 @@ def _set_scrape_status_failed(record_id: str, published_at: Any) -> None:
                 {"record_id": record_id, "published_at": published_at},
             )
             session.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "scraper: failed to set scrape_status=failed for record %s: %s",
             record_id,
@@ -149,8 +153,9 @@ def _get_thin_records(collection_run_id: str) -> list[tuple[str, Any, str]]:
 
     Only records with ``text_content IS NULL`` are returned.
     """
-    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
-    from sqlalchemy import text  # noqa: PLC0415
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session
 
     with get_sync_session() as session:
         rows = session.execute(
@@ -182,8 +187,9 @@ def _update_content_record_v2(
     Uses both ``id`` AND ``published_at`` in the WHERE clause so PostgreSQL
     can prune to the correct range partition and avoid full-table scans.
     """
-    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
-    from sqlalchemy import text  # noqa: PLC0415
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session
 
     raw_html_snippet = (html or "")[:50_000]
 
@@ -235,8 +241,9 @@ def _insert_manual_record(
     job_id: str,
 ) -> None:
     """Insert a new content_record for a manually scraped URL."""
-    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
-    from sqlalchemy import text  # noqa: PLC0415
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session
 
     raw_html_snippet = (html or "")[:50_000]
 
@@ -300,7 +307,7 @@ async def _run_scraping(job_id: str, celery_task_id: str) -> None:
         job_id,
         status="running",
         celery_task_id=celery_task_id,
-        started_at=datetime.now(tz=timezone.utc),
+        started_at=datetime.now(tz=UTC),
     )
 
     # ---- Build URL work-list -----------------------------------------------
@@ -354,7 +361,7 @@ async def _run_scraping(job_id: str, celery_task_id: str) -> None:
                     logger.info(
                         "scraper: job %s — playwright fallback for %s", job_id, url
                     )
-                    from issue_observatory.scraper.playwright_fetcher import (  # noqa: PLC0415
+                    from issue_observatory.scraper.playwright_fetcher import (
                         fetch_url_playwright,
                     )
 
@@ -398,7 +405,7 @@ async def _run_scraping(job_id: str, celery_task_id: str) -> None:
                 _increment_counter(job_id, "urls_enriched")
                 logger.debug("scraper: job %s — enriched %s", job_id, url)
 
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "scraper: job %s — error processing %s: %s", job_id, url, exc
                 )
@@ -411,7 +418,7 @@ async def _run_scraping(job_id: str, celery_task_id: str) -> None:
     _update_job(
         job_id,
         status="completed",
-        completed_at=datetime.now(tz=timezone.utc),
+        completed_at=datetime.now(tz=UTC),
     )
     logger.info("scraper: job %s completed", job_id)
 
@@ -444,13 +451,13 @@ def scrape_urls_task(self: Any, job_id: str) -> dict[str, Any]:
     logger.info("scraper: scrape_urls_task started for job=%s", job_id)
     try:
         asyncio.run(_run_scraping(job_id, self.request.id))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.error("scraper: scrape_urls_task failed for job=%s: %s", job_id, exc)
         _update_job(
             job_id,
             status="failed",
             error_message=str(exc),
-            completed_at=datetime.now(tz=timezone.utc),
+            completed_at=datetime.now(tz=UTC),
         )
         raise
 
@@ -471,8 +478,9 @@ def cancel_scraping_job_task(job_id: str) -> dict[str, Any]:
     Returns:
         Dict with ``job_id`` and final ``status``.
     """
-    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
-    from sqlalchemy import text  # noqa: PLC0415
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session
 
     try:
         with get_sync_session() as session:
@@ -488,7 +496,7 @@ def cancel_scraping_job_task(job_id: str) -> dict[str, Any]:
             logger.info(
                 "scraper: revoked celery task %s for job %s", row[0], job_id
             )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "scraper: failed to revoke celery task for job %s: %s", job_id, exc
         )
@@ -496,7 +504,7 @@ def cancel_scraping_job_task(job_id: str) -> dict[str, Any]:
     _update_job(
         job_id,
         status="cancelled",
-        completed_at=datetime.now(tz=timezone.utc),
+        completed_at=datetime.now(tz=UTC),
     )
     logger.info("scraper: job %s cancelled", job_id)
     return {"job_id": job_id, "status": "cancelled"}

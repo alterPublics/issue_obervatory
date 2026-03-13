@@ -41,9 +41,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 
@@ -71,7 +70,7 @@ def export_status_key(job_id: str) -> str:
     return f"export:{job_id}:status"
 
 
-def _set_status(redis_client: Any, job_id: str, payload: dict[str, Any]) -> None:  # noqa: ANN401
+def _set_status(redis_client: Any, job_id: str, payload: dict[str, Any]) -> None:
     """Write a JSON status blob to Redis with a 24-hour TTL.
 
     Args:
@@ -90,7 +89,7 @@ def _query_records(
     sync_dsn: str,
     user_id: str,
     filters: dict[str, Any],
-    limit: Optional[int],
+    limit: int | None,
 ) -> list[dict[str, Any]]:
     """Run the content query synchronously and return plain dicts.
 
@@ -212,7 +211,7 @@ def _query_records(
 
 @celery_app.task(name="export_content_records", bind=True)  # type: ignore[misc]
 def export_content_records(
-    self: Any,  # noqa: ANN401
+    self: Any,
     user_id: str,
     job_id: str,
     filters: dict[str, Any],
@@ -341,7 +340,7 @@ def export_content_records(
             "record_count": len(records),
             "object_key": object_key,
             "download_url": presigned_url,
-            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": datetime.now(UTC).isoformat(),
         }
         _set_status(redis_client, job_id, final_status)
 

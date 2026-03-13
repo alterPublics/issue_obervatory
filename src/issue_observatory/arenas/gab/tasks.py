@@ -18,8 +18,6 @@ import logging
 import time
 from typing import Any
 
-from celery.exceptions import SoftTimeLimitExceeded
-
 from issue_observatory.arenas.gab.collector import GabCollector
 from issue_observatory.config.settings import get_settings
 from issue_observatory.core.credential_pool import CredentialPool
@@ -57,23 +55,24 @@ def _update_task_status(
         error_message: Error description for failed updates.
     """
     try:
-        from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+        from issue_observatory.core.database import get_sync_session
 
         with get_sync_session() as session:
-            from sqlalchemy import text  # noqa: PLC0415
+            from sqlalchemy import text
 
             session.execute(
                 text(
                     """
                     UPDATE collection_tasks
                     SET status = :status,
-                        records_collected = :records_collected,
+                        records_collected = GREATEST(records_collected, :records_collected),
                         error_message = :error_message,
                         completed_at = CASE WHEN :status IN ('completed', 'failed')
                                             THEN NOW() ELSE completed_at END,
                         started_at   = CASE WHEN :status = 'running' AND started_at IS NULL
                                             THEN NOW() ELSE started_at END
                     WHERE collection_run_id = :run_id AND arena = :arena
+                        AND status != 'cancelled'
                     """
                 ),
                 {
@@ -85,7 +84,7 @@ def _update_task_status(
                 },
             )
             session.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "gab: failed to update collection_tasks to '%s': %s",
             status,
@@ -106,8 +105,7 @@ def _update_task_status(
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
-    soft_time_limit=600,
-    time_limit=720,
+    # No fixed time limit — records persist incrementally and stale_run_cleanup handles stuck tasks.
 )
 def gab_collect_terms(
     self: Any,
@@ -143,187 +141,194 @@ def gab_collect_terms(
         ArenaRateLimitError: Triggers automatic retry.
         ArenaCollectionError: Marks the task as FAILED.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
+    from issue_observatory.arenas.base import Tier
 
     _settings = get_settings()
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    try:
-        logger.info(
-            "gab: collect_by_terms started — run=%s terms=%d",
-            collection_run_id,
-            len(terms),
+    logger.info(
+        "gab: collect_by_terms started — run=%s terms=%d",
+        collection_run_id,
+        len(terms),
+    )
+    _update_task_status(collection_run_id, "gab", "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="gab",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+
+    credential_pool = CredentialPool()
+    collector = GabCollector(credential_pool=credential_pool)
+
+    from issue_observatory.workers._task_helpers import make_batch_sink
+
+    sink = make_batch_sink(collection_run_id, query_design_id)
+    collector.configure_batch_persistence(sink=sink, batch_size=100, collection_run_id=collection_run_id)
+
+    # Check if force_recollect is set (opt-out from coverage check)
+    force_recollect = _extra.get("force_recollect", False)
+
+    # Pre-collection coverage check: narrow date range to uncovered gaps
+    effective_date_from = date_from
+    effective_date_to = date_to
+    if not force_recollect and date_from and date_to:
+        from datetime import datetime as _dt
+
+        from issue_observatory.core.coverage_checker import (
+            check_existing_coverage,
         )
-        _update_task_status(collection_run_id, "gab", "running")
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="social_media",
+
+        gaps = check_existing_coverage(
             platform="gab",
-            status="running",
-            records_collected=0,
-            error_message=None,
-            elapsed_seconds=elapsed_since(_task_start),
+            date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
+            date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
+            terms=terms,
         )
-
-        credential_pool = CredentialPool()
-        collector = GabCollector(credential_pool=credential_pool)
-
-        # Check if force_recollect is set (opt-out from coverage check)
-        force_recollect = _extra.get("force_recollect", False)
-
-        # Pre-collection coverage check: narrow date range to uncovered gaps
-        effective_date_from = date_from
-        effective_date_to = date_to
-        if not force_recollect and date_from and date_to:
-            from datetime import datetime as _dt  # noqa: PLC0415
-
-            from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
-                check_existing_coverage,
-            )
-
-            gaps = check_existing_coverage(
-                platform="gab",
-                date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
-                date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
-                terms=terms,
-            )
-            if not gaps:
-                logger.info(
-                    "gab: full coverage exists for run=%s — skipping API call, "
-                    "will reindex existing records only.",
-                    collection_run_id,
-                )
-                from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-                    reindex_existing_records,
-                )
-
-                linked = reindex_existing_records(
-                    platform="gab",
-                    collection_run_id=collection_run_id,
-                    query_design_id=query_design_id,
-                    terms=terms,
-                    date_from=date_from,
-                    date_to=date_to,
-                )
-                _update_task_status(
-                    collection_run_id, "gab", "completed", records_collected=0
-                )
-                publish_task_update(
-                    redis_url=_redis_url,
-                    run_id=collection_run_id,
-                    arena="social_media",
-                    platform="gab",
-                    status="completed",
-                    records_collected=0,
-                    error_message=None,
-                    elapsed_seconds=elapsed_since(_task_start),
-                )
-                return {
-                    "records_collected": 0,
-                    "records_linked": linked,
-                    "status": "completed",
-                    "arena": "social_media",
-                    "tier": tier,
-                    "coverage_skip": True,
-                }
-            effective_date_from = gaps[0][0].isoformat()
-            effective_date_to = gaps[-1][1].isoformat()
+        if not gaps:
             logger.info(
-                "gab: narrowing collection to uncovered range %s — %s (run=%s)",
-                effective_date_from,
-                effective_date_to,
+                "gab: full coverage exists for run=%s — skipping API call, "
+                "will reindex existing records only.",
                 collection_run_id,
             )
-
-        try:
-            records = asyncio.run(
-                collector.collect_by_terms(
-                    terms=terms,
-                    tier=Tier.FREE,
-                    date_from=effective_date_from,
-                    date_to=effective_date_to,
-                    max_results=max_results,
-                    language_filter=language_filter,
-                )
+            from issue_observatory.workers._task_helpers import (
+                reindex_existing_records,
             )
-        except NoCredentialAvailableError as exc:
-            msg = f"gab: no credential available: {exc}"
-            logger.error(msg)
-            _update_task_status(collection_run_id, "gab", "failed", error_message=msg)
-            raise ArenaCollectionError(msg, arena="social_media", platform="gab") from exc
-        except ArenaRateLimitError:
-            logger.warning(
-                "gab: rate limited on collect_by_terms for run=%s — will retry.",
-                collection_run_id,
-            )
-            raise
-        except (ArenaAuthError, ArenaCollectionError) as exc:
-            msg = str(exc)
-            logger.error("gab: collection error for run=%s: %s", collection_run_id, msg)
-            _update_task_status(collection_run_id, "gab", "failed", error_message=msg)
-            raise
 
-        count = len(records)
-
-        # Persist collected records to the database.
-        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-            persist_collected_records,
-            record_collection_attempts_batch,
-        )
-
-        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id, terms=terms)
-
-        # Record successful collection attempts for future pre-checks.
-        if date_from and date_to:
-            record_collection_attempts_batch(
+            linked = reindex_existing_records(
                 platform="gab",
                 collection_run_id=collection_run_id,
                 query_design_id=query_design_id,
-                inputs=terms,
-                input_type="term",
+                terms=terms,
                 date_from=date_from,
                 date_to=date_to,
-                records_returned=inserted,
             )
-
+            _update_task_status(
+                collection_run_id, "gab", "completed", records_collected=0
+            )
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="gab",
+                status="completed",
+                records_collected=0,
+                error_message=None,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            return {
+                "records_collected": 0,
+                "records_linked": linked,
+                "status": "completed",
+                "arena": "social_media",
+                "tier": tier,
+                "coverage_skip": True,
+            }
+        effective_date_from = gaps[0][0].isoformat()
+        effective_date_to = gaps[-1][1].isoformat()
         logger.info(
-            "gab: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
+            "gab: narrowing collection to uncovered range %s — %s (run=%s)",
+            effective_date_from,
+            effective_date_to,
             collection_run_id,
-            count,
-            inserted,
-            skipped,
         )
-        _update_task_status(collection_run_id, "gab", "completed", records_collected=inserted)
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="social_media",
+
+    try:
+        remaining = asyncio.run(
+            collector.collect_by_terms(
+                terms=terms,
+                tier=Tier.FREE,
+                date_from=effective_date_from,
+                date_to=effective_date_to,
+                max_results=max_results,
+                language_filter=language_filter,
+            )
+        )
+    except NoCredentialAvailableError as exc:
+        msg = f"gab: no credential available: {exc}"
+        logger.error(msg)
+        _update_task_status(collection_run_id, "gab", "failed", error_message=msg)
+        raise ArenaCollectionError(msg, arena="social_media", platform="gab") from exc
+    except ArenaRateLimitError:
+        logger.warning(
+            "gab: rate limited on collect_by_terms for run=%s — will retry.",
+            collection_run_id,
+        )
+        raise
+    except (ArenaAuthError, ArenaCollectionError) as exc:
+        msg = str(exc)
+        logger.error("gab: collection error for run=%s: %s", collection_run_id, msg)
+        _update_task_status(collection_run_id, "gab", "failed", error_message=msg)
+        raise
+
+    # Persist collected records to the database.
+    from issue_observatory.workers._task_helpers import (
+        persist_collected_records,
+        record_collection_attempts_batch,
+    )
+
+    fallback_inserted, fallback_skipped = 0, 0
+    if remaining:
+        fallback_inserted, fallback_skipped = persist_collected_records(
+            remaining, collection_run_id, query_design_id, terms=terms
+        )
+    inserted = collector.batch_stats["inserted"] + fallback_inserted
+    skipped = collector.batch_stats["skipped"] + fallback_skipped
+
+    # Fallback: if in-memory counters lost track, use the actual DB count.
+    if inserted == 0:
+        from issue_observatory.workers._task_helpers import (
+            count_run_platform_records,
+        )
+        db_count = count_run_platform_records(collection_run_id, "gab")
+        if db_count > 0:
+            logger.info("gab: in-memory counter=0 but DB has %d records — using DB count", db_count)
+            inserted = db_count
+
+    # Record successful collection attempts for future pre-checks.
+    if date_from and date_to:
+        record_collection_attempts_batch(
             platform="gab",
-            status="completed",
-            records_collected=inserted,
-            error_message=None,
-            elapsed_seconds=elapsed_since(_task_start),
+            collection_run_id=collection_run_id,
+            query_design_id=query_design_id,
+            inputs=terms,
+            input_type="term",
+            date_from=date_from,
+            date_to=date_to,
+            records_returned=inserted,
+            per_input_counts=collector.per_input_counts,
         )
-        return {
-            "records_collected": inserted,
-            "status": "completed",
-            "arena": "social_media",
-            "tier": "free",
-        }
-    except SoftTimeLimitExceeded:
-        logger.error(
-            "gab: collect_by_terms timed out after 10 minutes — run=%s",
-            collection_run_id,
-        )
-        _update_task_status(
-            collection_run_id,
-            "gab",
-            "failed",
-            error_message="Collection timed out after 10 minutes",
-        )
-        return {"status": "failed", "error": "timeout", "arena": "social_media"}
+
+    logger.info(
+        "gab: collect_by_terms completed — run=%s emitted=%d inserted=%d skipped=%d",
+        collection_run_id,
+        collector.batch_stats["emitted"],
+        inserted,
+        skipped,
+    )
+    _update_task_status(collection_run_id, "gab", "completed", records_collected=inserted)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="gab",
+        status="completed",
+        records_collected=inserted,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+    return {
+        "records_collected": inserted,
+        "status": "completed",
+        "arena": "social_media",
+        "tier": "free",
+    }
 
 
 @celery_app.task(
@@ -334,8 +339,7 @@ def gab_collect_terms(
     retry_backoff=True,
     retry_backoff_max=300,
     acks_late=True,
-    soft_time_limit=600,
-    time_limit=720,
+    # No fixed time limit — records persist incrementally and stale_run_cleanup handles stuck tasks.
 )
 def gab_collect_actors(
     self: Any,
@@ -370,186 +374,193 @@ def gab_collect_actors(
         ArenaRateLimitError: Triggers automatic retry.
         ArenaCollectionError: Marks the task as FAILED.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
+    from issue_observatory.arenas.base import Tier
 
     _settings = get_settings()
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
-    try:
-        logger.info(
-            "gab: collect_by_actors started — run=%s actors=%d",
-            collection_run_id,
-            len(actor_ids),
+    logger.info(
+        "gab: collect_by_actors started — run=%s actors=%d",
+        collection_run_id,
+        len(actor_ids),
+    )
+    _update_task_status(collection_run_id, "gab", "running")
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="gab",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+
+    credential_pool = CredentialPool()
+    collector = GabCollector(credential_pool=credential_pool)
+
+    from issue_observatory.workers._task_helpers import make_batch_sink
+
+    sink = make_batch_sink(collection_run_id, query_design_id)
+    collector.configure_batch_persistence(sink=sink, batch_size=100, collection_run_id=collection_run_id)
+
+    # Check if force_recollect is set (opt-out from coverage check)
+    force_recollect = _extra.get("force_recollect", False)
+
+    # Pre-collection coverage check: narrow date range to uncovered gaps
+    effective_date_from = date_from
+    effective_date_to = date_to
+    if not force_recollect and date_from and date_to:
+        from datetime import datetime as _dt
+
+        from issue_observatory.core.coverage_checker import (
+            check_existing_coverage,
         )
-        _update_task_status(collection_run_id, "gab", "running")
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="social_media",
+
+        gaps = check_existing_coverage(
             platform="gab",
-            status="running",
-            records_collected=0,
-            error_message=None,
-            elapsed_seconds=elapsed_since(_task_start),
+            date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
+            date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
+            actor_ids=actor_ids,
         )
-
-        credential_pool = CredentialPool()
-        collector = GabCollector(credential_pool=credential_pool)
-
-        # Check if force_recollect is set (opt-out from coverage check)
-        force_recollect = _extra.get("force_recollect", False)
-
-        # Pre-collection coverage check: narrow date range to uncovered gaps
-        effective_date_from = date_from
-        effective_date_to = date_to
-        if not force_recollect and date_from and date_to:
-            from datetime import datetime as _dt  # noqa: PLC0415
-
-            from issue_observatory.core.coverage_checker import (  # noqa: PLC0415
-                check_existing_coverage,
-            )
-
-            gaps = check_existing_coverage(
-                platform="gab",
-                date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
-                date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
-                actor_ids=actor_ids,
-            )
-            if not gaps:
-                logger.info(
-                    "gab: full coverage exists for run=%s — skipping API call, "
-                    "will reindex existing records only.",
-                    collection_run_id,
-                )
-                from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-                    reindex_existing_records,
-                )
-
-                linked = reindex_existing_records(
-                    platform="gab",
-                    collection_run_id=collection_run_id,
-                    query_design_id=query_design_id,
-                    actor_ids=actor_ids,
-                    date_from=date_from,
-                    date_to=date_to,
-                )
-                _update_task_status(
-                    collection_run_id, "gab", "completed", records_collected=0
-                )
-                publish_task_update(
-                    redis_url=_redis_url,
-                    run_id=collection_run_id,
-                    arena="social_media",
-                    platform="gab",
-                    status="completed",
-                    records_collected=0,
-                    error_message=None,
-                    elapsed_seconds=elapsed_since(_task_start),
-                )
-                return {
-                    "records_collected": 0,
-                    "records_linked": linked,
-                    "status": "completed",
-                    "arena": "social_media",
-                    "tier": tier,
-                    "coverage_skip": True,
-                }
-            effective_date_from = gaps[0][0].isoformat()
-            effective_date_to = gaps[-1][1].isoformat()
+        if not gaps:
             logger.info(
-                "gab: narrowing collection to uncovered range %s — %s (run=%s)",
-                effective_date_from,
-                effective_date_to,
+                "gab: full coverage exists for run=%s — skipping API call, "
+                "will reindex existing records only.",
                 collection_run_id,
             )
-
-        try:
-            records = asyncio.run(
-                collector.collect_by_actors(
-                    actor_ids=actor_ids,
-                    tier=Tier.FREE,
-                    date_from=effective_date_from,
-                    date_to=effective_date_to,
-                    max_results=max_results,
-                )
+            from issue_observatory.workers._task_helpers import (
+                reindex_existing_records,
             )
-        except NoCredentialAvailableError as exc:
-            msg = f"gab: no credential available: {exc}"
-            logger.error(msg)
-            _update_task_status(collection_run_id, "gab", "failed", error_message=msg)
-            raise ArenaCollectionError(msg, arena="social_media", platform="gab") from exc
-        except ArenaRateLimitError:
-            logger.warning(
-                "gab: rate limited on collect_by_actors for run=%s — will retry.",
-                collection_run_id,
-            )
-            raise
-        except (ArenaAuthError, ArenaCollectionError) as exc:
-            msg = str(exc)
-            logger.error("gab: actor collection error for run=%s: %s", collection_run_id, msg)
-            _update_task_status(collection_run_id, "gab", "failed", error_message=msg)
-            raise
 
-        count = len(records)
-
-        # Persist collected records to the database.
-        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
-            persist_collected_records,
-            record_collection_attempts_batch,
-        )
-
-        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
-
-        # Record successful collection attempts for future pre-checks.
-        if date_from and date_to:
-            record_collection_attempts_batch(
+            linked = reindex_existing_records(
                 platform="gab",
                 collection_run_id=collection_run_id,
                 query_design_id=query_design_id,
-                inputs=actor_ids,
-                input_type="actor",
+                actor_ids=actor_ids,
                 date_from=date_from,
                 date_to=date_to,
-                records_returned=inserted,
             )
-
+            _update_task_status(
+                collection_run_id, "gab", "completed", records_collected=0
+            )
+            publish_task_update(
+                redis_url=_redis_url,
+                run_id=collection_run_id,
+                arena="social_media",
+                platform="gab",
+                status="completed",
+                records_collected=0,
+                error_message=None,
+                elapsed_seconds=elapsed_since(_task_start),
+            )
+            return {
+                "records_collected": 0,
+                "records_linked": linked,
+                "status": "completed",
+                "arena": "social_media",
+                "tier": tier,
+                "coverage_skip": True,
+            }
+        effective_date_from = gaps[0][0].isoformat()
+        effective_date_to = gaps[-1][1].isoformat()
         logger.info(
-            "gab: collect_by_actors completed — run=%s records=%d inserted=%d skipped=%d",
+            "gab: narrowing collection to uncovered range %s — %s (run=%s)",
+            effective_date_from,
+            effective_date_to,
             collection_run_id,
-            count,
-            inserted,
-            skipped,
         )
-        _update_task_status(collection_run_id, "gab", "completed", records_collected=inserted)
-        publish_task_update(
-            redis_url=_redis_url,
-            run_id=collection_run_id,
-            arena="social_media",
+
+    try:
+        remaining = asyncio.run(
+            collector.collect_by_actors(
+                actor_ids=actor_ids,
+                tier=Tier.FREE,
+                date_from=effective_date_from,
+                date_to=effective_date_to,
+                max_results=max_results,
+            )
+        )
+    except NoCredentialAvailableError as exc:
+        msg = f"gab: no credential available: {exc}"
+        logger.error(msg)
+        _update_task_status(collection_run_id, "gab", "failed", error_message=msg)
+        raise ArenaCollectionError(msg, arena="social_media", platform="gab") from exc
+    except ArenaRateLimitError:
+        logger.warning(
+            "gab: rate limited on collect_by_actors for run=%s — will retry.",
+            collection_run_id,
+        )
+        raise
+    except (ArenaAuthError, ArenaCollectionError) as exc:
+        msg = str(exc)
+        logger.error("gab: actor collection error for run=%s: %s", collection_run_id, msg)
+        _update_task_status(collection_run_id, "gab", "failed", error_message=msg)
+        raise
+
+    # Persist collected records to the database.
+    from issue_observatory.workers._task_helpers import (
+        persist_collected_records,
+        record_collection_attempts_batch,
+    )
+
+    fallback_inserted, fallback_skipped = 0, 0
+    if remaining:
+        fallback_inserted, fallback_skipped = persist_collected_records(
+            remaining, collection_run_id, query_design_id
+        )
+    inserted = collector.batch_stats["inserted"] + fallback_inserted
+    skipped = collector.batch_stats["skipped"] + fallback_skipped
+
+    # Fallback: if in-memory counters lost track, use the actual DB count.
+    if inserted == 0:
+        from issue_observatory.workers._task_helpers import (
+            count_run_platform_records,
+        )
+        db_count = count_run_platform_records(collection_run_id, "gab")
+        if db_count > 0:
+            logger.info("gab: in-memory counter=0 but DB has %d records — using DB count", db_count)
+            inserted = db_count
+
+    # Record successful collection attempts for future pre-checks.
+    if date_from and date_to:
+        record_collection_attempts_batch(
             platform="gab",
-            status="completed",
-            records_collected=inserted,
-            error_message=None,
-            elapsed_seconds=elapsed_since(_task_start),
+            collection_run_id=collection_run_id,
+            query_design_id=query_design_id,
+            inputs=actor_ids,
+            input_type="actor",
+            date_from=date_from,
+            date_to=date_to,
+            records_returned=inserted,
+            per_input_counts=collector.per_input_counts,
         )
-        return {
-            "records_collected": inserted,
-            "status": "completed",
-            "arena": "social_media",
-            "tier": "free",
-        }
-    except SoftTimeLimitExceeded:
-        logger.error(
-            "gab: collect_by_actors timed out after 10 minutes — run=%s",
-            collection_run_id,
-        )
-        _update_task_status(
-            collection_run_id,
-            "gab",
-            "failed",
-            error_message="Collection timed out after 10 minutes",
-        )
-        return {"status": "failed", "error": "timeout", "arena": "social_media"}
+
+    logger.info(
+        "gab: collect_by_actors completed — run=%s emitted=%d inserted=%d skipped=%d",
+        collection_run_id,
+        collector.batch_stats["emitted"],
+        inserted,
+        skipped,
+    )
+    _update_task_status(collection_run_id, "gab", "completed", records_collected=inserted)
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="social_media",
+        platform="gab",
+        status="completed",
+        records_collected=inserted,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+    return {
+        "records_collected": inserted,
+        "status": "completed",
+        "arena": "social_media",
+        "tier": "free",
+    }
 
 
 @celery_app.task(

@@ -7,7 +7,7 @@ uses a similar structure to Instagram but with some differences.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -76,7 +76,7 @@ class ThreadsNormalizer:
         published_at = None
         if taken_at:
             try:
-                published_at = datetime.fromtimestamp(int(taken_at), tz=timezone.utc)
+                published_at = datetime.fromtimestamp(int(taken_at), tz=UTC)
             except (ValueError, TypeError) as exc:
                 logger.warning(
                     "threads.timestamp_parse_error",

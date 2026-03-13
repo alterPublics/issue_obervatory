@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
@@ -74,7 +73,7 @@ class ContentAnnotation(Base, TimestampMixin):
 
     # Ownership — who created this annotation.
     # ON DELETE SET NULL: annotations survive user deletion for audit purposes.
-    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
@@ -101,22 +100,22 @@ class ContentAnnotation(Base, TimestampMixin):
     # Valid values: "positive", "negative", "neutral", "contested", "irrelevant".
     # Enforced at the application layer, not via a DB CHECK constraint so that
     # the vocabulary can evolve without a schema migration.
-    stance: Mapped[Optional[str]] = mapped_column(
+    stance: Mapped[str | None] = mapped_column(
         sa.String(20),
         nullable=True,
     )
 
-    frame: Mapped[Optional[str]] = mapped_column(
+    frame: Mapped[str | None] = mapped_column(
         sa.String(200),
         nullable=True,
     )
 
-    is_relevant: Mapped[Optional[bool]] = mapped_column(
+    is_relevant: Mapped[bool | None] = mapped_column(
         sa.Boolean,
         nullable=True,
     )
 
-    notes: Mapped[Optional[str]] = mapped_column(
+    notes: Mapped[str | None] = mapped_column(
         sa.Text,
         nullable=True,
     )
@@ -125,14 +124,14 @@ class ContentAnnotation(Base, TimestampMixin):
     # Context links — optional, used for filtering annotations by study
     # ---------------------------------------------------------------------------
 
-    collection_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    collection_run_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("collection_runs.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
 
-    query_design_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    query_design_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("query_designs.id", ondelete="SET NULL"),
         nullable=True,
@@ -143,7 +142,7 @@ class ContentAnnotation(Base, TimestampMixin):
     # Flexible researcher-defined tags
     # ---------------------------------------------------------------------------
 
-    tags: Mapped[Optional[list]] = mapped_column(
+    tags: Mapped[list | None] = mapped_column(
         JSONB,
         nullable=True,
     )
@@ -229,19 +228,19 @@ class CodebookEntry(Base, TimestampMixin):
         nullable=False,
     )
 
-    description: Mapped[Optional[str]] = mapped_column(
+    description: Mapped[str | None] = mapped_column(
         sa.Text,
         nullable=True,
     )
 
-    category: Mapped[Optional[str]] = mapped_column(
+    category: Mapped[str | None] = mapped_column(
         sa.String(100),
         nullable=True,
         index=True,
     )
 
     # Scope: design-specific or global
-    query_design_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    query_design_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("query_designs.id", ondelete="CASCADE"),
         nullable=True,
@@ -249,7 +248,7 @@ class CodebookEntry(Base, TimestampMixin):
     )
 
     # Ownership — who created this entry
-    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,

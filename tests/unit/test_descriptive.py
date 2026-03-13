@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -34,7 +34,7 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.analysis.descriptive import (  # noqa: E402
+from issue_observatory.analysis.descriptive import (
     _build_content_filters,
     _dt_iso,
     get_emergent_terms,
@@ -44,7 +44,6 @@ from issue_observatory.analysis.descriptive import (  # noqa: E402
     get_top_terms,
     get_volume_over_time,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -150,7 +149,7 @@ def _make_engagement_row(
 class TestDtIso:
     def test_dt_iso_converts_datetime_to_iso_string(self) -> None:
         """_dt_iso() converts a datetime object to an ISO 8601 string."""
-        dt = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        dt = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
         result = _dt_iso(dt)
         assert isinstance(result, str)
         assert "2026-01-15" in result
@@ -211,8 +210,8 @@ class TestBuildContentFilters:
     def test_build_content_filters_date_range_adds_both_clauses(self) -> None:
         """date_from and date_to each generate a WHERE predicate."""
         params: dict = {}
-        date_from = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        date_to = datetime(2026, 1, 31, tzinfo=timezone.utc)
+        date_from = datetime(2026, 1, 1, tzinfo=UTC)
+        date_to = datetime(2026, 1, 31, tzinfo=UTC)
         result = _build_content_filters(None, None, None, None, date_from, date_to, params)
         assert "published_at >=" in result
         assert "published_at <=" in result
@@ -241,7 +240,7 @@ class TestGetVolumeOverTime:
     @pytest.mark.asyncio
     async def test_volume_over_time_groups_by_period(self) -> None:
         """Records in the same period are aggregated into one dict entry."""
-        period = datetime(2026, 1, 15, tzinfo=timezone.utc)
+        period = datetime(2026, 1, 15, tzinfo=UTC)
         rows = [
             _make_volume_row(period, "social_media", 50),
             _make_volume_row(period, "news_media", 30),
@@ -258,7 +257,7 @@ class TestGetVolumeOverTime:
     @pytest.mark.asyncio
     async def test_volume_over_time_period_is_iso_string(self) -> None:
         """The 'period' value in the returned dict is an ISO 8601 string."""
-        period = datetime(2026, 2, 1, tzinfo=timezone.utc)
+        period = datetime(2026, 2, 1, tzinfo=UTC)
         db = _mock_db_returning([_make_volume_row(period, "social_media", 10)])
         result = await get_volume_over_time(db)
         assert isinstance(result[0]["period"], str)
@@ -282,8 +281,8 @@ class TestGetVolumeOverTime:
     @pytest.mark.asyncio
     async def test_volume_over_time_multiple_periods_preserved(self) -> None:
         """Multiple distinct periods each get their own entry in the result list."""
-        period1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        period2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+        period1 = datetime(2026, 1, 1, tzinfo=UTC)
+        period2 = datetime(2026, 1, 2, tzinfo=UTC)
         rows = [
             _make_volume_row(period1, "news_media", 100),
             _make_volume_row(period2, "news_media", 200),
@@ -634,8 +633,8 @@ class TestGetRunSummary:
         row.id = run_id
         row.status = "completed"
         row.mode = "batch"
-        row.started_at = datetime(2026, 2, 15, 10, 0, 0, tzinfo=timezone.utc)
-        row.completed_at = datetime(2026, 2, 15, 10, 47, 0, tzinfo=timezone.utc)
+        row.started_at = datetime(2026, 2, 15, 10, 0, 0, tzinfo=UTC)
+        row.completed_at = datetime(2026, 2, 15, 10, 47, 0, tzinfo=UTC)
         row.credits_spent = 240
         row.records_collected = 5812
         return row
@@ -643,8 +642,8 @@ class TestGetRunSummary:
     def _make_content_row(self) -> Any:
         row = MagicMock()
         row.total_records = 5812
-        row.published_at_min = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        row.published_at_max = datetime(2026, 2, 14, tzinfo=timezone.utc)
+        row.published_at_min = datetime(2026, 1, 1, tzinfo=UTC)
+        row.published_at_max = datetime(2026, 2, 14, tzinfo=UTC)
         return row
 
     def _make_arena_row(self, arena: str, record_count: int, tasks_records: int) -> Any:

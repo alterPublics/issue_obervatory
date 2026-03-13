@@ -16,7 +16,7 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
@@ -77,15 +77,15 @@ class Actor(Base):
         sa.String(500),
         nullable=False,
     )
-    actor_type: Mapped[Optional[str]] = mapped_column(
+    actor_type: Mapped[str | None] = mapped_column(
         sa.String(50),
         nullable=True,
     )
-    description: Mapped[Optional[str]] = mapped_column(
+    description: Mapped[str | None] = mapped_column(
         sa.Text,
         nullable=True,
     )
-    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
@@ -119,7 +119,7 @@ class Actor(Base):
         nullable=False,
         server_default=sa.text("NOW()"),
     )
-    metadata_: Mapped[Optional[dict]] = mapped_column(
+    metadata_: Mapped[dict | None] = mapped_column(
         "metadata",
         JSONB,
         nullable=True,
@@ -127,7 +127,7 @@ class Actor(Base):
     )
 
     # Relationships
-    creator: Mapped[Optional[User]] = relationship(
+    creator: Mapped[User | None] = relationship(
         "User",
         foreign_keys=[created_by],
     )
@@ -217,15 +217,15 @@ class ActorPlatformPresence(Base):
         sa.String(50),
         nullable=False,
     )
-    platform_user_id: Mapped[Optional[str]] = mapped_column(
+    platform_user_id: Mapped[str | None] = mapped_column(
         sa.String(500),
         nullable=True,
     )
-    platform_username: Mapped[Optional[str]] = mapped_column(
+    platform_username: Mapped[str | None] = mapped_column(
         sa.String(500),
         nullable=True,
     )
-    profile_url: Mapped[Optional[str]] = mapped_column(
+    profile_url: Mapped[str | None] = mapped_column(
         sa.String(2000),
         nullable=True,
     )
@@ -234,11 +234,11 @@ class ActorPlatformPresence(Base):
         nullable=False,
         server_default=sa.text("false"),
     )
-    follower_count: Mapped[Optional[int]] = mapped_column(
+    follower_count: Mapped[int | None] = mapped_column(
         sa.BigInteger,
         nullable=True,
     )
-    last_checked_at: Mapped[Optional[datetime]] = mapped_column(
+    last_checked_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )

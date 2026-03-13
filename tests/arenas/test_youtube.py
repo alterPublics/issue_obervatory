@@ -28,9 +28,12 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.youtube.collector import YouTubeCollector  # noqa: E402
-from issue_observatory.core.exceptions import ArenaRateLimitError, NoCredentialAvailableError  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.youtube.collector import YouTubeCollector
+from issue_observatory.core.exceptions import (
+    ArenaRateLimitError,
+    NoCredentialAvailableError,
+)
 
 # ---------------------------------------------------------------------------
 # Fixture paths

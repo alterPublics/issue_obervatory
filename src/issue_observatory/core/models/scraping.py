@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
@@ -69,7 +68,7 @@ class ScrapingJob(Base):
         sa.ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
-    query_design_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    query_design_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("query_designs.id", ondelete="SET NULL"),
         nullable=True,
@@ -80,12 +79,12 @@ class ScrapingJob(Base):
         sa.String(20),
         nullable=False,
     )
-    source_collection_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    source_collection_run_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("collection_runs.id", ondelete="SET NULL"),
         nullable=True,
     )
-    source_urls: Mapped[Optional[list]] = mapped_column(
+    source_urls: Mapped[list | None] = mapped_column(
         JSONB,
         nullable=True,
     )
@@ -128,11 +127,11 @@ class ScrapingJob(Base):
         nullable=False,
         server_default=sa.text("'pending'"),
     )
-    celery_task_id: Mapped[Optional[str]] = mapped_column(
+    celery_task_id: Mapped[str | None] = mapped_column(
         sa.String(255),
         nullable=True,
     )
-    error_message: Mapped[Optional[str]] = mapped_column(
+    error_message: Mapped[str | None] = mapped_column(
         sa.Text,
         nullable=True,
     )
@@ -165,11 +164,11 @@ class ScrapingJob(Base):
         nullable=False,
         server_default=sa.text("NOW()"),
     )
-    started_at: Mapped[Optional[datetime]] = mapped_column(
+    started_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )
-    completed_at: Mapped[Optional[datetime]] = mapped_column(
+    completed_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )

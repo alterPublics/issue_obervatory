@@ -77,7 +77,7 @@ def _strip_tags(html: str) -> str:
     stripper = _TagStripper()
     try:
         stripper.feed(html)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return stripper.get_text()
 
@@ -130,7 +130,7 @@ def extract_from_html(html: str, url: str) -> ExtractedContent:
         logger.warning(
             "scraper: trafilatura not installed; falling back to tag stripping"
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("scraper: trafilatura extraction failed: %s", exc)
 
     # --- Fallback: naive tag stripping ----------------------------------

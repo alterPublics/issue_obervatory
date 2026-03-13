@@ -110,17 +110,9 @@
     {# Application JS — must load before Alpine initialises (no defer). #}
     <script src="{{ url_for('static', path='js/app.js') }}?v=4"></script>
 
-    {#
-        Alpine.js ↔ HTMX bridge (inline).
-        When hx-boost swaps page content, Alpine.js must re-initialise x-data
-        components on the new DOM. This inline copy ensures the bridge is always
-        active even if app.js is cached by the browser.
-    #}
-    <script>
-    document.addEventListener('htmx:load', function (evt) {
-        if (window.Alpine) window.Alpine.initTree(evt.detail.elt);
-    });
-    </script>
+    {# Alpine.js ↔ HTMX bridge is in app.js (section 0). #}
+    {# Do NOT add a duplicate htmx:load → initTree handler here —         #}
+    {# multiple initTree calls cause x-for to render duplicate items.      #}
 
     {# Chart helpers — loaded after Chart.js CDN, also without defer so initVolumeChart etc. are available in template <script> blocks. #}
     <script src="{{ url_for('static', path='js/charts.js') }}?v=3"></script>

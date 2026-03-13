@@ -27,28 +27,30 @@ All requests use Danish defaults: ``lang=da`` on term searches.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
-from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.bluesky.config import (
     BLUESKY_TIERS,
     BSKY_API_BASE,
     BSKY_AUTHOR_FEED_ENDPOINT,
+    BSKY_GET_POST_THREAD_ENDPOINT,
     BSKY_SEARCH_POSTS_ENDPOINT,
     BSKY_WEB_BASE,
     DANISH_LANG,
     MAX_RESULTS_PER_PAGE,
 )
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.registry import register
 from issue_observatory.config.tiers import TierConfig
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
 )
+from issue_observatory.core.language_utils import resolve_bluesky_lang
 from issue_observatory.core.normalizer import Normalizer
 
 logger = logging.getLogger(__name__)
@@ -85,6 +87,8 @@ class BlueskyCollector(ArenaCollector):
     platform_name: str = "bluesky"
     supported_tiers: list[Tier] = [Tier.FREE]
     temporal_mode: TemporalMode = TemporalMode.RECENT
+    supports_actor_collection: bool = True
+    source_list_config_key: str | None = "custom_accounts"
 
     def __init__(
         self,
@@ -97,6 +101,7 @@ class BlueskyCollector(ArenaCollector):
         self._normalizer = Normalizer()
         self._session_token: str | None = None
         self._current_credential: dict[str, Any] | None = None
+        self._resolved_lang: str = DANISH_LANG
 
     # ------------------------------------------------------------------
     # ArenaCollector abstract method implementations
@@ -166,6 +171,10 @@ class BlueskyCollector(ArenaCollector):
         since_str = _to_iso_string(date_from)
         until_str = _to_iso_string(date_to)
 
+        # Resolve language for this collection run.
+        self._resolved_lang = resolve_bluesky_lang(language_filter)
+        resolved_lang = self._resolved_lang
+
         # Build query strings: boolean groups each become a space-joined query.
         if term_groups is not None:
             query_strings: list[str] = [
@@ -176,42 +185,35 @@ class BlueskyCollector(ArenaCollector):
         else:
             query_strings = list(terms)
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
         seen_hashes: set[str] = set()
-        last_progress_count = 0
 
         try:
             async with self._build_http_client() as client:
                 for query in query_strings:
-                    if len(all_records) >= effective_max:
+                    if self._total_emitted >= effective_max:
                         break
-                    remaining = effective_max - len(all_records)
-                    records = await self._search_term(
+                    remaining = effective_max - self._total_emitted
+                    count_before = self._total_emitted
+                    await self._search_term(
                         client=client,
                         term=query,
                         max_results=remaining,
                         since=since_str,
                         until=until_str,
+                        seen_hashes=seen_hashes,
+                        lang=resolved_lang,
                     )
-                    for rec in records:
-                        h = rec.get("content_hash", "")
-                        if h and h in seen_hashes:
-                            continue
-                        if h:
-                            seen_hashes.add(h)
-                        all_records.append(rec)
+                    self._record_input_count(query, self._total_emitted - count_before)
+                    self._flush()
 
-                        # Report progress every 100 records to reduce overhead
-                        if progress_callback and len(all_records) - last_progress_count >= 100:
-                            progress_callback(len(all_records))
-                            last_progress_count = len(all_records)
-
+            self._flush()  # persist any remaining buffered records
             logger.info(
                 "bluesky: collected %d posts for %d queries",
-                len(all_records),
+                self._total_emitted,
                 len(query_strings),
             )
-            return all_records
+            return list(self._batch_buffer)
         finally:
             await self._release_credential()
 
@@ -260,17 +262,17 @@ class BlueskyCollector(ArenaCollector):
         date_from_dt = _parse_datetime(date_from)
         date_to_dt = _parse_datetime(date_to)
 
-        all_records: list[dict[str, Any]] = []
-
+        self._reset_batch_state()
         self._skipped_actors = []
         try:
             async with self._build_http_client() as client:
                 for actor_id in actor_ids:
-                    if len(all_records) >= effective_max:
+                    if self._total_emitted >= effective_max:
                         break
-                    remaining = effective_max - len(all_records)
+                    count_before = self._total_emitted
+                    remaining = effective_max - self._total_emitted
                     try:
-                        records = await self._fetch_author_feed(
+                        await self._fetch_author_feed(
                             client=client,
                             actor=actor_id,
                             max_results=remaining,
@@ -286,17 +288,108 @@ class BlueskyCollector(ArenaCollector):
                             error=str(exc),
                         )
                         continue
-                    all_records.extend(records)
+                    self._record_input_count(actor_id, self._total_emitted - count_before)
+                    self._flush()
 
+            self._flush()  # persist any remaining buffered records
             logger.info(
                 "bluesky: collected %d posts for %d actors (%d skipped)",
-                len(all_records),
+                self._total_emitted,
                 len(actor_ids),
                 len(self._skipped_actors),
             )
-            return all_records
+            return list(self._batch_buffer)
         finally:
             await self._release_credential()
+
+    async def collect_comments(
+        self,
+        post_ids: list[dict[str, Any]],
+        tier: Tier,
+        max_comments_per_post: int = 50,
+        depth: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Collect reply threads for Bluesky posts.
+
+        Uses ``app.bsky.feed.getPostThread`` to retrieve the reply tree for
+        each post.  The endpoint is publicly accessible and does not require
+        authentication, but the collector still authenticates if a credential
+        pool is available so that authenticated rate limits apply.
+
+        Args:
+            post_ids: List of dicts with ``'platform_id'`` (AT URI, e.g.
+                ``at://did:plc:.../app.bsky.feed.post/xxx``) and optionally
+                ``'url'``.
+            tier: Collection tier (always FREE for Bluesky).
+            max_comments_per_post: Maximum replies to extract per post thread.
+            depth: Thread depth to request (default 1 = direct replies only).
+
+        Returns:
+            List of normalized comment records.
+
+        Raises:
+            ArenaRateLimitError: On HTTP 429 from the public API.
+            ArenaCollectionError: On other non-2xx responses or connection errors.
+        """
+        if tier != Tier.FREE:
+            logger.warning(
+                "bluesky: tier=%s requested for collect_comments but only FREE is "
+                "available. Proceeding with FREE tier.",
+                tier.value,
+            )
+
+        all_records: list[dict[str, Any]] = []
+
+        try:
+            async with self._build_http_client() as client:
+                for post_entry in post_ids:
+                    at_uri = post_entry.get("platform_id", "")
+                    if not at_uri:
+                        logger.warning(
+                            "bluesky: collect_comments — skipping entry with no "
+                            "platform_id: %s",
+                            post_entry,
+                        )
+                        continue
+
+                    await self._wait_for_rate_limit()
+                    try:
+                        data = await self._make_request(
+                            client,
+                            BSKY_GET_POST_THREAD_ENDPOINT,
+                            params={"uri": at_uri, "depth": depth},
+                        )
+                    except ArenaRateLimitError:
+                        raise
+                    except ArenaCollectionError as exc:
+                        logger.warning(
+                            "bluesky: collect_comments — failed to fetch thread "
+                            "for %s: %s",
+                            at_uri,
+                            exc,
+                        )
+                        continue
+
+                    thread = data.get("thread") or {}
+                    raw_replies = thread.get("replies") or []
+
+                    flat_replies = _extract_replies(raw_replies, max_depth=depth)
+                    flat_replies = flat_replies[:max_comments_per_post]
+
+                    for reply_post in flat_replies:
+                        raw = _build_comment_raw(reply_post, parent_post_id=at_uri)
+                        normalized = self.normalize(raw)
+                        all_records.append(normalized)
+
+        finally:
+            await self._release_credential()
+
+        logger.info(
+            "bluesky: collect_comments completed — %d comments from %d posts",
+            len(all_records),
+            len(post_ids),
+        )
+        return all_records
 
     def get_tier_config(self, tier: Tier) -> TierConfig | None:
         """Return the tier configuration for this arena.
@@ -395,7 +488,7 @@ class BlueskyCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
             ``arena``, ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -649,12 +742,15 @@ class BlueskyCollector(ArenaCollector):
         max_results: int,
         since: str | None = None,
         until: str | None = None,
-    ) -> list[dict[str, Any]]:
+        seen_hashes: set[str] | None = None,
+        lang: str | None = None,
+    ) -> int:
         """Paginate through searchPosts results for a single term.
 
-        Appends ``lang=da`` to all requests.  Pagination continues via the
-        ``cursor`` field in the response until exhausted or *max_results*
-        is reached.
+        Uses the ``lang`` parameter to filter posts by language.  Pagination
+        continues via the ``cursor`` field in the response until exhausted or
+        *max_results* is reached.  Records are emitted incrementally via
+        ``_emit()`` for batch persistence during pagination.
 
         Args:
             client: Shared HTTP client.
@@ -662,18 +758,23 @@ class BlueskyCollector(ArenaCollector):
             max_results: Maximum records to retrieve.
             since: ISO 8601 lower date bound (optional).
             until: ISO 8601 upper date bound (optional).
+            seen_hashes: Optional set of already-seen content hashes for
+                cross-term deduplication.
+            lang: Language code for the ``lang`` API parameter (e.g. ``"da"``).
+                Defaults to :data:`DANISH_LANG` when ``None``.
 
         Returns:
-            List of normalized records.
+            Number of records emitted.
         """
-        records: list[dict[str, Any]] = []
+        effective_lang = lang if lang is not None else DANISH_LANG
+        collected = 0
         cursor: str | None = None
 
-        while len(records) < max_results:
-            page_size = min(MAX_RESULTS_PER_PAGE, max_results - len(records))
+        while collected < max_results:
+            page_size = min(MAX_RESULTS_PER_PAGE, max_results - collected)
             params: dict[str, Any] = {
                 "q": term,
-                "lang": DANISH_LANG,
+                "lang": effective_lang,
                 "limit": page_size,
             }
             if since:
@@ -690,17 +791,26 @@ class BlueskyCollector(ArenaCollector):
                 break
 
             for post in posts:
-                if len(records) >= max_results:
+                if collected >= max_results:
                     break
                 # Mark post with the search term that retrieved it
                 post["_search_term"] = term
-                records.append(self.normalize(post))
+                rec = self.normalize(post)
+                # Deduplicate across terms using content_hash
+                if seen_hashes is not None:
+                    h = rec.get("content_hash", "")
+                    if h and h in seen_hashes:
+                        continue
+                    if h:
+                        seen_hashes.add(h)
+                self._emit(rec)
+                collected += 1
 
             cursor = data.get("cursor")
             if not cursor:
                 break  # No more pages.
 
-        return records
+        return collected
 
     async def _fetch_author_feed(
         self,
@@ -709,12 +819,13 @@ class BlueskyCollector(ArenaCollector):
         max_results: int,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> int:
         """Paginate through getAuthorFeed for a single actor.
 
         Date filtering is applied client-side after retrieval.  Pagination
         stops early when ``published_at`` falls before *date_from* (posts
-        are returned in reverse-chronological order).
+        are returned in reverse-chronological order).  Records are emitted
+        incrementally via ``_emit()`` for batch persistence during pagination.
 
         Args:
             client: Shared HTTP client.
@@ -724,13 +835,13 @@ class BlueskyCollector(ArenaCollector):
             date_to: Latest post date filter.
 
         Returns:
-            List of normalized records within the date range.
+            Number of records emitted.
         """
-        records: list[dict[str, Any]] = []
+        collected = 0
         cursor: str | None = None
 
-        while len(records) < max_results:
-            page_size = min(MAX_RESULTS_PER_PAGE, max_results - len(records))
+        while collected < max_results:
+            page_size = min(MAX_RESULTS_PER_PAGE, max_results - collected)
             params: dict[str, Any] = {"actor": actor, "limit": page_size}
             if cursor:
                 params["cursor"] = cursor
@@ -758,26 +869,136 @@ class BlueskyCollector(ArenaCollector):
                     if created_at and created_at > date_to:
                         continue
 
-                # Apply client-side language filter to restrict posts to Danish.
-                # The AT Protocol getAuthorFeed endpoint does not support a lang
-                # query parameter (unlike searchPosts), so filtering must happen
-                # here after retrieval.  BCP-47 language tags are in the record's
-                # "langs" array.  Posts with no "langs" field are included because
-                # their language is undeclared and may be Danish; posts with a
-                # "langs" list that does not contain "da" are excluded.
                 post_langs = record_data.get("langs")
-                if post_langs and DANISH_LANG not in post_langs:
+                if post_langs and self._resolved_lang not in post_langs:
                     continue
 
-                if len(records) >= max_results:
+                if collected >= max_results:
                     break
-                records.append(self.normalize(post))
+                self._emit(self.normalize(post))
+                collected += 1
 
             cursor = data.get("cursor")
             if not cursor or stop_early:
                 break
 
-        return records
+        return collected
+
+
+# ---------------------------------------------------------------------------
+# Comment / thread helper functions
+# ---------------------------------------------------------------------------
+
+
+def _extract_replies(
+    replies: list[Any],
+    max_depth: int = 1,
+    _current_depth: int = 0,
+) -> list[dict[str, Any]]:
+    """Flatten a nested Bluesky thread reply tree into a list of post views.
+
+    ``getPostThread`` returns a recursive tree where each element in
+    ``thread["replies"]`` is itself a ``ThreadViewPost`` that may contain
+    further ``replies``.  This function walks the tree breadth-first up to
+    *max_depth* levels and returns a flat list of the inner ``post`` view
+    dicts, preserving the order replies appear in the tree.
+
+    Only nodes whose ``$type`` is ``app.bsky.feed.defs#threadViewPost`` are
+    included; blocked and not-found nodes are silently skipped.
+
+    Args:
+        replies: List of ``ThreadViewPost`` objects from ``thread["replies"]``.
+        max_depth: Maximum recursion depth (``1`` = direct replies only).
+        _current_depth: Internal recursion counter — callers should not set
+            this argument.
+
+    Returns:
+        Flat list of ``post`` view dicts (the value of each node's ``"post"``
+        key) in traversal order.
+    """
+    flat: list[dict[str, Any]] = []
+    if _current_depth >= max_depth:
+        return flat
+
+    for node in replies:
+        if not isinstance(node, dict):
+            continue
+        node_type = node.get("$type", "")
+        if node_type != "app.bsky.feed.defs#threadViewPost":
+            continue
+        post_view = node.get("post")
+        if post_view and isinstance(post_view, dict):
+            flat.append(post_view)
+        child_replies = node.get("replies") or []
+        flat.extend(
+            _extract_replies(
+                child_replies,
+                max_depth=max_depth,
+                _current_depth=_current_depth + 1,
+            )
+        )
+
+    return flat
+
+
+def _build_comment_raw(
+    reply_post: dict[str, Any],
+    parent_post_id: str,
+) -> dict[str, Any]:
+    """Build a raw dict for a single reply post suitable for :meth:`normalize`.
+
+    Maps fields from a ``app.bsky.feed.defs#postView`` to the flat dict
+    structure expected by :meth:`BlueskyCollector.normalize`.  Sets
+    ``content_type`` to ``"comment"`` and attaches ``parent_post_id``.
+
+    Args:
+        reply_post: A ``postView`` dict from the thread reply tree.
+        parent_post_id: AT URI of the parent post being replied to.
+
+    Returns:
+        Flat dict ready for :meth:`BlueskyCollector.normalize`.
+    """
+    author = reply_post.get("author") or {}
+    record = reply_post.get("record") or {}
+
+    did = author.get("did", "")
+    handle = author.get("handle", did)
+
+    uri = reply_post.get("uri", "")
+    rkey = _parse_rkey_from_uri(uri)
+    web_url = f"{BSKY_WEB_BASE}/profile/{handle}/post/{rkey}" if rkey else None
+
+    langs = record.get("langs") or []
+    language = langs[0] if langs else None
+
+    return {
+        # Override content_type so normalize() labels this as a comment.
+        "content_type": "comment",
+        # Standard fields used by normalize()
+        "id": uri,
+        "platform_id": uri,
+        "uri": uri,
+        "author": author,
+        "record": record,
+        "text_content": record.get("text", ""),
+        "title": None,
+        "url": web_url,
+        "language": language,
+        "published_at": record.get("createdAt"),
+        "author_platform_id": did,
+        "author_display_name": author.get("displayName") or handle,
+        "likes_count": reply_post.get("likeCount"),
+        "shares_count": reply_post.get("repostCount"),
+        "comments_count": reply_post.get("replyCount"),
+        # Comment-specific fields stored in raw_metadata by the normalizer.
+        "parent_post_id": parent_post_id,
+        "parent_post_title": None,
+        # Preserve embed/facet/label data.
+        "embed": reply_post.get("embed"),
+        "facets": record.get("facets"),
+        "labels": reply_post.get("labels"),
+        "reply_ref": record.get("reply"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -838,15 +1059,15 @@ class BlueskyStreamer:
             ImportError: If the ``websockets`` package is not installed.
         """
         try:
-            import websockets  # noqa: PLC0415
+            import websockets
         except ImportError as exc:
             raise ImportError(
                 "The 'websockets' package is required for BlueskyStreamer. "
                 "Install it with: pip install websockets"
             ) from exc
 
-        import asyncio  # noqa: PLC0415
-        import json  # noqa: PLC0415
+        import asyncio
+        import json
 
         backoff = 1.0
         logger.info("bluesky: BlueskyStreamer starting on %s", self._endpoint)
@@ -983,7 +1204,7 @@ def _to_iso_string(value: datetime | str | None) -> str | None:
         return value
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
+            value = value.replace(tzinfo=UTC)
         return value.isoformat()
     return None
 
@@ -1001,7 +1222,7 @@ def _parse_datetime(value: datetime | str | None) -> datetime | None:
         return None
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
+            return value.replace(tzinfo=UTC)
         return value
     if isinstance(value, str):
         value = value.strip()
@@ -1016,7 +1237,7 @@ def _parse_datetime(value: datetime | str | None) -> datetime | None:
             try:
                 dt = datetime.strptime(value, fmt)
                 if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
+                    dt = dt.replace(tzinfo=UTC)
                 return dt
             except ValueError:
                 continue

@@ -51,6 +51,7 @@
                 <form id="launcher-form"
                       method="POST"
                       action="/collections/project-form"
+                      hx-boost="false"
                       @change="onFormChange()"
                       @submit="onSubmit($event)">
 
@@ -120,12 +121,38 @@
                             </div>
                             <div x-show="!loadingArenas && combinedArenas.length > 0" class="flex flex-wrap gap-1.5">
                                 <template x-for="arena in combinedArenas" :key="arena.id + '-' + arena.tier">
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800"
-                                          x-text="_humanizeArena(arena.id) + ' (' + arena.tier + ')'"></span>
+                                    <button type="button"
+                                            @click="toggleArenaExclusion(arena.id)"
+                                            class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors cursor-pointer select-none"
+                                            :class="excludedArenas.includes(arena.id)
+                                                ? 'bg-gray-100 text-gray-400 line-through'
+                                                : 'bg-blue-100 text-blue-800 hover:bg-blue-200'"
+                                            :title="excludedArenas.includes(arena.id) ? 'Click to include' : 'Click to exclude'">
+                                        <span x-text="_humanizeArena(arena.id) + ' (' + arena.tier + ')'"></span>
+                                        <svg x-show="excludedArenas.includes(arena.id)" class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                                        </svg>
+                                    </button>
                                 </template>
                             </div>
-                            <div x-show="!loadingArenas && combinedArenas.length === 0" class="text-xs text-gray-400 italic">
+                            <p x-show="!loadingArenas && combinedArenas.length > 0" class="text-xs text-gray-400 mt-1.5">Click an arena to exclude it from this run.</p>
+                            <div x-show="!loadingArenas && combinedArenas.length === 0 && commentPlatforms.length === 0" class="text-xs text-gray-400 italic">
                                 No arenas configured on any query design in this project.
+                            </div>
+                            {# Comment collection platforms #}
+                            <div x-show="!loadingArenas && commentPlatforms.length > 0" class="mt-2">
+                                <p class="text-xs font-medium text-gray-700 mb-1.5">Comment collection (Phase 2):</p>
+                                <div class="flex flex-wrap gap-1.5">
+                                    <template x-for="cp in commentPlatforms" :key="cp">
+                                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-800">
+                                            <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                                            </svg>
+                                            <span x-text="_humanizeArena(cp)"></span>
+                                        </span>
+                                    </template>
+                                </div>
+                                <p class="text-xs text-gray-400 mt-1">Comments will be collected from previously gathered posts after this run completes.</p>
                             </div>
                         </div>
 
@@ -310,6 +337,20 @@
                         </details>
                     </div>
 
+                    {# "Only collect new" checkbox #}
+                    <div class="mb-4">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" name="only_collect_new"
+                                   x-model="onlyCollectNew"
+                                   class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                            <span class="text-sm font-medium text-gray-700">Only collect new terms & actors</span>
+                        </label>
+                        <p class="text-xs text-gray-400 mt-1 ml-6">
+                            Skip search terms and source list actors that already have records in the database.
+                            Useful after adding a few new items.
+                        </p>
+                    </div>
+
                     {# F1: Pre-launch collection summary #}
                     <div x-show="projectId && (termCount > 0 || actorCount > 0 || enabledArenaCount > 0)"
                          x-cloak
@@ -329,6 +370,23 @@
                                 <strong x-text="actorCount"></strong> actor<span x-show="actorCount !== 1">s</span>
                             </span>
                         </p>
+                    </div>
+
+                    {# Inline error banner — shown when launch fails #}
+                    <div x-show="launchError" x-cloak
+                         class="rounded-md bg-red-50 border border-red-300 px-4 py-3 text-sm text-red-800 flex items-start gap-2">
+                        <svg class="w-4 h-4 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        <p class="flex-1" x-text="launchError"></p>
+                        <button @click="launchError = null" class="opacity-60 hover:opacity-100 flex-shrink-0" aria-label="Dismiss">
+                            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                 stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
                     </div>
 
                     {# Launch button — disabled when credits are insufficient or no project selected #}
@@ -451,6 +509,7 @@ function collectionLauncher(availableCredits, preselectedProjectId) {
         tier: 'free',
         dateFrom: '',
         dateTo: '',
+        onlyCollectNew: false,
 
         // Filtered query designs (computed from projectId)
         filteredDesigns: [],
@@ -458,6 +517,10 @@ function collectionLauncher(availableCredits, preselectedProjectId) {
         // Combined arena config across all designs in project
         combinedArenas: [],
         loadingArenas: false,
+        excludedArenas: [],
+
+        // Comment-enabled platforms from project comments_config
+        commentPlatforms: [],
 
         // Platforms that collect via actors only (no keyword search support).
         // Used to surface guidance when these arenas are selected in the project.
@@ -526,6 +589,8 @@ function collectionLauncher(availableCredits, preselectedProjectId) {
 
             // Reset arena and count state
             this.combinedArenas = [];
+            this.excludedArenas = [];
+            this.commentPlatforms = [];
             this.termCount = 0;
             this.actorCount = 0;
             this.enabledArenaCount = 0;
@@ -556,21 +621,43 @@ function collectionLauncher(availableCredits, preselectedProjectId) {
             this.loadingArenas = true;
 
             try {
-                // Fetch arena configs for all designs in parallel
+                // Fetch arena configs for all designs + project arenas_config in parallel
                 const configPromises = this.filteredDesigns.map(d =>
                     fetch(`/query-designs/${d.id}/arena-config`)
                         .then(r => r.ok ? r.json() : { arenas: [] })
                         .catch(() => ({ arenas: [] }))
                 );
+                const projectConfigPromise = fetch(`/projects/${this.projectId}/arenas-config`)
+                    .then(r => r.ok ? r.json() : {})
+                    .catch(() => ({}));
+                const commentsConfigPromise = fetch(`/projects/${this.projectId}/comments-config`)
+                    .then(r => r.ok ? r.json() : {})
+                    .catch(() => ({}));
 
-                const configs = await Promise.all(configPromises);
+                const [projectConfig, commentsConfig, ...configs] = await Promise.all([projectConfigPromise, commentsConfigPromise, ...configPromises]);
 
-                // Merge all enabled arenas, de-duplicate by platform + tier
+                // Extract comment-enabled platforms
+                this.commentPlatforms = Object.entries(commentsConfig)
+                    .filter(([_, cfg]) => cfg && cfg.enabled)
+                    .map(([platform]) => platform);
+
+                // Build project-level enabled set (intersection filter)
+                const projectArenas = Array.isArray(projectConfig.arenas) ? projectConfig.arenas : [];
+                const projectEnabledSet = new Set(
+                    projectArenas.filter(a => a.enabled).map(a => a.id)
+                );
+                const hasProjectFilter = Array.isArray(projectConfig.arenas);
+
+                // Merge all enabled arenas from QD configs, de-duplicate by platform + tier
                 const arenaMap = new Map();
                 for (const config of configs) {
                     const arenas = config.arenas || [];
                     for (const arena of arenas) {
                         if (arena.enabled) {
+                            // Apply project-level intersection filter
+                            if (hasProjectFilter && !projectEnabledSet.has(arena.id)) {
+                                continue;
+                            }
                             const key = `${arena.id}|${arena.tier}`;
                             if (!arenaMap.has(key)) {
                                 arenaMap.set(key, arena);
@@ -590,6 +677,15 @@ function collectionLauncher(availableCredits, preselectedProjectId) {
             }
         },
 
+        toggleArenaExclusion(arenaId) {
+            const idx = this.excludedArenas.indexOf(arenaId);
+            if (idx === -1) {
+                this.excludedArenas.push(arenaId);
+            } else {
+                this.excludedArenas.splice(idx, 1);
+            }
+        },
+
         onFormChange() {
             this.requestEstimate();
         },
@@ -606,12 +702,70 @@ function collectionLauncher(availableCredits, preselectedProjectId) {
             }, 400);
         },
 
-        onSubmit(event) {
-            if (!this.canLaunch || !this.projectId) {
-                event.preventDefault();
-                return;
-            }
+        launchError: null,
+
+        async onSubmit(event) {
+            event.preventDefault();
+            if (this.launching || !this.canLaunch || !this.projectId) return;
+
             this.launching = true;
+            this.launchError = null;
+
+            const form = event.target;
+            const formData = new FormData(form);
+
+            // Append excluded arenas so the backend can skip them
+            for (const arenaId of this.excludedArenas) {
+                formData.append('exclude_arenas', arenaId);
+            }
+
+            // Append "only collect new" flag
+            if (this.onlyCollectNew) {
+                formData.append('only_collect_new', 'true');
+            }
+
+            try {
+                const resp = await fetch(form.action, {
+                    method: 'POST',
+                    credentials: 'include',
+                    body: formData,
+                    redirect: 'follow',
+                });
+
+                // On success the server returns 303 redirect — fetch follows it.
+                // Check if we landed on an error page or the collections page with a flash.
+                const finalUrl = resp.url || '';
+
+                if (finalUrl.includes('flash=')) {
+                    // Extract flash message from URL
+                    const url = new URL(finalUrl, window.location.origin);
+                    const flashMsg = url.searchParams.get('flash');
+                    if (flashMsg) {
+                        this.launchError = decodeURIComponent(flashMsg);
+                        this.launching = false;
+                        return;
+                    }
+                }
+
+                if (resp.ok) {
+                    // Success — redirect to the final URL
+                    window.location.href = finalUrl || '/collections';
+                } else {
+                    // Try to extract error detail from response
+                    const text = await resp.text();
+                    try {
+                        const json = JSON.parse(text);
+                        this.launchError = json.detail || 'Collection failed to start. Please try again.';
+                    } catch {
+                        this.launchError = 'Collection failed to start. Please try again.';
+                    }
+                    this.launching = false;
+                }
+            } catch (err) {
+                console.error('Launch failed:', err);
+                this.launchError = 'Network error — please check your connection and try again.';
+                this.launching = false;
+            }
         },
     };
 }

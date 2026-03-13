@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncGenerator
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import Depends, Request
 from fastapi_users import BaseUserManager, UUIDIDMixin
@@ -34,7 +34,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from issue_observatory.config.settings import get_settings
 from issue_observatory.core.database import get_db
 from issue_observatory.core.models.users import User
-
 
 # ---------------------------------------------------------------------------
 # Pydantic schemas (FastAPI-Users contract)
@@ -53,7 +52,7 @@ class UserRead(BaseModel):
 
     id: uuid.UUID
     email: EmailStr
-    display_name: Optional[str] = None
+    display_name: str | None = None
     role: str
     is_active: bool
     is_superuser: bool
@@ -70,7 +69,7 @@ class UserCreate(BaseModel):
 
     email: EmailStr
     password: str
-    display_name: Optional[str] = None
+    display_name: str | None = None
 
 
 class UserUpdate(BaseModel):
@@ -81,9 +80,9 @@ class UserUpdate(BaseModel):
     managed through the admin routes.
     """
 
-    password: Optional[str] = None
-    display_name: Optional[str] = None
-    email: Optional[EmailStr] = None
+    password: str | None = None
+    display_name: str | None = None
+    email: EmailStr | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +123,7 @@ class ObservatoryUserDatabase(SQLAlchemyUserDatabase):
        every returned ``User`` instance.
     """
 
-    async def get(self, id: Any) -> Optional[User]:  # type: ignore[override]
+    async def get(self, id: Any) -> User | None:  # type: ignore[override]
         """Fetch a user by primary key and attach virtual fields.
 
         Args:
@@ -136,7 +135,7 @@ class ObservatoryUserDatabase(SQLAlchemyUserDatabase):
         user = await super().get(id)
         return _attach_virtual_fields(user) if user else None
 
-    async def get_by_email(self, email: str) -> Optional[User]:  # type: ignore[override]
+    async def get_by_email(self, email: str) -> User | None:  # type: ignore[override]
         """Fetch a user by email address and attach virtual fields.
 
         Args:
@@ -183,7 +182,7 @@ class ObservatoryUserDatabase(SQLAlchemyUserDatabase):
         updated = await super().update(user, update_dict)
         return _attach_virtual_fields(updated)
 
-    async def get_by_api_key(self, api_key: str) -> Optional[User]:
+    async def get_by_api_key(self, api_key: str) -> User | None:
         """Fetch a user by their programmatic API key.
 
         Args:
@@ -231,7 +230,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         return get_settings().secret_key
 
     async def on_after_register(
-        self, user: User, request: Optional[Request] = None
+        self, user: User, request: Request | None = None
     ) -> None:
         """Log new user registration; account stays inactive until admin approves.
 
@@ -239,7 +238,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
             user: The newly created ``User`` instance.
             request: The originating HTTP request, if available.
         """
-        import structlog  # noqa: PLC0415
+        import structlog
 
         logger = structlog.get_logger(__name__)
         logger.info(
@@ -250,7 +249,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         )
 
     async def on_after_forgot_password(
-        self, user: User, token: str, request: Optional[Request] = None
+        self, user: User, token: str, request: Request | None = None
     ) -> None:
         """Log password-reset token generation.
 
@@ -261,7 +260,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
             token: The signed reset token (do not log in full in production).
             request: The originating HTTP request, if available.
         """
-        import structlog  # noqa: PLC0415
+        import structlog
 
         logger = structlog.get_logger(__name__)
         logger.info(
@@ -271,7 +270,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         )
 
     async def on_after_request_verify(
-        self, user: User, token: str, request: Optional[Request] = None
+        self, user: User, token: str, request: Request | None = None
     ) -> None:
         """No-op verification hook; this project uses admin activation instead.
 
@@ -280,7 +279,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
             token: The signed verification token (unused).
             request: The originating HTTP request, if available.
         """
-        import structlog  # noqa: PLC0415
+        import structlog
 
         logger = structlog.get_logger(__name__)
         logger.info(

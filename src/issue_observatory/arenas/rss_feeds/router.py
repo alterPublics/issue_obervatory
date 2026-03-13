@@ -31,12 +31,12 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from issue_observatory.api.dependencies import get_current_active_user
 from issue_observatory.arenas.base import Tier
 from issue_observatory.arenas.rss_feeds.collector import RSSFeedsCollector
-from issue_observatory.api.dependencies import get_current_active_user
 from issue_observatory.config.danish_defaults import DANISH_RSS_FEEDS
 from issue_observatory.core.exceptions import ArenaCollectionError, ArenaRateLimitError
 from issue_observatory.core.models.users import User

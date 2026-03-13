@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import jwt as pyjwt
 import structlog
@@ -39,7 +39,6 @@ from issue_observatory.api.metrics import (
     http_request_duration_seconds,
     http_requests_total,
 )
-
 from issue_observatory.config.settings import get_settings
 from issue_observatory.core.logging_config import configure_logging, request_id_var
 
@@ -291,7 +290,7 @@ def create_app() -> FastAPI:
 
     # ---- Auth routers (FastAPI-Users) -------------------------------------
 
-    from issue_observatory.api.routes.auth import auth_router, users_router  # noqa: PLC0415
+    from issue_observatory.api.routes.auth import auth_router, users_router
 
     application.include_router(auth_router, prefix="/auth")
     application.include_router(users_router, prefix="/users")
@@ -300,74 +299,74 @@ def create_app() -> FastAPI:
     # Each arena exposes a standalone FastAPI router.  All are mounted under
     # the /arenas prefix so arena endpoints are grouped in the OpenAPI docs.
 
-    from issue_observatory.arenas.google_search.router import (  # noqa: PLC0415
-        router as google_search_router,
-    )
-    from issue_observatory.arenas.google_autocomplete.router import (  # noqa: PLC0415
-        router as google_autocomplete_router,
-    )
-    from issue_observatory.arenas.bluesky.router import (  # noqa: PLC0415
-        router as bluesky_router,
-    )
-    from issue_observatory.arenas.reddit.router import (  # noqa: PLC0415
-        router as reddit_router,
-    )
-    from issue_observatory.arenas.youtube.router import (  # noqa: PLC0415
-        router as youtube_router,
-    )
-    from issue_observatory.arenas.rss_feeds.router import (  # noqa: PLC0415
-        router as rss_feeds_router,
-    )
-    from issue_observatory.arenas.gdelt.router import (  # noqa: PLC0415
-        router as gdelt_router,
-    )
-    from issue_observatory.arenas.telegram.router import (  # noqa: PLC0415
-        router as telegram_router,
-    )
-    from issue_observatory.arenas.tiktok.router import (  # noqa: PLC0415
-        router as tiktok_router,
-    )
-    from issue_observatory.arenas.ritzau_via.router import (  # noqa: PLC0415
-        router as ritzau_via_router,
-    )
-    from issue_observatory.arenas.gab.router import (  # noqa: PLC0415
-        router as gab_router,
-    )
-    from issue_observatory.arenas.ai_chat_search.router import (  # noqa: PLC0415
+    from issue_observatory.arenas.ai_chat_search.router import (
         router as ai_chat_search_router,
     )
-    from issue_observatory.arenas.event_registry.router import (  # noqa: PLC0415
-        router as event_registry_router,
+    from issue_observatory.arenas.bluesky.router import (
+        router as bluesky_router,
     )
-    from issue_observatory.arenas.x_twitter.router import (  # noqa: PLC0415
-        router as x_twitter_router,
-    )
-    from issue_observatory.arenas.threads.router import (  # noqa: PLC0415
-        router as threads_router,
-    )
-    from issue_observatory.arenas.web.common_crawl.router import (  # noqa: PLC0415
-        router as common_crawl_router,
-    )
-    from issue_observatory.arenas.web.wayback.router import (  # noqa: PLC0415
-        router as wayback_router,
-    )
-    from issue_observatory.arenas.majestic.router import (  # noqa: PLC0415
-        router as majestic_router,
-    )
-    from issue_observatory.arenas.facebook.router import (  # noqa: PLC0415
-        router as facebook_router,
-    )
-    from issue_observatory.arenas.instagram.router import (  # noqa: PLC0415
-        router as instagram_router,
-    )
-    from issue_observatory.arenas.wikipedia.router import (  # noqa: PLC0415
-        router as wikipedia_router,
-    )
-    from issue_observatory.arenas.discord.router import (  # noqa: PLC0415
+    from issue_observatory.arenas.discord.router import (
         router as discord_router,
     )
-    from issue_observatory.arenas.web.url_scraper.router import (  # noqa: PLC0415
+    from issue_observatory.arenas.event_registry.router import (
+        router as event_registry_router,
+    )
+    from issue_observatory.arenas.facebook.router import (
+        router as facebook_router,
+    )
+    from issue_observatory.arenas.gab.router import (
+        router as gab_router,
+    )
+    from issue_observatory.arenas.gdelt.router import (
+        router as gdelt_router,
+    )
+    from issue_observatory.arenas.google_autocomplete.router import (
+        router as google_autocomplete_router,
+    )
+    from issue_observatory.arenas.google_search.router import (
+        router as google_search_router,
+    )
+    from issue_observatory.arenas.instagram.router import (
+        router as instagram_router,
+    )
+    from issue_observatory.arenas.majestic.router import (
+        router as majestic_router,
+    )
+    from issue_observatory.arenas.reddit.router import (
+        router as reddit_router,
+    )
+    from issue_observatory.arenas.ritzau_via.router import (
+        router as ritzau_via_router,
+    )
+    from issue_observatory.arenas.rss_feeds.router import (
+        router as rss_feeds_router,
+    )
+    from issue_observatory.arenas.telegram.router import (
+        router as telegram_router,
+    )
+    from issue_observatory.arenas.threads.router import (
+        router as threads_router,
+    )
+    from issue_observatory.arenas.tiktok.router import (
+        router as tiktok_router,
+    )
+    from issue_observatory.arenas.web.common_crawl.router import (
+        router as common_crawl_router,
+    )
+    from issue_observatory.arenas.web.url_scraper.router import (
         router as url_scraper_router,
+    )
+    from issue_observatory.arenas.web.wayback.router import (
+        router as wayback_router,
+    )
+    from issue_observatory.arenas.wikipedia.router import (
+        router as wikipedia_router,
+    )
+    from issue_observatory.arenas.x_twitter.router import (
+        router as x_twitter_router,
+    )
+    from issue_observatory.arenas.youtube.router import (
+        router as youtube_router,
     )
 
     application.include_router(google_search_router, prefix="/arenas")
@@ -396,7 +395,7 @@ def create_app() -> FastAPI:
 
     # ---- Scraper enrichment service ----------------------------------------
 
-    from issue_observatory.scraper.router import router as scraper_router  # noqa: PLC0415
+    from issue_observatory.scraper.router import router as scraper_router
 
     application.include_router(
         scraper_router, prefix="/api/scraping-jobs", tags=["scraping"]
@@ -406,23 +405,27 @@ def create_app() -> FastAPI:
     # Each stub module is imported lazily.  As routes are fleshed out these
     # imports will populate with real route handlers.
 
-    from issue_observatory.api.routes import (  # noqa: PLC0415
+    from issue_observatory.api.routes import (
         actors,
         analysis,
         annotations,
-        arenas as arenas_routes,
         codebooks,
         collections,
         content,
         credentials,
         credits,
-        health as health_routes,
         imports,
         live_tracking,
         pages,
         projects,
         query_designs,
         users,
+    )
+    from issue_observatory.api.routes import (
+        arenas as arenas_routes,
+    )
+    from issue_observatory.api.routes import (
+        health as health_routes,
     )
 
     # Health endpoints (/api/health, /api/arenas/health)
@@ -495,7 +498,7 @@ def create_app() -> FastAPI:
         # This eliminates the manual step of entering credentials via the admin UI.
         # Safe to call multiple times — only inserts missing credentials.
         try:
-            from issue_observatory.core.credential_bootstrap import (  # noqa: PLC0415
+            from issue_observatory.core.credential_bootstrap import (
                 bootstrap_credentials_from_env,
             )
 
@@ -521,7 +524,7 @@ def create_app() -> FastAPI:
             """Call the stale run cleanup logic asynchronously."""
             try:
                 # Import here to avoid circular import issues at module load.
-                from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+                from issue_observatory.workers._task_helpers import (
                     fetch_stale_runs,
                     mark_runs_failed,
                 )
@@ -546,13 +549,16 @@ def create_app() -> FastAPI:
                 logger.exception("startup_cleanup_stale_runs_failed")
 
         # Schedule the cleanup task to run in the background.
-        import asyncio  # noqa: PLC0415
+        import asyncio
 
         asyncio.create_task(_cleanup_stale_runs_on_startup())
 
     @application.on_event("shutdown")
     async def on_shutdown() -> None:
-        """Log clean shutdown."""
+        """Dispose DB engine and log clean shutdown."""
+        from issue_observatory.core.database import async_engine
+
+        await async_engine.dispose()
         logger.info("application_shutdown")
 
     # ---- Metrics endpoint -------------------------------------------------

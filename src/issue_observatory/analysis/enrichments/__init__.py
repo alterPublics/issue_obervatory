@@ -36,10 +36,10 @@ from issue_observatory.analysis.enrichments.sentiment_analyzer import SentimentA
 
 __all__ = [
     "ContentEnricher",
+    "CoordinationDetector",
     "EnrichmentError",
     "LanguageDetector",
     "NamedEntityExtractor",
     "PropagationEnricher",
-    "CoordinationDetector",
     "SentimentAnalyzer",
 ]

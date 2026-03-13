@@ -32,9 +32,9 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from issue_observatory.api.dependencies import get_current_active_user
 from issue_observatory.arenas.base import Tier
 from issue_observatory.arenas.google_search.collector import GoogleSearchCollector
-from issue_observatory.api.dependencies import get_current_active_user
 from issue_observatory.core.credential_pool import CredentialPool
 from issue_observatory.core.exceptions import (
     ArenaAuthError,

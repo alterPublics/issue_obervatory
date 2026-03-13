@@ -29,8 +29,8 @@ that identifies a specific annotation.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from typing import Annotated, Any, Optional
+from datetime import UTC, datetime
+from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -89,17 +89,17 @@ class AnnotationUpsertBody(BaseModel):
     """
 
     published_at: datetime
-    stance: Optional[str] = Field(default=None, max_length=20)
-    frame: Optional[str] = Field(default=None, max_length=200)
-    codebook_entry_id: Optional[uuid.UUID] = Field(
+    stance: str | None = Field(default=None, max_length=20)
+    frame: str | None = Field(default=None, max_length=200)
+    codebook_entry_id: uuid.UUID | None = Field(
         default=None,
         description="Codebook entry to use for structured coding (populates frame field)",
     )
-    is_relevant: Optional[bool] = None
-    notes: Optional[str] = None
-    tags: Optional[list[str]] = None
-    collection_run_id: Optional[uuid.UUID] = None
-    query_design_id: Optional[uuid.UUID] = None
+    is_relevant: bool | None = None
+    notes: str | None = None
+    tags: list[str] | None = None
+    collection_run_id: uuid.UUID | None = None
+    query_design_id: uuid.UUID | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +301,7 @@ async def upsert_annotation(
     # Normalise the published_at to UTC-aware before storing.
     published_at = body.published_at
     if published_at.tzinfo is None:
-        published_at = published_at.replace(tzinfo=timezone.utc)
+        published_at = published_at.replace(tzinfo=UTC)
 
     # Check for an existing annotation to determine insert vs. update.
     stmt = select(ContentAnnotation).where(

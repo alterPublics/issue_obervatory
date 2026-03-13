@@ -39,12 +39,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse, Response
-from sqlalchemy import distinct, select, text
+from sqlalchemy import any_, distinct, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from issue_observatory.analysis.coordination import get_coordination_events
@@ -66,7 +66,6 @@ from issue_observatory.analysis.descriptive import (
     get_volume_over_time,
     get_volume_with_deltas,
 )
-from issue_observatory.analysis.propagation import get_propagation_flows
 from issue_observatory.analysis.export import ContentExporter
 from issue_observatory.analysis.network import (
     build_bipartite_network,
@@ -76,6 +75,7 @@ from issue_observatory.analysis.network import (
     get_temporal_network_snapshots,
     get_term_co_occurrence,
 )
+from issue_observatory.analysis.propagation import get_propagation_flows
 from issue_observatory.api.dependencies import get_current_active_user, ownership_guard
 from issue_observatory.core.database import get_db
 from issue_observatory.core.models.collection import CollectionRun
@@ -144,8 +144,8 @@ async def analysis_landing(
     completed collection runs with enriched metadata (top platforms, date
     range, formatted dates), so researchers can jump directly to analysis.
     """
-    from sqlalchemy import func  # noqa: PLC0415
-    from sqlalchemy.orm import selectinload  # noqa: PLC0415
+    from sqlalchemy import func
+    from sqlalchemy.orm import selectinload
 
     # Fetch completed runs with their query designs
     stmt = (
@@ -433,10 +433,10 @@ async def volume_over_time(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    platform: Optional[str] = Query(default=None, description="Filter by platform."),
-    arena: Optional[str] = Query(default=None, description="Filter by arena."),
-    date_from: Optional[datetime] = Query(default=None, description="Lower bound on published_at."),
-    date_to: Optional[datetime] = Query(default=None, description="Upper bound on published_at."),
+    platform: str | None = Query(default=None, description="Filter by platform."),
+    arena: str | None = Query(default=None, description="Filter by arena."),
+    date_from: datetime | None = Query(default=None, description="Lower bound on published_at."),
+    date_to: datetime | None = Query(default=None, description="Upper bound on published_at."),
     granularity: str = Query(default="day", description="Time bucket: hour, day, week, month."),
 ) -> list[dict[str, Any]]:
     """Return content volume over time for the given collection run.
@@ -487,9 +487,9 @@ async def top_actors(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    platform: Optional[str] = Query(default=None, description="Filter by platform."),
-    date_from: Optional[datetime] = Query(default=None),
-    date_to: Optional[datetime] = Query(default=None),
+    platform: str | None = Query(default=None, description="Filter by platform."),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=200, description="Maximum actors to return."),
 ) -> list[dict[str, Any]]:
     """Return top authors by post volume and total engagement.
@@ -531,8 +531,8 @@ async def top_terms(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    date_from: Optional[datetime] = Query(default=None),
-    date_to: Optional[datetime] = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=200, description="Maximum terms to return."),
 ) -> list[dict[str, Any]]:
     """Return top search terms by match frequency across content records.
@@ -572,10 +572,10 @@ async def engagement_distribution(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    platform: Optional[str] = Query(default=None),
-    arena: Optional[str] = Query(default=None),
-    date_from: Optional[datetime] = Query(default=None),
-    date_to: Optional[datetime] = Query(default=None),
+    platform: str | None = Query(default=None),
+    arena: str | None = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
 ) -> dict[str, Any]:
     """Return statistical distribution of per-post engagement metrics.
 
@@ -621,11 +621,11 @@ async def temporal_comparison(
         default="week",
         description="Time period for comparison: 'week' or 'month'.",
     ),
-    date_from: Optional[datetime] = Query(
+    date_from: datetime | None = Query(
         default=None,
         description="Optional start of current period (ISO 8601).",
     ),
-    date_to: Optional[datetime] = Query(
+    date_to: datetime | None = Query(
         default=None,
         description="Optional end of current period (ISO 8601).",
     ),
@@ -729,10 +729,10 @@ async def network_actors(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    platform: Optional[str] = Query(default=None, description="Filter by platform."),
-    arena: Optional[str] = Query(default=None, description="Filter to a specific arena."),
-    date_from: Optional[datetime] = Query(default=None),
-    date_to: Optional[datetime] = Query(default=None),
+    platform: str | None = Query(default=None, description="Filter by platform."),
+    arena: str | None = Query(default=None, description="Filter to a specific arena."),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
     min_co_occurrences: int = Query(default=2, ge=1, description="Minimum edge weight."),
 ) -> dict[str, Any]:
     """Return the actor co-occurrence graph for the given collection run.
@@ -782,7 +782,7 @@ async def network_terms(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    arena: Optional[str] = Query(default=None, description="Filter to a specific arena."),
+    arena: str | None = Query(default=None, description="Filter to a specific arena."),
     min_co_occurrences: int = Query(default=2, ge=1, description="Minimum shared records."),
 ) -> dict[str, Any]:
     """Return the term co-occurrence graph for the given collection run.
@@ -865,7 +865,7 @@ async def network_bipartite(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    arena: Optional[str] = Query(default=None, description="Filter to a specific arena."),
+    arena: str | None = Query(default=None, description="Filter to a specific arena."),
     limit: int = Query(default=500, ge=1, le=2000, description="Max edges to return."),
 ) -> dict[str, Any]:
     """Return the bipartite actor-term graph for the given collection run.
@@ -968,8 +968,8 @@ async def top_actors_unified(
     run_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    date_from: Optional[datetime] = Query(default=None),
-    date_to: Optional[datetime] = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=200, description="Maximum actors to return."),
 ) -> list[dict[str, Any]]:
     """Return top authors by post volume, grouped by canonical Actor identity.
@@ -1323,7 +1323,7 @@ async def export_temporal_network_gexf(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate temporal network snapshots: {str(exc)}",
+            detail=f"Failed to generate temporal network snapshots: {exc!s}",
         ) from exc
 
     try:
@@ -1339,7 +1339,7 @@ async def export_temporal_network_gexf(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to serialize temporal GEXF: {str(exc)}",
+            detail=f"Failed to serialize temporal GEXF: {exc!s}",
         ) from exc
 
     filename = f"run_{run_id}_temporal_{network_type}_{interval}.gexf"
@@ -1393,7 +1393,7 @@ async def get_filter_options(
     # propagating 404 — the analysis dashboard renders gracefully without data.
     try:
         await _get_run_or_raise(run_id, db, current_user)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return {"platforms": [], "arenas": []}
 
     base_filters = [
@@ -1503,23 +1503,23 @@ async def filtered_export(
             "Export format: csv, xlsx, ndjson, parquet, ris, bibtex."
         ),
     ),
-    platform: Optional[str] = Query(default=None, description="Filter by platform name."),
-    arena: Optional[str] = Query(default=None, description="Filter by arena name."),
-    date_from: Optional[datetime] = Query(
+    platform: str | None = Query(default=None, description="Filter by platform name."),
+    arena: str | None = Query(default=None, description="Filter by arena name."),
+    date_from: datetime | None = Query(
         default=None, description="Inclusive lower bound on published_at (ISO 8601)."
     ),
-    date_to: Optional[datetime] = Query(
+    date_to: datetime | None = Query(
         default=None, description="Inclusive upper bound on published_at (ISO 8601)."
     ),
-    search_term: Optional[str] = Query(
+    search_term: str | None = Query(
         default=None,
         description="Only include records matching this search term in search_terms_matched.",
     ),
-    top_actors: Optional[str] = Query(
+    top_actors: str | None = Query(
         default=None,
         description="Comma-separated list of author_display_name values to filter by.",
     ),
-    min_engagement: Optional[float] = Query(
+    min_engagement: float | None = Query(
         default=None, description="Minimum engagement_score to include."
     ),
     limit: int = Query(
@@ -1595,9 +1595,12 @@ async def filtered_export(
     if date_to:
         stmt = stmt.where(UniversalContentRecord.published_at <= date_to)
     if search_term:
-        # Use PostgreSQL array containment (@>) to match exact term in the array.
+        # Use PostgreSQL ANY() to check exact term membership in the array.
+        # .contains() requires the dialect-specific ARRAY type and raises
+        # NotImplementedError on the base sa.ARRAY; any_() compiles to
+        # `= ANY(search_terms_matched)` and works with either ARRAY variant.
         stmt = stmt.where(
-            UniversalContentRecord.search_terms_matched.contains([search_term])
+            search_term == any_(UniversalContentRecord.search_terms_matched)
         )
     if min_engagement is not None:
         stmt = stmt.where(
@@ -2016,10 +2019,10 @@ async def design_volume_over_time(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    platform: Optional[str] = Query(default=None, description="Filter by platform."),
-    arena: Optional[str] = Query(default=None, description="Filter by arena."),
-    date_from: Optional[datetime] = Query(default=None, description="Lower bound on published_at."),
-    date_to: Optional[datetime] = Query(default=None, description="Upper bound on published_at."),
+    platform: str | None = Query(default=None, description="Filter by platform."),
+    arena: str | None = Query(default=None, description="Filter by arena."),
+    date_from: datetime | None = Query(default=None, description="Lower bound on published_at."),
+    date_to: datetime | None = Query(default=None, description="Upper bound on published_at."),
     granularity: str = Query(default="day", description="Time bucket: hour, day, week, month."),
     delta_mode: bool = Query(
         default=False,
@@ -2083,9 +2086,9 @@ async def design_top_actors(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    platform: Optional[str] = Query(default=None, description="Filter by platform."),
-    date_from: Optional[datetime] = Query(default=None),
-    date_to: Optional[datetime] = Query(default=None),
+    platform: str | None = Query(default=None, description="Filter by platform."),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=200, description="Maximum actors to return."),
     run_id: uuid.UUID | None = Query(
         default=None,
@@ -2130,8 +2133,8 @@ async def design_top_terms(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    date_from: Optional[datetime] = Query(default=None),
-    date_to: Optional[datetime] = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=200, description="Maximum terms to return."),
     run_id: uuid.UUID | None = Query(
         default=None,
@@ -2174,10 +2177,10 @@ async def design_network_actors(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    platform: Optional[str] = Query(default=None, description="Filter by platform."),
-    arena: Optional[str] = Query(default=None, description="Filter to a specific arena."),
-    date_from: Optional[datetime] = Query(default=None),
-    date_to: Optional[datetime] = Query(default=None),
+    platform: str | None = Query(default=None, description="Filter by platform."),
+    arena: str | None = Query(default=None, description="Filter to a specific arena."),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
     min_co_occurrences: int = Query(default=2, ge=1, description="Minimum edge weight."),
     run_id: uuid.UUID | None = Query(
         default=None,
@@ -2224,7 +2227,7 @@ async def design_network_terms(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    arena: Optional[str] = Query(default=None, description="Filter to a specific arena."),
+    arena: str | None = Query(default=None, description="Filter to a specific arena."),
     min_co_occurrences: int = Query(default=2, ge=1, description="Minimum shared records."),
     run_id: uuid.UUID | None = Query(
         default=None,
@@ -2265,7 +2268,7 @@ async def design_network_bipartite(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    arena: Optional[str] = Query(default=None, description="Filter to a specific arena."),
+    arena: str | None = Query(default=None, description="Filter to a specific arena."),
     limit: int = Query(default=500, ge=1, le=2000, description="Max edges to return."),
     run_id: uuid.UUID | None = Query(
         default=None,
@@ -2311,10 +2314,10 @@ async def design_engagement(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    platform: Optional[str] = Query(default=None, description="Filter by platform."),
-    arena: Optional[str] = Query(default=None, description="Filter by arena."),
-    date_from: Optional[datetime] = Query(default=None),
-    date_to: Optional[datetime] = Query(default=None),
+    platform: str | None = Query(default=None, description="Filter by platform."),
+    arena: str | None = Query(default=None, description="Filter by arena."),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
     run_id: uuid.UUID | None = Query(
         default=None,
         description="Optional run to scope analysis to; omit for design-level aggregate.",
@@ -2412,11 +2415,11 @@ async def design_temporal_comparison(
         default="week",
         description="Time period for comparison: 'week' or 'month'.",
     ),
-    date_from: Optional[datetime] = Query(
+    date_from: datetime | None = Query(
         default=None,
         description="Optional start of current period (ISO 8601).",
     ),
-    date_to: Optional[datetime] = Query(
+    date_to: datetime | None = Query(
         default=None,
         description="Optional end of current period (ISO 8601).",
     ),
@@ -2504,8 +2507,8 @@ async def design_top_actors_unified(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    date_from: Optional[datetime] = Query(default=None),
-    date_to: Optional[datetime] = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=200, description="Maximum actors to return."),
     run_id: uuid.UUID | None = Query(
         default=None,
@@ -2866,7 +2869,7 @@ async def design_filter_options(
     try:
         await _get_design_or_raise(design_id, db, current_user)
         run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return {"platforms": [], "arenas": []}
 
     if run_id is not None:
@@ -3094,23 +3097,23 @@ async def design_filtered_export(
         default="csv",
         description="Export format: csv, xlsx, ndjson, parquet, ris, bibtex.",
     ),
-    platform: Optional[str] = Query(default=None, description="Filter by platform name."),
-    arena: Optional[str] = Query(default=None, description="Filter by arena name."),
-    date_from: Optional[datetime] = Query(
+    platform: str | None = Query(default=None, description="Filter by platform name."),
+    arena: str | None = Query(default=None, description="Filter by arena name."),
+    date_from: datetime | None = Query(
         default=None, description="Inclusive lower bound on published_at (ISO 8601)."
     ),
-    date_to: Optional[datetime] = Query(
+    date_to: datetime | None = Query(
         default=None, description="Inclusive upper bound on published_at (ISO 8601)."
     ),
-    search_term: Optional[str] = Query(
+    search_term: str | None = Query(
         default=None,
         description="Only include records matching this search term in search_terms_matched.",
     ),
-    top_actors: Optional[str] = Query(
+    top_actors: str | None = Query(
         default=None,
         description="Comma-separated list of author_display_name values to filter by.",
     ),
-    min_engagement: Optional[float] = Query(
+    min_engagement: float | None = Query(
         default=None, description="Minimum engagement_score to include."
     ),
     limit: int = Query(
@@ -3197,8 +3200,9 @@ async def design_filtered_export(
     if date_to:
         stmt = stmt.where(UniversalContentRecord.published_at <= date_to)
     if search_term:
+        # Use PostgreSQL ANY() — see comment in filtered_export above.
         stmt = stmt.where(
-            UniversalContentRecord.search_terms_matched.contains([search_term])
+            search_term == any_(UniversalContentRecord.search_terms_matched)
         )
     if min_engagement is not None:
         stmt = stmt.where(UniversalContentRecord.engagement_score >= min_engagement)
@@ -3658,75 +3662,14 @@ async def coordination_events(
     )
 
 
-# ---------------------------------------------------------------------------
-# Project-level and user-level volume endpoints
-# ---------------------------------------------------------------------------
-
-
-@router.get("/project/{project_id:uuid}/volume")
-async def project_volume_over_time(
-    project_id: uuid.UUID,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(get_current_active_user)],
-    platform: Optional[str] = Query(default=None, description="Filter by platform."),
-    arena: Optional[str] = Query(default=None, description="Filter by arena."),
-    date_from: Optional[datetime] = Query(default=None, description="Lower bound on published_at."),
-    date_to: Optional[datetime] = Query(default=None, description="Upper bound on published_at."),
-    granularity: str = Query(default="day", description="Time bucket: hour, day, week, month."),
-    delta_mode: bool = Query(
-        default=False,
-        description="Use delta counting for snapshot arenas.",
-    ),
-) -> list[dict[str, Any]]:
-    """Return content volume over time across all designs in a project.
-
-    Fetches all query_design_ids belonging to the project, verifies ownership,
-    and returns aggregated volume data.
-    """
-    proj_result = await db.execute(
-        select(Project).where(Project.id == project_id)
-    )
-    project = proj_result.scalar_one_or_none()
-    if project is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Project '{project_id}' not found.",
-        )
-    ownership_guard(project.owner_id, current_user)
-
-    qd_result = await db.execute(
-        select(QueryDesign.id).where(QueryDesign.project_id == project_id)
-    )
-    qd_ids = [row[0] for row in qd_result.all()]
-    if not qd_ids:
-        return []
-
-    volume_fn = get_volume_with_deltas if delta_mode else get_volume_over_time
-    try:
-        return await volume_fn(
-            db,
-            query_design_ids=qd_ids,
-            arena=arena,
-            platform=platform,
-            date_from=date_from,
-            date_to=date_to,
-            granularity=granularity,
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
-        ) from exc
-
-
 @router.get("/volume")
 async def user_volume_over_time(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    platform: Optional[str] = Query(default=None, description="Filter by platform."),
-    arena: Optional[str] = Query(default=None, description="Filter by arena."),
-    date_from: Optional[datetime] = Query(default=None, description="Lower bound on published_at."),
-    date_to: Optional[datetime] = Query(default=None, description="Upper bound on published_at."),
+    platform: str | None = Query(default=None, description="Filter by platform."),
+    arena: str | None = Query(default=None, description="Filter by arena."),
+    date_from: datetime | None = Query(default=None, description="Lower bound on published_at."),
+    date_to: datetime | None = Query(default=None, description="Upper bound on published_at."),
     granularity: str = Query(default="day", description="Time bucket: hour, day, week, month."),
     delta_mode: bool = Query(
         default=False,
@@ -3761,3 +3704,812 @@ async def user_volume_over_time(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Project-Level Analysis
+# ---------------------------------------------------------------------------
+
+
+async def _get_project_design_ids(
+    project_id: uuid.UUID,
+    db: AsyncSession,
+    current_user: User,
+) -> tuple[Project, list[uuid.UUID]]:
+    """Fetch a Project, verify ownership, and return all its query design IDs."""
+    stmt = select(Project).where(Project.id == project_id)
+    result = await db.execute(stmt)
+    project = result.scalar_one_or_none()
+
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project '{project_id}' not found.",
+        )
+
+    ownership_guard(project.owner_id, current_user)
+
+    qd_stmt = select(QueryDesign.id).where(QueryDesign.project_id == project_id)
+    qd_result = await db.execute(qd_stmt)
+    design_ids = [row[0] for row in qd_result.all()]
+
+    return project, design_ids
+
+
+async def _resolve_project_scope(
+    project_id: uuid.UUID,
+    design_id: uuid.UUID | None,
+    db: AsyncSession,
+    current_user: User,
+) -> tuple[Project, list[uuid.UUID]]:
+    """Resolve the effective query_design_ids for a project-level request."""
+    project, all_ids = await _get_project_design_ids(project_id, db, current_user)
+
+    if design_id is not None:
+        if design_id not in all_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Design '{design_id}' does not belong to project '{project_id}'.",
+            )
+        return project, [design_id]
+
+    return project, all_ids
+
+
+@router.get("/project/{project_id:uuid}", include_in_schema=False)
+async def analysis_dashboard_project(
+    project_id: uuid.UUID,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    design_id: uuid.UUID | None = Query(
+        default=None, description="Optional design to scope the dashboard to."
+    ),
+) -> Any:
+    """Render the analysis dashboard for a project (all query designs aggregated)."""
+    project, _ = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+
+    templates = request.app.state.templates
+    if templates is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Template engine not initialised.",
+        )
+
+    qd_stmt = (
+        select(QueryDesign)
+        .where(QueryDesign.project_id == project_id)
+        .order_by(QueryDesign.name)
+    )
+    qd_result = await db.execute(qd_stmt)
+    query_designs = qd_result.scalars().all()
+
+    return templates.TemplateResponse(
+        "analysis/index.html",
+        {
+            "request": request,
+            "user": current_user,
+            "mode": "project",
+            "project_id": str(project_id),
+            "project": {
+                "id": str(project.id),
+                "name": project.name,
+                "description": project.description,
+            },
+            "query_designs": [
+                {"id": str(qd.id), "name": qd.name}
+                for qd in query_designs
+            ],
+            "design_id": str(design_id) if design_id else None,
+            "design": None,
+            "run_id": None,
+            "run": None,
+            "runs": [],
+            "run_count": 0,
+        },
+    )
+
+
+@router.get("/project/{project_id:uuid}/summary")
+async def project_summary(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    design_id: uuid.UUID | None = Query(default=None),
+) -> dict[str, Any]:
+    """Return aggregated statistics for a project."""
+    project, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return {
+            "project_id": str(project_id),
+            "total_runs": 0, "completed_runs": 0, "total_credits": 0,
+            "total_records": 0, "first_run_at": None, "last_completed_at": None,
+            "content_date_from": None, "content_date_to": None, "design_count": 0,
+        }
+
+    id_strs = [str(d) for d in design_ids]
+    ph = ", ".join(f":pid_{i}" for i in range(len(id_strs)))
+    bp: dict[str, Any] = {f"pid_{i}": v for i, v in enumerate(id_strs)}
+
+    runs_row = (await db.execute(text(
+        f"SELECT COUNT(DISTINCT cr.id) AS total_runs,"
+        f" COUNT(DISTINCT cr.id) FILTER (WHERE cr.status = 'completed') AS completed_runs,"
+        f" COALESCE(SUM(cr.credits_spent), 0) AS total_credits,"
+        f" MIN(cr.started_at) AS first_run_at,"
+        f" MAX(cr.completed_at) AS last_completed_at"
+        f" FROM collection_runs cr WHERE cr.query_design_id IN ({ph})"
+    ), bp)).fetchone()
+
+    content_row = (await db.execute(text(
+        f"SELECT COUNT(*) AS total_records,"
+        f" MIN(published_at) AS content_date_from,"
+        f" MAX(published_at) AS content_date_to"
+        f" FROM content_records"
+        f" WHERE query_design_id IN ({ph})"
+        f" AND term_matched = TRUE"
+        f" AND (raw_metadata->>'duplicate_of') IS NULL"
+    ), bp)).fetchone()
+
+    return {
+        "project_id": str(project_id),
+        "design_count": len(design_ids),
+        "total_runs": runs_row.total_runs if runs_row else 0,
+        "completed_runs": runs_row.completed_runs if runs_row else 0,
+        "total_credits": int(runs_row.total_credits or 0) if runs_row else 0,
+        "total_records": int(content_row.total_records or 0) if content_row else 0,
+        "first_run_at": (
+            runs_row.first_run_at.isoformat()
+            if runs_row and runs_row.first_run_at else None
+        ),
+        "last_completed_at": (
+            runs_row.last_completed_at.isoformat()
+            if runs_row and runs_row.last_completed_at else None
+        ),
+        "content_date_from": (
+            content_row.content_date_from.isoformat()
+            if content_row and content_row.content_date_from else None
+        ),
+        "content_date_to": (
+            content_row.content_date_to.isoformat()
+            if content_row and content_row.content_date_to else None
+        ),
+    }
+
+
+@router.get("/project/{project_id:uuid}/volume")
+async def project_volume(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    platform: str | None = Query(default=None),
+    arena: str | None = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
+    granularity: str = Query(default="day"),
+    design_id: uuid.UUID | None = Query(default=None),
+) -> list[dict[str, Any]]:
+    """Return content volume over time for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return []
+    try:
+        return await get_volume_over_time(
+            db, query_design_ids=design_ids, arena=arena, platform=platform,
+            date_from=date_from, date_to=date_to, granularity=granularity,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc),
+        ) from exc
+
+
+@router.get("/project/{project_id:uuid}/actors")
+async def project_top_actors(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    platform: str | None = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=200),
+    design_id: uuid.UUID | None = Query(default=None),
+) -> list[dict[str, Any]]:
+    """Return top actors for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return []
+    return await get_top_actors(
+        db, query_design_ids=design_ids, platform=platform,
+        date_from=date_from, date_to=date_to, limit=limit,
+    )
+
+
+@router.get("/project/{project_id:uuid}/terms")
+async def project_top_terms(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=200),
+    design_id: uuid.UUID | None = Query(default=None),
+) -> list[dict[str, Any]]:
+    """Return top terms for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return []
+    return await get_top_terms(
+        db, query_design_ids=design_ids,
+        date_from=date_from, date_to=date_to, limit=limit,
+    )
+
+
+@router.get("/project/{project_id:uuid}/engagement")
+async def project_engagement(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    platform: str | None = Query(default=None),
+    arena: str | None = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
+    design_id: uuid.UUID | None = Query(default=None),
+) -> dict[str, Any]:
+    """Return engagement distribution for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return {}
+    return await get_engagement_distribution(
+        db, query_design_ids=design_ids, arena=arena, platform=platform,
+        date_from=date_from, date_to=date_to,
+    )
+
+
+@router.get("/project/{project_id:uuid}/emergent-terms")
+async def project_emergent_terms(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    top_n: int = Query(default=50, ge=5, le=200),
+    exclude_search_terms: bool = Query(default=True),
+    min_doc_frequency: int = Query(default=2, ge=1),
+    design_id: uuid.UUID | None = Query(default=None),
+) -> list[dict[str, Any]]:
+    """Return emergent terms for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return []
+    return await get_emergent_terms(
+        db, query_design_ids=design_ids, top_n=top_n,
+        exclude_search_terms=exclude_search_terms,
+        min_doc_frequency=min_doc_frequency,
+    )
+
+
+@router.get("/project/{project_id:uuid}/filter-options")
+async def project_filter_options(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    design_id: uuid.UUID | None = Query(default=None),
+) -> dict[str, list[str]]:
+    """Return distinct platform and arena values for a project."""
+    try:
+        _, design_ids = await _resolve_project_scope(
+            project_id, design_id, db, current_user
+        )
+    except Exception:
+        return {"platforms": [], "arenas": []}
+    if not design_ids:
+        return {"platforms": [], "arenas": []}
+
+    base_filters = [
+        UniversalContentRecord.query_design_id.in_(design_ids),
+        UniversalContentRecord.term_matched.is_(True),
+        UniversalContentRecord.raw_metadata["duplicate_of"].as_string().is_(None),
+    ]
+    platform_result = await db.execute(
+        select(distinct(UniversalContentRecord.platform))
+        .where(*base_filters).order_by(UniversalContentRecord.platform)
+    )
+    arena_result = await db.execute(
+        select(distinct(UniversalContentRecord.arena))
+        .where(*base_filters).order_by(UniversalContentRecord.arena)
+    )
+    return {
+        "platforms": [row[0] for row in platform_result.fetchall() if row[0]],
+        "arenas": [row[0] for row in arena_result.fetchall() if row[0]],
+    }
+
+
+@router.get("/project/{project_id:uuid}/network/actors")
+async def project_network_actors(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    platform: str | None = Query(default=None),
+    arena: str | None = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
+    min_co_occurrences: int = Query(default=2, ge=1),
+    design_id: uuid.UUID | None = Query(default=None),
+) -> dict[str, Any]:
+    """Return actor co-occurrence graph for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return {"nodes": [], "edges": []}
+    return await get_actor_co_occurrence(
+        db, query_design_ids=design_ids, platform=platform, arena=arena,
+        date_from=date_from, date_to=date_to,
+        min_co_occurrences=min_co_occurrences,
+    )
+
+
+@router.get("/project/{project_id:uuid}/network/terms")
+async def project_network_terms(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    arena: str | None = Query(default=None),
+    min_co_occurrences: int = Query(default=2, ge=1),
+    design_id: uuid.UUID | None = Query(default=None),
+) -> dict[str, Any]:
+    """Return term co-occurrence graph for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return {"nodes": [], "edges": []}
+    return await get_term_co_occurrence(
+        db, query_design_ids=design_ids, arena=arena,
+        min_co_occurrences=min_co_occurrences,
+    )
+
+
+@router.get("/project/{project_id:uuid}/network/bipartite")
+async def project_network_bipartite(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    arena: str | None = Query(default=None),
+    limit: int = Query(default=500, ge=1, le=2000),
+    design_id: uuid.UUID | None = Query(default=None),
+) -> dict[str, Any]:
+    """Return bipartite actor-term graph for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return {"nodes": [], "edges": []}
+    return await build_bipartite_network(
+        db, query_design_ids=design_ids, arena=arena, limit=limit,
+    )
+
+
+@router.get("/project/{project_id:uuid}/temporal-comparison")
+async def project_temporal_comparison(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    period: str = Query(default="week"),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
+    design_id: uuid.UUID | None = Query(default=None),
+) -> dict[str, Any]:
+    """Period-over-period volume comparison for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return {
+            "current_period": {"date_from": None, "date_to": None, "count": 0},
+            "previous_period": {"date_from": None, "date_to": None, "count": 0},
+            "delta": 0, "pct_change": 0.0, "per_arena": [],
+        }
+    try:
+        return await get_temporal_comparison(
+            db, query_design_ids=design_ids,
+            period=period, date_from=date_from, date_to=date_to,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc),
+        ) from exc
+
+
+@router.get("/project/{project_id:uuid}/arena-comparison")
+async def project_arena_comparison(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    design_id: uuid.UUID | None = Query(default=None),
+) -> dict[str, Any]:
+    """Side-by-side arena metrics for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return {"by_arena": [], "totals": {}}
+    return await get_arena_comparison(db, query_design_ids=design_ids)
+
+
+@router.get("/project/{project_id:uuid}/actors-unified")
+async def project_top_actors_unified(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=200),
+    design_id: uuid.UUID | None = Query(default=None),
+) -> list[dict[str, Any]]:
+    """Return top actors grouped by canonical identity for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return []
+    return await get_top_actors_unified(
+        db, query_design_ids=design_ids,
+        date_from=date_from, date_to=date_to, limit=limit,
+    )
+
+
+@router.get("/project/{project_id:uuid}/network/cross-platform")
+async def project_network_cross_platform(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    min_platforms: int = Query(default=2, ge=2),
+    design_id: uuid.UUID | None = Query(default=None),
+) -> list[dict[str, Any]]:
+    """Return canonical actors active on multiple platforms for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return []
+    return await get_cross_platform_actors(
+        db, query_design_ids=design_ids, min_platforms=min_platforms,
+    )
+
+
+@router.get("/project/{project_id:uuid}/network/temporal")
+async def project_network_temporal(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    interval: str = Query(default="week"),
+    network_type: str = Query(default="actor"),
+    limit_per_snapshot: int = Query(default=100, ge=10, le=500),
+    design_id: uuid.UUID | None = Query(default=None),
+) -> list[dict[str, Any]]:
+    """Return temporal network snapshot index for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return []
+    try:
+        snapshots = await get_temporal_network_snapshots(
+            db, query_design_ids=design_ids,
+            interval=interval, network_type=network_type,
+            limit_per_snapshot=limit_per_snapshot,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc),
+        ) from exc
+    return [
+        {"period": s["period"], "node_count": s["node_count"], "edge_count": s["edge_count"]}
+        for s in snapshots
+    ]
+
+
+@router.get("/project/{project_id:uuid}/network/{network_type}/temporal")
+async def project_network_temporal_by_type(
+    project_id: uuid.UUID,
+    network_type: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    interval: str = Query(default="week"),
+    limit_per_snapshot: int = Query(default=100, ge=10, le=500),
+    design_id: uuid.UUID | None = Query(default=None),
+) -> list[dict[str, Any]]:
+    """Temporal network snapshot index — path alias with network_type in URL for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return []
+    try:
+        snapshots = await get_temporal_network_snapshots(
+            db, query_design_ids=design_ids,
+            interval=interval, network_type=network_type,
+            limit_per_snapshot=limit_per_snapshot,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc),
+        ) from exc
+    return [
+        {"period": s["period"], "node_count": s["node_count"], "edge_count": s["edge_count"]}
+        for s in snapshots
+    ]
+
+
+@router.get("/project/{project_id:uuid}/network/{network_type}/temporal/{period}")
+async def project_network_temporal_period(
+    project_id: uuid.UUID,
+    network_type: str,
+    period: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    interval: str = Query(default="week"),
+    limit_per_snapshot: int = Query(default=200, ge=10, le=500),
+    design_id: uuid.UUID | None = Query(default=None),
+) -> dict[str, Any]:
+    """Return the network graph for a single temporal period within a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return {"nodes": [], "edges": []}
+    try:
+        snapshots = await get_temporal_network_snapshots(
+            db, query_design_ids=design_ids,
+            interval=interval, network_type=network_type,
+            limit_per_snapshot=limit_per_snapshot,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc),
+        ) from exc
+
+    for snapshot in snapshots:
+        snap_period = str(snapshot.get("period", ""))
+        if snap_period.startswith(period) or period.startswith(snap_period):
+            return snapshot.get("graph", {"nodes": [], "edges": []})
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Period '{period}' not found in temporal snapshots for this project.",
+    )
+
+
+@router.get("/project/{project_id:uuid}/network/enhanced-bipartite")
+async def project_network_enhanced_bipartite(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    limit: int = Query(default=500, ge=1, le=2000),
+    top_emergent: int = Query(default=30, ge=5, le=100),
+    design_id: uuid.UUID | None = Query(default=None),
+) -> dict[str, Any]:
+    """Return enhanced bipartite actor-term graph for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return {"nodes": [], "edges": []}
+
+    emergent = await get_emergent_terms(
+        db, query_design_ids=design_ids,
+        top_n=top_emergent, exclude_search_terms=True,
+    )
+    return await build_enhanced_bipartite_network(
+        db, emergent_terms=emergent,
+        query_design_ids=design_ids, limit=limit,
+    )
+
+
+@router.get("/project/{project_id:uuid}/enrichments/languages")
+async def project_enrichment_languages(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    design_id: uuid.UUID | None = Query(default=None),
+) -> list[dict[str, Any]]:
+    """Return language distribution from enrichment results for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return []
+    return await get_language_distribution(db, query_design_ids=design_ids)
+
+
+@router.get("/project/{project_id:uuid}/enrichments/entities")
+async def project_enrichment_entities(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    limit: int = Query(default=20, ge=1, le=100),
+    design_id: uuid.UUID | None = Query(default=None),
+) -> list[dict[str, Any]]:
+    """Return most frequent named entities from enrichment data for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return []
+    return await get_top_named_entities(
+        db, query_design_ids=design_ids, limit=limit,
+    )
+
+
+@router.get("/project/{project_id:uuid}/enrichments/propagation")
+async def project_enrichment_propagation(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    design_id: uuid.UUID | None = Query(default=None),
+) -> list[dict[str, Any]]:
+    """Return cross-arena propagation patterns for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return []
+    return await get_propagation_patterns(db, query_design_ids=design_ids)
+
+
+@router.get("/project/{project_id:uuid}/enrichments/coordination")
+async def project_enrichment_coordination(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    design_id: uuid.UUID | None = Query(default=None),
+) -> list[dict[str, Any]]:
+    """Return coordination signals from enrichment data for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return []
+    return await get_coordination_signals(db, query_design_ids=design_ids)
+
+
+@router.get("/project/{project_id:uuid}/enrichments/sentiment")
+async def project_enrichment_sentiment(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    design_id: uuid.UUID | None = Query(default=None),
+) -> dict[str, Any]:
+    """Return sentiment distribution from enrichment data for a project."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return {
+            "positive": 0, "negative": 0, "neutral": 0,
+            "average_score": 0.0, "total_records": 0,
+        }
+    return await get_sentiment_distribution(db, query_design_ids=design_ids)
+
+
+@router.get("/project/{project_id:uuid}/filtered-export")
+async def project_filtered_export(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    format: str = Query(default="csv"),
+    platform: str | None = Query(default=None),
+    arena: str | None = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
+    search_term: str | None = Query(default=None),
+    top_actors: str | None = Query(default=None),
+    min_engagement: float | None = Query(default=None),
+    limit: int = Query(default=10_000, ge=1, le=10_000),
+    design_id: uuid.UUID | None = Query(default=None),
+) -> Response:
+    """Export filtered content records from a project as a file."""
+    _, design_ids = await _resolve_project_scope(
+        project_id, design_id, db, current_user
+    )
+    if not design_ids:
+        return Response(
+            content=b"", media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="empty_export.csv"'},
+        )
+
+    if format not in _EXPORT_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Unsupported export format {format!r}. "
+                f"Choose from: {', '.join(_EXPORT_CONTENT_TYPES)}."
+            ),
+        )
+
+    stmt = (
+        select(UniversalContentRecord)
+        .where(
+            UniversalContentRecord.query_design_id.in_(design_ids),
+            UniversalContentRecord.term_matched.is_(True),
+            UniversalContentRecord.raw_metadata["duplicate_of"].as_string().is_(None),
+        )
+        .order_by(UniversalContentRecord.collected_at.desc())
+        .limit(limit)
+    )
+
+    if platform:
+        stmt = stmt.where(UniversalContentRecord.platform == platform)
+    if arena:
+        stmt = stmt.where(UniversalContentRecord.arena == arena)
+    if date_from:
+        stmt = stmt.where(UniversalContentRecord.published_at >= date_from)
+    if date_to:
+        stmt = stmt.where(UniversalContentRecord.published_at <= date_to)
+    if search_term:
+        stmt = stmt.where(
+            search_term == any_(UniversalContentRecord.search_terms_matched)
+        )
+    if min_engagement is not None:
+        stmt = stmt.where(UniversalContentRecord.engagement_score >= min_engagement)
+    if top_actors:
+        actor_names = [a.strip() for a in top_actors.split(",") if a.strip()]
+        if actor_names:
+            stmt = stmt.where(
+                UniversalContentRecord.author_display_name.in_(actor_names)
+            )
+
+    db_result = await db.execute(stmt)
+    orm_rows = list(db_result.scalars().all())
+    records = [_record_to_dict(r) for r in orm_rows]
+
+    exporter = ContentExporter()
+    try:
+        if format == "csv":
+            file_bytes = await exporter.export_csv(records)
+        elif format == "xlsx":
+            file_bytes = await exporter.export_xlsx(records)
+        elif format == "ndjson":
+            file_bytes = await exporter.export_json(records)
+        elif format == "parquet":
+            file_bytes = await exporter.export_parquet(records)
+        elif format == "ris":
+            file_bytes = exporter.export_ris(records)
+        else:  # bibtex
+            file_bytes = exporter.export_bibtex(records)
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
+
+    ext = _EXPORT_EXTENSIONS[format]
+    filename = f"project_{project_id}_{format}_export.{ext}"
+    content_type = _EXPORT_CONTENT_TYPES[format]
+
+    logger.info(
+        "analysis.project_filtered_export",
+        project_id=str(project_id),
+        user_id=str(current_user.id),
+        format=format,
+        record_count=len(records),
+    )
+
+    return Response(
+        content=file_bytes,
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

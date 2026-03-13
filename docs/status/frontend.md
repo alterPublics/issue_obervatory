@@ -158,6 +158,90 @@
 - [x] `templates/collections/launcher.html` — Added `_ACTOR_ONLY_PLATFORMS` constant and two Alpine getters (`actorOnlyArenaNames`, `hasActorOnlyArenas`) to the `collectionLauncher` component. When the selected project has Facebook or Instagram enabled, an amber guidance banner appears below the arena preview list explaining: keyword search is skipped for these arenas, search terms will be ignored, and researchers should add actors in the Actor Directory. The banner handles the single-arena ("Facebook collect via actors only") and both-arenas ("Facebook and Instagram collect via actors only") cases reactively.
 - [x] `templates/query_designs/editor.html` — Updated the source-list arenas info box to mention that Facebook and Instagram are actor-only and link to the Actor Directory.
 
+## Actor Workflow Redesign — Phase 1 & 2 Source List Panels (2026-03-04)
+
+Implemented per `docs/research_reports/actor_workflow_redesign.md` — Phase 1 (actor-only arenas) and Phase 2 (dual-mode arenas) source list panels.
+
+### New panels added to `query_designs/editor.html`
+
+- [x] **GR-06 (new) — Facebook — Custom Pages** (`facebook`, `custom_pages`): Actor-only arena badge (red). `type="url"` input. Items render as clickable links. Empty-state warns that collection will not run without at least one page URL.
+- [x] **GR-07 (new) — Instagram — Custom Profiles** (`instagram`, `custom_profiles`): Same actor-only treatment as Facebook. `type="url"` input, clickable link display.
+- [x] **GR-08 (new) — Bluesky — Custom Accounts** (`bluesky`, `custom_accounts`): Optional panel, text input for handles or DIDs. Empty-state explains keyword search still runs.
+- [x] **GR-09 (new) — X / Twitter — Custom Accounts** (`x_twitter`, `custom_accounts`): Optional panel. Inline `@` prefix affordance (same pattern as Telegram / Reddit). Display renders with `@` prefix.
+- [x] **GR-10 (new) — YouTube — Custom Channels** (`youtube`, `custom_channels`): Optional panel. `font-mono` input accepts channel IDs (`UC...`) or channel URLs.
+- [x] **GR-11 (new) — TikTok — Custom Accounts** (`tiktok`, `custom_accounts`): Optional panel. Inline `@` prefix affordance. Display renders with `@` prefix (conditionally, if not already present).
+- [x] **GR-12 (new) — Threads — Custom Accounts** (`threads`, `custom_accounts`): Collapsed behind "Additional social platforms" disclosure button. Plain username input.
+- [x] **GR-13 (new) — Gab — Custom Accounts** (`gab`, `custom_accounts`): Collapsed alongside Threads. Plain username input.
+
+### Panel ordering in editor (post-change)
+1. RSS, 2. Telegram, 3. Reddit, 4. Facebook, 5. Instagram, 6. Bluesky, 7. X/Twitter, 8. YouTube, 9. Discord, 10. Wikipedia, 11. TikTok, 12–13. Threads + Gab (collapsed), 14. Domain Crawler
+
+### Info box update
+- [x] Updated the source-list arenas info box to reflect the new unified approach: Facebook/Instagram now configured here (not Actor Directory only), dual-mode arenas explanation, link to "Actor Workbench" for discovered accounts.
+
+### JavaScript component
+- No changes to `arenaSourcePanel()` — it was already fully generic.
+- Updated the JSDoc comment to list all 13 panel types.
+
+**Backend API contracts needed** (same PATCH endpoint already exists per GR-01 notes):
+- `PATCH /query-designs/{design_id}/arena-config/facebook` — body `{ "custom_pages": [...] }` → 200
+- `PATCH /query-designs/{design_id}/arena-config/instagram` — body `{ "custom_profiles": [...] }` → 200
+- `PATCH /query-designs/{design_id}/arena-config/bluesky` — body `{ "custom_accounts": [...] }` → 200
+- `PATCH /query-designs/{design_id}/arena-config/x_twitter` — body `{ "custom_accounts": [...] }` → 200
+- `PATCH /query-designs/{design_id}/arena-config/youtube` — body `{ "custom_channels": [...] }` → 200
+- `PATCH /query-designs/{design_id}/arena-config/tiktok` — body `{ "custom_accounts": [...] }` → 200
+- `PATCH /query-designs/{design_id}/arena-config/threads` — body `{ "custom_accounts": [...] }` → 200
+- `PATCH /query-designs/{design_id}/arena-config/gab` — body `{ "custom_accounts": [...] }` → 200
+
+**Orchestrator changes needed** (Core Engineer / Workers Engineer):
+- Modify `dispatch_batch_collection()` in `workers/tasks.py` to read `arenas_config[platform].custom_{key}` before falling back to `fetch_actor_ids_for_design_and_platform()` for actor-only arenas (Facebook, Instagram).
+- For dual-mode arenas (Bluesky, X/Twitter, YouTube, TikTok, Threads, Gab): dispatch `collect_by_actors()` alongside `collect_by_terms()` when a source list is configured.
+
+## Actor Workbench Redesign — Phase 3 (2026-03-04)
+
+Implemented per `docs/research_reports/actor_workflow_redesign.md` — Phase 3 (Actor Workbench UI redesign).
+
+### `actors/list.html` — full redesign into tabbed Actor Workbench
+
+- [x] **Page header** — Renamed "Actor Directory" to "Actor Workbench", subtitle "Discover, stage, and port accounts to projects". "Add Actor" button now switches to Registry tab first before dispatching `open-add-actor` event.
+
+- [x] **Tab navigation** — Four tabs with brand-coloured active state and `x-cloak` per-tab `x-show`. Staging tab shows a live badge with item count when non-zero. All tab state managed in root `actorWorkbench()` Alpine component.
+
+- [x] **Tab 1 — Discover**: Contains three collapsible panels:
+    1. **Snowball Sampling** — All existing snowball logic retained and refactored into `snowballSampler()` component. New "Send results to Staging tab" toggle (`addToStaging`, default on); when enabled, `runSnowball()` / `runSnowballFromRun()` push discovered actors to the shared `stagingItems` array on the root `actorWorkbench()` component via `Alpine.$data()` traversal. Results card shows staging count + "Go to Staging tab" CTA button that dispatches `set-tab` event. Seed-from-collection-run mode retained in full.
+    2. **Similarity Discovery** — New `similarityDiscovery()` component. Actor selector dropdown pre-populated from server-rendered actor list. Three method buttons (Platform Recommendations → `POST /actors/{id}/similar/platform`, Content Similarity → `POST /actors/{id}/similar/content`, Cross-platform Search → `POST /actors/{id}/similar/cross-platform`). Results pushed to staging automatically. Loading and success states.
+    3. **Corpus Co-occurrence** — `corpusCoOccurrence()` component retained from previous implementation. Query Design ID text input + min threshold input + Run Analysis button. Results table unchanged.
+
+- [x] **Tab 2 — Staging**: Working table of discovered accounts held in `stagingItems` Alpine array (client-side, no backend persistence). Columns: Name/Handle (with initials avatar + shortened actor_id), Platform badges, Discovery Method (formatted), Depth, Status badge (Pending / Accepted / Rejected / Ported), row actions.
+    - Bulk select with indeterminate checkbox (select-all / individual per row)
+    - Row actions: Accept (green), Reject (red), Restore (from rejected), View (link to `/actors/{id}`)
+    - Toolbar: "Port All to Project" + "Clear Staging" header buttons; "Port Selected to Project" + "Reject Selected" bulk toolbar (shown when items selected)
+    - Empty state with CTA to Discover tab
+
+- [x] **Port to Project modal** — 3-step wizard in a fixed-position modal with max-height scroll:
+    - **Step 1**: Query design selector. Fetches `GET /query-designs/?is_active=true&page_size=50` on modal open (result cached in `portModal.queryDesigns`). Radio-card selection.
+    - **Step 2**: Arena mapping. `PLATFORM_ARENA_MAP` lookup (14 platforms mapped to arena name + `configKey`). Per-account per-arena checkboxes with arena name and config key displayed. Unmappable platforms show amber notice.
+    - **Step 3**: Confirmation summary (ported per arena) + execute. `executePort()` calls `PATCH /query-designs/{id}/arena-config/{arena}` for each arena group with the full `{ [configKey]: identifiers }` payload. On success: marks each staged item as `status: 'ported'`, removes from selected set, shows green success banner + "Open query design" link. On partial failure: shows red error with per-arena details.
+    - Step indicator (numbered circles → green checkmarks when completed); Back/Next/Confirm/Close buttons.
+
+- [x] **Tab 3 — Registry**: Existing actor directory table moved into this tab. Add Actor modal (HTMX POST to `/actors/form`), HTMX search input (`hx-get="/actors/search"`, `hx-trigger="keyup changed delay:300ms"`), type badge system, content count deep-link, pagination partial, GDPR public-figure "PF" badge all retained. `aria-live="polite"` on tbody.
+
+- [x] **Tab 4 — Entity Resolution**: Card with description + "Open Entity Resolution" link to `/actors/resolution`. Keeps existing page at its URL — no embed.
+
+- [x] **Shared state architecture**: Root `actorWorkbench()` owns `stagingItems`, `stagingSelected`, `portModal`, and formatting helpers. Child components (`snowballSampler`, `similarityDiscovery`) reach the root via `Alpine.$data(this.$el.closest('[x-data="actorWorkbench()"]'))` to push to staging. `set-tab` custom event dispatched on `$el` triggers tab switch from child components.
+
+- [x] **`PLATFORM_ARENA_MAP` constant**: Top-level JS constant mapping 14 platform slugs to their `{ arena, configKey }` pair (bluesky→`custom_accounts`, facebook→`custom_pages`, instagram→`custom_profiles`, x_twitter→`custom_accounts`, youtube→`custom_channels`, etc.). Used by `buildMappings()` in port flow.
+
+**Backend API contracts** (all use existing endpoints — no new backend code needed):
+- `GET /query-designs/?is_active=true&page_size=50` — returns list of query designs (already exists)
+- `PATCH /query-designs/{id}/arena-config/{arena}` — deep-merges source list (already exists per GR-01)
+- `POST /actors/{id}/similar/platform` — platform recommendations (already exists)
+- `POST /actors/{id}/similar/content` — content similarity (already exists)
+- `POST /actors/{id}/similar/cross-platform` — cross-platform name search (already exists)
+- `POST /actors/sampling/snowball` — snowball from seeds (already exists)
+- `POST /actors/sampling/snowball-from-run` — snowball from collection run (already exists)
+- `POST /actors/sampling/co-occurrence` — corpus co-occurrence (already exists)
+
 ## Remaining / Future Work
 - [ ] Tailwind production build (`make css`) to replace CDN dev script
 - [ ] End-to-end tests for login flow and collection launcher

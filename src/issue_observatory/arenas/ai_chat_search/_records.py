@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -84,7 +84,7 @@ def _extract_domain(url: str) -> str:
     try:
         parsed = urlparse(url)
         return parsed.netloc or url
-    except Exception:  # noqa: BLE001
+    except Exception:
         return url
 
 
@@ -97,6 +97,8 @@ def make_response_record(
     day_bucket: str,
     arena_name: str = "ai_chat_search",
     platform_name: str = "openrouter",
+    collection_tier: str = "medium",
+    language: str = "da",
 ) -> dict[str, Any]:
     """Build a universal content record for an AI chat search response.
 
@@ -120,7 +122,7 @@ def make_response_record(
         Dict conforming to the ``content_records`` universal schema with
         ``content_type="ai_chat_response"``.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Deterministic dedup key: same phrasing + model + day = same ID
     platform_id = _sha256(phrasing + model_used + day_bucket)
@@ -164,9 +166,10 @@ def make_response_record(
         "text_content": text_content,
         "title": phrasing,
         "url": None,
-        "language": "da",
+        "language": language,
         "published_at": now.isoformat(),
         "collected_at": now.isoformat(),
+        "collection_tier": collection_tier,
         "author_platform_id": model_used,
         "author_display_name": model_producer,
         "views_count": None,
@@ -189,13 +192,16 @@ def make_citation_record(
     parent_platform_id: str,
     day_bucket: str,
     arena_name: str = "ai_chat_search",
+    platform_name: str = "openrouter",
+    collection_tier: str = "medium",
+    language: str = "da",
 ) -> dict[str, Any]:
     """Build a universal content record for a single cited URL.
 
     Creates one ``ai_chat_citation`` record per citation in a Perplexity
-    Sonar response.  The ``platform`` field is set to the domain of the
-    cited URL (e.g. ``"dr.dk"``), enabling source-domain analysis across
-    citation records.
+    Sonar response.  The ``platform`` field is set to ``"openrouter"`` to
+    group all AI chat search records under one platform.  The cited domain
+    is stored in ``raw_metadata["source_domain"]`` for source-domain analysis.
 
     The ``platform_id`` is a deterministic SHA-256 of the citation URL +
     phrasing + UTC day bucket, ensuring deduplication when the same URL is
@@ -212,12 +218,13 @@ def make_citation_record(
             ``ai_chat_response`` record (for linking).
         day_bucket: UTC date string ``"YYYY-MM-DD"`` for dedup key construction.
         arena_name: Arena name written to the ``arena`` field.
+        platform_name: Platform name written to the ``platform`` field.
 
     Returns:
         Dict conforming to the ``content_records`` universal schema with
         ``content_type="ai_chat_citation"``.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     citation_url: str = citation["url"]
     domain = _extract_domain(citation_url)
@@ -232,19 +239,21 @@ def make_citation_record(
         "original_term": original_term,
         "expanded_phrasing": phrasing,
         "model": model_used,
+        "source_domain": domain,
     }
 
     return {
-        "platform": domain,
+        "platform": platform_name,
         "arena": arena_name,
         "platform_id": platform_id,
         "content_type": "ai_chat_citation",
         "text_content": citation.get("snippet"),
         "title": citation.get("title"),
         "url": citation_url,
-        "language": None,
-        "published_at": None,
+        "language": language,
+        "published_at": now.isoformat(),
         "collected_at": now.isoformat(),
+        "collection_tier": collection_tier,
         "author_platform_id": None,
         "author_display_name": None,
         "views_count": None,

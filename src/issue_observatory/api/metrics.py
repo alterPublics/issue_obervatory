@@ -178,6 +178,6 @@ def get_metrics_response() -> tuple[bytes, str]:
         A tuple of (body_bytes, content_type_string) suitable for constructing
         a FastAPI ``Response`` object.
     """
-    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest  # noqa: PLC0415
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
     return generate_latest(), CONTENT_TYPE_LATEST

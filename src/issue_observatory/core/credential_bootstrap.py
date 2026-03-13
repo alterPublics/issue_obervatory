@@ -107,10 +107,11 @@ async def bootstrap_credentials_from_env(env: dict[str, str] | None = None) -> i
 
     # Deferred imports to avoid circular dependency issues.
     try:
-        from issue_observatory.config.settings import get_settings  # noqa: PLC0415
-        from issue_observatory.core.database import AsyncSessionLocal  # noqa: PLC0415
-        from issue_observatory.core.models.credentials import ApiCredential  # noqa: PLC0415
-        from sqlalchemy import select  # noqa: PLC0415
+        from sqlalchemy import select
+
+        from issue_observatory.config.settings import get_settings
+        from issue_observatory.core.database import AsyncSessionLocal
+        from issue_observatory.core.models.credentials import ApiCredential
     except ImportError as exc:
         logger.warning(
             "credential_bootstrap_import_failed",
@@ -149,7 +150,7 @@ async def bootstrap_credentials_from_env(env: dict[str, str] | None = None) -> i
                     ApiCredential.is_active.is_(True),
                 )
             )
-            if existing.scalar_one_or_none() is not None:
+            if existing.scalars().first() is not None:
                 logger.debug(
                     "credential_bootstrap_skip_existing",
                     platform=platform,
@@ -220,7 +221,7 @@ def _encrypt_payload(payload: dict[str, str], encryption_key: str) -> Any | None
         or ``None`` if encryption failed.
     """
     try:
-        from cryptography.fernet import Fernet  # noqa: PLC0415
+        from cryptography.fernet import Fernet
 
         fernet = Fernet(encryption_key.encode("utf-8") if isinstance(encryption_key, str) else encryption_key)
         plaintext = json.dumps(payload)

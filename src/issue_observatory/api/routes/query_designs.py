@@ -39,7 +39,7 @@ Note on actor synchronization (IP2-007):
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Optional
+from typing import Annotated
 
 import structlog
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, status
@@ -56,11 +56,11 @@ from issue_observatory.api.dependencies import (
     ownership_guard,
 )
 from issue_observatory.arenas.registry import list_arenas
+from issue_observatory.config.tiers import Tier
 from issue_observatory.core.database import get_db
 from issue_observatory.core.models.actors import Actor, ActorListMember
 from issue_observatory.core.models.query_design import ActorList, QueryDesign, SearchTerm
 from issue_observatory.core.models.users import User
-from issue_observatory.config.tiers import Tier
 from issue_observatory.core.schemas.query_design import (
     QueryDesignCreate,
     QueryDesignRead,
@@ -122,7 +122,7 @@ async def list_query_designs(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     pagination: Annotated[PaginationParams, Depends(get_pagination)],
-    is_active: Optional[bool] = None,
+    is_active: bool | None = None,
 ) -> list[QueryDesign]:
     """List query designs owned by the current user.
 
@@ -202,6 +202,7 @@ async def create_query_design(
     db.add(design)
     await db.flush()  # populate design.id before inserting terms
 
+    seen_keys: set[tuple[str, str | None]] = set()
     for term_data in payload.search_terms:
         # Derive group_id from group_label if not explicitly provided
         # (same logic as the form-based and bulk term endpoints).
@@ -213,6 +214,15 @@ async def create_query_design(
                 resolved_group_id = uuid.uuid5(design.id, resolved_group_label.lower())
         else:
             resolved_group_label = None
+
+        # Skip duplicates within the same payload.
+        dedup_key = (
+            term_data.term.strip(),
+            str(resolved_group_id) if resolved_group_id else None,
+        )
+        if dedup_key in seen_keys:
+            continue
+        seen_keys.add(dedup_key)
 
         term = SearchTerm(
             query_design_id=design.id,
@@ -236,12 +246,12 @@ async def create_query_design_form(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     name: Annotated[str, Form()],
-    description: Annotated[Optional[str], Form()] = None,
+    description: Annotated[str | None, Form()] = None,
     default_tier: Annotated[str, Form()] = "free",
     language: Annotated[str, Form()] = "da",
     locale_country: Annotated[str, Form()] = "dk",
     visibility: Annotated[str, Form()] = "private",
-    project_id: Annotated[Optional[str], Form()] = None,
+    project_id: Annotated[str | None, Form()] = None,
 ) -> RedirectResponse:
     """Create a new query design from a browser form submission.
 
@@ -385,12 +395,12 @@ async def update_query_design_form(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    name: Annotated[Optional[str], Form()] = None,
-    description: Annotated[Optional[str], Form()] = None,
-    default_tier: Annotated[Optional[str], Form()] = None,
-    language: Annotated[Optional[str], Form()] = None,
-    locale_country: Annotated[Optional[str], Form()] = None,
-    visibility: Annotated[Optional[str], Form()] = None,
+    name: Annotated[str | None, Form()] = None,
+    description: Annotated[str | None, Form()] = None,
+    default_tier: Annotated[str | None, Form()] = None,
+    language: Annotated[str | None, Form()] = None,
+    locale_country: Annotated[str | None, Form()] = None,
+    visibility: Annotated[str | None, Form()] = None,
 ) -> RedirectResponse:
     """Update a query design from a browser form submission.
 
@@ -549,6 +559,7 @@ async def clone_query_design(
     # Create the cloned QueryDesign.
     clone = QueryDesign(
         owner_id=current_user.id,
+        project_id=original.project_id,
         name=f"{original.name} (copy)",
         description=original.description,
         visibility="private",
@@ -743,9 +754,9 @@ async def add_search_term(
     current_user: Annotated[User, Depends(get_current_active_user)],
     term: Annotated[str, Form()],
     term_type: Annotated[str, Form()] = "keyword",
-    group_label: Annotated[Optional[str], Form()] = None,
-    target_arenas: Annotated[Optional[str], Form()] = None,
-    translations: Annotated[Optional[str], Form()] = None,
+    group_label: Annotated[str | None, Form()] = None,
+    target_arenas: Annotated[str | None, Form()] = None,
+    translations: Annotated[str | None, Form()] = None,
 ) -> HTMLResponse:
     """Add a search term to an existing query design.
 
@@ -781,7 +792,7 @@ async def add_search_term(
         HTTPException 403: If the caller is not the owner (and not admin).
         HTTPException 422: If ``translations`` is provided but is not valid JSON.
     """
-    import json  # noqa: PLC0415
+    import json
 
     term = term.strip()
     if not term:
@@ -836,6 +847,25 @@ async def add_search_term(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Invalid translations JSON: {exc}",
             ) from exc
+
+    # Duplicate guard: skip if an identical (term, group_id) already exists.
+    existing = (
+        await db.execute(
+            select(SearchTerm.id).where(
+                SearchTerm.query_design_id == design_id,
+                SearchTerm.term == term,
+                SearchTerm.group_id.is_(resolved_group_id)
+                if resolved_group_id is None
+                else SearchTerm.group_id == resolved_group_id,
+                SearchTerm.parent_term_id.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Term {term!r} already exists in this query design.",
+        )
 
     new_term = SearchTerm(
         query_design_id=design_id,
@@ -918,7 +948,22 @@ async def add_search_terms_bulk(
                     ),
                 )
 
+    # Load existing terms for duplicate detection.
+    existing_rows = (
+        await db.execute(
+            select(SearchTerm.term, SearchTerm.group_id).where(
+                SearchTerm.query_design_id == design_id,
+                SearchTerm.parent_term_id.is_(None),
+            )
+        )
+    ).all()
+    existing_keys: set[tuple[str, str | None]] = {
+        (row.term, str(row.group_id) if row.group_id else None)
+        for row in existing_rows
+    }
+
     new_terms: list[SearchTerm] = []
+    skipped = 0
     for term_data in terms_data:
         # Strip and validate term text.
         term_text = term_data.term.strip()
@@ -940,6 +985,13 @@ async def add_search_terms_bulk(
             resolved_group_label = None
             resolved_group_id = None
 
+        # Skip duplicates (matching term text + group_id).
+        dedup_key = (term_text, str(resolved_group_id) if resolved_group_id else None)
+        if dedup_key in existing_keys:
+            skipped += 1
+            continue
+        existing_keys.add(dedup_key)
+
         # Construct the SearchTerm ORM instance.
         new_term = SearchTerm(
             query_design_id=design_id,
@@ -952,6 +1004,13 @@ async def add_search_terms_bulk(
             is_active=True,
         )
         new_terms.append(new_term)
+
+    if skipped:
+        logger.info(
+            "search_terms_bulk_skipped_duplicates",
+            design_id=str(design_id),
+            skipped=skipped,
+        )
 
     # Bulk insert all terms atomically.
     db.add_all(new_terms)
@@ -1020,6 +1079,52 @@ async def remove_search_term(
     return HTMLResponse(content="", status_code=status.HTTP_200_OK)
 
 
+@router.delete(
+    "/{design_id:uuid}/terms",
+    status_code=status.HTTP_200_OK,
+    response_model=None,
+)
+async def remove_all_search_terms(
+    design_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> HTMLResponse:
+    """Remove all search terms from a query design.
+
+    Performs a bulk hard delete of every ``SearchTerm`` row belonging to the
+    design.  Returns an empty ``#terms-list`` container so HTMX can swap the
+    list to its empty state.
+
+    Args:
+        design_id: UUID of the parent query design.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Raises:
+        HTTPException 404: If the design does not exist.
+        HTTPException 403: If the caller is not the owner (and not admin).
+    """
+    from sqlalchemy import delete as sa_delete
+
+    design = await _get_design_or_404(design_id, db)
+    ownership_guard(design.owner_id, current_user)
+
+    result = await db.execute(
+        sa_delete(SearchTerm).where(SearchTerm.query_design_id == design_id)
+    )
+    await db.commit()
+    deleted = result.rowcount or 0
+    logger.info(
+        "search_terms_removed_all",
+        design_id=str(design_id),
+        count=deleted,
+    )
+    return HTMLResponse(
+        content='<ul class="space-y-1.5" id="terms-list"></ul>',
+        status_code=status.HTTP_200_OK,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Arena configuration
 # ---------------------------------------------------------------------------
@@ -1066,7 +1171,7 @@ class ArenaConfigResponse(BaseModel):
     arenas: list[ArenaConfigEntry]
 
 
-def _raw_config_to_response(raw: Optional[dict]) -> ArenaConfigResponse:
+def _raw_config_to_response(raw: dict | None) -> ArenaConfigResponse:
     """Convert a raw ``arenas_config`` JSONB dict to ``ArenaConfigResponse``.
 
     The stored format written by POST is ``{"arenas": [...]}`` — a list of
@@ -1087,9 +1192,11 @@ def _raw_config_to_response(raw: Optional[dict]) -> ArenaConfigResponse:
         entries = [ArenaConfigEntry(**item) for item in raw["arenas"]]
     else:
         # Legacy: {"arena_id": "tier_string", ...}
+        # Skip source-list config entries (dicts/lists) — only process simple tier strings.
         entries = [
             ArenaConfigEntry(id=arena_id, enabled=True, tier=tier_str)
             for arena_id, tier_str in raw.items()
+            if isinstance(tier_str, str)
         ]
     return ArenaConfigResponse(arenas=entries)
 
@@ -1962,7 +2069,7 @@ async def get_volume_spike_alerts(
             is not an admin user).
         HTTPException 422: If ``days`` is not a positive integer.
     """
-    from issue_observatory.analysis.alerting import (  # noqa: PLC0415
+    from issue_observatory.analysis.alerting import (
         fetch_recent_volume_spikes,
     )
 
@@ -2041,7 +2148,7 @@ async def discover_rss_feeds(
         HTTPException 500: If feed discovery fails due to a connection error
             or timeout.
     """
-    from issue_observatory.arenas.rss_feeds.feed_discovery import (  # noqa: PLC0415
+    from issue_observatory.arenas.rss_feeds.feed_discovery import (
         discover_feeds,
     )
 
@@ -2090,7 +2197,7 @@ async def suggest_subreddits(
     design_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    query: Optional[str] = None,
+    query: str | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
     """Suggest Reddit subreddits relevant to a query design's search terms.
@@ -2133,14 +2240,11 @@ async def suggest_subreddits(
         HTTPException 500: If the Reddit API call fails due to rate limiting,
             authentication failure, or other API errors.
     """
-    from issue_observatory.arenas.reddit.collector import (  # noqa: PLC0415
+    from issue_observatory.arenas.reddit.collector import (
         RedditCollector,
     )
-    from issue_observatory.arenas.reddit.subreddit_suggestion import (  # noqa: PLC0415
+    from issue_observatory.arenas.reddit.subreddit_suggestion import (
         suggest_subreddits as suggest_subreddits_impl,
-    )
-    from issue_observatory.core.credential_pool import (  # noqa: PLC0415
-        CredentialPool,
     )
 
     if limit < 1 or limit > 100:
@@ -2169,7 +2273,7 @@ async def suggest_subreddits(
     # Use the RedditCollector's credential acquisition logic
     collector = RedditCollector(credential_pool=None)  # Env-var fallback
     try:
-        cred = await collector._acquire_credential()  # noqa: SLF001
+        cred = await collector._acquire_credential()
     except Exception as exc:
         logger.warning(
             "suggest_subreddits: failed to acquire Reddit credential: %s",
@@ -2181,7 +2285,7 @@ async def suggest_subreddits(
         ) from exc
 
     try:
-        reddit = await collector._build_reddit_client(cred)  # noqa: SLF001
+        reddit = await collector._build_reddit_client(cred)
         async with reddit:
             suggestions = await suggest_subreddits_impl(reddit, query, limit)
 

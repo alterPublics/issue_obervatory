@@ -6,19 +6,17 @@ HTTP error handling, and successful fetches using mocked httpx responses.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
 import respx
 
 from issue_observatory.scraper.http_fetcher import (
-    FetchResult,
     _is_binary_content_type,
     _is_js_shell,
     fetch_url,
 )
-
 
 # ---------------------------------------------------------------------------
 # Unit tests for helper functions

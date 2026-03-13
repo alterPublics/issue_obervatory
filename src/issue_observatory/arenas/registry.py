@@ -188,31 +188,21 @@ ARENA_DESCRIPTIONS: dict[str, str] = {
 ARENA_CUSTOM_CONFIG: dict[str, list[dict[str, str]]] = {
     "facebook": [
         {
-            "field": "actor_only_notice",
-            "label": "Actor-Only Collection",
-            "type": "notice",
-            "placeholder": "",
-            "help": (
-                "Facebook does not support keyword search. "
-                "Collection is based entirely on actors (pages and groups) "
-                "that you have added to the Actor Directory. "
-                "Add Facebook pages or groups there before launching a collection."
-            ),
+            "field": "custom_pages",
+            "label": "Custom Pages",
+            "type": "list",
+            "placeholder": "https://www.facebook.com/pagename",
+            "help": "Facebook pages, groups, or profiles to collect from. Enter full Facebook URLs. This is an actor-only arena — no keyword search is available.",
             "example": "https://www.facebook.com/drnyheder",
         }
     ],
     "instagram": [
         {
-            "field": "actor_only_notice",
-            "label": "Actor-Only Collection",
-            "type": "notice",
-            "placeholder": "",
-            "help": (
-                "Instagram does not support keyword search. "
-                "Collection is based entirely on actors (profiles) "
-                "that you have added to the Actor Directory. "
-                "Add Instagram profiles there before launching a collection."
-            ),
+            "field": "custom_profiles",
+            "label": "Custom Profiles",
+            "type": "list",
+            "placeholder": "https://www.instagram.com/username",
+            "help": "Instagram profiles to collect from. Enter full Instagram URLs. This is an actor-only arena — no keyword search is available.",
             "example": "https://www.instagram.com/drnyheder",
         }
     ],
@@ -274,6 +264,66 @@ ARENA_CUSTOM_CONFIG: dict[str, list[dict[str, str]]] = {
             "placeholder": "Article Title",
             "help": "Wikipedia article titles to monitor for editorial attention signals (revisions, talk page activity, pageviews). Use exact titles including capitalization.",
             "example": "Folkeskole",
+        }
+    ],
+    "bluesky": [
+        {
+            "field": "custom_accounts",
+            "label": "Custom Accounts",
+            "type": "list",
+            "placeholder": "username.bsky.social",
+            "help": "Bluesky accounts to collect from in addition to keyword search. Enter handles (e.g. user.bsky.social) or DIDs.",
+            "example": "politiken.bsky.social",
+        }
+    ],
+    "x_twitter": [
+        {
+            "field": "custom_accounts",
+            "label": "Custom Accounts",
+            "type": "list",
+            "placeholder": "username (without @)",
+            "help": "X/Twitter accounts to collect from in addition to keyword search. Enter usernames without the @ symbol.",
+            "example": "daborsen",
+        }
+    ],
+    "youtube": [
+        {
+            "field": "custom_channels",
+            "label": "Custom Channels",
+            "type": "list",
+            "placeholder": "UCxxxxx",
+            "help": "YouTube channels to collect from in addition to keyword search. Enter channel IDs (starting with UC) or channel URLs.",
+            "example": "UCddiUEpeqJcYeBxX1IVBKvQ",
+        }
+    ],
+    "tiktok": [
+        {
+            "field": "custom_accounts",
+            "label": "Custom Accounts",
+            "type": "list",
+            "placeholder": "@username",
+            "help": "TikTok accounts to collect from in addition to keyword search. Enter usernames with or without the @ prefix.",
+            "example": "@dr_dk",
+        }
+    ],
+    "threads": [
+        {
+            "field": "custom_accounts",
+            "label": "Custom Accounts",
+            "type": "list",
+            "placeholder": "username",
+            "help": "Threads accounts to collect from. Enter usernames without the @ symbol.",
+            "example": "politiken",
+        }
+    ],
+    "gab": [
+        {
+            "field": "custom_accounts",
+            "label": "Custom Accounts",
+            "type": "list",
+            "placeholder": "username",
+            "help": "Gab accounts to collect from in addition to keyword search. Enter usernames.",
+            "example": "username",
         }
     ],
 }
@@ -384,6 +434,12 @@ def list_arenas() -> list[dict]:  # type: ignore[type-arg]
         - ``supports_term_search`` (bool): Whether the arena supports keyword-
           based collection via ``collect_by_terms()``.  ``False`` for actor-only
           arenas such as Facebook and Instagram.
+        - ``supports_actor_collection`` (bool): Whether the arena implements
+          ``collect_by_actors()`` without raising ``NotImplementedError``.
+          ``True`` for arenas that can accept a researcher-curated source list.
+        - ``source_list_config_key`` (str | None): The ``arenas_config`` JSONB
+          sub-key for this arena's source list (e.g. ``"custom_accounts"``),
+          or ``None`` if no source list is supported.
         - ``description`` (str): One-line human-readable description from
           :data:`ARENA_DESCRIPTIONS`, looked up first by ``platform_name``
           then by ``arena_name`` (empty string if neither is defined).
@@ -405,6 +461,8 @@ def list_arenas() -> list[dict]:  # type: ignore[type-arg]
                 else "recent"  # default fallback for arenas not yet updated
             ),
             "supports_term_search": getattr(cls, "supports_term_search", True),
+            "supports_actor_collection": getattr(cls, "supports_actor_collection", False),
+            "source_list_config_key": getattr(cls, "source_list_config_key", None),
             "description": (
                 ARENA_DESCRIPTIONS.get(cls.platform_name)  # type: ignore[attr-defined]
                 or ARENA_DESCRIPTIONS.get(cls.arena_name, "")  # type: ignore[attr-defined]
@@ -473,7 +531,7 @@ def autodiscover() -> None:
             try:
                 importlib.import_module(module_name)
                 logger.debug("Autodiscovered arena module: %s", module_name)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.error(
                     "Failed to import arena collector module '%s': %s",
                     module_name,

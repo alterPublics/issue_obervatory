@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
@@ -84,7 +84,7 @@ class ZeeschuimerImport(Base, TimestampMixin):
         nullable=False,
         index=True,
     )
-    query_design_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    query_design_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("query_designs.id", ondelete="SET NULL"),
         nullable=True,
@@ -122,24 +122,24 @@ class ZeeschuimerImport(Base, TimestampMixin):
         server_default=sa.text("0"),
         comment="Number of content_records created (after deduplication)",
     )
-    started_at: Mapped[Optional[datetime]] = mapped_column(
+    started_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )
-    completed_at: Mapped[Optional[datetime]] = mapped_column(
+    completed_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,
     )
-    error_message: Mapped[Optional[str]] = mapped_column(
+    error_message: Mapped[str | None] = mapped_column(
         sa.Text,
         nullable=True,
     )
-    file_path: Mapped[Optional[str]] = mapped_column(
+    file_path: Mapped[str | None] = mapped_column(
         sa.String(500),
         nullable=True,
         comment="Path to the uploaded NDJSON file (deleted after processing)",
     )
-    import_metadata: Mapped[Optional[dict]] = mapped_column(
+    import_metadata: Mapped[dict | None] = mapped_column(
         "metadata",
         JSONB,
         nullable=True,
@@ -153,7 +153,7 @@ class ZeeschuimerImport(Base, TimestampMixin):
         foreign_keys=[initiated_by],
         back_populates="zeeschuimer_imports",
     )
-    query_design: Mapped[Optional[QueryDesign]] = relationship(
+    query_design: Mapped[QueryDesign | None] = relationship(
         "QueryDesign",
         foreign_keys=[query_design_id],
         back_populates="zeeschuimer_imports",

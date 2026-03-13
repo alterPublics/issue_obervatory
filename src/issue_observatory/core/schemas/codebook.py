@@ -29,10 +29,8 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 # ---------------------------------------------------------------------------
 # Request schemas
@@ -61,9 +59,9 @@ class CodebookEntryCreate(BaseModel):
 
     code: str = Field(..., min_length=1, max_length=100)
     label: str = Field(..., min_length=1, max_length=200)
-    description: Optional[str] = Field(default=None)
-    category: Optional[str] = Field(default=None, max_length=100)
-    query_design_id: Optional[uuid.UUID] = Field(default=None)
+    description: str | None = Field(default=None)
+    category: str | None = Field(default=None, max_length=100)
+    query_design_id: uuid.UUID | None = Field(default=None)
 
 
 class CodebookEntryUpdate(BaseModel):
@@ -83,10 +81,10 @@ class CodebookEntryUpdate(BaseModel):
         category: New category grouping.
     """
 
-    code: Optional[str] = Field(default=None, min_length=1, max_length=100)
-    label: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    description: Optional[str] = Field(default=None)
-    category: Optional[str] = Field(default=None, max_length=100)
+    code: str | None = Field(default=None, min_length=1, max_length=100)
+    label: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None)
+    category: str | None = Field(default=None, max_length=100)
 
 
 # ---------------------------------------------------------------------------
@@ -115,10 +113,10 @@ class CodebookEntryRead(BaseModel):
     id: uuid.UUID
     code: str
     label: str
-    description: Optional[str]
-    category: Optional[str]
-    query_design_id: Optional[uuid.UUID]
-    created_by: Optional[uuid.UUID]
+    description: str | None
+    category: str | None
+    query_design_id: uuid.UUID | None
+    created_by: uuid.UUID | None
     created_at: datetime
     updated_at: datetime
 
@@ -134,4 +132,4 @@ class CodebookListResponse(BaseModel):
 
     entries: list[CodebookEntryRead]
     total: int
-    query_design_id: Optional[uuid.UUID] = None
+    query_design_id: uuid.UUID | None = None

@@ -42,8 +42,6 @@ import logging
 import time
 from typing import Any
 
-from celery.exceptions import SoftTimeLimitExceeded
-
 from issue_observatory.arenas.google_search.collector import GoogleSearchCollector
 from issue_observatory.config.settings import get_settings
 from issue_observatory.core.credential_pool import CredentialPool
@@ -85,23 +83,24 @@ def _update_task_status(
         error_message: Error description (for ``"failed"`` updates).
     """
     try:
-        from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+        from issue_observatory.core.database import get_sync_session
 
         with get_sync_session() as session:
-            from sqlalchemy import text  # noqa: PLC0415
+            from sqlalchemy import text
 
             session.execute(
                 text(
                     """
                     UPDATE collection_tasks
                     SET status = :status,
-                        records_collected = :records_collected,
+                        records_collected = GREATEST(records_collected, :records_collected),
                         error_message = :error_message,
                         completed_at = CASE WHEN :status IN ('completed', 'failed')
                                             THEN NOW() ELSE completed_at END,
                         started_at   = CASE WHEN :status = 'running' AND started_at IS NULL
                                             THEN NOW() ELSE started_at END
                     WHERE collection_run_id = :run_id AND arena = :arena
+                        AND status != 'cancelled'
                     """
                 ),
                 {
@@ -113,7 +112,7 @@ def _update_task_status(
                 },
             )
             session.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "google_search: failed to update collection_tasks status to '%s': %s",
             status,
@@ -134,8 +133,7 @@ def _update_task_status(
     retry_backoff=True,
     retry_backoff_max=300,  # cap backoff at 5 minutes
     acks_late=True,
-    soft_time_limit=600,
-    time_limit=720,
+    # No fixed time limit — records persist incrementally and stale_run_cleanup handles stuck tasks.
 )
 def google_search_collect_terms(
     self: Any,
@@ -179,178 +177,197 @@ def google_search_collect_terms(
         ArenaCollectionError: Marks the task as FAILED in Celery.
         NoCredentialAvailableError: Marks the task as FAILED in Celery.
     """
-    from issue_observatory.arenas.base import Tier  # noqa: PLC0415
+    from issue_observatory.arenas.base import Tier
 
     _settings = get_settings()
     _redis_url = _settings.redis_url
     _task_start = time.monotonic()
 
+    logger.info(
+        "google_search: collect_by_terms started — run=%s terms=%d tier=%s",
+        collection_run_id,
+        len(terms),
+        tier,
+    )
+    _update_task_status(collection_run_id, "google_search", "running")
+    # SSE: notify subscribers that this arena task has started.
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="google_search",
+        platform="google",
+        status="running",
+        records_collected=0,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+
     try:
-        logger.info(
-            "google_search: collect_by_terms started — run=%s terms=%d tier=%s",
-            collection_run_id,
-            len(terms),
-            tier,
-        )
-        _update_task_status(collection_run_id, "google_search", "running")
-        # SSE: notify subscribers that this arena task has started.
+        tier_enum = Tier(tier)
+    except ValueError:
+        msg = f"google_search: invalid tier '{tier}'. Valid values: free, medium, premium."
+        logger.error(msg)
+        _update_task_status(collection_run_id, "google_search", "failed", error_message=msg)
+        # SSE: notify subscribers of the failure.
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="google_search",
             platform="google",
-            status="running",
+            status="failed",
             records_collected=0,
-            error_message=None,
+            error_message=msg,
             elapsed_seconds=elapsed_since(_task_start),
         )
+        raise ArenaCollectionError(msg, arena="google_search", platform="google")
 
-        try:
-            tier_enum = Tier(tier)
-        except ValueError:
-            msg = f"google_search: invalid tier '{tier}'. Valid values: free, medium, premium."
-            logger.error(msg)
-            _update_task_status(collection_run_id, "google_search", "failed", error_message=msg)
-            # SSE: notify subscribers of the failure.
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="google_search",
-                platform="google",
-                status="failed",
-                records_collected=0,
-                error_message=msg,
-                elapsed_seconds=elapsed_since(_task_start),
-            )
-            raise ArenaCollectionError(msg, arena="google_search", platform="google")
-
-        if tier_enum == Tier.FREE:
-            logger.warning(
-                "google_search: FREE tier requested — no results available. "
-                "Task completing with 0 records."
-            )
-            _update_task_status(collection_run_id, "google_search", "completed", records_collected=0)
-            # SSE: notify subscribers of the skipped-but-terminal state.
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="google_search",
-                platform="google",
-                status="completed",
-                records_collected=0,
-                error_message=None,
-                elapsed_seconds=elapsed_since(_task_start),
-            )
-            return {
-                "records_collected": 0,
-                "status": "skipped",
-                "arena": "google_search",
-                "tier": tier,
-                "detail": "FREE tier not available for Google Search.",
-            }
-
-        credential_pool = CredentialPool()
-        collector = GoogleSearchCollector(credential_pool=credential_pool)
-
-        # GR-14: make the public-figure ID set available to the collector's
-        # normalize() method so that per-record bypass decisions happen without
-        # an additional DB round-trip at collection time.
-        pf_ids: set[str] = set(public_figure_ids) if public_figure_ids else set()
-        collector.set_public_figure_ids(pf_ids)
-
-        try:
-            records = asyncio.run(
-                collector.collect_by_terms(
-                    terms=terms,
-                    tier=tier_enum,
-                    max_results=None,
-                    language_filter=language_filter,
-                )
-            )
-        except NoCredentialAvailableError as exc:
-            msg = f"google_search: no credential available for tier={tier}: {exc}"
-            logger.error(msg)
-            _update_task_status(collection_run_id, "google_search", "failed", error_message=msg)
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="google_search",
-                platform="google",
-                status="failed",
-                records_collected=0,
-                error_message=msg,
-                elapsed_seconds=elapsed_since(_task_start),
-            )
-            raise
-        except ArenaRateLimitError:
-            # Let autoretry handle it — status stays "running" until retry resolves.
-            logger.warning(
-                "google_search: rate limited on collect_by_terms for run=%s — will retry.",
-                collection_run_id,
-            )
-            raise
-        except ArenaCollectionError as exc:
-            msg = str(exc)
-            logger.error("google_search: collection error for run=%s: %s", collection_run_id, msg)
-            _update_task_status(collection_run_id, "google_search", "failed", error_message=msg)
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="google_search",
-                platform="google",
-                status="failed",
-                records_collected=0,
-                error_message=msg,
-                elapsed_seconds=elapsed_since(_task_start),
-            )
-            raise
-
-        count = len(records)
-
-        # Persist collected records to the database.
-        from issue_observatory.workers._task_helpers import persist_collected_records  # noqa: PLC0415
-
-        inserted, skipped = persist_collected_records(records, collection_run_id, query_design_id)
-        logger.info(
-            "google_search: collect_by_terms completed — run=%s records=%d inserted=%d skipped=%d",
-            collection_run_id,
-            count,
-            inserted,
-            skipped,
+    if tier_enum == Tier.FREE:
+        logger.warning(
+            "google_search: FREE tier requested — no results available. "
+            "Task completing with 0 records."
         )
-        _update_task_status(
-            collection_run_id, "google_search", "completed", records_collected=inserted
-        )
-        # SSE: notify subscribers of successful completion.
+        _update_task_status(collection_run_id, "google_search", "completed", records_collected=0)
+        # SSE: notify subscribers of the skipped-but-terminal state.
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena="google_search",
             platform="google",
             status="completed",
-            records_collected=inserted,
+            records_collected=0,
             error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
-
         return {
-            "records_collected": inserted,
-            "status": "completed",
+            "records_collected": 0,
+            "status": "skipped",
             "arena": "google_search",
             "tier": tier,
+            "detail": "FREE tier not available for Google Search.",
         }
-    except SoftTimeLimitExceeded:
-        logger.error(
-            "google_search: collect_by_terms timed out after 10 minutes — run=%s",
+
+    credential_pool = CredentialPool()
+    collector = GoogleSearchCollector(credential_pool=credential_pool)
+
+    # GR-14: make the public-figure ID set available to the collector's
+    # normalize() method so that per-record bypass decisions happen without
+    # an additional DB round-trip at collection time.
+    pf_ids: set[str] = set(public_figure_ids) if public_figure_ids else set()
+    collector.set_public_figure_ids(pf_ids)
+
+    from issue_observatory.workers._task_helpers import (
+        make_batch_sink,
+        persist_collected_records,
+    )
+
+    sink = make_batch_sink(collection_run_id, query_design_id)
+    collector.configure_batch_persistence(sink=sink, batch_size=100, collection_run_id=collection_run_id)
+
+    from issue_observatory.workers._task_helpers import run_with_tier_fallback
+
+    try:
+        remaining, used_tier = run_with_tier_fallback(
+            collector=collector,
+            collect_method="collect_by_terms",
+            kwargs={
+                "terms": terms,
+                "tier": tier_enum,
+                "max_results": None,
+                "language_filter": language_filter,
+            },
+            requested_tier_str=tier,
+            platform="google_search",
+            task_logger=logger,
+        )
+        tier = used_tier  # update for reporting
+    except NoCredentialAvailableError as exc:
+        msg = f"google_search: no credential available for any supported tier (requested={tier}): {exc}"
+        logger.error(msg)
+        _update_task_status(collection_run_id, "google_search", "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="google_search",
+            platform="google",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
+        )
+        raise
+    except ArenaRateLimitError:
+        # Let autoretry handle it — status stays "running" until retry resolves.
+        logger.warning(
+            "google_search: rate limited on collect_by_terms for run=%s — will retry.",
             collection_run_id,
         )
-        _update_task_status(
-            collection_run_id,
-            "google_search",
-            "failed",
-            error_message="Collection timed out after 10 minutes",
+        raise
+    except ArenaCollectionError as exc:
+        msg = str(exc)
+        logger.error("google_search: collection error for run=%s: %s", collection_run_id, msg)
+        _update_task_status(collection_run_id, "google_search", "failed", error_message=msg)
+        publish_task_update(
+            redis_url=_redis_url,
+            run_id=collection_run_id,
+            arena="google_search",
+            platform="google",
+            status="failed",
+            records_collected=0,
+            error_message=msg,
+            elapsed_seconds=elapsed_since(_task_start),
         )
-        return {"status": "failed", "error": "timeout", "arena": "google_search"}
+        raise
+
+    fallback_inserted, fallback_skipped = 0, 0
+    if remaining:
+        fallback_inserted, fallback_skipped = persist_collected_records(
+            remaining, collection_run_id, query_design_id
+        )
+    inserted = collector.batch_stats["inserted"] + fallback_inserted
+    skipped = collector.batch_stats["skipped"] + fallback_skipped
+
+    # Fallback: if in-memory counters lost track, use the actual DB count.
+    if inserted == 0:
+        from issue_observatory.workers._task_helpers import (
+            count_run_platform_records,
+        )
+
+        db_count = count_run_platform_records(collection_run_id, "google_search")
+        if db_count > 0:
+            logger.info(
+                "google_search: in-memory counter=0 but DB has %d records — using DB count",
+                db_count,
+            )
+            inserted = db_count
+
+    logger.info(
+        "google_search: collect_by_terms completed — run=%s emitted=%d inserted=%d skipped=%d",
+        collection_run_id,
+        collector.batch_stats["emitted"],
+        inserted,
+        skipped,
+    )
+    _update_task_status(
+        collection_run_id, "google_search", "completed", records_collected=inserted
+    )
+    # SSE: notify subscribers of successful completion.
+    publish_task_update(
+        redis_url=_redis_url,
+        run_id=collection_run_id,
+        arena="google_search",
+        platform="google",
+        status="completed",
+        records_collected=inserted,
+        error_message=None,
+        elapsed_seconds=elapsed_since(_task_start),
+    )
+
+    return {
+        "records_collected": inserted,
+        "status": "completed",
+        "arena": "google_search",
+        "tier": tier,
+    }
 
 
 @celery_app.task(

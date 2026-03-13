@@ -39,9 +39,9 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.gab.collector import GabCollector  # noqa: E402
-from issue_observatory.arenas.gab.config import (  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.gab.collector import GabCollector
+from issue_observatory.arenas.gab.config import (
     GAB_ACCOUNT_LOOKUP_ENDPOINT,
     GAB_ACCOUNT_STATUSES_ENDPOINT,
     GAB_HASHTAG_TIMELINE_ENDPOINT,
@@ -49,7 +49,7 @@ from issue_observatory.arenas.gab.config import (  # noqa: E402
     GAB_PUBLIC_TIMELINE_ENDPOINT,
     GAB_SEARCH_ENDPOINT,
 )
-from issue_observatory.core.exceptions import (  # noqa: E402
+from issue_observatory.core.exceptions import (
     ArenaAuthError,
     ArenaRateLimitError,
 )

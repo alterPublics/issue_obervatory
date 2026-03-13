@@ -15,12 +15,11 @@ from __future__ import annotations
 
 import email.utils
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from issue_observatory.arenas.web.url_scraper.config import TRACKING_PARAMS
 from issue_observatory.scraper.content_extractor import ExtractedContent
-
 
 # ---------------------------------------------------------------------------
 # Domain utilities
@@ -40,7 +39,7 @@ def extract_domain(url: str) -> str:
     try:
         netloc = urllib.parse.urlparse(url).netloc.lower()
         return netloc.removeprefix("www.")
-    except Exception:  # noqa: BLE001
+    except Exception:
         return url
 
 
@@ -74,7 +73,7 @@ def normalize_url(url: str) -> str:
         return urllib.parse.urlunparse(
             (parsed.scheme, netloc, path, parsed.params, new_query, "")
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         return url
 
 
@@ -129,10 +128,10 @@ def parse_date_from_trafilatura(html: str, url: str) -> datetime | None:
             for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ"):
                 try:
                     dt = datetime.strptime(date_str, fmt)
-                    return dt.replace(tzinfo=timezone.utc)
+                    return dt.replace(tzinfo=UTC)
                 except ValueError:
                     continue
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return None
 
@@ -151,8 +150,8 @@ def parse_last_modified_header(header_value: str) -> datetime | None:
     """
     try:
         parsed = email.utils.parsedate_to_datetime(header_value)
-        return parsed.astimezone(timezone.utc)
-    except Exception:  # noqa: BLE001
+        return parsed.astimezone(UTC)
+    except Exception:
         return None
 
 
@@ -189,7 +188,7 @@ def resolve_published_at(
         if lm_date is not None:
             return lm_date
 
-    return datetime.now(tz=timezone.utc)
+    return datetime.now(tz=UTC)
 
 
 # ---------------------------------------------------------------------------

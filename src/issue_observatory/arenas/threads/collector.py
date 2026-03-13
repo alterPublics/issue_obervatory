@@ -32,13 +32,15 @@ The Meta Content Library (MCL) tier is stubbed — both collection methods raise
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
-from issue_observatory.arenas.query_builder import any_group_matches_text, build_boolean_query_groups
+from issue_observatory.arenas.query_builder import (
+    any_group_matches_text,
+)
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.threads.config import (
     DEFAULT_DANISH_THREADS_ACCOUNTS,
@@ -90,6 +92,8 @@ class ThreadsCollector(ArenaCollector):
     platform_name: str = "threads"
     supported_tiers: list[Tier] = [Tier.FREE, Tier.MEDIUM]
     temporal_mode: TemporalMode = TemporalMode.RECENT
+    supports_actor_collection: bool = True
+    source_list_config_key: str | None = "custom_accounts"
 
     def __init__(
         self,
@@ -171,15 +175,16 @@ class ThreadsCollector(ArenaCollector):
         credential_id = cred["id"]
         access_token = cred["access_token"]
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         async with self._build_http_client() as client:
             for actor_id in actor_ids:
-                if len(all_records) >= effective_max:
+                if self._total_emitted >= effective_max:
                     break
-                remaining = effective_max - len(all_records)
+                count_before = self._total_emitted
+                remaining = effective_max - self._total_emitted
                 try:
-                    records = await self._fetch_actor_threads(
+                    await self._fetch_actor_threads(
                         client=client,
                         actor_id=actor_id,
                         access_token=access_token,
@@ -188,7 +193,7 @@ class ThreadsCollector(ArenaCollector):
                         date_from=date_from_dt,
                         date_to=date_to_dt,
                     )
-                    all_records.extend(records)
+                    self._flush()
                 except (ArenaRateLimitError, ArenaAuthError):
                     raise
                 except ArenaCollectionError as exc:
@@ -197,16 +202,18 @@ class ThreadsCollector(ArenaCollector):
                         actor_id,
                         exc,
                     )
+                self._record_input_count(actor_id, self._total_emitted - count_before)
 
         if self.credential_pool is not None:
             await self.credential_pool.release(credential_id=credential_id)
 
+        self._flush()
         logger.info(
             "threads: collect_by_actors completed — %d records for %d actors",
-            len(all_records),
+            self._total_emitted,
             len(actor_ids),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     async def collect_by_terms(
         self,
@@ -284,6 +291,8 @@ class ThreadsCollector(ArenaCollector):
         )
 
         # Collect all posts from known accounts, then filter.
+        # collect_by_actors will use a fresh batch state; we capture
+        # the buffered results (unflushed-to-sink) via the return value.
         all_posts = await self.collect_by_actors(
             actor_ids=DEFAULT_DANISH_THREADS_ACCOUNTS,
             tier=Tier.FREE,
@@ -300,23 +309,27 @@ class ThreadsCollector(ArenaCollector):
         else:
             lower_groups = [[t.lower()] for t in terms]
 
-        matched: list[dict[str, Any]] = []
+        # Reset batch state for the filtered result set.
+        self._reset_batch_state()
+        total_posts = len(all_posts)
         for record in all_posts:
             text = (record.get("text_content") or "").lower()
             # Match if at least one AND-group has all its terms present
             # (word-boundary matching to avoid stopword false positives).
             if any_group_matches_text(lower_groups, text):
-                matched.append(record)
-            if len(matched) >= effective_max:
+                self._emit(record)
+                self._flush()
+            if self._total_emitted >= effective_max:
                 break
 
+        self._flush()
         logger.info(
             "threads: collect_by_terms — %d matches from %d posts across %d accounts",
-            len(matched),
-            len(all_posts),
+            self._total_emitted,
+            total_posts,
             len(DEFAULT_DANISH_THREADS_ACCOUNTS),
         )
-        return matched
+        return list(self._batch_buffer)
 
     def get_tier_config(self, tier: Tier) -> TierConfig | None:
         """Return the tier configuration for the Threads arena.
@@ -404,7 +417,7 @@ class ThreadsCollector(ArenaCollector):
             ``arena``, ``platform``, ``checked_at``, and optionally
             ``username`` or ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -506,7 +519,7 @@ class ThreadsCollector(ArenaCollector):
         try:
             expiry_dt = datetime.fromisoformat(expiry_str)
             if expiry_dt.tzinfo is None:
-                expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
+                expiry_dt = expiry_dt.replace(tzinfo=UTC)
         except (ValueError, TypeError) as exc:
             logger.warning(
                 "threads: invalid expiry value '%s' for credential '%s': %s",
@@ -516,7 +529,7 @@ class ThreadsCollector(ArenaCollector):
             )
             return False
 
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         refresh_threshold = expiry_dt - timedelta(days=TOKEN_REFRESH_DAYS)
 
         if now < refresh_threshold:
@@ -722,13 +735,14 @@ class ThreadsCollector(ArenaCollector):
         max_results: int,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> int:
         """Paginate through threads for a single actor.
 
         Uses cursor-based pagination via ``paging.cursors.after``.  Date
-        filtering is applied client-side.  Pagination stops early when a post
-        timestamp falls before ``date_from`` (posts are returned in
-        reverse-chronological order).
+        filtering is applied client-side.  Records are emitted via
+        ``self._emit()`` during pagination for incremental persistence.
+        Pagination stops early when a post timestamp falls before
+        ``date_from`` (posts are returned in reverse-chronological order).
 
         Args:
             client: Shared HTTP client.
@@ -740,16 +754,16 @@ class ThreadsCollector(ArenaCollector):
             date_to: Latest post date filter (inclusive).
 
         Returns:
-            List of normalized records within the date range.
+            Count of emitted records.
         """
-        records: list[dict[str, Any]] = []
+        collected = 0
         cursor: str | None = None
         endpoint = f"{THREADS_API_BASE}/{actor_id}/threads"
 
-        while len(records) < max_results:
+        while collected < max_results:
             params: dict[str, Any] = {
                 "fields": THREADS_FIELDS,
-                "limit": min(THREADS_PAGE_SIZE, max_results - len(records)),
+                "limit": min(THREADS_PAGE_SIZE, max_results - collected),
             }
             if cursor:
                 params["after"] = cursor
@@ -780,9 +794,10 @@ class ThreadsCollector(ArenaCollector):
                 if published_at and date_to and published_at > date_to:
                     continue
 
-                if len(records) >= max_results:
+                if collected >= max_results:
                     break
-                records.append(self.normalize(item))
+                self._emit(self.normalize(item))
+                collected += 1
 
             # Advance cursor.
             paging = data.get("paging", {})
@@ -793,7 +808,7 @@ class ThreadsCollector(ArenaCollector):
                 break
             cursor = next_cursor
 
-        return records
+        return collected
 
 
 # ---------------------------------------------------------------------------
@@ -814,7 +829,7 @@ def _parse_datetime(value: datetime | str | None) -> datetime | None:
         return None
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
+            return value.replace(tzinfo=UTC)
         return value
     if isinstance(value, str):
         value = value.strip()
@@ -829,7 +844,7 @@ def _parse_datetime(value: datetime | str | None) -> datetime | None:
             try:
                 dt = datetime.strptime(value, fmt)
                 if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
+                    dt = dt.replace(tzinfo=UTC)
                 return dt
             except ValueError:
                 continue

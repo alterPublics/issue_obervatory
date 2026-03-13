@@ -38,7 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import redis
@@ -57,22 +57,24 @@ from issue_observatory.workers._task_helpers import (
     create_collection_tasks,
     enforce_retention,
     fetch_actor_ids_for_design_and_platform,
+    fetch_actor_ids_for_project_and_platform,
     fetch_batch_run_details,
     fetch_designs_with_prep,
-    fetch_live_tracking_designs,
+    fetch_posts_for_comment_collection,
+    fetch_project_comments_config,
     fetch_public_figure_ids_for_design,
+    fetch_public_figure_ids_for_project,
     fetch_resolved_terms_for_arena,
-    fetch_search_terms_for_arena,
     fetch_stale_runs,
     fetch_unsettled_reservations,
-    get_user_credit_balance,
-    get_user_email,
+    filter_new_actors,
+    filter_new_terms,
     mark_runs_failed,
     mark_task_failed,
+    read_source_list_from_arenas_config,
     set_run_status,
     settle_single_reservation,
     suspend_run,
-    update_task_celery_id,
 )
 from issue_observatory.workers.celery_app import celery_app
 
@@ -89,10 +91,9 @@ email_service = get_email_service()
 
 
 _INDEXING_LAG_HOURS: dict[str, int] = {
-    # TikTok Research API: "New videos take up to 48 hours to be added to the
-    # search engine."  Extend date_from back by this amount so that recently
-    # indexed content is captured even when collected_at is recent.
-    "tiktok": 48,
+    # TikTok Research API: nominal 48-hour indexing lag, but empirically
+    # observed at 8-10 days (March 2026).  240 hours = 10 days.
+    "tiktok": 240,
 }
 
 
@@ -120,7 +121,7 @@ def _compute_live_date_bounds(
         Tuple of (date_from_iso, date_to_iso).
     """
     lag_hours = _INDEXING_LAG_HOURS.get(arena_name, 0)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     last_collected = last_collected_by_platform.get(arena_name)
     if last_collected is not None:
@@ -246,8 +247,10 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
             )
 
         # --- Dispatch arena tasks ---
-        from issue_observatory.arenas.registry import (  # noqa: PLC0415
+        from issue_observatory.arenas.registry import (
             get_arena as _get_arena,
+        )
+        from issue_observatory.arenas.registry import (
             get_task_module as _gtm,
         )
 
@@ -352,6 +355,58 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                         arena=arena_name,
                         error=str(dispatch_exc),
                     )
+
+                # Also dispatch collect_by_actors for dual-mode arenas with a
+                # source list (e.g. Telegram custom_channels).
+                try:
+                    _config_key = getattr(_collector_cls, "source_list_config_key", None)
+                except (KeyError, AttributeError):
+                    _config_key = None
+
+                if _config_key and getattr(_collector_cls, "supports_actor_collection", False):
+                    _source_list = read_source_list_from_arenas_config(
+                        raw_arenas_config, arena_name, _config_key
+                    )
+                    if _source_list:
+                        _chunk_size = getattr(
+                            _collector_cls, "source_list_daily_chunk_size", None
+                        )
+                        if _chunk_size and len(_source_list) > _chunk_size:
+                            _source_list = _apply_daily_chunking(
+                                _source_list, _chunk_size, task_log, arena_name
+                            )
+
+                        _actors_task = f"{_task_module}.collect_by_actors"
+                        try:
+                            celery_app.send_task(
+                                _actors_task,
+                                kwargs={
+                                    "query_design_id": str(design_id),
+                                    "collection_run_id": str(run_id),
+                                    "actor_ids": _source_list,
+                                    "tier": tier,
+                                    "public_figure_ids": public_figure_ids,
+                                    "date_from": date_from,
+                                    "date_to": date_to,
+                                },
+                                queue="celery",
+                            )
+                            task_log.info(
+                                "trigger_daily_collection: dispatched dual-mode actor task",
+                                arena=arena_name,
+                                tier=tier,
+                                task_name=_actors_task,
+                                actors_count=len(_source_list),
+                                date_from=date_from,
+                                date_to=date_to,
+                            )
+                        except Exception as actor_dispatch_exc:
+                            task_log.error(
+                                "trigger_daily_collection: dual-mode actor dispatch failed",
+                                arena=arena_name,
+                                error=str(actor_dispatch_exc),
+                            )
+
         dispatched += 1
 
     summary = {
@@ -361,7 +416,7 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
     }
     log.info("trigger_daily_collection: complete", **summary)
     try:
-        from issue_observatory.api.metrics import (  # noqa: PLC0415
+        from issue_observatory.api.metrics import (
             celery_task_duration_seconds,
             celery_tasks_total,
         )
@@ -371,7 +426,7 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
         celery_task_duration_seconds.labels(
             task_name="trigger_daily_collection"
         ).observe(time.perf_counter() - _task_start)
-    except Exception as _metrics_exc:  # noqa: BLE001
+    except Exception as _metrics_exc:
         _stdlib_logger.debug(
             "trigger_daily_collection: metrics recording failed: %s", _metrics_exc
         )
@@ -384,7 +439,7 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
 
 
 @celery_app.task(name="issue_observatory.workers.tasks.health_check_all_arenas")
-def health_check_all_arenas() -> dict[str, Any]:  # noqa: PLR0912
+def health_check_all_arenas() -> dict[str, Any]:
     """Dispatch health-check tasks for all registered arenas and cache results.
 
     For each arena in the registry, dispatches the arena-specific Celery
@@ -401,7 +456,7 @@ def health_check_all_arenas() -> dict[str, Any]:  # noqa: PLR0912
     Returns:
         Dict with ``arenas_checked`` count and list of arena names dispatched.
     """
-    from issue_observatory.arenas.registry import autodiscover, list_arenas  # noqa: PLC0415
+    from issue_observatory.arenas.registry import autodiscover, list_arenas
 
     _task_start = time.perf_counter()
     log = logger.bind(task="health_check_all_arenas")
@@ -490,7 +545,7 @@ def health_check_all_arenas() -> dict[str, Any]:  # noqa: PLR0912
     summary = {"arenas_checked": len(checked_arenas), "arenas": checked_arenas}
     log.info("health_check_all_arenas: complete", **summary)
     try:
-        from issue_observatory.api.metrics import (  # noqa: PLC0415
+        from issue_observatory.api.metrics import (
             celery_task_duration_seconds,
             celery_tasks_total,
         )
@@ -500,7 +555,7 @@ def health_check_all_arenas() -> dict[str, Any]:  # noqa: PLR0912
         celery_task_duration_seconds.labels(
             task_name="health_check_all_arenas"
         ).observe(time.perf_counter() - _task_start)
-    except Exception as _metrics_exc:  # noqa: BLE001
+    except Exception as _metrics_exc:
         _stdlib_logger.debug(
             "health_check_all_arenas: metrics recording failed: %s", _metrics_exc
         )
@@ -623,7 +678,7 @@ def settle_pending_credits() -> dict[str, Any]:
     summary = {"settled_count": settled_count, "error_count": error_count}
     log.info("settle_pending_credits: complete", **summary)
     try:
-        from issue_observatory.api.metrics import (  # noqa: PLC0415
+        from issue_observatory.api.metrics import (
             celery_task_duration_seconds,
             celery_tasks_total,
         )
@@ -633,7 +688,7 @@ def settle_pending_credits() -> dict[str, Any]:
         celery_task_duration_seconds.labels(
             task_name="settle_pending_credits"
         ).observe(time.perf_counter() - _task_start)
-    except Exception as _metrics_exc:  # noqa: BLE001
+    except Exception as _metrics_exc:
         _stdlib_logger.debug(
             "settle_pending_credits: metrics recording failed: %s", _metrics_exc
         )
@@ -691,7 +746,7 @@ def cleanup_stale_runs() -> dict[str, Any]:
     summary = {"runs_failed": runs_failed}
     log.info("cleanup_stale_runs: complete", **summary)
     try:
-        from issue_observatory.api.metrics import (  # noqa: PLC0415
+        from issue_observatory.api.metrics import (
             celery_task_duration_seconds,
             celery_tasks_total,
         )
@@ -701,7 +756,7 @@ def cleanup_stale_runs() -> dict[str, Any]:
         celery_task_duration_seconds.labels(
             task_name="cleanup_stale_runs"
         ).observe(time.perf_counter() - _task_start)
-    except Exception as _metrics_exc:  # noqa: BLE001
+    except Exception as _metrics_exc:
         _stdlib_logger.debug(
             "cleanup_stale_runs: metrics recording failed: %s", _metrics_exc
         )
@@ -746,7 +801,7 @@ def enforce_retention_policy() -> dict[str, Any]:
     summary = {"records_deleted": deleted, "retention_days": retention_days}
     log.info("enforce_retention_policy: complete", **summary)
     try:
-        from issue_observatory.api.metrics import (  # noqa: PLC0415
+        from issue_observatory.api.metrics import (
             celery_task_duration_seconds,
             celery_tasks_total,
         )
@@ -756,7 +811,7 @@ def enforce_retention_policy() -> dict[str, Any]:
         celery_task_duration_seconds.labels(
             task_name="enforce_retention_policy"
         ).observe(time.perf_counter() - _task_start)
-    except Exception as _metrics_exc:  # noqa: BLE001
+    except Exception as _metrics_exc:
         _stdlib_logger.debug(
             "enforce_retention_policy: metrics recording failed: %s", _metrics_exc
         )
@@ -775,11 +830,14 @@ def enforce_retention_policy() -> dict[str, Any]:
 def reconcile_collection_attempts_task() -> dict[str, Any]:
     """Validate collection_attempts against actual content_records data.
 
-    For each valid attempt with ``records_returned > 0``, checks whether
-    at least one matching content record still exists.  If not (e.g. due
-    to manual deletion or retention policy enforcement), marks the attempt
-    as ``is_valid = FALSE`` so the coverage checker stops trusting it and
-    future collection runs can re-fetch the data.
+    For each valid attempt older than 14 days with ``records_returned > 0``,
+    checks whether at least one matching content record still exists.  If not
+    (e.g. due to manual deletion or retention policy enforcement), marks the
+    attempt as ``is_valid = FALSE`` so the coverage checker stops trusting it
+    and future collection runs can re-fetch the data.
+
+    Recent attempts (< 14 days) are skipped to avoid invalidating current
+    coverage for terms that simply returned zero results from the API.
 
     Runs weekly via Celery Beat (Sunday 05:00 Copenhagen time).
 
@@ -790,7 +848,7 @@ def reconcile_collection_attempts_task() -> dict[str, Any]:
     log = logger.bind(task="reconcile_collection_attempts")
     log.info("reconcile_collection_attempts: starting")
 
-    from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+    from issue_observatory.workers._task_helpers import (
         reconcile_collection_attempts,
     )
 
@@ -802,7 +860,7 @@ def reconcile_collection_attempts_task() -> dict[str, Any]:
         attempts_invalidated=result["attempts_invalidated"],
     )
     try:
-        from issue_observatory.api.metrics import (  # noqa: PLC0415
+        from issue_observatory.api.metrics import (
             celery_task_duration_seconds,
             celery_tasks_total,
         )
@@ -812,7 +870,7 @@ def reconcile_collection_attempts_task() -> dict[str, Any]:
         celery_task_duration_seconds.labels(
             task_name="reconcile_collection_attempts"
         ).observe(time.perf_counter() - _task_start)
-    except Exception as _metrics_exc:  # noqa: BLE001
+    except Exception as _metrics_exc:
         _stdlib_logger.debug(
             "reconcile_collection_attempts: metrics recording failed: %s",
             _metrics_exc,
@@ -871,7 +929,7 @@ def enrich_collection_run(
     )
 
     # --- Build enricher registry ---
-    from issue_observatory.analysis.enrichments import (  # noqa: PLC0415
+    from issue_observatory.analysis.enrichments import (
         LanguageDetector,
     )
 
@@ -960,7 +1018,7 @@ def enrich_collection_run(
             records_processed += 1
 
         offset += len(batch)
-        if len(batch) < 100:  # noqa: PLR2004 — batch size constant
+        if len(batch) < 100:
             break  # last partial batch; no more rows
 
     # -----------------------------------------------------------------------
@@ -972,7 +1030,7 @@ def enrich_collection_run(
     # -----------------------------------------------------------------------
     discovery_summary: dict[str, int] = {}
     try:
-        from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+        from issue_observatory.workers._task_helpers import (
             get_discovery_summary,
         )
 
@@ -980,8 +1038,9 @@ def enrich_collection_run(
         if discovery_summary:
             # Emit via event bus for SSE consumers
             try:
-                import json  # noqa: PLC0415
-                import redis as redis_lib  # noqa: PLC0415
+                import json
+
+                import redis as redis_lib
 
                 payload = {
                     "event": "discovery_summary",
@@ -1018,7 +1077,7 @@ def enrich_collection_run(
     }
     log.info("enrich_collection_run: complete", **summary)
     try:
-        from issue_observatory.api.metrics import (  # noqa: PLC0415
+        from issue_observatory.api.metrics import (
             celery_task_duration_seconds,
             celery_tasks_total,
         )
@@ -1028,7 +1087,7 @@ def enrich_collection_run(
         celery_task_duration_seconds.labels(
             task_name="enrich_collection_run"
         ).observe(time.perf_counter() - _task_start)
-    except Exception as _metrics_exc:  # noqa: BLE001
+    except Exception as _metrics_exc:
         _stdlib_logger.debug(
             "enrich_collection_run: metrics recording failed: %s", _metrics_exc
         )
@@ -1080,7 +1139,7 @@ def check_volume_spikes_task(
         Dict with key ``"spikes"`` containing a list of spike dicts, and
         ``"spike_count"`` for fast summary logging.
     """
-    import uuid as _uuid  # noqa: PLC0415
+    import uuid as _uuid
 
     _task_start = time.perf_counter()
     log = logger.bind(
@@ -1090,7 +1149,7 @@ def check_volume_spikes_task(
     )
     log.info("check_volume_spikes: starting")
 
-    from issue_observatory.workers._alerting_helpers import (  # noqa: PLC0415
+    from issue_observatory.workers._alerting_helpers import (
         run_spike_detection,
     )
 
@@ -1123,7 +1182,7 @@ def check_volume_spikes_task(
     summary: dict[str, Any] = {"spikes": spikes, "spike_count": len(spikes)}
     log.info("check_volume_spikes: complete", spike_count=len(spikes))
     try:
-        from issue_observatory.api.metrics import (  # noqa: PLC0415
+        from issue_observatory.api.metrics import (
             celery_task_duration_seconds,
             celery_tasks_total,
         )
@@ -1133,7 +1192,7 @@ def check_volume_spikes_task(
         celery_task_duration_seconds.labels(
             task_name="check_volume_spikes"
         ).observe(time.perf_counter() - _task_start)
-    except Exception as _metrics_exc:  # noqa: BLE001
+    except Exception as _metrics_exc:
         _stdlib_logger.debug(
             "check_volume_spikes: metrics recording failed: %s", _metrics_exc
         )
@@ -1143,6 +1202,40 @@ def check_volume_spikes_task(
 # ---------------------------------------------------------------------------
 # Task 8: dispatch_batch_collection (B-1 fix)
 # ---------------------------------------------------------------------------
+
+
+def _apply_daily_chunking(
+    source_list: list[str],
+    chunk_size: int,
+    log: Any,
+    platform_name: str,
+) -> list[str]:
+    """Split a source list into daily rotating chunks.
+
+    Uses ``date.today().toordinal() % num_chunks`` so that a different
+    chunk is dispatched each calendar day, achieving full coverage over
+    ``ceil(len(source_list) / chunk_size)`` days.
+    """
+    import math
+    from datetime import date
+
+    total = len(source_list)
+    if total <= chunk_size:
+        return source_list
+
+    num_chunks = math.ceil(total / chunk_size)
+    chunk_idx = date.today().toordinal() % num_chunks
+    start = chunk_idx * chunk_size
+    end = min(start + chunk_size, total)
+    chunk = source_list[start:end]
+    log.info(
+        "dispatch_batch_collection: chunking source list",
+        arena=platform_name,
+        chunk=f"{chunk_idx + 1}/{num_chunks}",
+        actors_in_chunk=len(chunk),
+        total_actors=total,
+    )
+    return chunk
 
 
 async def _dispatch_batch_async(
@@ -1171,7 +1264,11 @@ async def _dispatch_batch_async(
         - arena_entries: List of dicts for create_collection_tasks
         - no_arenas_dispatched: bool flag for completion handling
     """
-    from issue_observatory.arenas.registry import autodiscover, get_arena, list_arenas  # noqa: PLC0415
+    from issue_observatory.arenas.registry import (
+        autodiscover,
+        get_arena,
+        list_arenas,
+    )
 
     # --- Step 1: Load run details ---
     details = await fetch_batch_run_details(run_uuid)
@@ -1179,6 +1276,7 @@ async def _dispatch_batch_async(
         return {"details": None, "no_arenas_dispatched": True}
 
     design_id = details["query_design_id"]
+    project_id = details.get("project_id")
     raw_arenas_config: dict = details.get("arenas_config") or {}
     default_tier: str = details.get("default_tier") or "free"
     date_from = details.get("date_from")
@@ -1212,14 +1310,37 @@ async def _dispatch_batch_async(
                 arenas_config[key] = value["tier"]
             # Skip non-arena config entries (rss custom_feeds, etc.)
 
-    # Fallback: if no arenas were configured, dispatch ALL registered arenas.
-    if not arenas_config:
-        for platform_name in list_arenas():
-            arenas_config[platform_name] = default_tier
+    # Fallback: if no arenas were configured AND no explicit empty list was
+    # provided, dispatch ALL registered arenas.  An explicit empty list
+    # ({"arenas": []}) means the project intentionally has all arenas disabled
+    # (e.g. comment-only collection run).
+    has_explicit_arenas_list = (
+        "arenas" in raw_arenas_config
+        and isinstance(raw_arenas_config["arenas"], list)
+    )
+    if not arenas_config and not has_explicit_arenas_list:
+        for arena_info in list_arenas():
+            arenas_config[arena_info["platform_name"]] = default_tier
         log.info(
             "dispatch_batch_collection: no arena config; falling back to all %d arenas",
             len(arenas_config),
         )
+
+    # Apply per-run arena exclusions from the launcher form.
+    exclude_list = raw_arenas_config.get("_exclude_arenas")
+    if isinstance(exclude_list, list) and exclude_list:
+        before = len(arenas_config)
+        for arena_id in exclude_list:
+            arenas_config.pop(arena_id, None)
+        log.info(
+            "dispatch_batch_collection: excluded %d arenas per launcher request",
+            before - len(arenas_config),
+        )
+
+    # "Only collect new" flag — skip terms/actors that already have records.
+    only_collect_new = bool(raw_arenas_config.get("_only_collect_new"))
+    if only_collect_new:
+        log.info("dispatch_batch_collection: only_collect_new mode enabled")
 
     # Extract language config from the original raw config (not the normalized one)
     config_languages = raw_arenas_config.get("languages") if isinstance(raw_arenas_config, dict) else None
@@ -1234,7 +1355,10 @@ async def _dispatch_batch_async(
 
     # --- Step 4: GR-14: load public-figure IDs ---
     try:
-        pf_set = await fetch_public_figure_ids_for_design(design_id)
+        if project_id:
+            pf_set = await fetch_public_figure_ids_for_project(project_id)
+        else:
+            pf_set = await fetch_public_figure_ids_for_design(design_id)
         public_figure_ids = list(pf_set)
         if public_figure_ids:
             log.info(
@@ -1249,10 +1373,13 @@ async def _dispatch_batch_async(
         public_figure_ids = []
 
     # --- Step 5: Filter arenas to those actually registered ---
-    # Also record whether each arena supports term-based or actor-only collection.
+    # Also record whether each arena supports term-based or actor-only collection,
+    # and capture source_list_config_key for the new unified source list dispatch.
     arena_entries: list[dict[str, str]] = []
     # Maps platform_name -> True if the arena is actor-only (supports_term_search=False).
     actor_only_arenas: set[str] = set()
+    # Maps platform_name -> source_list_config_key (None if the arena has no source list).
+    arena_source_list_keys: dict[str, str | None] = {}
     skipped = 0
 
     for platform_name in arenas_config:
@@ -1280,6 +1407,12 @@ async def _dispatch_batch_async(
                 arena=platform_name,
             )
 
+        # Capture the source_list_config_key so the dispatch loop can read
+        # the researcher-curated source list from arenas_config JSONB.
+        arena_source_list_keys[platform_name] = getattr(
+            collector_cls, "source_list_config_key", None
+        )
+
     # --- Step 6: Create CollectionTask rows ---
     if arena_entries:
         await create_collection_tasks(run_uuid, arena_entries)
@@ -1288,46 +1421,107 @@ async def _dispatch_batch_async(
             count=len(arena_entries),
         )
 
-    # --- Step 7: Fetch search terms (term-based arenas) or actor IDs (actor-only arenas) ---
+    # --- Step 7: Fetch search terms and/or actor IDs for each arena ---
+    #
+    # New dispatch logic (actor workflow redesign):
+    #
+    # For actor-only arenas (supports_term_search=False):
+    #   1. Read source list from arenas_config[platform][config_key] (NEW path)
+    #   2. Merge with legacy ActorList chain (backward-compatible fallback)
+    #   3. Deduplicate; fail the task if no actor IDs remain
+    #
+    # For dual-mode arenas (supports_term_search=True):
+    #   1. Always fetch search terms and dispatch collect_by_terms (existing behaviour)
+    #   2. Additionally, if a source list is configured in arenas_config, populate
+    #      arena_actors_map so the sync dispatch loop also fires collect_by_actors
+    #
+    # arena_actors_map stores actor lists for BOTH actor-only arenas and dual-mode
+    # arenas that have a configured source list.  The sync dispatch loop checks
+    # arena_actors_map independently of arena_terms_map so both can fire.
     arena_terms_map: dict[str, list[str]] = {}
     arena_actors_map: dict[str, list[str]] = {}
 
     for entry in arena_entries:
         platform_name = entry["platform_name"]
+        config_key = arena_source_list_keys.get(platform_name)
 
         if platform_name in actor_only_arenas:
-            # Actor-only arena: fetch actor platform presences instead of search terms.
-            try:
-                actor_ids = await fetch_actor_ids_for_design_and_platform(
-                    design_id, platform_name
+            # Actor-only arena: merge source list with legacy ActorList chain.
+            # Source list takes priority; legacy chain provides backward compatibility.
+            source_list: list[str] = []
+            if config_key:
+                source_list = read_source_list_from_arenas_config(
+                    raw_arenas_config, platform_name, config_key
                 )
-                arena_actors_map[platform_name] = actor_ids
-
-                if not actor_ids:
-                    log.warning(
-                        "dispatch_batch_collection: actor-only arena has no actors configured; "
-                        "marking task as failed",
+                if source_list:
+                    log.debug(
+                        "dispatch_batch_collection: source list read from arenas_config",
                         arena=platform_name,
+                        config_key=config_key,
+                        count=len(source_list),
                     )
-                    await mark_task_failed(
-                        run_uuid,
-                        platform_name,
-                        f"No actors configured for actor-only platform '{platform_name}'. "
-                        "Add actors with platform presences to the Actor Directory and "
-                        "include them in an actor list for this query design.",
+
+            # Fetch legacy ActorList-based IDs as fallback / supplement.
+            try:
+                if project_id:
+                    legacy_actor_ids = await fetch_actor_ids_for_project_and_platform(
+                        project_id, platform_name
+                    )
+                else:
+                    legacy_actor_ids = await fetch_actor_ids_for_design_and_platform(
+                        design_id, platform_name
                     )
             except Exception as actors_exc:
                 log.error(
-                    "dispatch_batch_collection: failed to fetch actor IDs for actor-only arena",
+                    "dispatch_batch_collection: failed to fetch legacy actor IDs for actor-only arena",
                     arena=platform_name,
                     error=str(actors_exc),
                 )
-                arena_actors_map[platform_name] = []
+                legacy_actor_ids = []
+
+            # Deduplicate: source list items come first (they are the primary input),
+            # followed by legacy items not already present in the source list.
+            seen: set[str] = set(source_list)
+            merged_actor_ids = list(source_list)
+            for legacy_id in legacy_actor_ids:
+                if legacy_id not in seen:
+                    seen.add(legacy_id)
+                    merged_actor_ids.append(legacy_id)
+
+            # Filter out actors already present in the previous run (only_collect_new).
+            if only_collect_new and merged_actor_ids:
+                merged_actor_ids = await filter_new_actors(
+                    str(design_id), platform_name, merged_actor_ids, config_key
+                )
+                log.info(
+                    "only_collect_new: filtered actor-only actors",
+                    arena=platform_name,
+                    remaining=len(merged_actor_ids),
+                )
+
+            # Apply daily chunking if the collector defines a chunk size.
+            collector_cls = get_arena(platform_name)
+            chunk_size = getattr(collector_cls, "source_list_daily_chunk_size", None)
+            if chunk_size and len(merged_actor_ids) > chunk_size:
+                merged_actor_ids = _apply_daily_chunking(
+                    merged_actor_ids, chunk_size, log, platform_name
+                )
+
+            arena_actors_map[platform_name] = merged_actor_ids
+
+            if not merged_actor_ids:
+                log.warning(
+                    "dispatch_batch_collection: actor-only arena has no actors configured; "
+                    "marking task as failed",
+                    arena=platform_name,
+                )
                 try:
                     await mark_task_failed(
                         run_uuid,
                         platform_name,
-                        f"Failed to fetch actor IDs: {actors_exc}",
+                        f"No actors configured for actor-only platform '{platform_name}'. "
+                        "Add page/profile URLs to the arena source list in the query "
+                        "design editor, or add actors via the Actor Directory.",
                     )
                 except Exception as mark_exc:
                     log.warning(
@@ -1335,36 +1529,90 @@ async def _dispatch_batch_async(
                         arena=platform_name,
                         error=str(mark_exc),
                     )
+
         else:
-            # Term-based arena: fetch YF-01-scoped search terms.
+            # Dual-mode arena: always fetch search terms for collect_by_terms.
+            terms_fetch_error: Exception | None = None
             try:
                 arena_terms = await fetch_resolved_terms_for_arena(design_id, platform_name)
-                arena_terms_map[platform_name] = arena_terms
-
-                # If no terms found, mark the task as failed immediately (within async context)
-                if not arena_terms:
+                # Filter out terms that already have records (only_collect_new).
+                if only_collect_new and arena_terms:
+                    arena_terms = await filter_new_terms(
+                        str(design_id), platform_name, arena_terms
+                    )
                     log.info(
-                        "dispatch_batch_collection: no search terms for arena; marking failed",
+                        "only_collect_new: filtered terms",
                         arena=platform_name,
+                        remaining=len(arena_terms),
                     )
-                    await mark_task_failed(
-                        run_uuid,
-                        platform_name,
-                        "No search terms scoped to this arena (YF-01)",
-                    )
+                arena_terms_map[platform_name] = arena_terms
             except Exception as terms_exc:
                 log.error(
                     "dispatch_batch_collection: failed to fetch search terms",
                     arena=platform_name,
                     error=str(terms_exc),
                 )
-                # Mark task as failed and set empty terms list
                 arena_terms_map[platform_name] = []
+                terms_fetch_error = terms_exc
+
+            # Also check for a researcher-curated source list.  When present,
+            # the sync dispatch loop will fire collect_by_actors alongside
+            # collect_by_terms so both modes run in the same collection pass.
+            if config_key:
+                dual_mode_source_list = read_source_list_from_arenas_config(
+                    raw_arenas_config, platform_name, config_key
+                )
+                # Filter out actors already present in the previous run (only_collect_new).
+                if only_collect_new and dual_mode_source_list:
+                    dual_mode_source_list = await filter_new_actors(
+                        str(design_id), platform_name, dual_mode_source_list, config_key
+                    )
+                    log.info(
+                        "only_collect_new: filtered dual-mode actors",
+                        arena=platform_name,
+                        remaining=len(dual_mode_source_list),
+                    )
+                if dual_mode_source_list:
+                    # Apply daily chunking if the collector defines a chunk size.
+                    collector_cls = get_arena(platform_name)
+                    chunk_size = getattr(
+                        collector_cls, "source_list_daily_chunk_size", None
+                    )
+                    if chunk_size and len(dual_mode_source_list) > chunk_size:
+                        dual_mode_source_list = _apply_daily_chunking(
+                            dual_mode_source_list, chunk_size, log, platform_name
+                        )
+
+                    arena_actors_map[platform_name] = dual_mode_source_list
+                    log.debug(
+                        "dispatch_batch_collection: dual-mode arena has source list; "
+                        "will also dispatch collect_by_actors",
+                        arena=platform_name,
+                        config_key=config_key,
+                        count=len(dual_mode_source_list),
+                    )
+
+            # Only mark as failed when NEITHER terms NOR a source list exist.
+            # If a source list is present the actor dispatch will proceed even
+            # without search terms, so the CollectionTask must not be put into
+            # a terminal "failed" state prematurely (M-1 fix).
+            arena_terms = arena_terms_map.get(platform_name, [])
+            has_source_list = bool(arena_actors_map.get(platform_name))
+            if not arena_terms and not has_source_list:
+                if terms_fetch_error is not None:
+                    failure_reason = f"Failed to fetch search terms: {terms_fetch_error}"
+                else:
+                    failure_reason = "No search terms scoped to this arena (YF-01)"
+                log.info(
+                    "dispatch_batch_collection: no search terms and no source list for arena; "
+                    "marking failed",
+                    arena=platform_name,
+                )
                 try:
                     await mark_task_failed(
                         run_uuid,
                         platform_name,
-                        f"Failed to fetch search terms: {terms_exc}",
+                        failure_reason,
                     )
                 except Exception as mark_exc:
                     log.warning(
@@ -1374,11 +1622,13 @@ async def _dispatch_batch_async(
                     )
 
     # --- Step 8: Handle no-arenas case ---
-    # An arena is dispatchable if it has terms (term-based) OR actor IDs (actor-only).
+    # An arena is dispatchable if it has terms (term-based) OR actor IDs (actor-only
+    # or dual-mode with a source list).
     has_any_dispatchable = any(
         (
             (pn in actor_only_arenas and bool(arena_actors_map.get(pn)))
             or (pn not in actor_only_arenas and bool(arena_terms_map.get(pn)))
+            or bool(arena_actors_map.get(pn))  # dual-mode with source list
         )
         for pn in (e["platform_name"] for e in arena_entries)
     )
@@ -1432,7 +1682,7 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
     Returns:
         Dict with ``dispatched``, ``skipped``, and ``arenas`` lists.
     """
-    import uuid as _uuid  # noqa: PLC0415
+    import uuid as _uuid
 
     _task_start = time.perf_counter()
     log = logger.bind(task="dispatch_batch_collection", run_id=run_id)
@@ -1475,7 +1725,7 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
     default_tier = async_result["default_tier"]
 
     # Import registry helpers for task name resolution
-    from issue_observatory.arenas.registry import get_task_module  # noqa: PLC0415
+    from issue_observatory.arenas.registry import get_task_module
 
     # --- Dispatch per-arena tasks (sync Celery calls) ---
     dispatched_arenas: list[str] = []
@@ -1562,87 +1812,150 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
                 skipped += 1
 
         else:
-            # Term-based arena: dispatch collect_by_terms.
+            # Dual-mode arena: dispatch collect_by_terms when terms are available,
+            # and also dispatch collect_by_actors when a source list is configured.
             arena_terms = arena_terms_map.get(platform_name, [])
-            if not arena_terms:
-                # Task already marked as failed in the async block above.
+            dual_mode_actor_ids = arena_actors_map.get(platform_name, [])
+
+            if not arena_terms and not dual_mode_actor_ids:
+                # Task already marked as failed in the async block above (no terms).
+                # Also no source list configured — nothing to do for this arena.
                 log.debug(
-                    "dispatch_batch_collection: skipping arena with no terms",
+                    "dispatch_batch_collection: skipping arena with no terms and no source list",
                     arena=platform_name,
                 )
                 continue
 
-            task_name = f"{task_module}.collect_by_terms"
+            # --- dispatch collect_by_terms (if terms exist) ---
+            if arena_terms:
+                task_name = f"{task_module}.collect_by_terms"
 
-            # Always include language_filter and public_figure_ids since all
-            # arena tasks accept **_extra.
-            task_kwargs = {
-                "query_design_id": str(async_result["details"]["query_design_id"]),
-                "collection_run_id": run_id,
-                "terms": arena_terms,
-                "tier": tier,
-                "language_filter": language_filter,
-                "public_figure_ids": public_figure_ids,
-            }
-            if date_from:
-                task_kwargs["date_from"] = (
-                    date_from.isoformat() if hasattr(date_from, "isoformat") else str(date_from)
-                )
-            if date_to:
-                task_kwargs["date_to"] = (
-                    date_to.isoformat() if hasattr(date_to, "isoformat") else str(date_to)
-                )
-
-            try:
-                # Capture the AsyncResult to get the celery_task_id
-                async_task = celery_app.send_task(
-                    task_name,
-                    kwargs=task_kwargs,
-                    queue="celery",
-                )
-                dispatched_arenas.append(platform_name)
-                task_id_updates.append((platform_name, async_task.id))
-                log.info(
-                    "dispatch_batch_collection: dispatched arena task",
-                    arena=platform_name,
-                    tier=tier,
-                    terms_count=len(arena_terms),
-                    celery_task_id=async_task.id,
-                )
-            except Exception as dispatch_exc:
-                log.error(
-                    "dispatch_batch_collection: dispatch failed",
-                    arena=platform_name,
-                    error=str(dispatch_exc),
-                )
-                # Mark the task as failed in the DB - use a separate async run
-                # because we're in sync context after the main async block
-                try:
-                    async def _mark_failed(
-                        _run_uuid: Any = run_uuid,
-                        _pn: str = platform_name,
-                        _exc: Exception = dispatch_exc,
-                    ) -> None:
-                        await mark_task_failed(
-                            _run_uuid, _pn, f"Celery dispatch failed: {_exc}"
-                        )
-                    asyncio.run(_mark_failed())
-                except Exception as mark_exc:
-                    log.warning(
-                        "dispatch_batch_collection: failed to mark task as failed",
-                        arena=platform_name,
-                        error=str(mark_exc),
+                # Always include language_filter and public_figure_ids since all
+                # arena tasks accept **_extra.
+                task_kwargs = {
+                    "query_design_id": str(async_result["details"]["query_design_id"]),
+                    "collection_run_id": run_id,
+                    "terms": arena_terms,
+                    "tier": tier,
+                    "language_filter": language_filter,
+                    "public_figure_ids": public_figure_ids,
+                }
+                if date_from:
+                    task_kwargs["date_from"] = (
+                        date_from.isoformat() if hasattr(date_from, "isoformat") else str(date_from)
                     )
-                skipped += 1
+                if date_to:
+                    task_kwargs["date_to"] = (
+                        date_to.isoformat() if hasattr(date_to, "isoformat") else str(date_to)
+                    )
+
+                try:
+                    # Capture the AsyncResult to get the celery_task_id
+                    async_task = celery_app.send_task(
+                        task_name,
+                        kwargs=task_kwargs,
+                        queue="celery",
+                    )
+                    dispatched_arenas.append(platform_name)
+                    task_id_updates.append((platform_name, async_task.id))
+                    log.info(
+                        "dispatch_batch_collection: dispatched arena task",
+                        arena=platform_name,
+                        tier=tier,
+                        terms_count=len(arena_terms),
+                        celery_task_id=async_task.id,
+                    )
+                except Exception as dispatch_exc:
+                    log.error(
+                        "dispatch_batch_collection: dispatch failed",
+                        arena=platform_name,
+                        error=str(dispatch_exc),
+                    )
+                    # Mark the task as failed in the DB - use a separate async run
+                    # because we're in sync context after the main async block
+                    try:
+                        async def _mark_failed(
+                            _run_uuid: Any = run_uuid,
+                            _pn: str = platform_name,
+                            _exc: Exception = dispatch_exc,
+                        ) -> None:
+                            await mark_task_failed(
+                                _run_uuid, _pn, f"Celery dispatch failed: {_exc}"
+                            )
+                        asyncio.run(_mark_failed())
+                    except Exception as mark_exc:
+                        log.warning(
+                            "dispatch_batch_collection: failed to mark task as failed",
+                            arena=platform_name,
+                            error=str(mark_exc),
+                        )
+                    skipped += 1
+
+            # --- ALSO dispatch collect_by_actors if a source list is configured (NEW) ---
+            # This runs in parallel with collect_by_terms; results are deduplicated
+            # downstream by the content_hash deduplication pipeline.
+            if dual_mode_actor_ids:
+                actors_task_name = f"{task_module}.collect_by_actors"
+                actors_task_kwargs: dict[str, Any] = {
+                    "query_design_id": str(async_result["details"]["query_design_id"]),
+                    "collection_run_id": run_id,
+                    "actor_ids": dual_mode_actor_ids,
+                    "tier": tier,
+                    "public_figure_ids": public_figure_ids,
+                }
+                if date_from:
+                    actors_task_kwargs["date_from"] = (
+                        date_from.isoformat() if hasattr(date_from, "isoformat") else str(date_from)
+                    )
+                if date_to:
+                    actors_task_kwargs["date_to"] = (
+                        date_to.isoformat() if hasattr(date_to, "isoformat") else str(date_to)
+                    )
+
+                try:
+                    actors_async_task = celery_app.send_task(
+                        actors_task_name,
+                        kwargs=actors_task_kwargs,
+                        queue="celery",
+                    )
+                    if platform_name not in dispatched_arenas:
+                        dispatched_arenas.append(platform_name)
+                    # Only record the actor task's celery_task_id when no terms
+                    # task was dispatched for this arena.  When both are dispatched
+                    # we keep the FIRST (terms) task ID on the CollectionTask row
+                    # so the ID is deterministic and not silently overwritten
+                    # (m-1 fix: avoid overwriting celery_task_id with actor task ID).
+                    terms_already_dispatched = any(
+                        raw_key == platform_name for raw_key, _ in task_id_updates
+                    )
+                    if not terms_already_dispatched:
+                        task_id_updates.append((platform_name, actors_async_task.id))
+                    log.info(
+                        "dispatch_batch_collection: dispatched dual-mode actor task",
+                        arena=platform_name,
+                        tier=tier,
+                        actors_count=len(dual_mode_actor_ids),
+                        celery_task_id=actors_async_task.id,
+                    )
+                except Exception as actors_dispatch_exc:
+                    log.error(
+                        "dispatch_batch_collection: dual-mode actor dispatch failed",
+                        arena=platform_name,
+                        error=str(actors_dispatch_exc),
+                    )
 
     # --- Update CollectionTask rows with celery_task_ids ---
     if task_id_updates:
         try:
-            from issue_observatory.workers._task_helpers import update_task_celery_id  # noqa: PLC0415
-            # Batch all updates into a single async context
+            from issue_observatory.workers._task_helpers import (
+                update_task_celery_id,
+            )
+            # Batch all updates into a single async context.
+            # Each entry is (platform_name, celery_task_id) — one entry per arena,
+            # always holding the FIRST (terms) task ID when both modes are dispatched.
             async def _update_all_ids() -> None:
-                for platform_name, celery_task_id in task_id_updates:
-                    await update_task_celery_id(run_uuid, platform_name, celery_task_id)
+                for platform_name_key, celery_task_id in task_id_updates:
+                    await update_task_celery_id(run_uuid, platform_name_key, celery_task_id)
             asyncio.run(_update_all_ids())
             log.info(
                 "dispatch_batch_collection: updated celery_task_ids",
@@ -1666,7 +1979,7 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
         )
     elif no_arenas_dispatched:
         # Already marked completed in async function; just emit the event
-        from issue_observatory.core.event_bus import publish_run_complete  # noqa: PLC0415
+        from issue_observatory.core.event_bus import publish_run_complete
 
         publish_run_complete(
             redis_url=settings.redis_url,
@@ -1675,6 +1988,16 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
             records_collected=0,
             credits_spent=0,
         )
+
+        # Dispatch comment collection even when no post arenas ran
+        # (comment-only run collecting from previously gathered posts).
+        try:
+            trigger_comment_collection.delay(run_id)
+            log.info("dispatch_batch_collection: comment collection triggered (no post arenas)")
+        except Exception as exc:
+            log.warning(
+                "dispatch_batch_collection: comment trigger failed", error=str(exc),
+            )
 
     summary = {
         "dispatched": len(dispatched_arenas),
@@ -1723,16 +2046,23 @@ async def _check_batch_async(run_uuid: Any) -> dict[str, Any] | None:
     return result
 
 
+_CHECK_BATCH_MAX_ATTEMPTS: int = 480
+"""Maximum number of check_batch_completion re-schedules (~2 hours at 15s intervals)."""
+
+
 @celery_app.task(
     name="issue_observatory.workers.tasks.check_batch_completion",
 )
-def check_batch_completion(run_id: str) -> dict[str, Any]:
+def check_batch_completion(run_id: str, attempt: int = 1) -> dict[str, Any]:
     """Check whether all arena tasks for a batch run have finished.
 
     Polls the ``collection_tasks`` table to see if every task has reached
     a terminal state (``completed`` or ``failed``).  If not all done,
-    re-schedules itself with a 15-second countdown (up to 480 checks,
-    i.e., ~2 hours).
+    re-schedules itself with a 15-second countdown, up to
+    ``_CHECK_BATCH_MAX_ATTEMPTS`` (480 checks, ~2 hours).
+
+    After exceeding the max attempts, forces the run to ``failed`` status
+    to prevent infinite polling.
 
     When all tasks are terminal:
     1. Sets the run status to ``completed`` (or ``failed`` if all tasks failed).
@@ -1742,13 +2072,14 @@ def check_batch_completion(run_id: str) -> dict[str, Any]:
 
     Args:
         run_id: UUID string of the CollectionRun to check.
+        attempt: Current attempt number (1-indexed, auto-incremented).
 
     Returns:
         Dict with ``status``, ``total_tasks``, ``completed``, ``failed``.
     """
-    import uuid as _uuid  # noqa: PLC0415
+    import uuid as _uuid
 
-    log = logger.bind(task="check_batch_completion", run_id=run_id)
+    log = logger.bind(task="check_batch_completion", run_id=run_id, attempt=attempt)
 
     # Single asyncio.run() call for all DB operations
     try:
@@ -1756,11 +2087,20 @@ def check_batch_completion(run_id: str) -> dict[str, Any]:
         result = asyncio.run(_check_batch_async(run_uuid))
     except Exception as exc:
         log.error(
-            "check_batch_completion: DB error",
+            "check_batch_completion: DB error — will retry",
             error=str(exc),
             exc_info=True,
         )
-        return {"error": str(exc)}
+        # Re-schedule instead of silently returning.  DB errors (e.g.
+        # connection pool exhaustion from zombie tasks) are transient;
+        # giving up here leaves the run stuck as "running" forever.
+        if attempt < _CHECK_BATCH_MAX_ATTEMPTS:
+            check_batch_completion.apply_async(
+                kwargs={"run_id": run_id, "attempt": attempt + 1},
+                countdown=15,
+            )
+            return {"status": "db_error_retry", "error": str(exc), "attempt": attempt}
+        return {"status": "db_error_max_attempts", "error": str(exc)}
 
     if result is None:
         log.warning("check_batch_completion: no tasks found for run")
@@ -1776,6 +2116,35 @@ def check_batch_completion(run_id: str) -> dict[str, Any]:
         )
 
     if not result["all_done"]:
+        if attempt >= _CHECK_BATCH_MAX_ATTEMPTS:
+            log.error(
+                "check_batch_completion: max attempts reached — forcing run to failed",
+                attempt=attempt,
+                max_attempts=_CHECK_BATCH_MAX_ATTEMPTS,
+                remaining=result["total"] - result["completed"] - result["failed"],
+            )
+            asyncio.run(set_run_status(
+                _uuid.UUID(run_id),
+                "failed",
+                completed_at=True,
+                error_log=(
+                    f"Batch completion checker exceeded {_CHECK_BATCH_MAX_ATTEMPTS} "
+                    f"attempts (~{_CHECK_BATCH_MAX_ATTEMPTS * 15 // 60} min). "
+                    f"Completed: {result['completed']}/{result['total']}, "
+                    f"Failed: {result['failed']}/{result['total']}."
+                ),
+            ))
+            from issue_observatory.core.event_bus import publish_run_complete
+
+            publish_run_complete(
+                redis_url=settings.redis_url,
+                run_id=run_id,
+                status="failed",
+                records_collected=result.get("total_records", 0),
+                credits_spent=result.get("credits_spent", 0),
+            )
+            return {"status": "failed", "reason": "max_attempts_exceeded", **result}
+
         # Re-schedule to check again
         remaining = result["total"] - result["completed"] - result["failed"]
         log.debug(
@@ -1786,7 +2155,7 @@ def check_batch_completion(run_id: str) -> dict[str, Any]:
             failed=result["failed"],
         )
         check_batch_completion.apply_async(
-            kwargs={"run_id": run_id},
+            kwargs={"run_id": run_id, "attempt": attempt + 1},
             countdown=15,
         )
         return {"status": "waiting", **result}
@@ -1805,7 +2174,7 @@ def check_batch_completion(run_id: str) -> dict[str, Any]:
     )
 
     # Publish run_complete SSE event (sync Redis, no asyncio needed)
-    from issue_observatory.core.event_bus import publish_run_complete  # noqa: PLC0415
+    from issue_observatory.core.event_bus import publish_run_complete
 
     publish_run_complete(
         redis_url=settings.redis_url,
@@ -1826,10 +2195,229 @@ def check_batch_completion(run_id: str) -> dict[str, Any]:
                 error=str(exc),
             )
 
+    # Dispatch Phase 2 comment collection if any platforms are enabled
+    if final_status == "completed":
+        try:
+            trigger_comment_collection.delay(run_id)
+            log.info("check_batch_completion: comment collection triggered")
+        except Exception as exc:
+            log.warning(
+                "check_batch_completion: comment collection dispatch failed",
+                error=str(exc),
+            )
+
     return {
         "status": final_status,
         "total_tasks": result["total"],
         "completed": result["completed"],
         "failed": result["failed"],
         "total_records": total_records,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Task 7: trigger_comment_collection  (Phase 2 — runs after post collection)
+# ---------------------------------------------------------------------------
+
+# Map of platform name → Celery task name for comment collection
+_COMMENT_TASK_MAP: dict[str, str] = {
+    "reddit": "issue_observatory.arenas.reddit.tasks.collect_comments",
+    "bluesky": "issue_observatory.arenas.bluesky.tasks.collect_comments",
+    "youtube": "issue_observatory.arenas.youtube.tasks.collect_comments",
+    "tiktok": "issue_observatory.arenas.tiktok.tasks.collect_comments",
+    "facebook": "issue_observatory.arenas.facebook.tasks.collect_comments",
+    "instagram": "issue_observatory.arenas.instagram.tasks.collect_comments",
+}
+
+# Default tier per platform for comment tasks
+_COMMENT_DEFAULT_TIER: dict[str, str] = {
+    "reddit": "free",
+    "bluesky": "free",
+    "youtube": "free",
+    "tiktok": "free",
+    "facebook": "medium",
+    "instagram": "medium",
+}
+
+
+async def _trigger_comments_async(
+    collection_run_id: str,
+    log: Any,
+) -> dict[str, Any]:
+    """Single async context for all comment-collection DB operations.
+
+    Consolidates every async call into one event loop to avoid the asyncpg
+    ``attached to a different loop`` error that occurs when ``asyncio.run()``
+    is called multiple times within one Celery task.
+    """
+    import uuid as _uuid
+
+    from issue_observatory.workers._task_helpers import create_collection_tasks
+
+    # --- 1. Fetch run details ---
+    run_details = await fetch_batch_run_details(collection_run_id)
+    if not run_details:
+        log.warning("trigger_comment_collection: no run details found")
+        return {"platforms_dispatched": 0}
+
+    project_id = run_details.get("project_id")
+    query_design_id = run_details.get("query_design_id")
+
+    if not project_id:
+        log.info("trigger_comment_collection: run has no project_id, skipping")
+        return {"platforms_dispatched": 0}
+
+    # --- 2. Fetch comments_config ---
+    comments_config = await fetch_project_comments_config(str(project_id))
+    if not comments_config:
+        log.debug("trigger_comment_collection: no comments_config, skipping")
+        return {"platforms_dispatched": 0}
+
+    # --- 3. Per-platform: fetch posts + create task rows ---
+    # Celery send_task is sync and must be called outside this async fn,
+    # so collect dispatch instructions to return.
+    dispatches: list[dict[str, Any]] = []
+
+    for platform, platform_config in comments_config.items():
+        if not isinstance(platform_config, dict):
+            continue
+        if not platform_config.get("enabled", False):
+            continue
+        if platform not in _COMMENT_TASK_MAP:
+            log.warning(
+                "trigger_comment_collection: unsupported comment platform=%s", platform
+            )
+            continue
+
+        # Fetch qualifying posts
+        try:
+            posts = await fetch_posts_for_comment_collection(
+                collection_run_id=collection_run_id,
+                platform=platform,
+                comments_config=platform_config,
+                project_id=str(project_id),
+                date_from=run_details.get("date_from"),
+                date_to=run_details.get("date_to"),
+            )
+        except Exception as exc:
+            log.error(
+                "trigger_comment_collection: failed to fetch posts for %s: %s",
+                platform,
+                exc,
+            )
+            continue
+
+        if not posts:
+            log.info("trigger_comment_collection: no qualifying posts for %s", platform)
+            continue
+
+        task_name = _COMMENT_TASK_MAP[platform]
+        tier = _COMMENT_DEFAULT_TIER.get(platform, "free")
+        max_comments = platform_config.get("max_comments_per_post", 50)
+        depth = platform_config.get("depth", 1)
+        arena_label = f"{platform}_comments"
+
+        # Create CollectionTask row for tracking
+        try:
+            await create_collection_tasks(
+                collection_run_id=_uuid.UUID(collection_run_id),
+                arena_tasks=[{
+                    "arena": arena_label,
+                    "platform": platform,
+                    "tier": tier,
+                }],
+            )
+        except Exception as exc:
+            log.warning(
+                "trigger_comment_collection: failed to create task row for %s: %s",
+                arena_label,
+                exc,
+            )
+
+        dispatches.append({
+            "task_name": task_name,
+            "arena_label": arena_label,
+            "query_design_id": str(query_design_id),
+            "collection_run_id": collection_run_id,
+            "posts": posts,
+            "tier": tier,
+            "max_comments": max_comments,
+            "depth": depth,
+        })
+
+    return {"dispatches": dispatches}
+
+
+@celery_app.task(
+    name="issue_observatory.workers.tasks.trigger_comment_collection",
+    bind=True,
+    max_retries=3,
+)
+def trigger_comment_collection(
+    self: Any,
+    collection_run_id: str,
+) -> dict[str, Any]:
+    """Dispatch comment collection tasks for enabled platforms (Phase 2).
+
+    Called after all Phase 1 (post collection) arena tasks complete.
+    Loads the project's ``comments_config``, queries for qualifying posts,
+    creates ``CollectionTask`` rows, and dispatches per-platform Celery tasks.
+
+    All async DB operations are consolidated into a single ``asyncio.run()``
+    call to avoid asyncpg event-loop contamination.
+    """
+    log = logger.bind(task="trigger_comment_collection", run_id=collection_run_id)
+    log.info("trigger_comment_collection: starting")
+
+    # --- Single asyncio.run() for all DB operations ---
+    try:
+        result = asyncio.run(_trigger_comments_async(collection_run_id, log))
+    except Exception as exc:
+        log.error("trigger_comment_collection: async operations failed", error=str(exc))
+        return {"error": str(exc), "platforms_dispatched": 0}
+
+    dispatches = result.get("dispatches")
+    if dispatches is None:
+        # Early return from async function (no project, no config, etc.)
+        return result
+
+    # --- Sync Celery dispatch (outside asyncio.run) ---
+    platforms_dispatched = 0
+    total_posts = 0
+
+    for d in dispatches:
+        try:
+            celery_app.send_task(
+                d["task_name"],
+                kwargs={
+                    "query_design_id": d["query_design_id"],
+                    "collection_run_id": d["collection_run_id"],
+                    "post_ids": d["posts"],
+                    "tier": d["tier"],
+                    "max_comments_per_post": d["max_comments"],
+                    "depth": d["depth"],
+                },
+            )
+            platforms_dispatched += 1
+            total_posts += len(d["posts"])
+            log.info(
+                "trigger_comment_collection: dispatched %s — %d posts",
+                d["arena_label"],
+                len(d["posts"]),
+            )
+        except Exception as exc:
+            log.error(
+                "trigger_comment_collection: failed to dispatch %s: %s",
+                d["arena_label"],
+                exc,
+            )
+
+    log.info(
+        "trigger_comment_collection: done — dispatched=%d total_posts=%d",
+        platforms_dispatched,
+        total_posts,
+    )
+    return {
+        "platforms_dispatched": platforms_dispatched,
+        "total_posts": total_posts,
     }

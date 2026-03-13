@@ -18,8 +18,7 @@ from __future__ import annotations
 
 import calendar
 import logging
-import time as _time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import feedparser
@@ -57,7 +56,7 @@ def extract_error_reason(response: httpx.Response) -> str:
         errors = body.get("error", {}).get("errors", [])
         if errors:
             return errors[0].get("reason", "unknown")
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return "unknown"
 
@@ -101,7 +100,7 @@ async def make_api_request(
             reason = extract_error_reason(exc.response)
             if reason == "quotaExceeded":
                 if credential_pool is not None:
-                    from issue_observatory.core.exceptions import (  # noqa: PLC0415
+                    from issue_observatory.core.exceptions import (
                         ArenaRateLimitError as _ARLR,
                     )
                     await credential_pool.report_error(
@@ -148,7 +147,7 @@ async def search_videos_page(
     page_token: str | None,
     published_after: str | None,
     published_before: str | None,
-    danish_params: dict[str, str],
+    locale_params: dict[str, str],
 ) -> tuple[list[str], str | None]:
     """Fetch one page of YouTube ``search.list`` results.
 
@@ -162,7 +161,8 @@ async def search_videos_page(
         page_token: Pagination token from a previous response, or ``None``.
         published_after: ISO 8601 ``publishedAfter`` filter, or ``None``.
         published_before: ISO 8601 ``publishedBefore`` filter, or ``None``.
-        danish_params: Danish locale parameters dict.
+        locale_params: Locale parameters dict
+            (e.g. ``{"relevanceLanguage": "da", "regionCode": "DK"}``).
 
     Returns:
         Tuple of (list of video ID strings, next page token or ``None``).
@@ -179,7 +179,7 @@ async def search_videos_page(
         "order": "date",
         "maxResults": min(max_results_page, MAX_RESULTS_PER_SEARCH_PAGE),
         "key": api_key,
-        **danish_params,
+        **locale_params,
     }
     if page_token:
         params["pageToken"] = page_token
@@ -282,7 +282,7 @@ async def poll_channel_rss(
     url = YOUTUBE_CHANNEL_RSS_URL.format(channel_id=channel_id)
     try:
         feed = feedparser.parse(url)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "youtube: failed to parse RSS for channel %s: %s", channel_id, exc
         )
@@ -309,7 +309,7 @@ async def poll_channel_rss(
         published_struct = getattr(entry, "published_parsed", None)
         if published_struct is not None:
             pub_ts = calendar.timegm(published_struct)
-            pub_dt = datetime.fromtimestamp(pub_ts, tz=timezone.utc)
+            pub_dt = datetime.fromtimestamp(pub_ts, tz=UTC)
             if date_from and pub_dt < date_from:
                 continue
             if date_to and pub_dt > date_to:

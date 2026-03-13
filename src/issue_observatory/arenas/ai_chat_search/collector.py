@@ -17,8 +17,9 @@ LLMs (Perplexity Sonar) when queried with Danish search terms.
 Two content record types are produced:
 - ``ai_chat_response`` — the synthesized answer (``text_content`` = model
   output, ``language="da"``, ``author_platform_id`` = model name).
-- ``ai_chat_citation`` — each cited URL (``platform`` = domain, ``url`` =
-  cited URL, ``text_content`` = snippet if available).
+- ``ai_chat_citation`` — each cited URL (``platform`` = ``"openrouter"``,
+  ``url`` = cited URL, ``text_content`` = snippet if available,
+  cited domain stored in ``raw_metadata["source_domain"]``).
 
 **Tiers**: MEDIUM (``perplexity/sonar``, 5 phrasings/term) and PREMIUM
 (``perplexity/sonar-pro``, 10 phrasings/term).  FREE tier is not supported
@@ -39,7 +40,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -52,6 +53,7 @@ from issue_observatory.arenas.ai_chat_search._records import (
 from issue_observatory.arenas.ai_chat_search.config import (
     AI_CHAT_SEARCH_TIERS,
     CHAT_SYSTEM_PROMPT,
+    CHAT_SYSTEM_PROMPTS,
     CHAT_TIMEOUT_SECONDS,
     EXPANSION_TIMEOUT_SECONDS,
     get_chat_model,
@@ -80,7 +82,7 @@ def _day_bucket_utc() -> str:
     Returns:
         UTC date string in ISO 8601 format, e.g. ``"2026-02-17"``.
     """
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return datetime.now(UTC).strftime("%Y-%m-%d")
 
 
 @register
@@ -98,7 +100,7 @@ class AiChatSearchCollector(ArenaCollector):
     Class Attributes:
         arena_name: ``"ai_chat_search"`` (written to ``content_records.arena``).
         platform_name: ``"openrouter"`` (written to ``content_records.platform``
-            for response records; citation records use the cited domain).
+            for both response and citation records).
         supported_tiers: ``[Tier.MEDIUM, Tier.PREMIUM]``.
 
     Args:
@@ -160,7 +162,8 @@ class AiChatSearchCollector(ArenaCollector):
             max_results: Upper bound on returned records.
             term_groups: Optional boolean AND/OR groups.  Each group is
                 submitted as a space-joined phrase prompt.
-            language_filter: Not used — prompts are already in Danish.
+            language_filter: Optional language codes.  The first code
+                selects the expansion prompt language.
 
         Returns:
             List of normalized content record dicts (mix of
@@ -189,6 +192,11 @@ class AiChatSearchCollector(ArenaCollector):
         model = get_chat_model(tier)
         n_phrasings = get_n_phrasings(tier)
 
+        # Resolve language for expansion prompts and record metadata.
+        from issue_observatory.core.language_utils import resolve_language_label
+
+        self._language_label = resolve_language_label(language_filter)
+
         credential = await self._acquire_credential(tier)
         api_key: str = credential["api_key"]
         credential_id: str = credential.get("id", "unknown")
@@ -203,13 +211,14 @@ class AiChatSearchCollector(ArenaCollector):
         else:
             effective_terms = list(terms)
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
+        self._current_tier_str = tier.value
         day_bucket = _day_bucket_utc()
 
         try:
             async with self._build_http_client(CHAT_TIMEOUT_SECONDS) as client:
                 for term in effective_terms:
-                    if len(all_records) >= effective_max:
+                    if self._total_emitted >= effective_max:
                         break
 
                     term_records = await self._collect_term(
@@ -220,9 +229,11 @@ class AiChatSearchCollector(ArenaCollector):
                         api_key=api_key,
                         credential_id=credential_id,
                         day_bucket=day_bucket,
-                        remaining_budget=effective_max - len(all_records),
+                        remaining_budget=effective_max - self._total_emitted,
                     )
-                    all_records.extend(term_records)
+                    self._emit_many(term_records)
+                    # Flush after each term so records persist immediately.
+                    self._flush()
 
         finally:
             if self.credential_pool is not None:
@@ -230,13 +241,14 @@ class AiChatSearchCollector(ArenaCollector):
                     credential_id=credential_id, task_id=None
                 )
 
+        self._flush()
         logger.info(
             "ai_chat_search: collect_by_terms — %d records for %d queries (tier=%s)",
-            len(all_records),
+            self._total_emitted,
             len(effective_terms),
             tier.value,
         )
-        return all_records
+        return list(self._batch_buffer)
 
     async def collect_by_actors(
         self,
@@ -356,7 +368,7 @@ class AiChatSearchCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
             ``arena``, ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat()
+        checked_at = datetime.now(UTC).isoformat()
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -370,12 +382,12 @@ class AiChatSearchCollector(ArenaCollector):
             credential = await self._acquire_credential(Tier.MEDIUM)
             api_key: str = credential["api_key"]
             credential_id = credential.get("id", "unknown")
-        except (NoCredentialAvailableError, Exception) as exc:  # noqa: BLE001
+        except (NoCredentialAvailableError, Exception):
             try:
                 credential = await self._acquire_credential(Tier.PREMIUM)
                 api_key = credential["api_key"]
                 credential_id = credential.get("id", "unknown")
-            except Exception as exc2:  # noqa: BLE001
+            except Exception as exc2:
                 return {
                     **base,
                     "status": "down",
@@ -432,7 +444,7 @@ class AiChatSearchCollector(ArenaCollector):
                 "status": "down",
                 "detail": f"Collection error during health check: {exc}",
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {
                 **base,
                 "status": "down",
@@ -464,7 +476,7 @@ class AiChatSearchCollector(ArenaCollector):
             NoCredentialAvailableError: If no credential is available.
         """
         if self.credential_pool is None:
-            import os  # noqa: PLC0415
+            import os
 
             api_key = os.environ.get("OPENROUTER_API_KEY")
             if not api_key:
@@ -533,7 +545,9 @@ class AiChatSearchCollector(ArenaCollector):
         """
         records: list[dict[str, Any]] = []
 
-        # Expand term into Danish phrasings
+        # Expand term into phrasings using the collection language.
+        # Use the tier's chat model for expansion to avoid upstream rate limits
+        # on the free google/gemma model.
         try:
             phrasings = await _query_expander.expand_term(
                 client=client,
@@ -541,6 +555,8 @@ class AiChatSearchCollector(ArenaCollector):
                 n_phrasings=n_phrasings,
                 api_key=api_key,
                 rate_limiter=self.rate_limiter,
+                model_override=model,
+                language=getattr(self, "_language_label", "da"),
             )
         except (ArenaRateLimitError, ArenaAuthError) as exc:
             if self.credential_pool is not None:
@@ -567,11 +583,15 @@ class AiChatSearchCollector(ArenaCollector):
             if len(records) >= remaining_budget:
                 break
 
+            chat_prompt = CHAT_SYSTEM_PROMPTS.get(
+                getattr(self, "_language_label", "da"),
+                CHAT_SYSTEM_PROMPTS.get("en", CHAT_SYSTEM_PROMPT),
+            )
             try:
                 response = await _openrouter.chat_completion(
                     client=client,
                     model=model,
-                    system_prompt=CHAT_SYSTEM_PROMPT,
+                    system_prompt=chat_prompt,
                     user_message=phrasing,
                     api_key=api_key,
                     rate_limiter=self.rate_limiter,
@@ -601,6 +621,8 @@ class AiChatSearchCollector(ArenaCollector):
                 day_bucket=day_bucket,
                 arena_name=self.arena_name,
                 platform_name=self.platform_name,
+                collection_tier=getattr(self, "_current_tier_str", "medium"),
+                language=getattr(self, "_language_label", "da"),
             )
             records.append(response_record)
             parent_id = response_record["platform_id"]
@@ -617,6 +639,9 @@ class AiChatSearchCollector(ArenaCollector):
                     parent_platform_id=parent_id,
                     day_bucket=day_bucket,
                     arena_name=self.arena_name,
+                    platform_name=self.platform_name,
+                    collection_tier=getattr(self, "_current_tier_str", "medium"),
+                    language=getattr(self, "_language_label", "da"),
                 )
                 records.append(citation_record)
 

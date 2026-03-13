@@ -25,7 +25,7 @@ Danish defaults: ``lang:da`` operator is unconditionally appended.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -39,9 +39,6 @@ from issue_observatory.arenas.x_twitter.config import (
     MEDIUM_RATE_LIMIT_WINDOW_SECONDS,
     PREMIUM_RATE_LIMIT_MAX_CALLS,
     PREMIUM_RATE_LIMIT_WINDOW_SECONDS,
-    TWITTERAPIIO_BASE_URL,
-    TWITTERAPIIO_QUERY_TYPE,
-    TWITTERAPIIO_USER_TWEETS_URL,
     TWITTER_V2_EXPANSIONS,
     TWITTER_V2_MAX_RESULTS_PER_PAGE,
     TWITTER_V2_SEARCH_ALL,
@@ -49,6 +46,8 @@ from issue_observatory.arenas.x_twitter.config import (
     TWITTER_V2_TWEET_FIELDS,
     TWITTER_V2_USER_FIELDS,
     TWITTER_V2_USER_TWEETS,
+    TWITTERAPIIO_BASE_URL,
+    TWITTERAPIIO_QUERY_TYPE,
     XTWITTER_TIERS,
 )
 from issue_observatory.config.tiers import TierConfig
@@ -58,6 +57,7 @@ from issue_observatory.core.exceptions import (
     ArenaRateLimitError,
     NoCredentialAvailableError,
 )
+from issue_observatory.core.language_utils import resolve_x_lang_operator
 from issue_observatory.core.normalizer import Normalizer
 
 logger = logging.getLogger(__name__)
@@ -85,6 +85,8 @@ class XTwitterCollector(ArenaCollector):
     platform_name: str = _PLATFORM
     supported_tiers: list[Tier] = [Tier.MEDIUM, Tier.PREMIUM]
     temporal_mode: TemporalMode = TemporalMode.RECENT
+    supports_actor_collection: bool = True
+    source_list_config_key: str | None = "custom_accounts"
 
     def __init__(
         self,
@@ -150,6 +152,9 @@ class XTwitterCollector(ArenaCollector):
         date_from_str = _to_date_str(date_from)
         date_to_str = _to_date_str(date_to)
 
+        # Resolve language operator for this collection run.
+        self._lang_operator = resolve_x_lang_operator(language_filter)
+
         # Build query strings using Twitter boolean syntax.
         if term_groups is not None:
             query_strings: list[str] = [
@@ -160,13 +165,14 @@ class XTwitterCollector(ArenaCollector):
         else:
             query_strings = list(terms)
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         async with self._build_http_client() as client:
             for term in query_strings:
-                if len(all_records) >= effective_max:
+                if self._total_emitted >= effective_max:
                     break
-                remaining = effective_max - len(all_records)
+                remaining = effective_max - self._total_emitted
+                count_before = self._total_emitted
                 if tier == Tier.MEDIUM:
                     records = await self._collect_medium_term(
                         client, term, remaining, date_from_str, date_to_str
@@ -175,15 +181,18 @@ class XTwitterCollector(ArenaCollector):
                     records = await self._collect_premium_term(
                         client, term, remaining, date_from_str, date_to_str
                     )
-                all_records.extend(records)
+                self._emit_many(records)
+                self._record_input_count(term, self._total_emitted - count_before)
+                self._flush()
 
+        self._flush()
         logger.info(
             "x_twitter: collect_by_terms completed — tier=%s queries=%d records=%d",
             tier.value,
             len(query_strings),
-            len(all_records),
+            self._total_emitted,
         )
-        return all_records
+        return list(self._batch_buffer)
 
     async def collect_by_actors(
         self,
@@ -230,14 +239,15 @@ class XTwitterCollector(ArenaCollector):
         date_from_str = _to_date_str(date_from)
         date_to_str = _to_date_str(date_to)
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
         self._skipped_actors = []
 
         async with self._build_http_client() as client:
             for actor_id in actor_ids:
-                if len(all_records) >= effective_max:
+                if self._total_emitted >= effective_max:
                     break
-                remaining = effective_max - len(all_records)
+                remaining = effective_max - self._total_emitted
+                count_before = self._total_emitted
                 try:
                     if tier == Tier.MEDIUM:
                         records = await self._collect_medium_actor(
@@ -256,16 +266,19 @@ class XTwitterCollector(ArenaCollector):
                         error=str(exc),
                     )
                     continue
-                all_records.extend(records)
+                self._emit_many(records)
+                self._record_input_count(actor_id, self._total_emitted - count_before)
+                self._flush()
 
+        self._flush()
         logger.info(
             "x_twitter: collect_by_actors completed — tier=%s actors=%d records=%d skipped=%d",
             tier.value,
             len(actor_ids),
-            len(all_records),
+            self._total_emitted,
             len(self._skipped_actors),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     def get_tier_config(self, tier: Tier) -> TierConfig | None:
         """Return tier configuration for the X/Twitter arena.
@@ -342,6 +355,11 @@ class XTwitterCollector(ArenaCollector):
         cap on just the most recent day.  The global ``max_results`` cap
         still applies across all windows.
 
+        Records are emitted incrementally via ``_emit()`` during pagination
+        so that the batch sink flushes to the database every ``batch_size``
+        records.  This prevents data loss when tasks are interrupted and
+        ensures DB writes happen throughout collection, not just at the end.
+
         Args:
             client: Shared HTTP client.
             term: Search term (operators allowed).
@@ -350,7 +368,7 @@ class XTwitterCollector(ArenaCollector):
             date_to: ISO date upper bound (``YYYY-MM-DD``), optional.
 
         Returns:
-            List of normalized tweet records.
+            Empty list (records are emitted incrementally via ``_emit``).
         """
         # When both dates are provided and span >1 day, use daily windowing.
         if date_from and date_to and date_from[:10] != date_to[:10]:
@@ -366,27 +384,27 @@ class XTwitterCollector(ArenaCollector):
             # Single window: use the original date params as-is.
             windows = [(date_from, date_to)]
 
-        all_records: list[dict[str, Any]] = []
+        collected = 0
 
         for window_from, window_to in windows:
-            if len(all_records) >= max_results:
+            if collected >= max_results:
                 break
 
-            window_records = await self._paginate_medium(
-                client, term, max_results - len(all_records), window_from, window_to
+            window_count = await self._paginate_medium(
+                client, term, max_results - collected, window_from, window_to
             )
-            all_records.extend(window_records)
+            collected += window_count
 
-            if window_records:
+            if window_count:
                 logger.debug(
                     "x_twitter: window %s–%s yielded %d records (total so far: %d)",
                     window_from,
                     window_to,
-                    len(window_records),
-                    len(all_records),
+                    window_count,
+                    collected,
                 )
 
-        return all_records
+        return []
 
     async def _paginate_medium(
         self,
@@ -395,8 +413,13 @@ class XTwitterCollector(ArenaCollector):
         max_results: int,
         date_from: str | None,
         date_to: str | None,
-    ) -> list[dict[str, Any]]:
+    ) -> int:
         """Paginate a single TwitterAPI.io search window.
+
+        Records are emitted incrementally via ``_emit()`` for batch
+        persistence during pagination, ensuring data is written to the
+        database every ``batch_size`` records rather than accumulated
+        entirely in memory.
 
         Args:
             client: Shared HTTP client.
@@ -406,7 +429,7 @@ class XTwitterCollector(ArenaCollector):
             date_to: Window end date (``YYYY-MM-DD``), optional.
 
         Returns:
-            List of normalized tweet records for this window.
+            Number of records emitted for this window.
         """
         cred = await self._acquire_medium_credential()
         if cred is None:
@@ -414,13 +437,16 @@ class XTwitterCollector(ArenaCollector):
 
         cred_id: str = cred["id"]
         api_key: str = cred.get("api_key", "")
-        records: list[dict[str, Any]] = []
+        collected = 0
         cursor: str | None = None
-        seen_cursors: set[str] = set()
+        seen_ids: set[str] = set()
 
         try:
-            while len(records) < max_results:
-                query = _build_query(term, date_from, date_to)
+            while collected < max_results:
+                query = _build_query(
+                    term, date_from, date_to,
+                    lang_operator=getattr(self, "_lang_operator", DANISH_LANG_OPERATOR),
+                )
                 await self._wait_rate_limit_medium(cred_id)
 
                 payload: dict[str, Any] = {
@@ -435,21 +461,40 @@ class XTwitterCollector(ArenaCollector):
                 if not tweets:
                     break
 
-                for tweet in tweets:
-                    if len(records) >= max_results:
+                # Only keep tweets we haven't seen yet.  TwitterAPI.io can
+                # return unique cursors forever while recycling the same
+                # result set, so we filter by ID and stop when a page yields
+                # zero new tweets.
+                new_tweets: list[dict[str, Any]] = []
+                for t in tweets:
+                    tid = str(t.get("id") or t.get("tweetId", ""))
+                    if tid and tid not in seen_ids:
+                        seen_ids.add(tid)
+                        new_tweets.append(t)
+
+                if not new_tweets:
+                    logger.debug(
+                        "x_twitter: stopping pagination — 0 new tweets on page "
+                        "(%d seen total)",
+                        len(seen_ids),
+                    )
+                    break
+
+                for tweet in new_tweets:
+                    if collected >= max_results:
                         break
-                    records.append(self.normalize(tweet, tier_source="medium"))
+                    self._emit(self.normalize(tweet, tier_source="medium"))
+                    collected += 1
 
                 cursor = data.get("next_cursor")
-                if not cursor or cursor in seen_cursors:
+                if not cursor:
                     break
-                seen_cursors.add(cursor)
 
         finally:
             if self.credential_pool:
                 await self.credential_pool.release(credential_id=cred_id)
 
-        return records
+        return collected
 
     async def _collect_medium_actor(
         self,
@@ -465,6 +510,8 @@ class XTwitterCollector(ArenaCollector):
         advanced_search endpoint.  Uses daily windowing when both dates are
         provided and span more than one calendar day.
 
+        Records are emitted incrementally via ``_emit()`` during pagination.
+
         Args:
             client: Shared HTTP client.
             actor_id: Twitter user ID or ``@handle``.
@@ -473,7 +520,7 @@ class XTwitterCollector(ArenaCollector):
             date_to: ISO date upper bound, optional.
 
         Returns:
-            List of normalized tweet records.
+            Empty list (records are emitted incrementally via ``_emit``).
         """
         handle = _normalize_handle(actor_id)
         term = f"from:{handle}"
@@ -484,18 +531,18 @@ class XTwitterCollector(ArenaCollector):
         else:
             windows = [(date_from, date_to)]
 
-        all_records: list[dict[str, Any]] = []
+        collected = 0
 
         for window_from, window_to in windows:
-            if len(all_records) >= max_results:
+            if collected >= max_results:
                 break
 
-            window_records = await self._paginate_medium(
-                client, term, max_results - len(all_records), window_from, window_to
+            window_count = await self._paginate_medium(
+                client, term, max_results - collected, window_from, window_to
             )
-            all_records.extend(window_records)
+            collected += window_count
 
-        return all_records
+        return []
 
     async def _collect_premium_term(
         self,
@@ -507,7 +554,8 @@ class XTwitterCollector(ArenaCollector):
     ) -> list[dict[str, Any]]:
         """Paginate X API v2 full-archive search results for a single term.
 
-        Uses ``/2/tweets/search/all`` for full-archive access.
+        Uses ``/2/tweets/search/all`` for full-archive access.  Records are
+        emitted incrementally via ``_emit()`` for batch persistence.
 
         Args:
             client: Shared HTTP client.
@@ -517,7 +565,7 @@ class XTwitterCollector(ArenaCollector):
             date_to: ISO date upper bound, optional.
 
         Returns:
-            List of normalized tweet records.
+            Empty list (records are emitted incrementally via ``_emit``).
         """
         cred = await self._acquire_premium_credential()
         if cred is None:
@@ -525,14 +573,15 @@ class XTwitterCollector(ArenaCollector):
 
         cred_id: str = cred["id"]
         bearer_token: str = cred.get("bearer_token", "")
-        records: list[dict[str, Any]] = []
+        collected = 0
         next_token: str | None = None
-        seen_cursors: set[str] = set()
+        seen_ids: set[str] = set()
 
         try:
-            while len(records) < max_results:
-                page_size = min(TWITTER_V2_MAX_RESULTS_PER_PAGE, max_results - len(records))
-                query = f"{term} {DANISH_LANG_OPERATOR}"
+            while collected < max_results:
+                page_size = min(TWITTER_V2_MAX_RESULTS_PER_PAGE, max_results - collected)
+                lang_op = getattr(self, "_lang_operator", DANISH_LANG_OPERATOR)
+                query = f"{term} {lang_op}"
                 params: dict[str, Any] = {
                     "query": query,
                     "max_results": page_size,
@@ -556,23 +605,36 @@ class XTwitterCollector(ArenaCollector):
                 tweets = data.get("data") or []
                 users = _index_v2_users(data.get("includes", {}).get("users", []))
 
-                for tweet in tweets:
-                    if len(records) >= max_results:
+                new_tweets = [
+                    t for t in tweets
+                    if str(t.get("id", "")) not in seen_ids
+                ]
+                seen_ids.update(str(t.get("id", "")) for t in tweets)
+
+                if not new_tweets:
+                    logger.debug(
+                        "x_twitter: premium term — 0 new tweets on page (%d seen)",
+                        len(seen_ids),
+                    )
+                    break
+
+                for tweet in new_tweets:
+                    if collected >= max_results:
                         break
                     raw = {**tweet, "_users": users}
-                    records.append(self.normalize(raw, tier_source="premium"))
+                    self._emit(self.normalize(raw, tier_source="premium"))
+                    collected += 1
 
                 meta = data.get("meta", {})
                 next_token = meta.get("next_token")
-                if not next_token or next_token in seen_cursors:
+                if not next_token:
                     break
-                seen_cursors.add(next_token)
 
         finally:
             if self.credential_pool:
                 await self.credential_pool.release(credential_id=cred_id)
 
-        return records
+        return []
 
     async def _collect_premium_actor(
         self,
@@ -585,7 +647,8 @@ class XTwitterCollector(ArenaCollector):
         """Collect tweets from a single actor using X API v2.
 
         Uses ``GET /2/users/{id}/tweets`` when *actor_id* is a numeric string,
-        or falls back to a ``from:{handle}`` search for handles.
+        or falls back to a ``from:{handle}`` search for handles.  Records are
+        emitted incrementally via ``_emit()`` for batch persistence.
 
         Args:
             client: Shared HTTP client.
@@ -595,7 +658,7 @@ class XTwitterCollector(ArenaCollector):
             date_to: ISO date upper bound, optional.
 
         Returns:
-            List of normalized tweet records.
+            Empty list (records are emitted incrementally via ``_emit``).
         """
         cred = await self._acquire_premium_credential()
         if cred is None:
@@ -603,16 +666,16 @@ class XTwitterCollector(ArenaCollector):
 
         cred_id: str = cred["id"]
         bearer_token: str = cred.get("bearer_token", "")
-        records: list[dict[str, Any]] = []
+        collected = 0
         next_token: str | None = None
-        seen_cursors: set[str] = set()
+        seen_ids: set[str] = set()
 
         # Determine endpoint based on whether actor_id is numeric.
         is_numeric = actor_id.lstrip("@").isdigit()
 
         try:
-            while len(records) < max_results:
-                page_size = min(TWITTER_V2_MAX_RESULTS_PER_PAGE, max_results - len(records))
+            while collected < max_results:
+                page_size = min(TWITTER_V2_MAX_RESULTS_PER_PAGE, max_results - collected)
                 await self._wait_rate_limit_premium(cred_id)
 
                 if is_numeric:
@@ -638,8 +701,11 @@ class XTwitterCollector(ArenaCollector):
                     # Handle-based fallback via full-archive search.
                     handle = _normalize_handle(actor_id)
                     endpoint = TWITTER_V2_SEARCH_ALL
+                    lang_op = getattr(
+                        self, "_lang_operator", DANISH_LANG_OPERATOR,
+                    )
                     params = {
-                        "query": f"from:{handle} {DANISH_LANG_OPERATOR}",
+                        "query": f"from:{handle} {lang_op}",
                         "max_results": page_size,
                         "tweet.fields": TWITTER_V2_TWEET_FIELDS,
                         "expansions": TWITTER_V2_EXPANSIONS,
@@ -660,23 +726,36 @@ class XTwitterCollector(ArenaCollector):
                 tweets = data.get("data") or []
                 users = _index_v2_users(data.get("includes", {}).get("users", []))
 
-                for tweet in tweets:
-                    if len(records) >= max_results:
+                new_tweets = [
+                    t for t in tweets
+                    if str(t.get("id", "")) not in seen_ids
+                ]
+                seen_ids.update(str(t.get("id", "")) for t in tweets)
+
+                if not new_tweets:
+                    logger.debug(
+                        "x_twitter: premium actor — 0 new tweets on page (%d seen)",
+                        len(seen_ids),
+                    )
+                    break
+
+                for tweet in new_tweets:
+                    if collected >= max_results:
                         break
                     raw = {**tweet, "_users": users}
-                    records.append(self.normalize(raw, tier_source="premium"))
+                    self._emit(self.normalize(raw, tier_source="premium"))
+                    collected += 1
 
                 meta = data.get("meta", {})
                 next_token = meta.get("next_token") or meta.get("pagination_token")
-                if not next_token or next_token in seen_cursors:
+                if not next_token:
                     break
-                seen_cursors.add(next_token)
 
         finally:
             if self.credential_pool:
                 await self.credential_pool.release(credential_id=cred_id)
 
-        return records
+        return []
 
     # ------------------------------------------------------------------
     # Normalizer parsing paths
@@ -881,7 +960,7 @@ class XTwitterCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
             ``arena``, ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -1147,8 +1226,8 @@ class XTwitterCollector(ArenaCollector):
             headers: Dict with ``x-rate-limit-remaining`` and
                 ``x-rate-limit-reset`` keys (may be empty strings).
         """
-        import asyncio  # noqa: PLC0415
-        import time  # noqa: PLC0415
+        import asyncio
+        import time
 
         remaining_str = headers.get("x-rate-limit-remaining", "")
         reset_str = headers.get("x-rate-limit-reset", "")
@@ -1196,18 +1275,20 @@ def _build_query(
     term: str,
     date_from: str | None,
     date_to: str | None,
+    lang_operator: str = DANISH_LANG_OPERATOR,
 ) -> str:
-    """Construct a search query string with Danish language and date operators.
+    """Construct a search query string with language and date operators.
 
     Args:
         term: Base search term or X operator query.
         date_from: ISO date lower bound (``YYYY-MM-DD``), optional.
         date_to: ISO date upper bound (``YYYY-MM-DD``), optional.
+        lang_operator: Language operator (e.g. ``"lang:da"``).
 
     Returns:
         Fully-constructed query string.
     """
-    parts = [term, DANISH_LANG_OPERATOR]
+    parts = [term, lang_operator]
     if date_from:
         parts.append(f"since:{date_from}")
     if date_to:
@@ -1230,6 +1311,11 @@ def _normalize_handle(actor_id: str) -> str:
 def _to_date_str(value: datetime | str | None) -> str | None:
     """Convert a datetime or string to a ``YYYY-MM-DD`` date string.
 
+    Parses the full ISO 8601 string (including timezone) and converts to
+    Danish local time before extracting the date, so that
+    ``"2026-03-10T23:00:00+00:00"`` (CET midnight) becomes ``"2026-03-11"``
+    rather than ``"2026-03-10"``.
+
     Args:
         value: Datetime object, ISO 8601 string, or ``None``.
 
@@ -1239,10 +1325,21 @@ def _to_date_str(value: datetime | str | None) -> str | None:
     if value is None:
         return None
     if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            from zoneinfo import ZoneInfo
+
+            value = value.astimezone(ZoneInfo("Europe/Copenhagen"))
         return value.strftime("%Y-%m-%d")
-    if isinstance(value, str):
-        return value[:10] if len(value) >= 10 else value
-    return None
+    if isinstance(value, str) and len(value) >= 10:
+        try:
+            dt = datetime.fromisoformat(value)
+            from zoneinfo import ZoneInfo
+
+            dt = dt.astimezone(ZoneInfo("Europe/Copenhagen"))
+            return dt.strftime("%Y-%m-%d")
+        except (ValueError, KeyError):
+            return value[:10]
+    return value if isinstance(value, str) else None
 
 
 def _generate_daily_windows(
@@ -1263,8 +1360,8 @@ def _generate_daily_windows(
         List of ``(since_str, until_str)`` tuples in chronological order.
         Returns a single-element list when ``date_from == date_to``.
     """
-    start = datetime.strptime(date_from[:10], "%Y-%m-%d")
-    end = datetime.strptime(date_to[:10], "%Y-%m-%d")
+    start = datetime.strptime(_to_date_str(date_from) or date_from[:10], "%Y-%m-%d")
+    end = datetime.strptime(_to_date_str(date_to) or date_to[:10], "%Y-%m-%d")
     windows: list[tuple[str, str]] = []
     current = start
     while current <= end:

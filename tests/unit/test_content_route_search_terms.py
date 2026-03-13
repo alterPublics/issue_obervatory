@@ -21,8 +21,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 # ---------------------------------------------------------------------------
 # Env bootstrap
@@ -32,9 +30,8 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.api.routes.content import get_search_terms_for_run  # noqa: E402
-from issue_observatory.core.models.users import User  # noqa: E402
-
+from issue_observatory.api.routes.content import get_search_terms_for_run
+from issue_observatory.core.models.users import User
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -70,6 +70,7 @@ def _build_run_filter(
     date_to: Any,
     params: dict,
     table_alias: str = "",
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> list[str]:
     """Build a list of SQL WHERE clause predicates for content_records.
 
@@ -81,6 +82,8 @@ def _build_run_filter(
     Args:
         table_alias: Optional table alias prefix (e.g. ``"a."``).  Include
             trailing dot.
+        query_design_ids: Restrict to records belonging to any of these query
+            designs.  Takes precedence over *query_design_id* if both given.
 
     Returns:
         List of SQL predicate strings (no leading ``WHERE``).  Never empty
@@ -89,6 +92,7 @@ def _build_run_filter(
     return build_content_filters(
         query_design_id, run_id, arena, platform, date_from, date_to, params,
         table_alias=table_alias,
+        query_design_ids=query_design_ids,
     )
 
 
@@ -121,6 +125,7 @@ async def get_actor_co_occurrence(
     date_to: Any = None,
     min_co_occurrences: int = 2,
     limit: int = 200,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> dict:
     """Actor co-occurrence network based on shared search terms.
 
@@ -162,12 +167,14 @@ async def get_actor_co_occurrence(
 
     # Build filter clauses for both sides of the self-join.
     a_clauses = _build_run_filter(
-        query_design_id, run_id, arena, platform, date_from, date_to, params, "a."
+        query_design_id, run_id, arena, platform, date_from, date_to, params, "a.",
+        query_design_ids=query_design_ids,
     )
     # Duplicate filter params for the b side — use _b suffixed names.
     b_params: dict[str, Any] = {}
     b_clauses_raw = _build_run_filter(
-        query_design_id, run_id, arena, platform, date_from, date_to, b_params, "b."
+        query_design_id, run_id, arena, platform, date_from, date_to, b_params, "b.",
+        query_design_ids=query_design_ids,
     )
     # Rename b-side params to avoid collisions with a-side params.
     b_clauses: list[str] = []
@@ -237,11 +244,13 @@ async def get_actor_co_occurrence(
         "limit": limit,
     }
     a_clauses2 = _build_run_filter(
-        query_design_id, run_id, arena, platform, date_from, date_to, edge_params, "a."
+        query_design_id, run_id, arena, platform, date_from, date_to, edge_params, "a.",
+        query_design_ids=query_design_ids,
     )
     b_params2: dict[str, Any] = {}
     b_clauses_raw2 = _build_run_filter(
-        query_design_id, run_id, arena, platform, date_from, date_to, b_params2, "b."
+        query_design_id, run_id, arena, platform, date_from, date_to, b_params2, "b.",
+        query_design_ids=query_design_ids,
     )
     b_clauses2: list[str] = []
     for clause in b_clauses_raw2:
@@ -315,6 +324,7 @@ async def get_term_co_occurrence(
     arena: str | None = None,
     min_co_occurrences: int = 2,
     limit: int = 100,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> dict:
     """Term co-occurrence network — pairs of search terms appearing in the same record.
 
@@ -345,7 +355,8 @@ async def get_term_co_occurrence(
     # Platform is not relevant for term networks; arena is passed through
     # when the caller wants to restrict to a single arena.
     scope_clauses = _build_run_filter(
-        query_design_id, run_id, arena, None, None, None, params
+        query_design_id, run_id, arena, None, None, None, params,
+        query_design_ids=query_design_ids,
     )
     scope_filter = _and(scope_clauses)
 
@@ -443,6 +454,7 @@ async def get_cross_platform_actors(
     query_design_id: uuid.UUID | None = None,
     run_id: uuid.UUID | None = None,
     min_platforms: int = 2,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> list[dict]:
     """Find canonical actors active on multiple platforms.
 
@@ -476,7 +488,8 @@ async def get_cross_platform_actors(
     # Use the shared filter builder with the "c." alias for content_records c.
     # The duplicate exclusion clause is included automatically.
     scope_clauses = _build_run_filter(
-        query_design_id, run_id, None, None, None, None, params, table_alias="c."
+        query_design_id, run_id, None, None, None, None, params, table_alias="c.",
+        query_design_ids=query_design_ids,
     )
     scope_filter = _and(scope_clauses)
 
@@ -519,6 +532,7 @@ async def build_bipartite_network(
     run_id: uuid.UUID | None = None,
     arena: str | None = None,
     limit: int = 500,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> dict:
     """Bipartite network linking actors to the search terms they match.
 
@@ -554,7 +568,8 @@ async def build_bipartite_network(
     # Use the shared filter builder with the "cr." alias for content_records cr.
     # The duplicate exclusion clause is included automatically.
     scope_clauses = _build_run_filter(
-        query_design_id, run_id, arena, None, None, None, params, table_alias="cr."
+        query_design_id, run_id, arena, None, None, None, params, table_alias="cr.",
+        query_design_ids=query_design_ids,
     )
     scope_filter = _and(scope_clauses)
 
@@ -650,6 +665,7 @@ async def get_temporal_network_snapshots(
     interval: str = "week",
     network_type: str = "actor",
     limit_per_snapshot: int = 200,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> list[dict]:
     """Generate a time-series of network snapshots.
 
@@ -705,11 +721,26 @@ async def get_temporal_network_snapshots(
         )
 
     params: dict[str, Any] = {}
-    scope_clauses = _build_run_filter(
+    # Build scope filter with the "a." alias for the date-range query (which
+    # always uses ``content_records a``) and for the actor temporal query.
+    scope_clauses_a = _build_run_filter(
         query_design_id, run_id, None, None, None, None, params,
-        table_alias="a.",
+        table_alias="a.", query_design_ids=query_design_ids,
     )
-    scope_filter = _and(scope_clauses)
+    scope_filter_a = _and(scope_clauses_a)
+
+    # Build a separate scope filter with the "cr." alias for the term temporal
+    # query, which uses ``content_records cr``.  We pass a fresh params dict
+    # so the helper can write the same keys; since the values are identical we
+    # merge them into the shared params dict afterwards.
+    cr_params: dict[str, Any] = {}
+    scope_clauses_cr = _build_run_filter(
+        query_design_id, run_id, None, None, None, None, cr_params,
+        table_alias="cr.", query_design_ids=query_design_ids,
+    )
+    scope_filter_cr = _and(scope_clauses_cr)
+    # Merge (values are identical; keys are the same — no collision risk).
+    params.update(cr_params)
 
     # ------------------------------------------------------------------
     # Step 1: determine date range and auto-upgrade interval if needed.
@@ -721,7 +752,7 @@ async def get_temporal_network_snapshots(
             MAX(a.published_at) AS max_date
         FROM content_records a
         WHERE a.published_at IS NOT NULL
-          {scope_filter}
+          {scope_filter_a}
         """
     )
     range_result = await db.execute(range_sql, params)
@@ -763,11 +794,11 @@ async def get_temporal_network_snapshots(
     # ------------------------------------------------------------------
     if network_type == "actor":
         rows = await _fetch_actor_temporal_rows(
-            db, params, scope_filter, effective_interval
+            db, params, scope_filter_a, effective_interval
         )
     else:
         rows = await _fetch_term_temporal_rows(
-            db, params, scope_filter, effective_interval
+            db, params, scope_filter_cr, effective_interval
         )
 
     if not rows:
@@ -834,24 +865,27 @@ async def _fetch_actor_temporal_rows(
         List of SQLAlchemy Row objects with columns ``period``, ``author_a``,
         ``author_b``, ``weight``, ``name_a``, ``name_b``.
     """
-    # The scope filter references params keys without aliases.  For the
-    # self-join we apply them to the ``a`` side only; the ``b`` side mirrors
-    # the same scope via a renamed param set.
+    # The scope filter references params keys scoped to the ``a`` alias and
+    # is applied to the ``a`` side only.  The ``b`` side needs its own set of
+    # always-on predicates (duplicate exclusion + term_matched) using the
+    # ``b.`` table alias so that all column references are unambiguous in the
+    # self-join.  Bind params are renamed with a ``_b`` suffix to avoid
+    # collisions with the a-side params that are already in ``params``.
     b_params: dict[str, Any] = {}
     b_clauses_raw = _build_run_filter(
-        None, None, None, None, None, None, b_params
+        None, None, None, None, None, None, b_params, table_alias="b."
     )
-    # Extract only the duplicate-exclusion clause for the b side (since
-    # run_id / query_design_id are already applied on the a side).
-    # Re-alias to avoid bind-param collisions.
+    # Rename b-side bind params to avoid collisions with a-side params.
     b_clauses: list[str] = []
     for clause in b_clauses_raw:
-        new_clause = clause.replace("raw_metadata", "b.raw_metadata")
+        new_clause = clause
+        for key in list(b_params.keys()):
+            new_key = key + "_b"
+            new_clause = new_clause.replace(f":{key}", f":{new_key}")
+            params[new_key] = b_params[key]
         b_clauses.append(new_clause)
 
-    b_filter = " AND ".join(b_clauses)
-    if b_filter:
-        b_filter = "AND " + b_filter
+    b_filter = _and(b_clauses)
 
     sql = text(
         f"""
@@ -1033,6 +1067,7 @@ async def build_enhanced_bipartite_network(
     query_design_id: uuid.UUID | None = None,
     run_id: uuid.UUID | None = None,
     limit: int = 500,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> dict:
     """Enhanced bipartite network combining search terms and emergent topics.
 
@@ -1074,7 +1109,8 @@ async def build_enhanced_bipartite_network(
     """
     # Step 1: get the base bipartite graph from search-term edges.
     base_graph = await build_bipartite_network(
-        db, query_design_id=query_design_id, run_id=run_id, limit=limit
+        db, query_design_id=query_design_id, run_id=run_id, limit=limit,
+        query_design_ids=query_design_ids,
     )
 
     # Step 2: annotate existing term nodes with term_type="search_term"
@@ -1104,7 +1140,8 @@ async def build_enhanced_bipartite_network(
 
     params: dict[str, Any] = {}
     scope_clauses = _build_run_filter(
-        query_design_id, run_id, None, None, None, None, params, table_alias="cr."
+        query_design_id, run_id, None, None, None, None, params, table_alias="cr.",
+        query_design_ids=query_design_ids,
     )
     scope_filter = _and(scope_clauses)
 

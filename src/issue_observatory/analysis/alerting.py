@@ -226,7 +226,7 @@ async def detect_volume_spikes(
             GROUP BY arena, platform, collection_run_id
         ) sub
         GROUP BY arena, platform
-        """  # noqa: S608 — id_placeholders are UUID strings, not user input
+        """
     )
     avg_result = await session.execute(rolling_avg_sql)
     avg_rows = {(row.arena, row.platform): float(row.avg_count) for row in avg_result.fetchall()}

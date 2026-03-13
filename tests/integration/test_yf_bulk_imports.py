@@ -8,17 +8,14 @@ Uses conftest fixtures for database sessions, users, and HTTP client.
 
 from __future__ import annotations
 
-import uuid
-
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from issue_observatory.core.models.actors import Actor, ActorListMember
 from issue_observatory.core.models.query_design import ActorList, QueryDesign, SearchTerm
-
 
 # ---------------------------------------------------------------------------
 # Local fixtures
@@ -47,7 +44,7 @@ async def other_auth_headers(
     test_user_2, client: AsyncClient
 ) -> dict[str, str]:
     """Return auth headers for a second user (non-owner of test_design)."""
-    from tests.conftest import TEST_PASSWORD  # noqa: PLC0415
+    from tests.conftest import TEST_PASSWORD
 
     response = await client.post(
         "/auth/bearer/login",

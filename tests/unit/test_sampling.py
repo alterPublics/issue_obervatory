@@ -31,14 +31,14 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.sampling.network_expander import NetworkExpander  # noqa: E402
-from issue_observatory.sampling.similarity_finder import (  # noqa: E402
+from issue_observatory.sampling.network_expander import NetworkExpander
+from issue_observatory.sampling.similarity_finder import (
     SimilarityFinder,
     _name_similarity,
     _tokenize,
     _word_overlap_similarity,
 )
-from issue_observatory.sampling.snowball import SnowballResult, SnowballSampler  # noqa: E402
+from issue_observatory.sampling.snowball import SnowballResult, SnowballSampler
 
 # ---------------------------------------------------------------------------
 # AT Protocol endpoint constants (mirroring network_expander.py)

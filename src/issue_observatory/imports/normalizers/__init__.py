@@ -18,15 +18,15 @@ Normalizers:
 from __future__ import annotations
 
 __all__ = [
-    "LinkedInNormalizer",
-    "TwitterNormalizer",
     "InstagramNormalizer",
-    "TikTokNormalizer",
+    "LinkedInNormalizer",
     "ThreadsNormalizer",
+    "TikTokNormalizer",
+    "TwitterNormalizer",
 ]
 
-from issue_observatory.imports.normalizers.linkedin import LinkedInNormalizer
-from issue_observatory.imports.normalizers.twitter import TwitterNormalizer
 from issue_observatory.imports.normalizers.instagram import InstagramNormalizer
-from issue_observatory.imports.normalizers.tiktok import TikTokNormalizer
+from issue_observatory.imports.normalizers.linkedin import LinkedInNormalizer
 from issue_observatory.imports.normalizers.threads import ThreadsNormalizer
+from issue_observatory.imports.normalizers.tiktok import TikTokNormalizer
+from issue_observatory.imports.normalizers.twitter import TwitterNormalizer

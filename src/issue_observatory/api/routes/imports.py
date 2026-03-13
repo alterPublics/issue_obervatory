@@ -24,7 +24,8 @@ from __future__ import annotations
 import csv
 import io
 import json
-from typing import Annotated, Any, Optional
+from datetime import UTC
+from typing import Annotated
 from uuid import UUID
 
 import structlog
@@ -189,7 +190,7 @@ async def _bulk_insert(
 
         # BLOCKER-1: Use ON CONFLICT with WHERE clause to match partial unique index
         stmt = text(
-            f"INSERT INTO content_records ({col_list}) "  # noqa: S608
+            f"INSERT INTO content_records ({col_list}) "
             f"VALUES ({placeholders}) "
             f"ON CONFLICT (content_hash, published_at) WHERE content_hash IS NOT NULL DO NOTHING"
         )
@@ -228,7 +229,7 @@ async def import_content(
         ),
     ],
     query_design_id: Annotated[
-        Optional[UUID],
+        UUID | None,
         Form(description="Optional query design UUID to associate with imported records."),
     ] = None,
 ) -> dict:
@@ -313,7 +314,7 @@ async def import_content(
                 if isinstance(record.get("raw_metadata"), dict):
                     record["raw_metadata"]["collection_method"] = collection_method
                 records_to_insert.append(record)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 errors.append({"row": line_num, "error": str(exc)})
 
     else:  # csv
@@ -342,7 +343,7 @@ async def import_content(
                 if isinstance(record.get("raw_metadata"), dict):
                     record["raw_metadata"]["collection_method"] = collection_method
                 records_to_insert.append(record)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 errors.append({"row": row_num, "error": str(exc)})
 
     # ---- Error threshold check ---------------------------------------------
@@ -470,11 +471,10 @@ async def zeeschuimer_import_dataset(
         HTTPException: 404 if platform is not supported.
         HTTPException: 500 on processing errors.
     """
-    from datetime import datetime
-    from datetime import timezone as dt_timezone
-    from pathlib import Path
     import tempfile
     import uuid as uuid_module
+    from datetime import datetime
+    from pathlib import Path
 
     from issue_observatory.core.models.zeeschuimer_import import ZeeschuimerImport
     from issue_observatory.imports.zeeschuimer import ZeeschuimerProcessor
@@ -512,7 +512,7 @@ async def zeeschuimer_import_dataset(
         initiated_by=current_user.id,
         query_design_id=None,  # Can be extended later
         status="queued",
-        started_at=datetime.now(dt_timezone.utc),
+        started_at=datetime.now(UTC),
     )
     db.add(zeeschuimer_import)
     await db.commit()
@@ -581,7 +581,7 @@ async def zeeschuimer_import_dataset(
         zeeschuimer_import.status = "complete" if result["imported"] > 0 else "failed"
         zeeschuimer_import.rows_processed = rows_total
         zeeschuimer_import.rows_imported = result["imported"]
-        zeeschuimer_import.completed_at = datetime.now(dt_timezone.utc)
+        zeeschuimer_import.completed_at = datetime.now(UTC)
         if result.get("errors"):
             zeeschuimer_import.error_message = f"{len(result['errors'])} row errors"
         await db.commit()
@@ -613,7 +613,7 @@ async def zeeschuimer_import_dataset(
 
         # Update ZeeschuimerImport to failed
         zeeschuimer_import.status = "failed"
-        zeeschuimer_import.completed_at = datetime.now(dt_timezone.utc)
+        zeeschuimer_import.completed_at = datetime.now(UTC)
         zeeschuimer_import.error_message = str(exc)
         await db.commit()
 

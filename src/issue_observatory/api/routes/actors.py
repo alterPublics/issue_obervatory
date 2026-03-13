@@ -20,8 +20,11 @@ Routes:
     GET    /actors/sampling/snowball/platforms    platforms that support network expansion
     POST   /actors/sampling/snowball              run snowball sampling from seed actors
     GET    /actors/sampling/available-runs        collection runs available for seeding
+    GET    /actors/sampling/available-projects    projects with collected data for seeding
     GET    /actors/sampling/collection-authors    ranked authors from a collection run
+    GET    /actors/sampling/project-authors       ranked authors across all runs in a project
     POST   /actors/sampling/snowball-from-run     snowball from collection run authors
+    POST   /actors/port-to-project               port discovered accounts into arena source lists
     GET    /actors/{actor_id}                     actor detail
     PATCH  /actors/{actor_id}                     update actor fields
     DELETE /actors/{actor_id}                     delete actor
@@ -40,7 +43,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, Request, status
@@ -57,7 +60,12 @@ from issue_observatory.api.dependencies import (
     ownership_guard,
 )
 from issue_observatory.core.database import get_db
-from issue_observatory.core.models.actors import Actor, ActorAlias, ActorListMember, ActorPlatformPresence
+from issue_observatory.core.models.actors import (
+    Actor,
+    ActorAlias,
+    ActorListMember,
+    ActorPlatformPresence,
+)
 from issue_observatory.core.models.content import UniversalContentRecord
 from issue_observatory.core.models.users import User
 from issue_observatory.core.schemas.actors import (
@@ -112,8 +120,8 @@ class QuickAddRequest(BaseModel):
     platform: str
     platform_username: str
     actor_type: str = "individual"
-    source_content_id: Optional[uuid.UUID] = None
-    actor_list_id: Optional[uuid.UUID] = None
+    source_content_id: uuid.UUID | None = None
+    actor_list_id: uuid.UUID | None = None
 
 
 class QuickAddResponse(BaseModel):
@@ -132,7 +140,7 @@ class QuickAddResponse(BaseModel):
     actor_id: uuid.UUID
     platform_presence_id: uuid.UUID
     was_created: bool
-    actor_list_member_id: Optional[str] = None
+    actor_list_member_id: str | None = None
 
 
 class QuickAddBulkItem(BaseModel):
@@ -152,8 +160,8 @@ class QuickAddBulkItem(BaseModel):
     url: str
     platform: str
     target_identifier: str
-    display_name: Optional[str] = None
-    actor_list_id: Optional[uuid.UUID] = None
+    display_name: str | None = None
+    actor_list_id: uuid.UUID | None = None
 
 
 class QuickAddBulkResponse(BaseModel):
@@ -201,7 +209,7 @@ class SnowballRequest(BaseModel):
     platforms: list[str]
     max_depth: int = 2
     max_actors_per_step: int = 20
-    add_to_actor_list_id: Optional[uuid.UUID] = None
+    add_to_actor_list_id: uuid.UUID | None = None
     auto_create_actors: bool = True
     min_comention_records: int = 2
 
@@ -236,6 +244,7 @@ class SnowballActorEntry(BaseModel):
     canonical_name: str
     platforms: list[str]
     discovery_depth: int
+    record_count: int | None = None
     discovery_method: str = ""
 
 
@@ -340,7 +349,19 @@ class SnowballFromRunRequest(BaseModel):
     max_depth: int = 2
     max_actors_per_step: int = 50
     auto_create_actors: bool = True
-    add_to_actor_list_id: Optional[uuid.UUID] = None
+    add_to_actor_list_id: uuid.UUID | None = None
+
+
+class SnowballFromProjectRequest(BaseModel):
+    """Request body for snowball sampling seeded from all runs in a project."""
+
+    project_id: uuid.UUID
+    author_keys: list[CollectionAuthorKey] = []
+    platforms: list[str] = []
+    max_depth: int = 2
+    max_actors_per_step: int = 50
+    auto_create_actors: bool = True
+    add_to_actor_list_id: uuid.UUID | None = None
 
 
 class CoOccurrencePair(BaseModel):
@@ -545,8 +566,8 @@ async def actor_resolution_page(
 async def get_resolution_candidates(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    run_id: Optional[uuid.UUID] = Query(default=None),
-    query_design_id: Optional[uuid.UUID] = Query(default=None),
+    run_id: uuid.UUID | None = Query(default=None),
+    query_design_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[dict]:
     """Return entity resolution candidates from content records.
@@ -706,7 +727,7 @@ async def run_snowball_sampling(
     # Validate and guard the target actor list before running the expensive
     # sampling operation so we fail fast on auth errors.
     if payload.add_to_actor_list_id is not None:
-        from issue_observatory.core.models.query_design import ActorList  # noqa: PLC0415
+        from issue_observatory.core.models.query_design import ActorList
 
         list_result = await db.execute(
             select(ActorList).where(ActorList.id == payload.add_to_actor_list_id)
@@ -721,7 +742,7 @@ async def run_snowball_sampling(
 
     t_start = time.monotonic()
 
-    from issue_observatory.core.credential_pool import get_credential_pool  # noqa: PLC0415
+    from issue_observatory.core.credential_pool import get_credential_pool
 
     sampler = SnowballSampler()
     result = await sampler.run(
@@ -798,6 +819,7 @@ async def run_snowball_sampling(
                 ),
                 discovery_depth=int(actor_dict.get("discovery_depth", 0)),
                 discovery_method=actor_dict.get("discovery_method", ""),
+                record_count=actor_dict.get("record_count"),
             )
         )
 
@@ -841,8 +863,8 @@ async def list_available_runs(
         List of dicts with ``id``, ``query_design_name``, ``records_collected``,
         ``started_at``, and ``unique_authors``.
     """
-    from issue_observatory.core.models.collection import CollectionRun  # noqa: PLC0415
-    from issue_observatory.core.models.query_design import QueryDesign  # noqa: PLC0415
+    from issue_observatory.core.models.collection import CollectionRun
+    from issue_observatory.core.models.query_design import QueryDesign
 
     stmt = (
         select(
@@ -886,28 +908,107 @@ async def list_available_runs(
     return runs
 
 
-@router.get("/sampling/collection-authors")
-async def list_collection_authors(
+@router.get("/sampling/available-projects")
+async def list_available_projects(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    run_id: uuid.UUID = Query(..., description="Collection run UUID"),
-    limit: int = Query(default=50, ge=1, le=200),
+    require_data: bool = Query(default=True, description="Only return projects with collected data"),
 ) -> list[dict]:
-    """Return ranked distinct authors from a collection run.
+    """Return projects owned by the current user.
 
-    Each entry includes the author's platform, display name, platform user ID,
-    record count, and whether they are already linked to an Actor record.
-
-    Args:
-        db: Injected async database session.
-        current_user: The authenticated, active user making the request.
-        run_id: UUID of the collection run to query.
-        limit: Maximum authors to return (1-200, default 50).
-
-    Returns:
-        List of author dicts ordered by record count descending.
+    When ``require_data`` is True (default), only projects with at least one
+    collection run containing records are returned. Set to False to include
+    all projects (used by the port modal).
     """
+    from issue_observatory.core.models.collection import CollectionRun
+    from issue_observatory.core.models.project import Project
+
+    if not require_data:
+        stmt = (
+            select(Project.id, Project.name)
+            .where(Project.owner_id == current_user.id)
+            .order_by(Project.name)
+        )
+        result = await db.execute(stmt)
+        return [
+            {"id": str(row.id), "name": row.name, "total_records": 0, "run_count": 0, "unique_authors": 0}
+            for row in result.all()
+        ]
+
+    stmt = (
+        select(
+            Project.id,
+            Project.name,
+            func.sum(CollectionRun.records_collected).label("total_records"),
+            func.count(CollectionRun.id).label("run_count"),
+        )
+        .join(CollectionRun, CollectionRun.project_id == Project.id)
+        .where(
+            Project.owner_id == current_user.id,
+            CollectionRun.records_collected > 0,
+        )
+        .group_by(Project.id, Project.name)
+        .order_by(Project.name)
+    )
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    projects: list[dict] = []
+    for row in rows:
+        author_count_result = await db.execute(
+            select(func.count(func.distinct(UniversalContentRecord.author_platform_id)))
+            .join(
+                CollectionRun,
+                UniversalContentRecord.collection_run_id == CollectionRun.id,
+            )
+            .where(
+                CollectionRun.project_id == row.id,
+                UniversalContentRecord.author_platform_id.isnot(None),
+            )
+        )
+        unique_authors = author_count_result.scalar() or 0
+
+        projects.append({
+            "id": str(row.id),
+            "name": row.name,
+            "total_records": int(row.total_records or 0),
+            "run_count": int(row.run_count),
+            "unique_authors": unique_authors,
+        })
+
+    return projects
+
+
+@router.get("/sampling/project-authors")
+async def list_project_authors(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    project_id: uuid.UUID = Query(..., description="Project UUID"),
+    limit: int = Query(default=50, ge=1, le=1000),
+    platforms: str | None = Query(
+        default=None,
+        description="Comma-separated platform slugs to filter by",
+    ),
+) -> list[dict]:
+    """Return ranked distinct authors across all collection runs in a project.
+
+    Aggregates author appearances across every run belonging to the project,
+    so the same author appearing in multiple runs is counted once with a
+    combined record count.
+    """
+    from issue_observatory.core.models.collection import CollectionRun
+
     UCR = UniversalContentRecord
+
+    filters = [
+        CollectionRun.project_id == project_id,
+        UCR.author_platform_id.isnot(None),
+    ]
+    if platforms:
+        platform_list = [p.strip() for p in platforms.split(",") if p.strip()]
+        if platform_list:
+            filters.append(UCR.platform.in_(platform_list))
 
     stmt = (
         select(
@@ -917,10 +1018,70 @@ async def list_collection_authors(
             UCR.author_id,
             func.count(UCR.id).label("record_count"),
         )
-        .where(
-            UCR.collection_run_id == run_id,
-            UCR.author_platform_id.isnot(None),
+        .join(CollectionRun, UCR.collection_run_id == CollectionRun.id)
+        .where(*filters)
+        .group_by(
+            UCR.platform,
+            UCR.author_platform_id,
+            UCR.author_display_name,
+            UCR.author_id,
         )
+        .order_by(func.count(UCR.id).desc())
+        .limit(limit)
+    )
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    authors: list[dict] = []
+    for row in rows:
+        authors.append({
+            "platform": row.platform,
+            "platform_user_id": row.author_platform_id,
+            "author_display_name": row.author_display_name or row.author_platform_id,
+            "record_count": row.record_count,
+            "actor_id": str(row.author_id) if row.author_id else None,
+        })
+
+    return authors
+
+
+@router.get("/sampling/collection-authors")
+async def list_collection_authors(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    run_id: uuid.UUID = Query(..., description="Collection run UUID"),
+    limit: int = Query(default=50, ge=1, le=200),
+    platforms: str | None = Query(
+        default=None,
+        description="Comma-separated platform slugs to filter by",
+    ),
+) -> list[dict]:
+    """Return ranked distinct authors from a collection run.
+
+    Each entry includes the author's platform, display name, platform user ID,
+    record count, and whether they are already linked to an Actor record.
+    """
+    UCR = UniversalContentRecord
+
+    filters = [
+        UCR.collection_run_id == run_id,
+        UCR.author_platform_id.isnot(None),
+    ]
+    if platforms:
+        platform_list = [p.strip() for p in platforms.split(",") if p.strip()]
+        if platform_list:
+            filters.append(UCR.platform.in_(platform_list))
+
+    stmt = (
+        select(
+            UCR.platform,
+            UCR.author_platform_id,
+            UCR.author_display_name,
+            UCR.author_id,
+            func.count(UCR.id).label("record_count"),
+        )
+        .where(*filters)
         .group_by(
             UCR.platform,
             UCR.author_platform_id,
@@ -969,7 +1130,7 @@ async def snowball_from_run(
     """
     # Validate the target actor list up front.
     if payload.add_to_actor_list_id is not None:
-        from issue_observatory.core.models.query_design import ActorList  # noqa: PLC0415
+        from issue_observatory.core.models.query_design import ActorList
 
         list_result = await db.execute(
             select(ActorList).where(ActorList.id == payload.add_to_actor_list_id)
@@ -1112,7 +1273,7 @@ async def snowball_from_run(
 
     snowball_platforms = payload.platforms or list(_NETWORK_EXPANSION_PLATFORMS)
 
-    from issue_observatory.core.credential_pool import get_credential_pool  # noqa: PLC0415
+    from issue_observatory.core.credential_pool import get_credential_pool
 
     result = await sampler.run(
         seed_actor_ids=seed_actor_ids,
@@ -1158,6 +1319,7 @@ async def snowball_from_run(
             platforms=[a["platform"]] if a.get("platform") else [],
             discovery_depth=int(a.get("discovery_depth", 0)),
             discovery_method=a.get("discovery_method", ""),
+            record_count=a.get("record_count"),
         )
         for a in result.actors
     ]
@@ -1165,6 +1327,209 @@ async def snowball_from_run(
     logger.info(
         "snowball_from_run_complete",
         run_id=str(payload.collection_run_id),
+        total_actors=result.total_actors,
+        elapsed_seconds=round(elapsed, 1),
+        user_id=str(current_user.id),
+    )
+
+    return SnowballResponse(
+        total_actors=result.total_actors,
+        max_depth_reached=result.max_depth_reached,
+        wave_log=wave_log,
+        actors=actors_out,
+        newly_created_actors=len(result.auto_created_actor_ids) + created_count,
+    )
+
+
+@router.post("/sampling/snowball-from-project", response_model=SnowballResponse)
+async def snowball_from_project(
+    payload: SnowballFromProjectRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> SnowballResponse:
+    """Run snowball sampling seeded from authors across all runs in a project."""
+    from issue_observatory.core.models.collection import CollectionRun
+
+    if payload.add_to_actor_list_id is not None:
+        from issue_observatory.core.models.query_design import ActorList
+
+        list_result = await db.execute(
+            select(ActorList).where(ActorList.id == payload.add_to_actor_list_id)
+        )
+        actor_list = list_result.scalar_one_or_none()
+        if actor_list is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"ActorList '{payload.add_to_actor_list_id}' not found.",
+            )
+        ownership_guard(actor_list.created_by or uuid.UUID(int=0), current_user)
+
+    UCR = UniversalContentRecord
+    seed_entries: list[dict] = []
+
+    if payload.author_keys:
+        for key in payload.author_keys:
+            seed_entries.append({
+                "platform": key.platform,
+                "platform_user_id": key.platform_user_id,
+                "display_name": key.platform_user_id,
+            })
+        # Resolve display names from any run in the project.
+        for entry in seed_entries:
+            name_result = await db.execute(
+                select(UCR.author_display_name)
+                .join(CollectionRun, UCR.collection_run_id == CollectionRun.id)
+                .where(
+                    CollectionRun.project_id == payload.project_id,
+                    UCR.author_platform_id == entry["platform_user_id"],
+                    UCR.platform == entry["platform"],
+                    UCR.author_display_name.isnot(None),
+                )
+                .limit(1)
+            )
+            name_row = name_result.scalar_one_or_none()
+            if name_row:
+                entry["display_name"] = name_row
+    else:
+        stmt = (
+            select(
+                UCR.platform,
+                UCR.author_platform_id,
+                UCR.author_display_name,
+            )
+            .join(CollectionRun, UCR.collection_run_id == CollectionRun.id)
+            .where(
+                CollectionRun.project_id == payload.project_id,
+                UCR.author_platform_id.isnot(None),
+            )
+            .distinct()
+            .limit(200)
+        )
+        result = await db.execute(stmt)
+        for row in result.all():
+            seed_entries.append({
+                "platform": row.platform,
+                "platform_user_id": row.author_platform_id,
+                "display_name": row.author_display_name or row.author_platform_id,
+            })
+
+    if not seed_entries:
+        return SnowballResponse(
+            total_actors=0, max_depth_reached=0, wave_log=[], actors=[],
+            newly_created_actors=0,
+        )
+
+    seed_actor_ids: list[uuid.UUID] = []
+    created_count = 0
+
+    for entry in seed_entries:
+        presence_result = await db.execute(
+            select(ActorPlatformPresence).where(
+                ActorPlatformPresence.platform == entry["platform"],
+                ActorPlatformPresence.platform_user_id == entry["platform_user_id"],
+            )
+        )
+        existing = presence_result.scalar_one_or_none()
+
+        if existing is not None:
+            if existing.actor_id not in seed_actor_ids:
+                seed_actor_ids.append(existing.actor_id)
+        else:
+            presence_result2 = await db.execute(
+                select(ActorPlatformPresence).where(
+                    ActorPlatformPresence.platform == entry["platform"],
+                    ActorPlatformPresence.platform_username == entry["platform_user_id"],
+                )
+            )
+            existing2 = presence_result2.scalar_one_or_none()
+
+            if existing2 is not None:
+                if existing2.actor_id not in seed_actor_ids:
+                    seed_actor_ids.append(existing2.actor_id)
+            else:
+                new_actor = Actor(
+                    canonical_name=entry["display_name"],
+                    actor_type="unknown",
+                    description="Auto-created from project for snowball seeding",
+                    created_by=current_user.id,
+                    is_shared=False,
+                    metadata_={"auto_created_by": "snowball_from_project"},
+                )
+                db.add(new_actor)
+                await db.flush()
+
+                new_presence = ActorPlatformPresence(
+                    actor_id=new_actor.id,
+                    platform=entry["platform"],
+                    platform_user_id=entry["platform_user_id"],
+                    platform_username=entry["platform_user_id"],
+                )
+                db.add(new_presence)
+                await db.flush()
+
+                seed_actor_ids.append(new_actor.id)
+                created_count += 1
+
+    await db.commit()
+
+    logger.info(
+        "snowball_from_project_seeds_resolved",
+        project_id=str(payload.project_id),
+        total_seeds=len(seed_actor_ids),
+        newly_created=created_count,
+        user_id=str(current_user.id),
+    )
+
+    t_start = time.monotonic()
+    sampler = SnowballSampler()
+    snowball_platforms = payload.platforms or list(_NETWORK_EXPANSION_PLATFORMS)
+
+    from issue_observatory.core.credential_pool import get_credential_pool
+
+    result = await sampler.run(
+        seed_actor_ids=seed_actor_ids,
+        platforms=snowball_platforms,
+        db=db,
+        credential_pool=get_credential_pool(),
+        max_depth=payload.max_depth,
+        max_actors_per_step=payload.max_actors_per_step,
+    )
+
+    if payload.auto_create_actors:
+        await sampler.auto_create_actor_records(
+            result=result, db=db, created_by=current_user.id,
+        )
+
+    elapsed = time.monotonic() - t_start
+
+    if payload.add_to_actor_list_id is not None:
+        await _bulk_add_to_list(
+            actor_dicts=result.actors,
+            list_id=payload.add_to_actor_list_id,
+            added_by="snowball_from_project",
+            db=db,
+        )
+
+    wave_log = [
+        SnowballWaveEntry(wave=depth, count=info["discovered"], methods=info["methods"])
+        for depth, info in sorted(result.wave_log.items())
+    ]
+
+    actors_out = [
+        SnowballActorEntry(
+            actor_id=a.get("actor_uuid", ""),
+            canonical_name=a.get("canonical_name", ""),
+            platforms=[a["platform"]] if a.get("platform") else [],
+            discovery_depth=int(a.get("discovery_depth", 0)),
+            discovery_method=a.get("discovery_method", ""),
+            record_count=a.get("record_count"),
+        )
+        for a in result.actors
+    ]
+
+    logger.info(
+        "snowball_from_project_complete",
+        project_id=str(payload.project_id),
         total_actors=result.total_actors,
         elapsed_seconds=round(elapsed, 1),
         user_id=str(current_user.id),
@@ -1203,7 +1568,7 @@ async def corpus_co_occurrence(
     Returns:
         A ``CorpusCoOccurrenceResponse`` with co-occurring actor pairs.
     """
-    from issue_observatory.sampling.network_expander import NetworkExpander  # noqa: PLC0415
+    from issue_observatory.sampling.network_expander import NetworkExpander
 
     expander = NetworkExpander()
     raw_pairs = await expander.find_co_mentioned_actors(
@@ -1396,10 +1761,10 @@ async def quick_add_actor(
     # ------------------------------------------------------------------
     # Step 4: Optionally add to an actor list.
     # ------------------------------------------------------------------
-    actor_list_member_id: Optional[str] = None
+    actor_list_member_id: str | None = None
 
     if payload.actor_list_id is not None:
-        from issue_observatory.core.models.query_design import ActorList  # noqa: PLC0415
+        from issue_observatory.core.models.query_design import ActorList
 
         list_result = await db.execute(
             select(ActorList).where(ActorList.id == payload.actor_list_id)
@@ -1513,7 +1878,7 @@ async def quick_add_bulk(
                 created_count += 1
             else:
                 reused_count += 1
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             results.append({"url": item.url, "error": str(exc)})
             error_count += 1
             logger.warning(
@@ -1581,7 +1946,7 @@ async def bulk_add_list_members(
         HTTPException 404: If the actor list does not exist.
         HTTPException 403: If the caller does not own the list.
     """
-    from issue_observatory.core.models.query_design import ActorList  # noqa: PLC0415
+    from issue_observatory.core.models.query_design import ActorList
 
     list_result = await db.execute(
         select(ActorList).where(ActorList.id == list_id)
@@ -1645,8 +2010,8 @@ async def list_actors(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     pagination: Annotated[PaginationParams, Depends(get_pagination)],
-    search: Optional[str] = Query(default=None, description="Filter by canonical_name substring."),
-    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
+    search: str | None = Query(default=None, description="Filter by canonical_name substring."),
+    hx_request: str | None = Header(default=None, alias="HX-Request"),
 ) -> list[Actor] | HTMLResponse:
     """List actors visible to the current user.
 
@@ -1713,7 +2078,7 @@ async def search_actors(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     q: str = Query(default="", description="Name substring to search for."),
-    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
+    hx_request: str | None = Header(default=None, alias="HX-Request"),
 ) -> list[ActorResponse] | HTMLResponse:
     """Search actors by canonical name substring.
 
@@ -1815,7 +2180,7 @@ async def create_actor_form(
     current_user: Annotated[User, Depends(get_current_active_user)],
     name: Annotated[str, Form()],
     type: Annotated[str, Form()] = "person",
-    description: Annotated[Optional[str], Form()] = None,
+    description: Annotated[str | None, Form()] = None,
     public_figure: Annotated[str, Form()] = "false",
 ) -> HTMLResponse:
     """Create an actor from the HTMX form on the Actors page.
@@ -1982,12 +2347,12 @@ async def get_actor_content(
     actor_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
-    cursor_published_at: Optional[str] = Query(
+    hx_request: str | None = Header(default=None, alias="HX-Request"),
+    cursor_published_at: str | None = Query(
         default=None,
         description="ISO 8601 cursor timestamp (published_at of last record).",
     ),
-    cursor_id: Optional[uuid.UUID] = Query(
+    cursor_id: uuid.UUID | None = Query(
         default=None,
         description="UUID cursor (id of last record).",
     ),
@@ -2031,7 +2396,7 @@ async def get_actor_content(
     )
 
     if cursor_published_at is not None and cursor_id is not None:
-        from datetime import datetime  # noqa: PLC0415
+        from datetime import datetime
 
         try:
             cursor_ts = datetime.fromisoformat(cursor_published_at)
@@ -2208,7 +2573,7 @@ async def find_merge_candidates(
         le=1.0,
         description="Minimum trigram similarity threshold (0–1).",
     ),
-    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
+    hx_request: str | None = Header(default=None, alias="HX-Request"),
 ) -> list[dict] | HTMLResponse:
     """Find actors that may be the same real-world entity as *actor_id*.
 
@@ -2616,7 +2981,7 @@ async def similar_by_platform(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     request: Request,
-    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
+    hx_request: str | None = Header(default=None, alias="HX-Request"),
 ) -> list[dict] | HTMLResponse:
     """Find actors similar to *actor_id* using platform recommendation APIs.
 
@@ -2645,7 +3010,7 @@ async def similar_by_platform(
         HTTPException 404: If the actor does not exist.
         HTTPException 403: If the actor is not accessible.
     """
-    from issue_observatory.sampling.similarity_finder import SimilarityFinder  # noqa: PLC0415
+    from issue_observatory.sampling.similarity_finder import SimilarityFinder
 
     actor = await _get_actor_or_404(actor_id, db, load_presences=True)
     _check_actor_readable(actor, current_user)
@@ -2702,7 +3067,7 @@ async def similar_by_content(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     request: Request,
-    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
+    hx_request: str | None = Header(default=None, alias="HX-Request"),
 ) -> list[dict] | HTMLResponse:
     """Find actors posting about similar topics to *actor_id*.
 
@@ -2734,7 +3099,7 @@ async def similar_by_content(
         HTTPException 404: If the actor does not exist.
         HTTPException 403: If the actor is not accessible.
     """
-    from issue_observatory.sampling.similarity_finder import SimilarityFinder  # noqa: PLC0415
+    from issue_observatory.sampling.similarity_finder import SimilarityFinder
 
     actor = await _get_actor_or_404(actor_id, db)
     _check_actor_readable(actor, current_user)
@@ -2799,7 +3164,7 @@ async def similar_cross_platform(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     request: Request,
-    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
+    hx_request: str | None = Header(default=None, alias="HX-Request"),
 ) -> list[dict] | HTMLResponse:
     """Search for the actor's name on other platforms.
 
@@ -2831,7 +3196,7 @@ async def similar_cross_platform(
         HTTPException 404: If the actor does not exist.
         HTTPException 403: If the actor is not accessible.
     """
-    from issue_observatory.sampling.similarity_finder import SimilarityFinder  # noqa: PLC0415
+    from issue_observatory.sampling.similarity_finder import SimilarityFinder
 
     actor = await _get_actor_or_404(actor_id, db)
     _check_actor_readable(actor, current_user)
@@ -2901,7 +3266,7 @@ async def get_actor_network(
         HTTPException 404: If the actor does not exist.
         HTTPException 403: If the actor is not accessible.
     """
-    from issue_observatory.analysis.network import get_actor_co_occurrence  # noqa: PLC0415
+    from issue_observatory.analysis.network import get_actor_co_occurrence
 
     actor = await _get_actor_or_404(actor_id, db)
     _check_actor_readable(actor, current_user)
@@ -2958,3 +3323,247 @@ async def get_actor_network(
     ]
 
     return {"nodes": ego_nodes, "edges": ego_edges}
+
+
+# ---------------------------------------------------------------------------
+# Pydantic schemas for the "port to project" endpoint
+# ---------------------------------------------------------------------------
+
+
+class PortToProjectItem(BaseModel):
+    """A single account to be ported into an arena source list.
+
+    Attributes:
+        platform_name: Arena platform identifier (e.g. ``"bluesky"``,
+            ``"facebook"``).  Must match the ``platform_name`` of a
+            registered ``ArenaCollector``.
+        identifier: Platform-native account identifier to add — a handle,
+            URL, channel ID, or username depending on the arena (e.g.
+            ``"dr.dk.bsky.social"`` for Bluesky,
+            ``"https://facebook.com/drnyheder"`` for Facebook).
+    """
+
+    platform_name: str
+    identifier: str
+
+
+class PortToProjectRequest(BaseModel):
+    """Request body for ``POST /actors/port-to-project``.
+
+    Attributes:
+        project_id: UUID of the target ``Project``.  The
+            ``source_config`` JSONB on this project will be updated.
+        items: One or more accounts to port. Each item specifies the
+            platform and the identifier string to append to the source list.
+    """
+
+    project_id: uuid.UUID
+    items: list[PortToProjectItem]
+
+
+class PortToProjectResult(BaseModel):
+    """Per-item outcome from ``POST /actors/port-to-project``.
+
+    Attributes:
+        platform_name: Platform of the ported item.
+        identifier: The identifier that was (or already was) in the list.
+        config_key: The ``arenas_config`` sub-key that was updated
+            (e.g. ``"custom_accounts"``).
+        added: ``True`` when the identifier was newly appended;
+            ``False`` when it was already present.
+        error: Human-readable error message when the item could not be
+            ported (e.g. unknown platform, arena has no source list).
+    """
+
+    platform_name: str
+    identifier: str
+    config_key: str | None
+    added: bool
+    error: str | None = None
+
+
+class PortToProjectResponse(BaseModel):
+    """Response body for ``POST /actors/port-to-project``.
+
+    Attributes:
+        project_id: UUID of the updated project.
+        results: Per-item outcome list.
+        total: Total items processed.
+        added: Count of identifiers newly appended to their source lists.
+        already_present: Count of identifiers already in their source lists.
+        errors: Count of items that could not be ported.
+    """
+
+    project_id: uuid.UUID
+    results: list[PortToProjectResult]
+    total: int
+    added: int
+    already_present: int
+    errors: int
+
+
+# ---------------------------------------------------------------------------
+# Port to project endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.post("/port-to-project", response_model=PortToProjectResponse)
+async def port_to_project(
+    payload: PortToProjectRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> PortToProjectResponse:
+    """Append discovered accounts into arena source lists on a project.
+
+    For each item in ``payload.items``, the endpoint:
+
+    1. Looks up the arena registry to find the collector class for
+       ``platform_name`` and reads its ``source_list_config_key``.
+    2. Reads the project's current ``source_config`` from the database.
+    3. Reads the current source list at
+       ``source_config[platform_name][config_key]``.
+    4. Appends the ``identifier`` if it is not already present
+       (case-sensitive string comparison).
+    5. Persists the updated ``source_config`` back to the database.
+
+    All items targeting the same platform are applied in a single DB commit
+    to avoid partial writes.  Items with unknown platforms or arenas that
+    have no ``source_list_config_key`` are recorded as errors but do not
+    block the remaining items.
+
+    Args:
+        payload: Target project UUID and list of platform/identifier
+            pairs to port.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        ``PortToProjectResponse`` with per-item results and aggregate counts.
+
+    Raises:
+        HTTPException 400: If ``items`` is empty.
+        HTTPException 404: If the project does not exist.
+        HTTPException 403: If the caller is not the owner or an admin.
+    """
+    from issue_observatory.arenas.registry import autodiscover, get_arena
+    from issue_observatory.core.models.project import Project
+
+    if not payload.items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="items must not be empty.",
+        )
+
+    # Load and authorise the target project.
+    project_stmt = select(Project).where(Project.id == payload.project_id)
+    project_result = await db.execute(project_stmt)
+    project = project_result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project {payload.project_id} not found.",
+        )
+    ownership_guard(project.owner_id, current_user)
+
+    # Ensure all arena collectors are available in the registry.
+    autodiscover()
+
+    # Work on a mutable copy of source_config so we can make multiple edits
+    # before a single DB commit.
+    current_config: dict = dict(project.source_config) if project.source_config else {}
+
+    results: list[PortToProjectResult] = []
+    added_count = 0
+    already_present_count = 0
+    error_count = 0
+
+    for item in payload.items:
+        # Look up the collector class to find the source list config key.
+        try:
+            collector_cls = get_arena(item.platform_name)
+        except KeyError:
+            results.append(PortToProjectResult(
+                platform_name=item.platform_name,
+                identifier=item.identifier,
+                config_key=None,
+                added=False,
+                error=(
+                    f"Platform '{item.platform_name}' is not registered in the arena "
+                    "registry. Check the platform_name spelling."
+                ),
+            ))
+            error_count += 1
+            continue
+
+        config_key: str | None = getattr(collector_cls, "source_list_config_key", None)
+        if not config_key:
+            results.append(PortToProjectResult(
+                platform_name=item.platform_name,
+                identifier=item.identifier,
+                config_key=None,
+                added=False,
+                error=(
+                    f"Arena '{item.platform_name}' does not support a researcher-curated "
+                    "source list (source_list_config_key is not set). "
+                    "This arena cannot be used as a port target."
+                ),
+            ))
+            error_count += 1
+            continue
+
+        if not item.identifier or not item.identifier.strip():
+            results.append(PortToProjectResult(
+                platform_name=item.platform_name,
+                identifier=item.identifier,
+                config_key=config_key,
+                added=False,
+                error="identifier must not be empty or whitespace.",
+            ))
+            error_count += 1
+            continue
+
+        # Read (or initialise) the arena's sub-section.
+        arena_section: dict = dict(current_config.get(item.platform_name) or {})
+        existing_list: list = list(arena_section.get(config_key) or [])
+
+        if item.identifier in existing_list:
+            results.append(PortToProjectResult(
+                platform_name=item.platform_name,
+                identifier=item.identifier,
+                config_key=config_key,
+                added=False,
+            ))
+            already_present_count += 1
+        else:
+            existing_list.append(item.identifier)
+            arena_section[config_key] = existing_list
+            current_config[item.platform_name] = arena_section
+            results.append(PortToProjectResult(
+                platform_name=item.platform_name,
+                identifier=item.identifier,
+                config_key=config_key,
+                added=True,
+            ))
+            added_count += 1
+
+    # Persist all changes in a single DB write.
+    project.source_config = current_config
+    await db.commit()
+
+    logger.info(
+        "port_to_project: completed",
+        project_id=str(payload.project_id),
+        total=len(payload.items),
+        added=added_count,
+        already_present=already_present_count,
+        errors=error_count,
+    )
+
+    return PortToProjectResponse(
+        project_id=payload.project_id,
+        results=results,
+        total=len(payload.items),
+        added=added_count,
+        already_present=already_present_count,
+        errors=error_count,
+    )

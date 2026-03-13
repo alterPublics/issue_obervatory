@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -61,10 +61,10 @@ def _detect_extractor(html: str, url: str) -> str:
         text; ``"fallback"`` otherwise.
     """
     try:
-        import trafilatura  # type: ignore[import-untyped]  # noqa: PLC0415
+        import trafilatura  # type: ignore[import-untyped]
 
         return "trafilatura" if trafilatura.extract(html, url=url) else "fallback"
-    except Exception:  # noqa: BLE001
+    except Exception:
         return "fallback"
 
 
@@ -125,7 +125,7 @@ async def fetch_single_record_content(
                 respect_robots=False,  # archive.org robots.txt is not relevant
                 robots_cache=robots_cache,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("wayback: unexpected fetch error for %s: %s", wayback_url, exc)
             raw_meta["content_fetch_error"] = f"unexpected error: {exc}"
             record["raw_metadata"] = raw_meta
@@ -146,7 +146,7 @@ async def fetch_single_record_content(
                     respect_robots=False,
                     robots_cache=robots_cache,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "wayback: 503 retry failed for %s: %s", wayback_url, exc
                 )
@@ -177,13 +177,13 @@ async def fetch_single_record_content(
     # --- Text extraction ---
     try:
         extracted = extract_from_html(fetch_result.html, url=wayback_url)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("wayback: extraction error for %s: %s", wayback_url, exc)
         raw_meta["content_fetch_error"] = f"extraction error: {exc}"
         record["raw_metadata"] = raw_meta
         return record
 
-    fetched_at = datetime.now(tz=timezone.utc).isoformat()
+    fetched_at = datetime.now(tz=UTC).isoformat()
 
     if extracted.text:
         extractor_name = _detect_extractor(fetch_result.html, wayback_url)

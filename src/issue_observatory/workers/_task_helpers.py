@@ -13,8 +13,11 @@ each invocation requires a fresh event loop with no pre-existing session.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from sqlalchemy import func, select, update
 
@@ -27,6 +30,7 @@ from issue_observatory.core.models.collection import (
     CreditTransaction,
 )
 from issue_observatory.core.models.content import UniversalContentRecord
+from issue_observatory.core.models.project import Project
 from issue_observatory.core.models.query_design import ActorList, QueryDesign
 from issue_observatory.core.models.users import User
 from issue_observatory.core.retention_service import RetentionService
@@ -61,6 +65,7 @@ async def fetch_live_tracking_designs() -> list[dict[str, Any]]:
             select(
                 QueryDesign.id.label("query_design_id"),
                 QueryDesign.owner_id,
+                QueryDesign.project_id,
                 QueryDesign.arenas_config,
                 QueryDesign.default_tier,
                 QueryDesign.language,
@@ -161,12 +166,13 @@ async def fetch_designs_with_prep() -> list[dict[str, Any]]:
     """
     designs = await fetch_live_tracking_designs()
 
-    from issue_observatory.api.routes.collections import _normalize_arenas_config  # noqa: PLC0415
-    from issue_observatory.arenas.registry import get_arena as _get_arena  # noqa: PLC0415
+    from issue_observatory.api.routes.collections import _normalize_arenas_config
+    from issue_observatory.arenas.registry import get_arena as _get_arena
 
     for design in designs:
         owner_id = design["owner_id"]
         design_id = design["query_design_id"]
+        project_id = design.get("project_id")
 
         # Credit balance
         async with AsyncSessionLocal() as db:
@@ -178,11 +184,16 @@ async def fetch_designs_with_prep() -> list[dict[str, Any]]:
             email_result = await db.execute(select(User.email).where(User.id == owner_id))
             design["user_email"] = email_result.scalar_one_or_none()
 
-        # Public figure IDs
+        # Public figure IDs — prefer project-scoped if available
         try:
-            design["public_figure_ids"] = list(
-                await fetch_public_figure_ids_for_design(design_id)
-            )
+            if project_id:
+                design["public_figure_ids"] = list(
+                    await fetch_public_figure_ids_for_project(project_id)
+                )
+            else:
+                design["public_figure_ids"] = list(
+                    await fetch_public_figure_ids_for_design(design_id)
+                )
         except Exception:
             design["public_figure_ids"] = []
 
@@ -190,6 +201,16 @@ async def fetch_designs_with_prep() -> list[dict[str, Any]]:
         raw_arenas_config: dict = design.get("arenas_config") or {}
         default_tier: str = design.get("default_tier") or "free"
         flat_arenas = _normalize_arenas_config(raw_arenas_config, default_tier)
+
+        # Project-level arena filter (intersection).
+        if project_id:
+            async with AsyncSessionLocal() as db:
+                proj = await db.get(Project, project_id)
+                if proj and proj.arenas_config:
+                    proj_arenas = _normalize_arenas_config(proj.arenas_config, default_tier)
+                    if proj_arenas:
+                        flat_arenas = {k: v for k, v in flat_arenas.items() if k in proj_arenas}
+
         design["_flat_arenas"] = flat_arenas
 
         arena_terms: dict[str, list] = {}
@@ -204,9 +225,14 @@ async def fetch_designs_with_prep() -> list[dict[str, Any]]:
 
             if is_actor_only:
                 try:
-                    arena_actor_ids[arena_name] = await fetch_actor_ids_for_design_and_platform(
-                        design_id, arena_name
-                    )
+                    if project_id:
+                        arena_actor_ids[arena_name] = await fetch_actor_ids_for_project_and_platform(
+                            project_id, arena_name
+                        )
+                    else:
+                        arena_actor_ids[arena_name] = await fetch_actor_ids_for_design_and_platform(
+                            design_id, arena_name
+                        )
                 except Exception:
                     arena_actor_ids[arena_name] = []
             else:
@@ -341,10 +367,10 @@ async def fetch_stale_runs() -> list[dict[str, Any]]:
     Returns:
         List of dicts with ``id``, ``status``, and ``started_at``.
     """
-    from sqlalchemy import or_  # noqa: PLC0415
+    from sqlalchemy import or_
 
-    absolute_cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=24)
-    idle_cutoff = datetime.now(tz=timezone.utc) - timedelta(minutes=30)
+    absolute_cutoff = datetime.now(tz=UTC) - timedelta(hours=24)
+    idle_cutoff = datetime.now(tz=UTC) - timedelta(minutes=30)
 
     async with AsyncSessionLocal() as db:
         # Subquery: most recent collected_at per run
@@ -554,14 +580,14 @@ async def fetch_search_terms_for_arena(
         List of search term strings.  Empty list when no active terms are
         scoped to the given arena, or when the design has no active terms at all.
     """
-    from issue_observatory.core.models.query_design import SearchTerm  # noqa: PLC0415
+    from issue_observatory.core.models.query_design import SearchTerm
 
     async with AsyncSessionLocal() as db:
         # YF-01 filtering logic:
         # Include terms where target_arenas is NULL (all arenas)
         # OR where the JSONB array contains the arena platform_name.
         # PostgreSQL's JSONB ? operator checks for string existence in array/object.
-        from sqlalchemy import func, or_  # noqa: PLC0415
+        from sqlalchemy import func, or_
 
         stmt = (
             select(SearchTerm.term)
@@ -614,7 +640,7 @@ async def fetch_resolved_terms_for_arena(
         List of search term strings.  Empty when no active terms resolve for
         the given arena.
     """
-    from issue_observatory.core.models.query_design import SearchTerm  # noqa: PLC0415
+    from issue_observatory.core.models.query_design import SearchTerm
 
     # Step 1: load default terms (YF-01 target_arenas filtering)
     default_terms = await fetch_search_terms_for_arena(query_design_id, arena_platform_name)
@@ -674,10 +700,10 @@ async def get_discovery_summary(run_id: str) -> dict[str, int]:
         - ``discovered_links``: Total discovered link count (min 2 mentions)
         - ``telegram_links``: Count of Telegram-specific discovered links
     """
-    from uuid import UUID  # noqa: PLC0415
+    from uuid import UUID
 
-    from issue_observatory.analysis.descriptive import get_emergent_terms  # noqa: PLC0415
-    from issue_observatory.analysis.link_miner import LinkMiner  # noqa: PLC0415
+    from issue_observatory.analysis.descriptive import get_emergent_terms
+    from issue_observatory.analysis.link_miner import LinkMiner
 
     run_uuid = UUID(run_id)
 
@@ -696,7 +722,7 @@ async def get_discovery_summary(run_id: str) -> dict[str, int]:
                 min_doc_frequency=2,
             )
             suggested_terms_count = len(emergent_terms)
-        except Exception:  # noqa: BLE001
+        except Exception:
             # If scikit-learn is not installed or TF-IDF fails, return zero.
             suggested_terms_count = 0
 
@@ -729,7 +755,7 @@ async def get_discovery_summary(run_id: str) -> dict[str, int]:
                 telegram_links_count = sum(
                     1 for link in all_links if link.platform == "telegram"
                 )
-        except Exception:  # noqa: BLE001
+        except Exception:
             # If link mining fails, return zero counts.
             discovered_links_count = 0
             telegram_links_count = 0
@@ -760,6 +786,7 @@ async def fetch_batch_run_details(run_id: Any) -> dict[str, Any] | None:
             select(
                 CollectionRun.id.label("run_id"),
                 CollectionRun.query_design_id,
+                CollectionRun.project_id,
                 CollectionRun.arenas_config,
                 CollectionRun.tier.label("default_tier"),
                 CollectionRun.date_from,
@@ -794,9 +821,9 @@ async def set_run_status(
     """
     values: dict[str, Any] = {"status": status}
     if started_at:
-        values["started_at"] = datetime.now(tz=timezone.utc)
+        values["started_at"] = datetime.now(tz=UTC)
     if completed_at:
-        values["completed_at"] = datetime.now(tz=timezone.utc)
+        values["completed_at"] = datetime.now(tz=UTC)
     if error_log is not None:
         values["error_log"] = error_log
 
@@ -883,7 +910,7 @@ async def mark_task_failed(
             .values(
                 status="failed",
                 error_message=error_message,
-                completed_at=datetime.now(tz=timezone.utc),
+                completed_at=datetime.now(tz=UTC),
             )
         )
         await db.commit()
@@ -903,11 +930,34 @@ async def check_all_tasks_terminal(run_id: Any) -> dict[str, Any] | None:
         Dict with 'all_done', 'total', 'completed', 'failed', 'total_records',
         'credits_spent' if tasks exist, or None if no tasks found.
     """
-    from sqlalchemy import case, func  # noqa: PLC0415
+    from sqlalchemy import case, func
+
+    async with AsyncSessionLocal() as db:
+        # Check if the run itself has been cancelled by the user.
+        # If so, mark all non-terminal tasks as cancelled immediately.
+        run_status_result = await db.execute(
+            select(CollectionRun.status).where(CollectionRun.id == run_id)
+        )
+        run_status = run_status_result.scalar_one_or_none()
+        if run_status == "cancelled":
+            cancel_result = await db.execute(
+                update(CollectionTask)
+                .where(
+                    CollectionTask.collection_run_id == run_id,
+                    CollectionTask.status.notin_(["completed", "failed", "cancelled"]),
+                )
+                .values(
+                    status="cancelled",
+                    error_message="Run cancelled by user.",
+                    completed_at=datetime.now(tz=UTC),
+                )
+            )
+            if cancel_result.rowcount and cancel_result.rowcount > 0:
+                await db.commit()
 
     # First check for stuck tasks and mark them as failed
     # Reduced from 10 minutes to 2 minutes to detect issues faster
-    stuck_cutoff = datetime.now(tz=timezone.utc) - timedelta(minutes=2)
+    stuck_cutoff = datetime.now(tz=UTC) - timedelta(minutes=2)
     async with AsyncSessionLocal() as db:
         # Mark tasks that have been pending for > 2 minutes as failed
         # (likely dispatch failures or import errors preventing task execution)
@@ -925,16 +975,19 @@ async def check_all_tasks_terminal(run_id: Any) -> dict[str, Any] | None:
             .values(
                 status="failed",
                 error_message="Task stuck in pending state for >2 minutes; likely dispatch failure, import error, or missing dependency",
-                completed_at=datetime.now(tz=timezone.utc),
+                completed_at=datetime.now(tz=UTC),
             )
         )
         stuck_count = stuck_result.rowcount or 0
         if stuck_count > 0:
             await db.commit()
 
-        # Also check for tasks stuck in 'running' status for > 1 hour
-        # (infinite loops, hanging HTTP calls, etc.)
-        running_stuck_cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=1)
+        # Also check for tasks stuck in 'running' status for too long.
+        # The global Celery hard limit is 2 hours (celery_app.py:134).
+        # Arena-specific limits range from 12 min to 2h 5min.
+        # A task still 'running' 30 min past the global soft limit (1 hour)
+        # is certainly dead (killed by Celery without updating the DB).
+        running_stuck_cutoff = datetime.now(tz=UTC) - timedelta(minutes=90)
         running_stuck_result = await db.execute(
             update(CollectionTask)
             .where(
@@ -944,8 +997,8 @@ async def check_all_tasks_terminal(run_id: Any) -> dict[str, Any] | None:
             )
             .values(
                 status="failed",
-                error_message="Task stuck in running state for >1 hour; likely infinite loop or hanging API call",
-                completed_at=datetime.now(tz=timezone.utc),
+                error_message="Task stuck in running state for >90 min (past Celery hard limit); likely killed without status update",
+                completed_at=datetime.now(tz=UTC),
             )
         )
         running_stuck_count = running_stuck_result.rowcount or 0
@@ -1003,6 +1056,30 @@ async def check_all_tasks_terminal(run_id: Any) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
+def _fetch_terms_for_design(query_design_id: str) -> list[str]:
+    """Look up active search terms for a query design from the database.
+
+    Uses a synchronous session (safe for Celery worker context).
+    Returns an empty list on any error to avoid blocking persistence.
+    """
+    try:
+        from sqlalchemy import text as sa_text
+
+        from issue_observatory.core.database import get_sync_session
+
+        with get_sync_session() as session:
+            rows = session.execute(
+                sa_text(
+                    "SELECT term FROM search_terms "
+                    "WHERE query_design_id = CAST(:qd_id AS uuid) AND is_active = true"
+                ),
+                {"qd_id": query_design_id},
+            ).fetchall()
+            return [row[0] for row in rows] if rows else []
+    except Exception:
+        return []
+
+
 def _match_terms_in_text(
     text_content: str | None,
     title: str | None,
@@ -1021,6 +1098,80 @@ def _match_terms_in_text(
     if not haystack.strip():
         return []
     return [t for t in terms if t.lower() in haystack]
+
+
+class RunCancelledError(Exception):
+    """Raised when a collection run has been cancelled by the user."""
+
+
+def is_run_cancelled(collection_run_id: str) -> bool:
+    """Check whether a collection run has been cancelled.
+
+    Uses a synchronous DB query (safe for Celery worker context).
+    Returns ``True`` if the run status is ``'cancelled'``.
+    Returns ``False`` on any error (fail-open to avoid blocking tasks).
+    """
+    try:
+        from sqlalchemy import text
+
+        from issue_observatory.core.database import get_sync_session
+
+        with get_sync_session() as session:
+            row = session.execute(
+                text("SELECT status FROM collection_runs WHERE id = :id"),
+                {"id": collection_run_id},
+            ).fetchone()
+            if row and row[0] == "cancelled":
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def check_run_cancelled(collection_run_id: str) -> None:
+    """Raise ``RunCancelledError`` if the run has been cancelled.
+
+    Call this at natural checkpoints in long-running arena tasks
+    (between API pages, between batch inserts, etc.) to bail out
+    promptly when the user cancels a run.
+    """
+    if is_run_cancelled(collection_run_id):
+        raise RunCancelledError(
+            f"Collection run {collection_run_id} was cancelled by the user."
+        )
+
+
+def make_rate_limiter() -> Any:
+    """Create a shared Redis-backed :class:`RateLimiter` for arena tasks.
+
+    Returns a :class:`~issue_observatory.workers.rate_limiter.RateLimiter`
+    backed by the application's Redis instance.  The async Redis client
+    opens connections lazily on first use, so this is safe to call from
+    synchronous Celery task bodies before ``asyncio.run()``.
+
+    Returns:
+        A :class:`RateLimiter` instance, or ``None`` if Redis is unavailable.
+    """
+    try:
+        import redis.asyncio as aioredis
+
+        from issue_observatory.config.settings import get_settings
+        from issue_observatory.workers.rate_limiter import RateLimiter
+
+        settings = get_settings()
+        redis_client = aioredis.from_url(
+            str(settings.redis_url),
+            encoding="utf-8",
+            decode_responses=True,
+        )
+        return RateLimiter(redis_client=redis_client)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Could not create rate limiter — collectors will run without shared rate limiting"
+        )
+        return None
 
 
 def persist_collected_records(
@@ -1054,12 +1205,21 @@ def persist_collected_records(
     import structlog
     from sqlalchemy import text
 
-    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+    from issue_observatory.core.database import get_sync_session
 
     logger = structlog.get_logger("issue_observatory.workers._task_helpers")
 
     if not records:
         return 0, 0
+
+    # Bail out early if the run was cancelled while we were collecting.
+    check_run_cancelled(collection_run_id)
+
+    # Auto-fetch search terms from the query design when not explicitly provided.
+    # This ensures actor-only arenas (Facebook, Instagram) and any task that
+    # forgot to pass terms still get term-matching backfill.
+    if not terms and query_design_id:
+        terms = _fetch_terms_for_design(query_design_id)
 
     # Set term_matched based on search_terms_matched presence.
     # Backfill search_terms_matched via text matching when terms are provided.
@@ -1141,7 +1301,7 @@ def persist_collected_records(
             val_list = ", ".join(placeholders)
 
             stmt = text(
-                f"INSERT INTO content_records ({col_list}) "  # noqa: S608
+                f"INSERT INTO content_records ({col_list}) "
                 f"VALUES ({val_list}) "
                 f"ON CONFLICT (content_hash, published_at) "
                 f"WHERE content_hash IS NOT NULL DO NOTHING"
@@ -1155,12 +1315,12 @@ def persist_collected_records(
                 else:
                     skipped += 1
                 db.commit()  # release savepoint
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "persist_collected_records: insert failed",
                     error=str(exc),
                     platform=record.get("platform"),
-                    url=record.get("url", "")[:100],
+                    url=(record.get("url") or "")[:100],
                 )
                 db.rollback()  # rollback to savepoint only
                 skipped += 1
@@ -1188,6 +1348,62 @@ def persist_collected_records(
     return inserted, skipped
 
 
+def make_batch_sink(
+    collection_run_id: str,
+    query_design_id: str | None = None,
+    terms: list[str] | None = None,
+) -> Callable[[list[dict[str, Any]]], tuple[int, int]]:
+    """Create a batch sink callback for :meth:`ArenaCollector.configure_batch_persistence`.
+
+    Returns a closure that delegates to :func:`persist_collected_records`
+    with the given run/design context pre-bound.
+
+    Args:
+        collection_run_id: UUID string of the parent collection run.
+        query_design_id: Optional UUID string of the owning query design.
+        terms: Optional search terms for term-matching backfill.
+
+    Returns:
+        Callable that accepts ``list[dict]`` and returns ``(inserted, skipped)``.
+    """
+
+    def _sink(records: list[dict[str, Any]]) -> tuple[int, int]:
+        return persist_collected_records(records, collection_run_id, query_design_id, terms)
+
+    return _sink
+
+
+def count_run_platform_records(collection_run_id: str, platform: str) -> int:
+    """Count actual content records for a run + platform.
+
+    Useful as a fallback when in-memory counters may be inaccurate (e.g. after
+    a task redelivery where the first execution persisted records but the
+    counter was lost).
+
+    Args:
+        collection_run_id: UUID string of the parent collection run.
+        platform: Platform name (e.g. ``"telegram"``, ``"bluesky"``).
+
+    Returns:
+        Number of content_records rows, or ``0`` on DB error.
+    """
+    from sqlalchemy import text
+
+    try:
+        with get_sync_session() as session:
+            row = session.execute(
+                text(
+                    "SELECT COUNT(*) FROM content_records "
+                    "WHERE collection_run_id = CAST(:run_id AS uuid) "
+                    "AND platform = :platform"
+                ),
+                {"run_id": collection_run_id, "platform": platform},
+            ).scalar()
+            return int(row or 0)
+    except Exception:
+        return 0
+
+
 def update_collection_task_status(
     collection_run_id: str,
     arena: str,
@@ -1211,9 +1427,9 @@ def update_collection_task_status(
             already present (detected via ON CONFLICT on content_hash).
         error_message: Error description for failed updates, or ``None``.
     """
-    from sqlalchemy import text  # noqa: PLC0415
+    from sqlalchemy import text
 
-    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+    from issue_observatory.core.database import get_sync_session
 
     try:
         with get_sync_session() as session:
@@ -1222,7 +1438,7 @@ def update_collection_task_status(
                     """
                     UPDATE collection_tasks
                     SET status = :status,
-                        records_collected = :records_collected,
+                        records_collected = GREATEST(records_collected, :records_collected),
                         duplicates_skipped = :duplicates_skipped,
                         error_message = :error_message,
                         completed_at = CASE WHEN :status IN ('completed', 'failed', 'cancelled')
@@ -1230,6 +1446,7 @@ def update_collection_task_status(
                         started_at   = CASE WHEN :status = 'running' AND started_at IS NULL
                                             THEN NOW() ELSE started_at END
                     WHERE collection_run_id = :run_id AND arena = :arena
+                        AND status != 'cancelled'
                     """
                 ),
                 {
@@ -1242,7 +1459,7 @@ def update_collection_task_status(
                 },
             )
             session.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         import structlog
 
         log = structlog.get_logger("issue_observatory.workers._task_helpers")
@@ -1323,6 +1540,121 @@ async def fetch_actor_ids_for_design_and_platform(
     return actor_ids
 
 
+async def fetch_actor_ids_for_project_and_platform(
+    project_id: Any,
+    platform_name: str,
+) -> list[str]:
+    """Return platform actor identifiers scoped to a *project* (not query design).
+
+    Same logic as :func:`fetch_actor_ids_for_design_and_platform`, but queries
+    ``ActorList.project_id`` instead of ``ActorList.query_design_id``.
+
+    Args:
+        project_id: UUID of the Project whose actor lists to inspect.
+        platform_name: Platform identifier (e.g. ``"facebook"``).
+
+    Returns:
+        Deduplicated list of actor identifier strings.
+    """
+    async with AsyncSessionLocal() as db:
+        stmt = (
+            select(
+                ActorPlatformPresence.profile_url,
+                ActorPlatformPresence.platform_user_id,
+                ActorPlatformPresence.platform_username,
+            )
+            .join(Actor, Actor.id == ActorPlatformPresence.actor_id)
+            .join(ActorListMember, ActorListMember.actor_id == Actor.id)
+            .join(ActorList, ActorList.id == ActorListMember.actor_list_id)
+            .where(ActorList.project_id == project_id)
+            .where(ActorPlatformPresence.platform == platform_name)
+        )
+        result = await db.execute(stmt)
+        rows = result.mappings().all()
+
+    seen: set[str] = set()
+    actor_ids: list[str] = []
+    for row in rows:
+        identifier: str | None = (
+            row["profile_url"]
+            or row["platform_user_id"]
+            or row["platform_username"]
+        )
+        if identifier and identifier not in seen:
+            seen.add(identifier)
+            actor_ids.append(identifier)
+
+    return actor_ids
+
+
+async def fetch_public_figure_ids_for_project(project_id: Any) -> set[str]:
+    """Return public-figure platform user IDs scoped to a *project*.
+
+    Same logic as :func:`fetch_public_figure_ids_for_design`, but queries
+    ``ActorList.project_id`` instead of ``ActorList.query_design_id``.
+
+    Args:
+        project_id: UUID of the Project whose actor lists to inspect.
+
+    Returns:
+        Set of ``platform_user_id`` strings.
+    """
+    async with AsyncSessionLocal() as db:
+        stmt = (
+            select(ActorPlatformPresence.platform_user_id)
+            .join(Actor, Actor.id == ActorPlatformPresence.actor_id)
+            .join(ActorListMember, ActorListMember.actor_id == Actor.id)
+            .join(ActorList, ActorList.id == ActorListMember.actor_list_id)
+            .where(ActorList.project_id == project_id)
+            .where(Actor.public_figure.is_(True))
+            .where(ActorPlatformPresence.platform_user_id.is_not(None))
+        )
+        result = await db.execute(stmt)
+        rows = result.scalars().all()
+        return {str(uid) for uid in rows}
+
+
+# ---------------------------------------------------------------------------
+# Source list helpers (actor workflow redesign)
+# ---------------------------------------------------------------------------
+
+
+def read_source_list_from_arenas_config(
+    arenas_config: dict,
+    platform_name: str,
+    config_key: str,
+) -> list[str]:
+    """Read a source list from the ``arenas_config`` JSONB for a given platform.
+
+    Returns the string array stored at
+    ``arenas_config[platform_name][config_key]``, or an empty list when the
+    key does not exist or the value is not a list.
+
+    This is a pure synchronous helper — no DB access is required because the
+    raw ``arenas_config`` dict is loaded from the ``QueryDesign`` row by the
+    caller before entering the async dispatch context.
+
+    Args:
+        arenas_config: The raw ``arenas_config`` JSONB dict from ``QueryDesign``.
+        platform_name: Arena platform identifier (e.g. ``"bluesky"``).
+        config_key: The sub-key within the platform section
+            (e.g. ``"custom_accounts"``).  Comes from the collector class's
+            ``source_list_config_key`` attribute.
+
+    Returns:
+        List of identifier strings. Empty list when the path does not exist,
+        is ``None``, or contains non-string elements (those are silently
+        filtered out).
+    """
+    arena_section = arenas_config.get(platform_name)
+    if not isinstance(arena_section, dict):
+        return []
+    raw_list = arena_section.get(config_key)
+    if not isinstance(raw_list, list):
+        return []
+    return [item for item in raw_list if isinstance(item, str) and item]
+
+
 # ---------------------------------------------------------------------------
 # Cross-design record linking (Issue 3: avoid recollection)
 # ---------------------------------------------------------------------------
@@ -1355,12 +1687,11 @@ def reindex_existing_records(
     Returns:
         Number of link rows created.
     """
-    import json
     import logging
 
     from sqlalchemy import text
 
-    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+    from issue_observatory.core.database import get_sync_session
 
     log = logging.getLogger("issue_observatory.workers._task_helpers")
 
@@ -1395,12 +1726,12 @@ def reindex_existing_records(
 
     where = " AND ".join(clauses)
 
-    qd_value = f"CAST(:qd_id AS uuid)" if query_design_id else "NULL"
+    qd_value = "CAST(:qd_id AS uuid)" if query_design_id else "NULL"
     if query_design_id:
         params["qd_id"] = query_design_id
 
     insert_sql = text(
-        f"INSERT INTO content_record_links "  # noqa: S608
+        f"INSERT INTO content_record_links "
         f"(content_record_id, content_record_published_at, collection_run_id, "
         f"query_design_id, link_type) "
         f"SELECT cr.id, cr.published_at, CAST(:run_id AS uuid), "
@@ -1423,7 +1754,7 @@ def reindex_existing_records(
             collection_run_id,
         )
         return linked
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning(
             "reindex_existing_records: failed for platform=%s run=%s: %s",
             platform,
@@ -1472,7 +1803,7 @@ def record_collection_attempt(
 
     from sqlalchemy import text
 
-    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+    from issue_observatory.core.database import get_sync_session
 
     log = logging.getLogger("issue_observatory.workers._task_helpers")
 
@@ -1500,7 +1831,7 @@ def record_collection_attempt(
                 },
             )
             db.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning(
             "record_collection_attempt: failed for platform=%s input=%s: %s",
             platform,
@@ -1518,11 +1849,21 @@ def record_collection_attempts_batch(
     date_from: str,
     date_to: str,
     records_returned: int | None,
+    per_input_counts: dict[str, int] | None = None,
 ) -> None:
     """Record collection attempts for multiple inputs in a single transaction.
 
-    Convenience wrapper around :func:`record_collection_attempt` that inserts
-    one row per input value in a single DB round-trip.
+    Convenience wrapper that inserts one row per input value in a single
+    DB round-trip.
+
+    When ``per_input_counts`` is provided, each input gets its actual count
+    (0 for terms that returned no results).  Otherwise, all inputs get the
+    same ``records_returned`` value (the run total) for backward
+    compatibility.
+
+    A ``records_returned`` of 0 is valid and means "the API was queried but
+    returned nothing for this input".  The coverage checker treats this as
+    valid coverage to avoid needlessly re-querying empty terms.
 
     Args:
         platform: Platform identifier.
@@ -1532,15 +1873,15 @@ def record_collection_attempts_batch(
         input_type: ``"term"`` or ``"actor"``.
         date_from: ISO 8601 start of the collection window.
         date_to: ISO 8601 end of the collection window.
-        records_returned: Total records returned (split equally is impractical,
-            so the total is stored on each row — the coverage checker only
-            checks ``IS NOT NULL`` to confirm success).
+        records_returned: Fallback records count used when ``per_input_counts``
+            is not provided.
+        per_input_counts: Optional mapping of input → actual records count.
     """
     import logging
 
     from sqlalchemy import text
 
-    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+    from issue_observatory.core.database import get_sync_session
 
     log = logging.getLogger("issue_observatory.workers._task_helpers")
 
@@ -1550,6 +1891,16 @@ def record_collection_attempts_batch(
     try:
         with get_sync_session() as db:
             for inp in inputs:
+                if per_input_counts is not None:
+                    # Only record coverage for inputs the collector actually
+                    # queried.  Inputs missing from per_input_counts were never
+                    # sent to the API (e.g. collector crashed mid-run), so
+                    # recording them as 0 would create false coverage.
+                    if inp not in per_input_counts:
+                        continue
+                    count = per_input_counts[inp]
+                else:
+                    count = records_returned
                 db.execute(
                     text(
                         "INSERT INTO collection_attempts "
@@ -1566,13 +1917,13 @@ def record_collection_attempts_batch(
                         "input_type": input_type,
                         "date_from": date_from,
                         "date_to": date_to,
-                        "records_returned": records_returned,
+                        "records_returned": count,
                         "run_id": collection_run_id,
                         "qd_id": query_design_id,
                     },
                 )
             db.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning(
             "record_collection_attempts_batch: failed for platform=%s: %s",
             platform,
@@ -1581,24 +1932,286 @@ def record_collection_attempts_batch(
 
 
 # ---------------------------------------------------------------------------
+# Platform URL error helpers (dead page suppression)
+# ---------------------------------------------------------------------------
+
+
+def get_suppressed_urls(platform: str, urls: list[str]) -> set[str]:
+    """Return the subset of *urls* that should be suppressed (dead/errored).
+
+    A URL is suppressed when ``failure_count >= 2`` AND ``last_seen_at`` is
+    within the last 30 days.  After 30 days the URL is retried automatically.
+
+    Fail-open: returns an empty set on any DB error so collection is never
+    blocked by a bug in the suppression logic.
+
+    Args:
+        platform: Platform identifier (e.g. ``"facebook"``).
+        urls: Candidate URLs to check.
+
+    Returns:
+        Set of URLs that should be skipped.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session
+
+    log = logging.getLogger("issue_observatory.workers._task_helpers")
+
+    if not urls:
+        return set()
+
+    try:
+        with get_sync_session() as db:
+            rows = db.execute(
+                text(
+                    "SELECT url FROM platform_url_errors "
+                    "WHERE platform = :platform "
+                    "AND url = ANY(:urls) "
+                    "AND failure_count >= 2 "
+                    "AND last_seen_at > NOW() - INTERVAL '30 days'"
+                ),
+                {"platform": platform, "urls": urls},
+            ).fetchall()
+            return {row[0] for row in rows}
+    except Exception as exc:
+        log.warning("get_suppressed_urls: failed for platform=%s: %s", platform, exc)
+        return set()
+
+
+def record_url_errors(
+    platform: str,
+    errors: list[dict[str, str]],
+) -> None:
+    """UPSERT error records for URLs that failed collection.
+
+    Each entry in *errors* should have keys ``url``, ``error_code``, and
+    optionally ``error_detail``.  On conflict the ``failure_count`` is
+    incremented, ``last_seen_at`` is updated, and the latest error code
+    is stored.
+
+    Best-effort: DB failures are logged and do not propagate.
+
+    Args:
+        platform: Platform identifier.
+        errors: List of ``{"url": ..., "error_code": ..., "error_detail": ...}`` dicts.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session
+
+    log = logging.getLogger("issue_observatory.workers._task_helpers")
+
+    if not errors:
+        return
+
+    try:
+        with get_sync_session() as db:
+            for err in errors:
+                db.execute(
+                    text(
+                        "INSERT INTO platform_url_errors "
+                        "(platform, url, error_code, error_detail) "
+                        "VALUES (:platform, :url, :error_code, :error_detail) "
+                        "ON CONFLICT ON CONSTRAINT uq_platform_url_errors_platform_url "
+                        "DO UPDATE SET "
+                        "  error_code = EXCLUDED.error_code, "
+                        "  error_detail = EXCLUDED.error_detail, "
+                        "  last_seen_at = NOW(), "
+                        "  failure_count = platform_url_errors.failure_count + 1"
+                    ),
+                    {
+                        "platform": platform,
+                        "url": err.get("url", ""),
+                        "error_code": err.get("error_code", "unknown"),
+                        "error_detail": err.get("error_detail"),
+                    },
+                )
+            db.commit()
+            log.info(
+                "record_url_errors: recorded %d errors for platform=%s",
+                len(errors),
+                platform,
+            )
+    except Exception as exc:
+        log.warning("record_url_errors: failed for platform=%s: %s", platform, exc)
+
+
+def clear_url_errors(platform: str, urls: list[str]) -> None:
+    """Remove error records for URLs that produced valid data (page recovered).
+
+    Called after a successful collection to clear suppression for URLs that
+    are working again.
+
+    Best-effort: DB failures are logged and do not propagate.
+
+    Args:
+        platform: Platform identifier.
+        urls: URLs that successfully returned data.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session
+
+    log = logging.getLogger("issue_observatory.workers._task_helpers")
+
+    if not urls:
+        return
+
+    try:
+        with get_sync_session() as db:
+            db.execute(
+                text(
+                    "DELETE FROM platform_url_errors "
+                    "WHERE platform = :platform AND url = ANY(:urls)"
+                ),
+                {"platform": platform, "urls": urls},
+            )
+            db.commit()
+    except Exception as exc:
+        log.warning("clear_url_errors: failed for platform=%s: %s", platform, exc)
+
+
+# ---------------------------------------------------------------------------
+# Tier fallback helper
+# ---------------------------------------------------------------------------
+
+
+def run_with_tier_fallback(
+    collector: Any,
+    collect_method: str,
+    kwargs: dict[str, Any],
+    requested_tier_str: str,
+    platform: str,
+    task_logger: Any = None,
+) -> tuple[Any, str]:
+    """Run a collection method with automatic tier fallback on credential failure.
+
+    When the requested tier has no available credentials, tries lower tiers
+    in order: PREMIUM → MEDIUM → FREE.  Only tiers in the collector's
+    ``supported_tiers`` are attempted.
+
+    The collection method is called via ``asyncio.run()`` (suitable for
+    synchronous Celery task bodies).
+
+    Args:
+        collector: An :class:`ArenaCollector` instance.
+        collect_method: Method name to call (e.g. ``"collect_by_terms"``).
+        kwargs: Keyword arguments for the collection method.  The ``tier``
+            key will be overwritten on each fallback attempt.
+        requested_tier_str: Originally requested tier value string.
+        platform: Platform name for logging.
+        task_logger: Logger instance (defaults to module logger).
+
+    Returns:
+        Tuple of ``(result, used_tier_str)`` — the collection result and the
+        tier value string that was actually used.
+
+    Raises:
+        NoCredentialAvailableError: If no supported tier has credentials.
+    """
+    import asyncio
+    import logging
+
+    from issue_observatory.arenas.base import Tier
+    from issue_observatory.core.exceptions import NoCredentialAvailableError
+
+    log = task_logger or logging.getLogger(__name__)
+
+    tier_order = [Tier.PREMIUM, Tier.MEDIUM, Tier.FREE]
+    requested_tier = Tier(requested_tier_str)
+
+    try:
+        start_idx = tier_order.index(requested_tier)
+    except ValueError:
+        start_idx = 0
+
+    tiers_to_try = [t for t in tier_order[start_idx:] if t in collector.supported_tiers]
+
+    if not tiers_to_try:
+        raise NoCredentialAvailableError(platform=platform, tier=requested_tier_str)
+
+    last_exc: NoCredentialAvailableError | NotImplementedError | None = None
+    method = getattr(collector, collect_method)
+
+    for tier in tiers_to_try:
+        try:
+            kwargs["tier"] = tier
+            result = asyncio.run(method(**kwargs))
+            if tier != requested_tier:
+                log.warning(
+                    "%s: fell back from tier=%s to tier=%s due to missing credentials",
+                    platform,
+                    requested_tier.value,
+                    tier.value,
+                )
+            return result, tier.value
+        except NoCredentialAvailableError as exc:
+            last_exc = exc
+            log.warning(
+                "%s: no credential for tier=%s, trying lower tier...",
+                platform,
+                tier.value,
+            )
+            continue
+        except NotImplementedError as exc:
+            last_exc = exc
+            log.warning(
+                "%s: tier=%s not implemented (%s), trying lower tier...",
+                platform,
+                tier.value,
+                exc,
+            )
+            continue
+
+    if isinstance(last_exc, NotImplementedError):
+        raise NoCredentialAvailableError(
+            platform=platform, tier=requested_tier_str
+        ) from last_exc
+    raise last_exc or NoCredentialAvailableError(
+        platform=platform, tier=requested_tier_str
+    )
+
+
+# ---------------------------------------------------------------------------
 # Collection attempt reconciliation
 # ---------------------------------------------------------------------------
 
 
-def reconcile_collection_attempts() -> dict[str, int]:
+def reconcile_collection_attempts(
+    min_age_days: int = 14,
+) -> dict[str, int]:
     """Validate collection_attempts against actual content_records data.
 
-    For each valid attempt with ``records_returned > 0``, checks whether
-    at least one matching content record still exists in the database.
-    If no records remain (e.g. due to manual deletion or retention policy
-    enforcement), the attempt is marked ``is_valid = FALSE`` so the
-    coverage checker no longer trusts it.
+    For each valid attempt with ``records_returned > 0`` that is older than
+    ``min_age_days``, checks whether at least one matching content record
+    still exists in the database.  If no records remain (e.g. due to manual
+    deletion or retention policy enforcement), the attempt is marked
+    ``is_valid = FALSE`` so the coverage checker no longer trusts it.
+
+    Recent attempts (< ``min_age_days`` old) are skipped because they
+    represent current, trustworthy coverage — even if no content records
+    exist for a specific search term (which simply means the API returned
+    zero results for that term).
+
+    Zero-result attempts (``records_returned = 0``) are also skipped because
+    they legitimately indicate "the API was queried and found nothing".
 
     This runs as a periodic Celery Beat task (weekly by default) to prevent
     stale coverage claims from permanently blocking re-collection.
 
     The check is efficient: uses ``EXISTS`` with partition-pruning-friendly
     predicates (platform + published_at bounds) and short-circuits per row.
+
+    Args:
+        min_age_days: Only reconcile attempts older than this many days.
+            Defaults to 14 days to avoid invalidating current coverage data.
 
     Returns:
         Dict with ``attempts_checked`` and ``attempts_invalidated`` counts.
@@ -1607,7 +2220,7 @@ def reconcile_collection_attempts() -> dict[str, int]:
 
     from sqlalchemy import text
 
-    from issue_observatory.core.database import get_sync_session  # noqa: PLC0415
+    from issue_observatory.core.database import get_sync_session
 
     log = logging.getLogger("issue_observatory.workers._task_helpers")
 
@@ -1616,16 +2229,19 @@ def reconcile_collection_attempts() -> dict[str, int]:
 
     try:
         with get_sync_session() as db:
-            # Fetch all valid attempts that claimed successful collection.
-            # We process in batches to avoid holding a long transaction.
+            # Fetch valid attempts older than min_age_days with records_returned > 0.
+            # Recent attempts are trusted regardless of content existence.
+            # Zero-result attempts are valid coverage (API returned nothing).
             rows = db.execute(
                 text(
                     "SELECT id, platform, input_value, input_type, "
                     "date_from, date_to "
                     "FROM collection_attempts "
                     "WHERE is_valid = TRUE AND records_returned > 0 "
+                    "AND attempted_at < NOW() - CAST(:min_age AS interval) "
                     "ORDER BY attempted_at DESC"
-                )
+                ),
+                {"min_age": f"{min_age_days} days"},
             ).fetchall()
 
             stale_ids: list[str] = []
@@ -1674,7 +2290,7 @@ def reconcile_collection_attempts() -> dict[str, int]:
 
                 exists_result = db.execute(
                     text(
-                        f"SELECT EXISTS("  # noqa: S608
+                        f"SELECT EXISTS("
                         f"SELECT 1 FROM content_records WHERE {cr_where} LIMIT 1)"
                     ),
                     cr_params,
@@ -1694,7 +2310,7 @@ def reconcile_collection_attempts() -> dict[str, int]:
                     params_dict = {f"id_{j}": uid for j, uid in enumerate(chunk)}
                     db.execute(
                         text(
-                            f"UPDATE collection_attempts "  # noqa: S608
+                            f"UPDATE collection_attempts "
                             f"SET is_valid = FALSE "
                             f"WHERE id IN ({placeholders})"
                         ),
@@ -1708,7 +2324,7 @@ def reconcile_collection_attempts() -> dict[str, int]:
             checked,
             invalidated,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.error(
             "reconcile_collection_attempts: error: %s",
             exc,
@@ -1716,3 +2332,244 @@ def reconcile_collection_attempts() -> dict[str, int]:
         )
 
     return {"attempts_checked": checked, "attempts_invalidated": invalidated}
+
+
+# ---------------------------------------------------------------------------
+# "Only collect new" filters
+# ---------------------------------------------------------------------------
+
+
+async def filter_new_terms(
+    query_design_id: str,
+    platform: str,
+    terms: list[str],
+) -> list[str]:
+    """Return only terms that have no matching content records yet.
+
+    Checks ``search_terms_matched`` on existing content records for the
+    given query design and platform, then returns terms not already present.
+    """
+    if not terms:
+        return []
+
+    from sqlalchemy import text
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text(
+                "SELECT DISTINCT unnest(search_terms_matched) "
+                "FROM content_records "
+                "WHERE query_design_id = CAST(:qd_id AS uuid) "
+                "AND platform = :platform"
+            ),
+            {"qd_id": str(query_design_id), "platform": platform},
+        )
+        existing = {row[0] for row in result}
+
+    return [t for t in terms if t not in existing]
+
+
+async def filter_new_actors(
+    query_design_id: str,
+    platform: str,
+    actor_ids: list[str],
+    config_key: str | None = None,
+) -> list[str]:
+    """Return only source list entries not present in the most recent completed run.
+
+    Source list identifiers (usernames, URLs) differ from
+    ``author_platform_id`` stored in content records, so matching against
+    records is unreliable.  Instead, compare the current source list against
+    the snapshot stored on the most recent completed ``CollectionRun`` for
+    the same query design.  Only entries absent from that snapshot are
+    returned as "new".
+
+    Falls back to returning all ``actor_ids`` when no previous run exists
+    (first collection) or when the previous run's config cannot be read.
+    """
+    if not actor_ids:
+        return []
+
+    from sqlalchemy import text
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text(
+                "SELECT arenas_config "
+                "FROM collection_runs "
+                "WHERE query_design_id = CAST(:qd_id AS uuid) "
+                "AND status = 'completed' "
+                "ORDER BY created_at DESC "
+                "LIMIT 1"
+            ),
+            {"qd_id": str(query_design_id)},
+        )
+        row = result.first()
+
+    if row is None or row[0] is None:
+        # No previous completed run — everything is new.
+        return actor_ids
+
+    prev_config: dict = row[0]
+
+    # Extract previous source list for this platform.
+    prev_section = prev_config.get(platform)
+    if not isinstance(prev_section, dict) or not config_key:
+        # Can't determine previous list — fall back to all.
+        return actor_ids
+
+    prev_list = prev_section.get(config_key)
+    if not isinstance(prev_list, list):
+        # Platform wasn't in the previous run — everything is new.
+        return actor_ids
+
+    prev_set = set(prev_list)
+    return [a for a in actor_ids if a not in prev_set]
+
+
+# ---------------------------------------------------------------------------
+# Comment collection helpers
+# ---------------------------------------------------------------------------
+
+
+async def fetch_posts_for_comment_collection(
+    collection_run_id: str,
+    platform: str,
+    comments_config: dict,
+    project_id: str,
+    date_from: Any | None = None,
+    date_to: Any | None = None,
+) -> list[dict]:
+    """Return posts matching the comment collection criteria for a platform.
+
+    Queries all posts in the project for the given platform within the date
+    range — not limited to a single collection run. This allows researchers
+    to enable comment collection later and still pick up posts from earlier
+    runs.
+
+    Modes:
+    - ``search_terms``: posts where ``search_terms_matched`` overlaps configured terms.
+    - ``source_list_actors``: posts where ``author_id`` is in configured actor lists.
+    - ``post_urls``: returns the explicit URLs as-is (no DB query needed).
+
+    Args:
+        collection_run_id: UUID of the triggering collection run (used for
+            fallback scoping if no date range is available).
+        platform: Platform name (e.g. ``"reddit"``, ``"bluesky"``).
+        comments_config: The platform's section from ``project.comments_config``.
+        project_id: UUID of the project.
+        date_from: Start of the date range (from the collection run).
+        date_to: End of the date range (from the collection run).
+
+    Returns:
+        List of dicts with ``platform_id``, ``url``, ``published_at`` keys.
+    """
+    from sqlalchemy import Text as SAText
+    from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
+
+    mode = comments_config.get("mode", "search_terms")
+
+    if mode == "post_urls":
+        urls = comments_config.get("post_urls") or []
+        return [{"platform_id": None, "url": u, "published_at": None} for u in urls if u]
+
+    async with AsyncSessionLocal() as db:
+        # Scope to all runs in this project for the given platform
+        project_run_ids = (
+            select(CollectionRun.id)
+            .where(CollectionRun.project_id == project_id)
+            .scalar_subquery()
+        )
+
+        # Subquery: posts that already have comments collected for them.
+        from sqlalchemy import exists
+        from sqlalchemy.orm import aliased
+
+        ExistingComment = aliased(UniversalContentRecord)
+        has_comments = (
+            exists()
+            .where(
+                ExistingComment.platform == platform,
+                ExistingComment.content_type == "comment",
+                ExistingComment.raw_metadata["parent_post_id"].astext
+                == UniversalContentRecord.platform_id,
+            )
+        )
+
+        stmt = (
+            select(
+                UniversalContentRecord.platform_id,
+                UniversalContentRecord.url,
+                UniversalContentRecord.published_at,
+            )
+            .where(
+                UniversalContentRecord.collection_run_id.in_(project_run_ids),
+                UniversalContentRecord.platform == platform,
+                UniversalContentRecord.content_type.notin_(["comment", "reply"]),
+                ~has_comments,
+            )
+        )
+
+        # Apply date range filter on published_at
+        if date_from is not None:
+            stmt = stmt.where(UniversalContentRecord.published_at >= date_from)
+        if date_to is not None:
+            stmt = stmt.where(UniversalContentRecord.published_at <= date_to)
+
+        if mode == "search_terms":
+            configured_terms = comments_config.get("search_terms") or []
+            if configured_terms:
+                # Filter posts whose search_terms_matched array overlaps with configured terms
+                for term in configured_terms:
+                    stmt = stmt.where(
+                        UniversalContentRecord.search_terms_matched
+                        .cast(PG_ARRAY(SAText))
+                        .contains([term])
+                    )
+
+        elif mode == "source_list_actors":
+            actor_list_ids = comments_config.get("actor_list_ids") or []
+            if actor_list_ids:
+                from issue_observatory.core.models.actors import ActorListMember
+                from issue_observatory.core.models.query_design import ActorList
+
+                actor_ids_subq = (
+                    select(ActorListMember.actor_id)
+                    .join(ActorList, ActorListMember.actor_list_id == ActorList.id)
+                    .where(ActorList.id.in_(actor_list_ids))
+                    .scalar_subquery()
+                )
+                stmt = stmt.where(
+                    UniversalContentRecord.author_id.in_(actor_ids_subq)
+                )
+
+        # Deduplicate by platform_id (same post may appear in multiple runs)
+        stmt = stmt.distinct(UniversalContentRecord.platform_id)
+
+        result = await db.execute(stmt)
+        rows = result.mappings().all()
+        return [
+            {
+                "platform_id": str(row["platform_id"]) if row["platform_id"] else None,
+                "url": row["url"],
+                "published_at": row["published_at"].isoformat() if row["published_at"] else None,
+            }
+            for row in rows
+        ]
+
+
+async def fetch_project_comments_config(project_id: str) -> dict:
+    """Fetch the comments_config from a project.
+
+    Args:
+        project_id: UUID string of the project.
+
+    Returns:
+        The comments_config dict, or empty dict if not found.
+    """
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Project.comments_config).where(Project.id == project_id)
+        )
+        config = result.scalar_one_or_none()
+        return dict(config) if config else {}

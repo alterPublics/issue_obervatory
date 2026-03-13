@@ -41,11 +41,12 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 
+from issue_observatory.arenas._brightdata_comments import BrightDataCommentCollector
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.instagram.config import (
     BRIGHTDATA_MAX_POLL_ATTEMPTS,
@@ -54,6 +55,7 @@ from issue_observatory.arenas.instagram.config import (
     BRIGHTDATA_RATE_LIMIT_MAX_CALLS,
     BRIGHTDATA_RATE_LIMIT_WINDOW_SECONDS,
     BRIGHTDATA_SNAPSHOT_URL,
+    INSTAGRAM_DATASET_ID_COMMENTS,
     INSTAGRAM_DATASET_ID_POSTS,
     INSTAGRAM_REEL_MEDIA_TYPES,
     INSTAGRAM_REEL_PRODUCT_TYPES,
@@ -78,6 +80,11 @@ _PLATFORM: str = "instagram"
 
 # Number of posts to request per actor per API call.
 _DEFAULT_NUM_POSTS: int = 100
+
+# Number of profiles per Bright Data trigger request.
+# Conservative: Bright Data supports large batches, but chunking avoids
+# single-point-of-failure for 200+ URLs and keeps individual snapshots manageable.
+_BATCH_CHUNK_SIZE: int = 25
 
 
 def _normalize_profile_url(actor_id: str) -> str:
@@ -126,6 +133,8 @@ class InstagramCollector(ArenaCollector):
     # Actor-only arena: keyword search is not supported by the Bright Data API.
     # The orchestration layer will dispatch collect_by_actors() instead.
     supports_term_search: bool = False
+    supports_actor_collection: bool = True
+    source_list_config_key: str | None = "custom_profiles"
 
     def __init__(
         self,
@@ -236,36 +245,65 @@ class InstagramCollector(ArenaCollector):
         cred_id: str = cred["id"]
         api_token: str = cred.get("api_token") or cred.get("api_key", "")
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
+        self._bd_errors: list[dict[str, str]] = []
+
+        # Build full profile URL list and split into chunks.
+        # Initialize all submitted URLs with count 0 — actual counts are
+        # updated in _collect_brightdata_batch() from Bright Data's input.url
+        # echo field.  URLs that produce no valid records stay at 0.
+        profile_urls = [_normalize_profile_url(aid) for aid in actor_ids]
+        for url in profile_urls:
+            self._record_input_count(url, 0)
+        chunks = [
+            profile_urls[i : i + _BATCH_CHUNK_SIZE]
+            for i in range(0, len(profile_urls), _BATCH_CHUNK_SIZE)
+        ]
 
         try:
             async with self._build_http_client() as client:
-                for actor_id in actor_ids:
-                    if len(all_records) >= effective_max:
+                for chunk_idx, chunk in enumerate(chunks, 1):
+                    if self._total_emitted >= effective_max:
                         break
-                    remaining = effective_max - len(all_records)
-                    profile_url = _normalize_profile_url(actor_id)
-                    records = await self._collect_brightdata_profile(
+                    remaining = effective_max - self._total_emitted
+                    logger.info(
+                        "instagram: processing chunk %d/%d (%d profiles)",
+                        chunk_idx,
+                        len(chunks),
+                        len(chunk),
+                    )
+                    records, errors = await self._collect_brightdata_batch(
                         client,
                         api_token,
                         cred_id,
-                        profile_url,
+                        chunk,
                         remaining,
                         date_from,
                         date_to,
                     )
-                    all_records.extend(records)
+                    self._bd_errors.extend(errors)
+                    self._emit_many(records)
+                    self._flush()
         finally:
             if self.credential_pool:
                 await self.credential_pool.release(credential_id=cred_id)
 
+        self._flush()
         logger.info(
             "instagram: collect_by_actors completed — tier=%s actors=%d records=%d",
             tier.value,
             len(actor_ids),
-            len(all_records),
+            self._total_emitted,
         )
-        return all_records
+        return list(self._batch_buffer)
+
+    @property
+    def brightdata_errors(self) -> list[dict[str, str]]:
+        """Error entries from the most recent Bright Data collection.
+
+        Each entry has ``url``, ``error_code``, and ``error_detail`` keys.
+        """
+        return getattr(self, "_bd_errors", [])
 
     def get_tier_config(self, tier: Tier) -> TierConfig | None:
         """Return tier configuration for the Instagram arena.
@@ -378,9 +416,103 @@ class InstagramCollector(ArenaCollector):
         for item in raw_items[:max_results]:
             try:
                 records.append(self.normalize(item, source="brightdata"))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("instagram: normalization error for item: %s", exc)
         return records
+
+    async def _collect_brightdata_batch(
+        self,
+        client: httpx.AsyncClient,
+        api_token: str,
+        cred_id: str,
+        profile_urls: list[str],
+        max_results: int,
+        date_from: datetime | str | None,
+        date_to: datetime | str | None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+        """Submit a single Bright Data trigger for a batch of profile URLs.
+
+        Builds one payload with all profile URLs in the chunk, triggers once,
+        polls once, and normalizes all returned records. This replaces the
+        per-actor sequential trigger+poll pattern.
+
+        Args:
+            client: Shared HTTP client.
+            api_token: Bright Data API token.
+            cred_id: Credential ID for rate limiting.
+            profile_urls: List of full Instagram profile URLs.
+            max_results: Maximum records to return from this batch.
+            date_from: Date range lower bound (optional).
+            date_to: Date range upper bound (optional).
+
+        Returns:
+            Tuple of (normalized records, error entries). Error entries are
+            dicts with ``url``, ``error_code``, ``error_detail`` keys.
+        """
+        await self._wait_rate_limit(cred_id)
+
+        per_actor_limit = min(_DEFAULT_NUM_POSTS, max_results // max(1, len(profile_urls)))
+        per_actor_limit = max(1, per_actor_limit)
+        start_date_str = to_brightdata_date(date_from)
+        end_date_str = to_brightdata_date(date_to)
+
+        payload: list[dict[str, Any]] = []
+        for url in profile_urls:
+            entry: dict[str, Any] = {
+                "url": url,
+                "num_of_posts": per_actor_limit,
+            }
+            if start_date_str:
+                entry["start_date"] = start_date_str
+            if end_date_str:
+                entry["end_date"] = end_date_str
+            payload.append(entry)
+
+        trigger_url = build_trigger_url(INSTAGRAM_DATASET_ID_POSTS, discover_by_url=True)
+        snapshot_id = await self._trigger_dataset(client, api_token, trigger_url, payload)
+        raw_items = await self._poll_and_download(client, api_token, snapshot_id)
+
+        # Filter out Bright Data error records (e.g. dead_page, login_required).
+        valid_items: list[dict[str, Any]] = []
+        error_entries: list[dict[str, str]] = []
+        for item in raw_items:
+            error_code = item.get("error_code")
+            if error_code:
+                input_url = (item.get("input") or {}).get("url", "unknown")
+                logger.warning(
+                    "instagram: Bright Data error record skipped — "
+                    "url=%s error_code=%s error=%s",
+                    input_url,
+                    error_code,
+                    item.get("error", ""),
+                )
+                error_entries.append({
+                    "url": input_url,
+                    "error_code": str(error_code),
+                    "error_detail": str(item.get("error", "")),
+                })
+                continue
+            valid_items.append(item)
+
+        if error_entries:
+            logger.info(
+                "instagram: filtered %d/%d Bright Data error records (valid=%d)",
+                len(error_entries),
+                len(raw_items),
+                len(valid_items),
+            )
+
+        records: list[dict[str, Any]] = []
+        for item in valid_items[:max_results]:
+            try:
+                records.append(self.normalize(item, source="brightdata"))
+                # Attribute this record to its source actor via BD's input echo.
+                input_url = (item.get("input") or {}).get("url", "")
+                if input_url:
+                    self._record_input_count(input_url, 1)
+            except Exception as exc:
+                logger.warning("instagram: normalization error for item: %s", exc)
+        return records, error_entries
 
     # ------------------------------------------------------------------
     # Normalizer parsing paths
@@ -639,7 +771,7 @@ class InstagramCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
             ``arena``, ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -689,6 +821,86 @@ class InstagramCollector(ArenaCollector):
         finally:
             if self.credential_pool:
                 await self.credential_pool.release(credential_id=cred_id)
+
+    # ------------------------------------------------------------------
+    # Comment collection
+    # ------------------------------------------------------------------
+
+    async def collect_comments(
+        self,
+        post_ids: list[dict],
+        tier: Tier,
+        max_comments_per_post: int = 200,
+        depth: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Collect comments for Instagram posts via Bright Data.
+
+        Args:
+            post_ids: List of dicts with ``url`` key (Instagram post URL).
+            tier: Collection tier (MEDIUM for Bright Data).
+            max_comments_per_post: Max comments per post.
+            depth: Unused (Bright Data returns flat comment list).
+
+        Returns:
+            List of normalized comment records.
+        """
+        post_urls: list[str] = [
+            entry["url"]
+            for entry in post_ids
+            if entry.get("url")
+        ]
+        if not post_urls:
+            logger.warning("instagram: collect_comments called with no valid post URLs")
+            return []
+
+        cred = await self._acquire_medium_credential()
+        if cred is None:
+            raise NoCredentialAvailableError(platform="brightdata_instagram", tier="medium")
+
+        cred_id: str = cred["id"]
+        api_token: str = cred.get("api_token") or cred.get("api_key", "")
+
+        try:
+            bd = BrightDataCommentCollector()
+            async with httpx.AsyncClient(timeout=60) as client:
+                raw_comments = await bd.collect_comments_brightdata(
+                    client,
+                    api_token,
+                    post_urls,
+                    INSTAGRAM_DATASET_ID_COMMENTS,
+                    "instagram",
+                    max_comments_per_post,
+                )
+        finally:
+            if self.credential_pool:
+                await self.credential_pool.release(credential_id=cred_id)
+
+        records: list[dict[str, Any]] = []
+        for item in raw_comments:
+            # Build a flat dict using the field names that _parse_brightdata_instagram
+            # expects so that normalize() can extract values correctly.
+            # - "text" is read by _parse_brightdata_instagram as a text fallback.
+            # - "description" is the primary text field (falls back to "text").
+            text: str = item.get("text") or item.get("comment_text") or item.get("description", "")
+            raw_dict: dict[str, Any] = {
+                "id": item.get("id") or item.get("comment_id"),
+                "shortcode": item.get("shortcode") or item.get("id") or item.get("comment_id"),
+                "text": text,
+                "user_posted": item.get("author_name") or item.get("user_posted"),
+                "owner_id": item.get("author_id") or item.get("owner_id"),
+                "date_posted": item.get("date_posted") or item.get("date") or item.get("timestamp"),
+                "likes": item.get("num_likes") or item.get("likes") or item.get("like_count") or 0,
+                "url": item.get("comment_url") or item.get("url"),
+                "parent_post_id": item.get("post_url") or item.get("post_id"),
+            }
+            records.append(self.normalize(raw_dict))
+
+        logger.info(
+            "instagram: collect_comments — normalized %d comment records from %d post URLs",
+            len(records),
+            len(post_urls),
+        )
+        return records
 
     # ------------------------------------------------------------------
     # Bright Data low-level HTTP helpers
@@ -793,6 +1005,9 @@ class InstagramCollector(ArenaCollector):
         snapshot_url = BRIGHTDATA_SNAPSHOT_URL.format(snapshot_id=snapshot_id)
 
         for attempt in range(1, BRIGHTDATA_MAX_POLL_ATTEMPTS + 1):
+            # Bail out early if the run was cancelled while polling.
+            self.check_cancelled()
+
             try:
                 prog_response = await client.get(progress_url, headers=headers)
                 prog_response.raise_for_status()
@@ -978,6 +1193,6 @@ def _extract_hashtags(text: str) -> list[str]:
     """
     if not text:
         return []
-    import re  # noqa: PLC0415
+    import re
 
     return re.findall(r"#(\w+)", text)

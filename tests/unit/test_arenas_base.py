@@ -19,7 +19,6 @@ import pytest
 from issue_observatory.arenas.base import ArenaCollector, Tier
 from issue_observatory.arenas.registry import _REGISTRY, get_arena, list_arenas, register
 
-
 # ---------------------------------------------------------------------------
 # Tier enum
 # ---------------------------------------------------------------------------

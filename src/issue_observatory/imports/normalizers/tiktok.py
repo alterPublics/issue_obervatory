@@ -11,7 +11,7 @@ Supports both:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -79,7 +79,7 @@ class TikTokNormalizer:
         published_at = None
         if create_time:
             try:
-                published_at = datetime.fromtimestamp(int(create_time), tz=timezone.utc)
+                published_at = datetime.fromtimestamp(int(create_time), tz=UTC)
             except (ValueError, TypeError) as exc:
                 logger.warning(
                     "tiktok.timestamp_parse_error",
@@ -162,7 +162,7 @@ class TikTokNormalizer:
         published_at = None
         if create_time:
             try:
-                published_at = datetime.fromtimestamp(int(create_time), tz=timezone.utc)
+                published_at = datetime.fromtimestamp(int(create_time), tz=UTC)
             except (ValueError, TypeError) as exc:
                 logger.warning(
                     "tiktok_comment.timestamp_parse_error",

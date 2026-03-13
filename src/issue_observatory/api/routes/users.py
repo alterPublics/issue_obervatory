@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import secrets
 import uuid
-from typing import Annotated, Optional
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
@@ -53,10 +53,10 @@ class UserAdminRead(BaseModel):
 
     id: uuid.UUID
     email: EmailStr
-    display_name: Optional[str] = None
+    display_name: str | None = None
     role: str
     is_active: bool
-    last_login_at: Optional[str] = None
+    last_login_at: str | None = None
 
 
 class RoleUpdateRequest(BaseModel):
@@ -514,7 +514,6 @@ async def admin_create_user(
     Returns:
         HTML ``<tr>`` fragment for HTMX swap.
     """
-    from issue_observatory.core.user_manager import UserManager  # noqa: PLC0415
 
     allowed_roles = {"researcher", "admin"}
     if role not in allowed_roles:
@@ -532,7 +531,7 @@ async def admin_create_user(
             status_code=400,
         )
 
-    from fastapi_users.password import PasswordHelper  # noqa: PLC0415
+    from fastapi_users.password import PasswordHelper
 
     password_helper = PasswordHelper()
     hashed = password_helper.hash(password)

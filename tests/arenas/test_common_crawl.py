@@ -40,14 +40,14 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.web.common_crawl.collector import CommonCrawlCollector  # noqa: E402
-from issue_observatory.arenas.web.common_crawl.config import (  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.web.common_crawl.collector import CommonCrawlCollector
+from issue_observatory.arenas.web.common_crawl.config import (
     CC_COLLINFO_URL,
     CC_DEFAULT_INDEX,
     CC_INDEX_BASE_URL,
 )
-from issue_observatory.core.exceptions import ArenaRateLimitError  # noqa: E402
+from issue_observatory.core.exceptions import ArenaRateLimitError
 
 # ---------------------------------------------------------------------------
 # Fixture paths
@@ -148,7 +148,7 @@ class TestNormalize:
 
     def test_normalize_platform_id_sha256_when_no_digest(self) -> None:
         """normalize() falls back to SHA-256(url+timestamp) when digest is absent."""
-        import hashlib  # noqa: PLC0415
+        import hashlib
 
         collector = self._collector()
         entry = {**_first_entry()}

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -33,7 +33,7 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.analysis.network import (  # noqa: E402
+from issue_observatory.analysis.network import (
     _and,
     _build_run_filter,
     _empty_graph,
@@ -43,7 +43,6 @@ from issue_observatory.analysis.network import (  # noqa: E402
     get_cross_platform_actors,
     get_term_co_occurrence,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -213,8 +212,8 @@ class TestBuildRunFilter:
         the two date predicates plus the duplicate exclusion clause.
         """
         params: dict = {}
-        date_from = datetime(2026, 1, 1, tzinfo=timezone.utc)
-        date_to = datetime(2026, 1, 31, tzinfo=timezone.utc)
+        date_from = datetime(2026, 1, 1, tzinfo=UTC)
+        date_to = datetime(2026, 1, 31, tzinfo=UTC)
         clauses = _build_run_filter(None, None, None, None, date_from, date_to, params)
         assert len(clauses) == 3
         date_clause_texts = " ".join(clauses)

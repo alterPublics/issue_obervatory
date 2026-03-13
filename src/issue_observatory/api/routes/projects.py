@@ -15,6 +15,7 @@ Routes:
     GET    /{project_id:uuid}         — project detail page (HTML)
     PATCH  /{project_id:uuid}         — update project name/description/visibility
     DELETE /{project_id:uuid}         — delete project (detaches query designs)
+    POST   /{project_id:uuid}/clone   — deep-clone project with all query designs
     POST   /{project_id:uuid}/attach/{design_id:uuid}   — attach query design
     POST   /{project_id:uuid}/detach/{design_id:uuid}   — detach query design
 
@@ -31,7 +32,7 @@ import uuid
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, Depends, Form, HTTPException, status
+from fastapi import APIRouter, Body, Depends, Form, HTTPException, status
 from fastapi.requests import Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -41,15 +42,10 @@ from sqlalchemy.orm import selectinload
 
 from issue_observatory.api.dependencies import get_current_active_user
 from issue_observatory.core.database import get_db
+from issue_observatory.core.models.actors import ActorListMember
 from issue_observatory.core.models.project import Project
-from issue_observatory.core.models.query_design import QueryDesign
+from issue_observatory.core.models.query_design import ActorList, QueryDesign, SearchTerm
 from issue_observatory.core.models.users import User
-from issue_observatory.core.schemas.project import (
-    ProjectCreate,
-    ProjectListResponse,
-    ProjectRead,
-    ProjectUpdate,
-)
 
 logger = structlog.get_logger(__name__)
 
@@ -307,6 +303,8 @@ async def get_project_detail(
             "user": current_user,
             "project": project,
             "query_designs": designs_with_runs,
+            "source_config": project.source_config or {},
+            "comments_config": project.comments_config or {},
         },
     )
 
@@ -417,6 +415,152 @@ async def delete_project(
     return JSONResponse(
         {"deleted": True, "redirect": "/projects"},
         status_code=status.HTTP_200_OK,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /{project_id:uuid}/clone
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{project_id:uuid}/clone")
+async def clone_project(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> JSONResponse:
+    """Clone a project including all query designs, search terms, and actor lists.
+
+    Creates a deep copy of the project owned by the current user. The clone
+    includes source_config, arenas_config, and all attached query designs
+    with their search terms and actor list members.
+
+    Args:
+        project_id: UUID of the project to clone.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        JSON response with the new project ID and redirect URL.
+
+    Raises:
+        HTTPException 404: If the project does not exist.
+        HTTPException 403: If the user does not own the project and is not admin.
+    """
+    # Load the original project with all nested relationships.
+    await _verify_project_ownership(project_id, current_user, db)
+
+    stmt = (
+        select(Project)
+        .where(Project.id == project_id)
+        .options(
+            selectinload(Project.query_designs)
+            .selectinload(QueryDesign.search_terms),
+            selectinload(Project.query_designs)
+            .selectinload(QueryDesign.actor_lists)
+            .selectinload(ActorList.members),
+        )
+    )
+    result = await db.execute(stmt)
+    original = result.scalar_one()
+
+    # Determine a unique name, respecting uq_project_owner_name.
+    base_name = f"{original.name} (copy)"
+    clone_name = base_name
+    suffix = 2
+    while True:
+        exists_stmt = select(
+            func.count(Project.id)
+        ).where(
+            Project.owner_id == current_user.id,
+            Project.name == clone_name,
+        )
+        count = (await db.execute(exists_stmt)).scalar_one()
+        if count == 0:
+            break
+        clone_name = f"{base_name} {suffix}"
+        suffix += 1
+
+    # Create the cloned Project.
+    clone = Project(
+        id=uuid.uuid4(),
+        name=clone_name,
+        description=original.description,
+        visibility="private",
+        owner_id=current_user.id,
+        source_config=dict(original.source_config) if original.source_config else {},
+        arenas_config=dict(original.arenas_config) if original.arenas_config else {},
+        comments_config=dict(original.comments_config) if original.comments_config else {},
+    )
+    db.add(clone)
+    await db.flush()
+
+    # Deep-copy each attached QueryDesign with search terms and actor lists.
+    for qd in original.query_designs:
+        new_qd = QueryDesign(
+            owner_id=current_user.id,
+            project_id=clone.id,
+            name=qd.name,
+            description=qd.description,
+            visibility="private",
+            default_tier=qd.default_tier,
+            language=qd.language,
+            locale_country=qd.locale_country,
+            arenas_config=dict(qd.arenas_config) if qd.arenas_config else {},
+            is_active=True,
+            parent_design_id=qd.id,
+        )
+        db.add(new_qd)
+        await db.flush()
+
+        for term in qd.search_terms:
+            new_term = SearchTerm(
+                query_design_id=new_qd.id,
+                term=term.term,
+                term_type=term.term_type,
+                group_id=term.group_id,
+                group_label=term.group_label,
+                target_arenas=term.target_arenas,
+                translations=term.translations,
+                is_active=term.is_active,
+            )
+            db.add(new_term)
+
+        for actor_list in qd.actor_lists:
+            new_list = ActorList(
+                query_design_id=new_qd.id,
+                name=actor_list.name,
+                description=actor_list.description,
+                created_by=current_user.id,
+                sampling_method=actor_list.sampling_method,
+            )
+            db.add(new_list)
+            await db.flush()
+
+            for member in actor_list.members:
+                new_member = ActorListMember(
+                    actor_list_id=new_list.id,
+                    actor_id=member.actor_id,
+                    added_by="clone",
+                )
+                db.add(new_member)
+
+    await db.commit()
+
+    logger.info(
+        "project.cloned",
+        original_id=str(project_id),
+        clone_id=str(clone.id),
+        user_id=str(current_user.id),
+    )
+
+    return JSONResponse(
+        {
+            "id": str(clone.id),
+            "name": clone.name,
+            "redirect": f"/projects/{clone.id}",
+        },
+        status_code=status.HTTP_201_CREATED,
     )
 
 
@@ -544,5 +688,339 @@ async def detach_query_design(
 
     return JSONResponse(
         {"detached": True, "design_id": str(design_id)},
+        status_code=status.HTTP_200_OK,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /{project_id:uuid}/source-config
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{project_id:uuid}/source-config")
+async def get_source_config(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> JSONResponse:
+    """Return the full source_config for a project.
+
+    Args:
+        project_id: UUID of the project.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        JSON response with the source_config dict.
+    """
+    project = await _verify_project_ownership(project_id, current_user, db)
+    return JSONResponse(
+        project.source_config or {},
+        status_code=status.HTTP_200_OK,
+    )
+
+
+# ---------------------------------------------------------------------------
+# PATCH /{project_id:uuid}/source-config/{arena_name}
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/{project_id:uuid}/source-config/{arena_name}")
+async def patch_source_config(
+    project_id: uuid.UUID,
+    arena_name: str,
+    payload: Annotated[dict, Body()],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> JSONResponse:
+    """Deep-merge source list entries into ``project.source_config[arena_name]``.
+
+    The request body is a JSON object of key-value pairs (e.g.
+    ``{"custom_feeds": ["https://..."]}``) to merge into the arena section.
+
+    Args:
+        project_id: UUID of the project.
+        arena_name: Arena identifier (e.g. ``"rss"``, ``"facebook"``).
+        payload: Dict of key-value pairs to merge.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        JSON response with the updated arena section.
+    """
+    if not arena_name or not arena_name.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="arena_name must not be empty.",
+        )
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Request body must be a non-empty JSON object.",
+        )
+
+    project = await _verify_project_ownership(project_id, current_user, db)
+
+    current_config: dict = dict(project.source_config) if project.source_config else {}
+    existing_section: dict = dict(current_config.get(arena_name) or {})
+    existing_section.update(payload)
+    current_config[arena_name] = existing_section
+
+    project.source_config = current_config
+    await db.commit()
+
+    logger.info(
+        "project.source_config_patched",
+        project_id=str(project_id),
+        arena_name=arena_name,
+        keys=list(payload.keys()),
+    )
+    return JSONResponse(
+        {"arena_name": arena_name, "source_config_section": existing_section},
+        status_code=status.HTTP_200_OK,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /{project_id:uuid}/arenas-config
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{project_id:uuid}/arenas-config")
+async def get_arenas_config(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> JSONResponse:
+    """Return the project-level arenas_config.
+
+    Args:
+        project_id: UUID of the project.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        JSON response with the arenas_config dict.
+    """
+    project = await _verify_project_ownership(project_id, current_user, db)
+    return JSONResponse(
+        project.arenas_config or {},
+        status_code=status.HTTP_200_OK,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /{project_id:uuid}/arenas-config
+# ---------------------------------------------------------------------------
+
+
+class _ArenasConfigPayload(BaseModel):
+    """Payload for updating project-level arena enable/disable config."""
+
+    arenas: list[dict] = []
+
+
+@router.post("/{project_id:uuid}/arenas-config")
+async def save_arenas_config(
+    project_id: uuid.UUID,
+    payload: Annotated[_ArenasConfigPayload, Body()],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> JSONResponse:
+    """Save the project-level arenas_config (full replace).
+
+    Accepts ``{"arenas": [{"id": "tiktok", "enabled": true}, ...]}``
+    and writes to ``project.arenas_config``.  When the list is empty,
+    all QD-enabled arenas pass through (backward compatible).
+
+    Args:
+        project_id: UUID of the project.
+        payload: Arena config payload with a list of arena entries.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        JSON response with the saved arenas_config.
+    """
+    project = await _verify_project_ownership(project_id, current_user, db)
+
+    project.arenas_config = {"arenas": payload.arenas}
+    await db.commit()
+
+    logger.info(
+        "project.arenas_config_saved",
+        project_id=str(project_id),
+        arena_count=len(payload.arenas),
+    )
+    return JSONResponse(
+        project.arenas_config,
+        status_code=status.HTTP_200_OK,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /{project_id:uuid}/comments-config
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{project_id:uuid}/comments-config")
+async def get_comments_config(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> JSONResponse:
+    """Return the full comments_config for a project.
+
+    Args:
+        project_id: UUID of the project.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        JSON response with the comments_config dict.
+    """
+    project = await _verify_project_ownership(project_id, current_user, db)
+    return JSONResponse(
+        project.comments_config or {},
+        status_code=status.HTTP_200_OK,
+    )
+
+
+# ---------------------------------------------------------------------------
+# PATCH /{project_id:uuid}/comments-config/{platform_name}
+# ---------------------------------------------------------------------------
+
+_VALID_COMMENT_MODES = {"search_terms", "source_list_actors", "post_urls"}
+
+_COMMENT_CAPABLE_PLATFORMS = {
+    "reddit", "bluesky", "youtube", "tiktok", "facebook", "instagram",
+}
+
+
+@router.patch("/{project_id:uuid}/comments-config/{platform_name}")
+async def patch_comments_config(
+    project_id: uuid.UUID,
+    platform_name: str,
+    payload: Annotated[dict, Body()],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> JSONResponse:
+    """Deep-merge comment settings into ``project.comments_config[platform_name]``.
+
+    Validates that the platform supports comments, the mode is valid, and
+    mode-specific inputs are well-formed.
+
+    Args:
+        project_id: UUID of the project.
+        platform_name: Platform identifier (e.g. ``"reddit"``, ``"bluesky"``).
+        payload: Dict of settings to merge (e.g. ``{"enabled": true, "mode": "search_terms"}``).
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        JSON response with the updated platform section.
+    """
+    if platform_name not in _COMMENT_CAPABLE_PLATFORMS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Platform '{platform_name}' does not support comment collection. "
+                f"Supported: {sorted(_COMMENT_CAPABLE_PLATFORMS)}"
+            ),
+        )
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Request body must be a non-empty JSON object.",
+        )
+
+    # Validate mode if provided
+    mode = payload.get("mode")
+    if mode is not None and mode not in _VALID_COMMENT_MODES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid mode '{mode}'. Must be one of: {sorted(_VALID_COMMENT_MODES)}",
+        )
+
+    # Validate post_urls format if provided
+    post_urls = payload.get("post_urls")
+    if post_urls is not None:
+        if not isinstance(post_urls, list):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="post_urls must be a list of URL strings.",
+            )
+        for url in post_urls:
+            if not isinstance(url, str) or not url.startswith("http"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid URL in post_urls: {url!r}",
+                )
+
+    project = await _verify_project_ownership(project_id, current_user, db)
+
+    current_config: dict = dict(project.comments_config) if project.comments_config else {}
+    existing_section: dict = dict(current_config.get(platform_name) or {})
+    existing_section.update(payload)
+    current_config[platform_name] = existing_section
+
+    project.comments_config = current_config
+    await db.commit()
+
+    logger.info(
+        "project.comments_config_patched",
+        project_id=str(project_id),
+        platform=platform_name,
+        keys=list(payload.keys()),
+    )
+    return JSONResponse(
+        {"platform": platform_name, "comments_config_section": existing_section},
+        status_code=status.HTTP_200_OK,
+    )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /{project_id:uuid}/comments-config/{platform_name}
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/{project_id:uuid}/comments-config/{platform_name}")
+async def delete_comments_config(
+    project_id: uuid.UUID,
+    platform_name: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> JSONResponse:
+    """Remove comment configuration for a specific platform.
+
+    Args:
+        project_id: UUID of the project.
+        platform_name: Platform identifier to remove.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        JSON response confirming deletion.
+    """
+    project = await _verify_project_ownership(project_id, current_user, db)
+
+    current_config: dict = dict(project.comments_config) if project.comments_config else {}
+    if platform_name not in current_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No comment config for platform '{platform_name}'.",
+        )
+
+    del current_config[platform_name]
+    project.comments_config = current_config
+    await db.commit()
+
+    logger.info(
+        "project.comments_config_deleted",
+        project_id=str(project_id),
+        platform=platform_name,
+    )
+    return JSONResponse(
+        {"deleted": True, "platform": platform_name},
         status_code=status.HTTP_200_OK,
     )

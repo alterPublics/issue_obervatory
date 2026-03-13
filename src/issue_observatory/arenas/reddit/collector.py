@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
@@ -62,6 +62,7 @@ from issue_observatory.core.exceptions import (
     ArenaRateLimitError,
     NoCredentialAvailableError,
 )
+from issue_observatory.core.language_utils import resolve_language_label
 from issue_observatory.core.normalizer import Normalizer
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,8 @@ class RedditCollector(ArenaCollector):
     platform_name: str = "reddit"
     supported_tiers: list[Tier] = [Tier.FREE]
     temporal_mode: TemporalMode = TemporalMode.RECENT
+    source_list_config_key: str | None = "custom_subreddits"
+    supports_actor_collection: bool = True
 
     def __init__(
         self,
@@ -144,8 +147,9 @@ class RedditCollector(ArenaCollector):
                 :data:`~config.DEFAULT_MAX_RESULTS`.
             term_groups: Optional boolean AND/OR groups.  Each group is
                 joined with ``+`` (Reddit AND syntax) and queried separately.
-            language_filter: Not used — Reddit Danish subreddits provide
-                implicit language scoping.
+            language_filter: Optional language codes.  When not Danish,
+                subreddit restriction is removed (searches all of Reddit)
+                unless custom subreddits are configured.
             extra_subreddits: Optional list of subreddit names (without the
                 ``r/`` prefix) supplied by the researcher via
                 ``arenas_config["reddit"]["custom_subreddits"]`` (GR-03).
@@ -163,6 +167,7 @@ class RedditCollector(ArenaCollector):
             NoCredentialAvailableError: When no credential is available.
         """
         self._validate_tier(tier)
+        self._reset_batch_state()
         effective_max = max_results if max_results is not None else DEFAULT_MAX_RESULTS
         cred = await self._acquire_credential()
 
@@ -175,7 +180,6 @@ class RedditCollector(ArenaCollector):
                 platform=self.platform_name,
             ) from exc
 
-        all_records: list[dict[str, Any]] = []
         seen_post_ids: set[str] = set()
 
         # Build query strings: boolean groups use Reddit's + syntax for AND.
@@ -189,15 +193,21 @@ class RedditCollector(ArenaCollector):
             query_strings = list(terms)
 
         # GR-03: build effective subreddit search string including extra subreddits.
-        effective_subreddit_string = _build_subreddit_string(extra_subreddits)
+        # When language is not Danish and no custom subreddits, search globally.
+        lang_label = resolve_language_label(language_filter)
+        is_danish = lang_label == "da"
+        effective_subreddit_string = _build_subreddit_string(
+            extra_subreddits, include_danish=is_danish,
+        )
 
         try:
             async with reddit:
                 for query in query_strings:
-                    if len(all_records) >= effective_max:
+                    if self._total_emitted >= effective_max:
                         break
-                    remaining = effective_max - len(all_records)
-                    new_records, new_seen = await self._search_term(
+                    remaining = effective_max - self._total_emitted
+                    count_before = self._total_emitted
+                    _count, new_seen = await self._search_term(
                         reddit=reddit,
                         term=query,
                         max_results=min(remaining, MAX_RESULTS_PER_SEARCH),
@@ -206,17 +216,19 @@ class RedditCollector(ArenaCollector):
                         subreddit_string=effective_subreddit_string,
                     )
                     seen_post_ids.update(new_seen)
-                    all_records.extend(new_records)
+                    self._record_input_count(query, self._total_emitted - count_before)
+                    self._flush()
         finally:
             if self.credential_pool is not None:
                 await self.credential_pool.release(credential_id=cred.get("id", "default"))
 
+        self._flush()
         logger.info(
             "reddit: collect_by_terms completed — %d records for %d queries",
-            len(all_records),
+            self._total_emitted,
             len(query_strings),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     async def collect_by_actors(
         self,
@@ -250,6 +262,7 @@ class RedditCollector(ArenaCollector):
             NoCredentialAvailableError: When no credential is available.
         """
         self._validate_tier(tier)
+        self._reset_batch_state()
         effective_max = max_results if max_results is not None else DEFAULT_MAX_RESULTS
         self._skipped_actors = []
         cred = await self._acquire_credential()
@@ -263,31 +276,32 @@ class RedditCollector(ArenaCollector):
                 platform=self.platform_name,
             ) from exc
 
-        all_records: list[dict[str, Any]] = []
-
         try:
             async with reddit:
                 for username in actor_ids:
-                    if len(all_records) >= effective_max:
+                    if self._total_emitted >= effective_max:
                         break
-                    records = await self._collect_user(
+                    count_before = self._total_emitted
+                    await self._collect_user(
                         reddit=reddit,
                         username=username,
-                        max_results=effective_max - len(all_records),
+                        max_results=effective_max - self._total_emitted,
                         credential_id=cred.get("id", "default"),
                     )
-                    all_records.extend(records)
+                    self._record_input_count(username, self._total_emitted - count_before)
+                    self._flush()
         finally:
             if self.credential_pool is not None:
                 await self.credential_pool.release(credential_id=cred.get("id", "default"))
 
+        self._flush()
         logger.info(
             "reddit: collect_by_actors completed — %d records for %d actors (%d skipped)",
-            len(all_records),
+            self._total_emitted,
             len(actor_ids),
             len(self._skipped_actors),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     def get_tier_config(self, tier: Tier) -> TierConfig | None:
         """Return the tier configuration for the Reddit arena.
@@ -344,7 +358,7 @@ class RedditCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
             ``arena``, ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(tz=timezone.utc).isoformat()
+        checked_at = datetime.now(tz=UTC).isoformat()
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -372,7 +386,7 @@ class RedditCollector(ArenaCollector):
                         "detail": "r/Denmark returned 0 hot posts.",
                     }
             return {**base, "status": "ok", "detail": f"r/Denmark reachable; post={posts[0].id}"}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("reddit: health_check failed: %s", exc)
             return {**base, "status": "down", "detail": str(exc)}
         finally:
@@ -440,7 +454,7 @@ class RedditCollector(ArenaCollector):
         Raises:
             ImportError: If ``asyncpraw`` is not installed.
         """
-        import asyncpraw  # noqa: PLC0415
+        import asyncpraw
 
         return asyncpraw.Reddit(
             client_id=cred["client_id"],
@@ -473,8 +487,11 @@ class RedditCollector(ArenaCollector):
         seen_post_ids: set[str],
         credential_id: str,
         subreddit_string: str | None = None,
-    ) -> tuple[list[dict[str, Any]], set[str]]:
+    ) -> tuple[int, set[str]]:
         """Search Reddit for a single term across Danish subreddits.
+
+        Records are emitted incrementally via ``_emit()`` for batch persistence
+        during pagination.
 
         Args:
             reddit: An active ``asyncpraw.Reddit`` context.
@@ -488,16 +505,16 @@ class RedditCollector(ArenaCollector):
                 :meth:`collect_by_terms`.
 
         Returns:
-            Tuple of (list of normalized records, set of new post IDs seen).
+            Tuple of (number of records emitted, set of new post IDs seen).
 
         Raises:
             ArenaRateLimitError: On rate limit response from Reddit.
             ArenaAuthError: On authentication failure.
             ArenaCollectionError: On other API errors.
         """
-        import asyncprawcore.exceptions  # noqa: PLC0415
+        import asyncprawcore.exceptions
 
-        records: list[dict[str, Any]] = []
+        collected = 0
         new_seen: set[str] = set()
 
         effective_subreddit_string = subreddit_string or DANISH_SUBREDDIT_SEARCH_STRING
@@ -518,14 +535,17 @@ class RedditCollector(ArenaCollector):
                     continue
                 new_seen.add(post.id)
                 raw_post = self._post_to_raw(post, search_term=term)
-                records.append(self.normalize(raw_post))
+                self._emit(self.normalize(raw_post))
+                collected += 1
 
                 if self._include_comments:
                     comment_records = await self._collect_post_comments(
                         post=post,
                         credential_id=credential_id,
                     )
-                    records.extend(comment_records)
+                    for crec in comment_records:
+                        self._emit(crec)
+                        collected += 1
 
                 # asyncpraw internally fetches 100 results per API call.
                 # Check the rate limiter every 100 posts consumed to ensure
@@ -534,7 +554,7 @@ class RedditCollector(ArenaCollector):
                 if page_counter % 100 == 0:
                     await self._wait_for_rate_limit(credential_id)
 
-                if len(records) >= max_results:
+                if collected >= max_results:
                     break
 
         except asyncprawcore.exceptions.TooManyRequests as exc:
@@ -572,8 +592,8 @@ class RedditCollector(ArenaCollector):
                 platform=self.platform_name,
             ) from exc
 
-        logger.debug("reddit: term=%r collected %d records", term, len(records))
-        return records, new_seen
+        logger.debug("reddit: term=%r collected %d records", term, collected)
+        return collected, new_seen
 
     async def _collect_post_comments(
         self,
@@ -592,7 +612,7 @@ class RedditCollector(ArenaCollector):
         Returns:
             List of normalized comment records.
         """
-        import asyncprawcore.exceptions  # noqa: PLC0415
+        import asyncprawcore.exceptions
 
         records: list[dict[str, Any]] = []
         try:
@@ -615,7 +635,7 @@ class RedditCollector(ArenaCollector):
                 getattr(post, "id", "unknown"),
                 exc,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 "reddit: error fetching comments for post=%s: %s",
                 getattr(post, "id", "unknown"),
@@ -623,14 +643,140 @@ class RedditCollector(ArenaCollector):
             )
         return records
 
+    async def collect_comments(
+        self,
+        post_ids: list[dict],
+        tier: Tier,
+        max_comments_per_post: int = 50,
+        depth: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Collect comments for a list of Reddit posts.
+
+        Fetches comments for each post identified by ``platform_id`` in the
+        input dicts.  Uses ``replace_more(limit=0)`` to skip "load more" stubs,
+        minimising API calls.  Filters by comment depth and caps the number of
+        comments per post at ``max_comments_per_post``.
+
+        Args:
+            post_ids: List of dicts each containing a ``platform_id`` key
+                with the Reddit base-36 post ID (e.g. ``{"platform_id": "abc123"}``).
+            tier: Collection tier.  Only ``Tier.FREE`` is supported for Reddit.
+            max_comments_per_post: Maximum number of comments to collect per
+                post.  Defaults to ``50``.
+            depth: Maximum comment depth to include.  ``0`` = top-level comments
+                only; ``1`` = top-level and their direct replies, etc.
+
+        Returns:
+            List of normalized comment content record dicts.
+
+        Raises:
+            ArenaRateLimitError: When Reddit returns a 429 response.
+            ArenaAuthError: When the OAuth credentials are rejected.
+            ArenaCollectionError: On other unrecoverable API errors.
+            NoCredentialAvailableError: When no credential is available.
+        """
+        import asyncprawcore.exceptions
+
+        self._validate_tier(tier)
+        self._reset_batch_state()
+        cred = await self._acquire_credential()
+        credential_id = cred.get("id", "default")
+
+        try:
+            reddit = await self._build_reddit_client(cred)
+        except Exception as exc:
+            raise ArenaCollectionError(
+                f"reddit: failed to build Reddit client: {exc}",
+                arena=self.arena_name,
+                platform=self.platform_name,
+            ) from exc
+
+        try:
+            async with reddit:
+                for post_id_dict in post_ids:
+                    raw_post_id = post_id_dict.get("platform_id", "")
+                    if not raw_post_id:
+                        logger.warning("reddit: collect_comments — skipping entry with no platform_id")
+                        continue
+                    try:
+                        await self._wait_for_rate_limit(credential_id)
+                        submission = await reddit.submission(id=raw_post_id)
+                        await submission.comments.replace_more(limit=0)
+                        comments = submission.comments.list()
+                        count = 0
+                        for comment in comments:
+                            if count >= max_comments_per_post:
+                                break
+                            comment_depth = getattr(comment, "depth", 0)
+                            if comment_depth > depth:
+                                continue
+                            raw_comment = self._comment_to_raw(comment, parent_post=submission)
+                            self._emit(self.normalize(raw_comment))
+                            count += 1
+                    except asyncprawcore.exceptions.TooManyRequests as exc:
+                        raise ArenaRateLimitError(
+                            f"reddit: rate limited while fetching comments for post={raw_post_id!r}",
+                            retry_after=60.0,
+                            arena=self.arena_name,
+                            platform=self.platform_name,
+                        ) from exc
+                    except asyncprawcore.exceptions.Forbidden as exc:
+                        logger.warning(
+                            "reddit: forbidden when fetching comments for post=%s — skipping. error=%s",
+                            raw_post_id,
+                            exc,
+                        )
+                    except asyncprawcore.exceptions.NotFound:
+                        logger.warning(
+                            "reddit: post %r not found when fetching comments — skipping.",
+                            raw_post_id,
+                        )
+                    except asyncprawcore.exceptions.ResponseException as exc:
+                        if hasattr(exc, "response") and exc.response is not None:
+                            status = exc.response.status
+                            if status in (401, 403):
+                                raise ArenaAuthError(
+                                    f"reddit: authentication failed (HTTP {status})",
+                                    arena=self.arena_name,
+                                    platform=self.platform_name,
+                                ) from exc
+                        raise ArenaCollectionError(
+                            f"reddit: API error while fetching comments for post={raw_post_id!r}: {exc}",
+                            arena=self.arena_name,
+                            platform=self.platform_name,
+                        ) from exc
+                    except (ArenaRateLimitError, ArenaAuthError, ArenaCollectionError):
+                        raise
+                    except Exception as exc:
+                        logger.warning(
+                            "reddit: unexpected error fetching comments for post=%s: %s",
+                            raw_post_id,
+                            exc,
+                        )
+                    self._flush()
+        finally:
+            if self.credential_pool is not None:
+                await self.credential_pool.release(credential_id=credential_id)
+
+        self._flush()
+        logger.info(
+            "reddit: collect_comments completed — %d comment records for %d posts",
+            self._total_emitted,
+            len(post_ids),
+        )
+        return list(self._batch_buffer)
+
     async def _collect_user(
         self,
         reddit: Any,
         username: str,
         max_results: int,
         credential_id: str,
-    ) -> list[dict[str, Any]]:
+    ) -> int:
         """Collect posts and comments from a single Reddit user.
+
+        Records are emitted incrementally via ``_emit()`` for batch persistence
+        during pagination.
 
         Args:
             reddit: An active ``asyncpraw.Reddit`` context.
@@ -639,15 +785,15 @@ class RedditCollector(ArenaCollector):
             credential_id: Credential ID for rate limiting.
 
         Returns:
-            List of normalized post and comment records.
+            Number of records emitted.
 
         Raises:
             ArenaRateLimitError: On rate limit response.
             ArenaCollectionError: On other errors.
         """
-        import asyncprawcore.exceptions  # noqa: PLC0415
+        import asyncprawcore.exceptions
 
-        records: list[dict[str, Any]] = []
+        collected = 0
         try:
             await self._wait_for_rate_limit(credential_id)
             redditor = await reddit.redditor(username)
@@ -655,19 +801,21 @@ class RedditCollector(ArenaCollector):
             # Collect posts
             async for post in redditor.submissions.new(limit=min(max_results, 100)):
                 raw_post = self._post_to_raw(post)
-                records.append(self.normalize(raw_post))
-                if len(records) >= max_results:
+                self._emit(self.normalize(raw_post))
+                collected += 1
+                if collected >= max_results:
                     break
 
             # Collect comments (up to remaining quota)
-            if len(records) < max_results:
+            if collected < max_results:
                 await self._wait_for_rate_limit(credential_id)
                 async for comment in redditor.comments.new(
-                    limit=min(max_results - len(records), 100)
+                    limit=min(max_results - collected, 100)
                 ):
                     raw_comment = self._comment_to_raw(comment)
-                    records.append(self.normalize(raw_comment))
-                    if len(records) >= max_results:
+                    self._emit(self.normalize(raw_comment))
+                    collected += 1
+                    if collected >= max_results:
                         break
 
         except asyncprawcore.exceptions.TooManyRequests as exc:
@@ -690,8 +838,8 @@ class RedditCollector(ArenaCollector):
                 error=str(exc),
             )
 
-        logger.debug("reddit: user=%r collected %d records", username, len(records))
-        return records
+        logger.debug("reddit: user=%r collected %d records", username, collected)
+        return collected
 
     # ------------------------------------------------------------------
     # Raw-to-dict converters
@@ -711,10 +859,17 @@ class RedditCollector(ArenaCollector):
         Returns:
             Dict with all fields mapped for :meth:`normalize`.
         """
+        # Extract the human author (the person who submitted the post).
+        # post.author is a Redditor object; .name is the username string.
+        # When the account has been deleted Reddit sets author to None.
         author_name: str | None = None
+        author_fullname: str | None = None
         if post.author is not None:
             try:
                 author_name = post.author.name
+                # author_fullname is the native t2_... user ID; present on
+                # most submissions but not guaranteed on older/deleted posts.
+                author_fullname = getattr(post, "author_fullname", None) or None
             except AttributeError:
                 author_name = None
 
@@ -739,9 +894,13 @@ class RedditCollector(ArenaCollector):
             "body": post.selftext if post.selftext not in ("", "[removed]") else None,
             "url": f"https://www.reddit.com{post.permalink}",
             "published_at": post.created_utc,
-            "author_platform_id": f"t5_{post.subreddit_id}" if post.subreddit_id else str(post.subreddit),
-            "author_display_name": str(post.subreddit),
-            "actual_poster_name": author_name,
+            # author_platform_id: use the t2_ user fullname when available so
+            # that the pseudonymization hash is stable across username changes;
+            # fall back to the username string for older API responses.
+            "author_platform_id": author_fullname or author_name,
+            # author_display_name: the human poster, NOT the subreddit.
+            # Deleted/missing accounts are stored as None.
+            "author_display_name": author_name,
             "score": post.score,
             "likes_count": post.score,
             "num_comments": post.num_comments,
@@ -749,7 +908,7 @@ class RedditCollector(ArenaCollector):
             "shares_count": getattr(post, "num_crossposts", None),
             "engagement_score": getattr(post, "upvote_ratio", None),
             "media_urls": media_urls,
-            # Raw metadata passthrough
+            # Raw metadata passthrough — subreddit info lives here only.
             "subreddit": str(post.subreddit),
             "subreddit_id": post.subreddit_id,
             "link_flair_text": getattr(post, "link_flair_text", None),
@@ -780,10 +939,14 @@ class RedditCollector(ArenaCollector):
         Returns:
             Dict with all fields mapped for :meth:`normalize`.
         """
+        # Extract the human author who wrote the comment.
+        # Deleted/suspended accounts have comment.author == None.
         author_name: str | None = None
+        author_fullname: str | None = None
         if comment.author is not None:
             try:
                 author_name = comment.author.name
+                author_fullname = getattr(comment, "author_fullname", None) or None
             except AttributeError:
                 author_name = None
 
@@ -804,9 +967,10 @@ class RedditCollector(ArenaCollector):
             "body": body,
             "url": url,
             "published_at": comment.created_utc,
-            "author_platform_id": f"t5_{getattr(comment, 'subreddit_id', None)}" if getattr(comment, "subreddit_id", None) else str(comment.subreddit),
-            "author_display_name": str(comment.subreddit),
-            "actual_poster_name": author_name,
+            # author_platform_id: t2_ user fullname when available, else username.
+            "author_platform_id": author_fullname or author_name,
+            # author_display_name: the human commenter, NOT the subreddit.
+            "author_display_name": author_name,
             "score": comment.score,
             "likes_count": comment.score,
             "num_comments": None,
@@ -814,7 +978,7 @@ class RedditCollector(ArenaCollector):
             "shares_count": None,
             "engagement_score": None,
             "media_urls": [],
-            # Raw metadata passthrough
+            # Raw metadata passthrough — subreddit info lives here only.
             "subreddit": str(comment.subreddit),
             "subreddit_id": getattr(comment, "subreddit_id", None),
             "link_flair_text": None,
@@ -841,32 +1005,49 @@ class RedditCollector(ArenaCollector):
 # ---------------------------------------------------------------------------
 
 
-def _build_subreddit_string(extra_subreddits: list[str] | None) -> str:
+def _build_subreddit_string(
+    extra_subreddits: list[str] | None,
+    include_danish: bool = True,
+) -> str:
     """Build a Reddit multireddit ``+``-joined search string.
 
     Merges :data:`~config.ALL_DANISH_SUBREDDITS` with any researcher-supplied
     extra subreddit names (GR-03).  Duplicate names are removed while
     preserving the insertion order (defaults first, extras appended).
 
+    When ``include_danish`` is ``False`` and no ``extra_subreddits`` are
+    provided, returns ``"all"`` to search globally across Reddit.
+
     Args:
         extra_subreddits: Optional list of additional subreddit names
             (without the ``r/`` prefix) from
             ``arenas_config["reddit"]["custom_subreddits"]``.
+        include_danish: Whether to include Danish default subreddits.
+            Set to ``False`` for non-Danish language collection runs.
 
     Returns:
         A ``+``-joined multireddit string suitable for
         ``asyncpraw.Reddit.subreddit()``.  Falls back to
-        :data:`DANISH_SUBREDDIT_SEARCH_STRING` when ``extra_subreddits``
-        is ``None`` or empty.
+        :data:`DANISH_SUBREDDIT_SEARCH_STRING` when ``include_danish`` is
+        ``True`` and ``extra_subreddits`` is ``None`` or empty.
+        Returns ``"all"`` for non-Danish runs with no custom subreddits.
     """
-    if not extra_subreddits:
+    cleaned_extras = [
+        s.strip().lstrip("r/") for s in (extra_subreddits or []) if s and s.strip()
+    ]
+
+    if not include_danish:
+        # Non-Danish: only use custom subreddits, or search all of Reddit.
+        if cleaned_extras:
+            return "+".join(dict.fromkeys(cleaned_extras))
+        return "all"
+
+    if not cleaned_extras:
         return DANISH_SUBREDDIT_SEARCH_STRING
 
     seen: set[str] = set()
     merged: list[str] = []
-    for name in ALL_DANISH_SUBREDDITS + [
-        s.strip().lstrip("r/") for s in extra_subreddits if s and s.strip()
-    ]:
+    for name in ALL_DANISH_SUBREDDITS + cleaned_extras:
         if name and name not in seen:
             seen.add(name)
             merged.append(name)

@@ -32,7 +32,6 @@ compatibility fallback for callers that have not been updated yet).
 from __future__ import annotations
 
 import re
-import uuid
 from collections import OrderedDict
 from functools import lru_cache
 from typing import Any

@@ -22,7 +22,6 @@ Key design choices:
 from __future__ import annotations
 
 import uuid
-from typing import Optional
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID
@@ -70,7 +69,7 @@ class CodebookEntry(Base, TimestampMixin):
 
     # Scope: NULL = global/shared codebook, non-NULL = query-design-specific.
     # ON DELETE CASCADE: deleting a query design removes its codebook entries.
-    query_design_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    query_design_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("query_designs.id", ondelete="CASCADE"),
         nullable=True,
@@ -90,13 +89,13 @@ class CodebookEntry(Base, TimestampMixin):
     )
 
     # Optional detailed explanation.
-    description: Mapped[Optional[str]] = mapped_column(
+    description: Mapped[str | None] = mapped_column(
         sa.Text,
         nullable=True,
     )
 
     # Optional grouping label (e.g., "framing", "stance", "topic").
-    category: Mapped[Optional[str]] = mapped_column(
+    category: Mapped[str | None] = mapped_column(
         sa.String(100),
         nullable=True,
         index=True,

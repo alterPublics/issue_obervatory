@@ -50,7 +50,7 @@ Design notes
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -79,7 +79,7 @@ def _parse_published_at(value: Any) -> datetime | None:
         return None
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
+            return value.replace(tzinfo=UTC)
         return value
     if isinstance(value, str):
         stripped = value.strip()
@@ -88,7 +88,7 @@ def _parse_published_at(value: Any) -> datetime | None:
         try:
             dt = datetime.fromisoformat(stripped)
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             return dt
         except ValueError:
             logger.warning(
@@ -214,7 +214,7 @@ class PropagationEnricher(ContentEnricher):
         if not records:
             raise EnrichmentError("PropagationEnricher.enrich_cluster: empty cluster")
 
-        computed_at: str = datetime.now(tz=timezone.utc).isoformat()
+        computed_at: str = datetime.now(tz=UTC).isoformat()
 
         # Determine cluster_id from the first record (all should share it)
         cluster_id: str | None = str(records[0].get("near_duplicate_cluster_id") or "")
@@ -224,7 +224,7 @@ class PropagationEnricher(ContentEnricher):
             dt = _parse_published_at(rec.get("published_at"))
             if dt is None:
                 # Use a sentinel max date so None-timestamped records sort last
-                return (1, datetime.max.replace(tzinfo=timezone.utc))
+                return (1, datetime.max.replace(tzinfo=UTC))
             return (0, dt)
 
         sorted_records = sorted(records, key=_sort_key)

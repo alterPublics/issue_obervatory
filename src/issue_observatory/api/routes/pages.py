@@ -36,10 +36,10 @@ Routes:
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Optional
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,13 +48,12 @@ from sqlalchemy.orm import selectinload
 from issue_observatory.api.dependencies import (
     PaginationParams,
     get_current_active_user,
-    get_optional_user,
     get_pagination,
     require_admin,
 )
-from issue_observatory.core.models.content import UniversalContentRecord
 from issue_observatory.core.database import get_db
 from issue_observatory.core.models.collection import CollectionRun, CollectionTask
+from issue_observatory.core.models.content import UniversalContentRecord
 from issue_observatory.core.models.project import Project
 from issue_observatory.core.models.query_design import QueryDesign, SearchTerm
 from issue_observatory.core.models.users import CreditAllocation, User
@@ -200,7 +199,7 @@ async def arenas_page(
     Returns:
         Rendered ``arenas/index.html`` template.
     """
-    from issue_observatory.arenas.registry import autodiscover, list_arenas  # noqa: PLC0415
+    from issue_observatory.arenas.registry import autodiscover, list_arenas
 
     autodiscover()
     arenas = list_arenas()
@@ -273,7 +272,7 @@ async def query_designs_new(
     request: Request,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
 ) -> HTMLResponse:
     """Render the query design create form.
 
@@ -537,7 +536,6 @@ async def collections_list(
     Returns:
         Rendered ``collections/list.html`` template.
     """
-    from issue_observatory.core.models.project import Project as ProjectModel  # noqa: PLC0415
 
     stmt = (
         select(CollectionRun)
@@ -654,7 +652,7 @@ async def project_collection_detail(
     Returns:
         Rendered ``collections/project_detail.html`` template.
     """
-    from issue_observatory.core.models.content import UniversalContentRecord  # noqa: PLC0415
+    from issue_observatory.core.models.content import UniversalContentRecord
 
     tpl = _templates(request)
 
@@ -782,11 +780,13 @@ async def collections_new(
     Returns:
         Rendered ``collections/launcher.html`` template.
     """
-    from issue_observatory.core.models.query_design import (  # noqa: PLC0415
+    from issue_observatory.core.models.actors import ActorListMember
+    from issue_observatory.core.models.query_design import (
         ActorList,
+    )
+    from issue_observatory.core.models.query_design import (
         QueryDesign as QD,
     )
-    from issue_observatory.core.models.actors import ActorListMember  # noqa: PLC0415
 
     stmt = (
         select(QD)
@@ -843,7 +843,7 @@ async def collections_new(
         })
 
     # Load user's projects for the project-based launcher.
-    from issue_observatory.core.models.project import Project as ProjectModel  # noqa: PLC0415
+    from issue_observatory.core.models.project import Project as ProjectModel
 
     proj_stmt = (
         select(ProjectModel)
@@ -934,7 +934,7 @@ async def collections_detail(
             else ""
         )
 
-        query_design: Optional[QueryDesign] = collection_run.query_design
+        query_design: QueryDesign | None = collection_run.query_design
         if query_design is not None:
             run_context["query_design_name"] = query_design.name
 
@@ -1019,8 +1019,8 @@ async def discovered_links_page(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    query_design_id: Optional[uuid.UUID] = None,
-    platform: Optional[str] = None,
+    query_design_id: uuid.UUID | None = None,
+    platform: str | None = None,
     min_count: int = 1,
     limit: int = 100,
 ) -> HTMLResponse:
@@ -1042,7 +1042,7 @@ async def discovered_links_page(
         min_count: Minimum source-record count threshold (default: 1).
         limit: Maximum links to return (default: 100).
     """
-    from issue_observatory.analysis.link_miner import LinkMiner  # noqa: PLC0415
+    from issue_observatory.analysis.link_miner import LinkMiner
 
     tpl = _templates(request)
 
@@ -1212,7 +1212,7 @@ async def actors_detail(
 
         return await get_actor(actor_id, db, current_user)
 
-    from issue_observatory.core.models.actors import Actor, ActorPlatformPresence
+    from issue_observatory.core.models.actors import Actor
 
     tpl = _templates(request)
 
@@ -1301,7 +1301,7 @@ async def actors_detail(
 @router.get("/auth/login", response_class=HTMLResponse)
 async def login_page(
     request: Request,
-    session_expired: Optional[str] = None,
+    session_expired: str | None = None,
 ) -> HTMLResponse:
     """Render the login page.
 
@@ -1329,7 +1329,7 @@ async def login_page(
 @router.get("/auth/forgot-password", response_class=HTMLResponse)
 async def forgot_password_page(
     request: Request,
-    success: Optional[str] = None,
+    success: str | None = None,
 ) -> HTMLResponse:
     """Render the forgot password page.
 
@@ -1358,8 +1358,8 @@ async def forgot_password_page(
 @router.get("/auth/reset-password", response_class=HTMLResponse)
 async def reset_password_page(
     request: Request,
-    token: Optional[str] = None,
-    success: Optional[str] = None,
+    token: str | None = None,
+    success: str | None = None,
 ) -> HTMLResponse:
     """Render the reset password form page.
 
@@ -1390,7 +1390,7 @@ async def reset_password_page(
 @router.get("/auth/register", response_class=HTMLResponse)
 async def register_page(
     request: Request,
-    success: Optional[str] = None,
+    success: str | None = None,
 ) -> HTMLResponse:
     """Render the user registration page.
 
@@ -1509,7 +1509,7 @@ async def admin_credentials(
     Returns:
         Rendered ``admin/credentials.html`` template.
     """
-    from issue_observatory.core.models.credentials import ApiCredential  # noqa: PLC0415
+    from issue_observatory.core.models.credentials import ApiCredential
 
     result = await db.execute(
         select(ApiCredential).order_by(ApiCredential.created_at.desc())

@@ -11,10 +11,8 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 # ---------------------------------------------------------------------------
 # Request schemas
@@ -32,7 +30,7 @@ class ProjectCreate(BaseModel):
     """
 
     name: str = Field(..., min_length=1, max_length=200)
-    description: Optional[str] = Field(default=None)
+    description: str | None = Field(default=None)
     visibility: str = Field(default="private", pattern="^(private|shared)$")
 
 
@@ -48,9 +46,9 @@ class ProjectUpdate(BaseModel):
         visibility: New access control level ('private' or 'shared').
     """
 
-    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    description: Optional[str] = Field(default=None)
-    visibility: Optional[str] = Field(default=None, pattern="^(private|shared)$")
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None)
+    visibility: str | None = Field(default=None, pattern="^(private|shared)$")
 
 
 # ---------------------------------------------------------------------------
@@ -76,9 +74,12 @@ class ProjectRead(BaseModel):
 
     id: uuid.UUID
     name: str
-    description: Optional[str]
+    description: str | None
     owner_id: uuid.UUID
     visibility: str
+    source_config: dict = {}
+    arenas_config: dict = {}
+    comments_config: dict = {}
     created_at: datetime
     updated_at: datetime
     query_design_count: int = 0

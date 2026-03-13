@@ -26,13 +26,12 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
-from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.gdelt.config import (
     GDELT_DATETIME_FORMAT,
     GDELT_DOC_API_BASE,
@@ -47,10 +46,11 @@ from issue_observatory.arenas.gdelt.config import (
     map_country,
     map_language,
 )
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.registry import register
-from issue_observatory.config.danish_defaults import GDELT_DANISH_FILTERS
 from issue_observatory.config.tiers import TierConfig
-from issue_observatory.core.exceptions import ArenaCollectionError, ArenaRateLimitError
+from issue_observatory.core.exceptions import ArenaCollectionError
+from issue_observatory.core.language_utils import resolve_gdelt_filters
 from issue_observatory.core.normalizer import Normalizer
 
 logger = logging.getLogger(__name__)
@@ -128,8 +128,8 @@ class GDELTCollector(ArenaCollector):
             max_results: Upper bound on returned records.
             term_groups: Optional boolean AND/OR groups.  GDELT supports
                 native ``AND``/``OR`` syntax.
-            language_filter: Not used — Danish defaults applied via
-                ``sourcecountry`` filter.
+            language_filter: Optional language codes.  The first code
+                determines ``sourcelang`` and ``sourcecountry`` filters.
 
         Returns:
             List of normalized content record dicts.
@@ -146,8 +146,11 @@ class GDELTCollector(ArenaCollector):
         gdelt_from = _format_gdelt_datetime(date_from)
         gdelt_to = _format_gdelt_datetime(date_to)
 
+        # Resolve GDELT language/country filters for this collection run.
+        gdelt_filters = resolve_gdelt_filters(language_filter)
+
         seen_urls: set[str] = set()
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         # Build query strings: use GDELT boolean syntax for groups.
         if term_groups is not None:
@@ -159,31 +162,41 @@ class GDELTCollector(ArenaCollector):
         else:
             query_strings = list(terms)
 
+        # Build the extra_filter string from resolved GDELT filters.
+        # For languages with a country mapping (e.g. Danish → DA), use sourcecountry.
+        # For global languages (e.g. English), omit sourcecountry.
+        extra_filter = (
+            f"sourcecountry:{gdelt_filters['sourcecountry']}"
+            if gdelt_filters["sourcecountry"]
+            else None
+        )
+
         async with self._build_http_client() as client:
             for term in query_strings:
-                if len(all_records) >= effective_max:
+                if self._total_emitted >= effective_max:
                     break
 
-                remaining = effective_max - len(all_records)
+                remaining = effective_max - self._total_emitted
+                count_before = self._total_emitted
 
-                # Query with source country filter (sourcecountry:DA)
-                records_country = await self._query_term(
+                await self._query_term(
                     client=client,
                     term=term,
-                    extra_filter=f"sourcecountry:{GDELT_DANISH_FILTERS['sourcecountry']}",
+                    extra_filter=extra_filter,
                     date_from=gdelt_from,
                     date_to=gdelt_to,
                     max_records=min(GDELT_MAX_RECORDS, remaining),
                     seen_urls=seen_urls,
                 )
-                all_records.extend(records_country)
+                self._record_input_count(term, self._total_emitted - count_before)
+                self._flush()
 
         logger.info(
             "gdelt: collect_by_terms — %d records for %d queries",
-            len(all_records),
+            self._total_emitted,
             len(query_strings),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     async def collect_by_actors(
         self,
@@ -323,7 +336,7 @@ class GDELTCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
             ``arena``, ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -376,7 +389,7 @@ class GDELTCollector(ArenaCollector):
                 else f"{type(exc).__name__} (network error)"
             )
             return {**base, "status": "down", "detail": f"Connection error: {error_detail}"}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {**base, "status": "down", "detail": f"Unexpected error: {exc}"}
 
     # ------------------------------------------------------------------
@@ -418,47 +431,50 @@ class GDELTCollector(ArenaCollector):
                     timeout=GDELT_RATE_LIMIT_TIMEOUT,
                 )
                 return
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "gdelt: rate_limiter.wait_for_slot failed (%s) — falling back to sleep(1)",
                     exc,
                 )
 
-        import asyncio  # noqa: PLC0415
+        import asyncio
         await asyncio.sleep(1.0)
 
     async def _query_term(
         self,
         client: httpx.AsyncClient,
         term: str,
-        extra_filter: str,
+        extra_filter: str | None,
         date_from: str | None,
         date_to: str | None,
         max_records: int,
         seen_urls: set[str],
-    ) -> list[dict[str, Any]]:
-        """Issue a single GDELT DOC API query and return normalized records.
+    ) -> int:
+        """Issue a single GDELT DOC API query, emit records incrementally.
+
+        Records are emitted via ``self._emit()`` during processing so that
+        the batch persistence infrastructure auto-flushes every
+        ``_batch_size`` records.
 
         Args:
             client: Shared HTTP client.
             term: Search term (GDELT Boolean query syntax supported).
             extra_filter: Additional GDELT filter appended to the query
-                (e.g. ``"sourcecountry:DA"`` or ``"sourcelang:danish"``).
+                (e.g. ``"sourcecountry:DA"``), or ``None`` to omit.
             date_from: GDELT-formatted start datetime or ``None``.
             date_to: GDELT-formatted end datetime or ``None``.
             max_records: Maximum records to fetch (1–250).
             seen_urls: Mutable set of already-seen URLs for deduplication.
 
         Returns:
-            List of normalized content record dicts (new URLs only).
+            Count of emitted records.
 
         Raises:
-            ArenaCollectionError: On non-retryable API errors.
-            ArenaRateLimitError: On HTTP 429.
+            ArenaCollectionError: On non-retryable API errors after all retries.
         """
-        await self._rate_limit_wait()
+        import asyncio as _aio
 
-        query = f"{term} {extra_filter}".strip()
+        query = f"{term} {extra_filter}".strip() if extra_filter else term
         params: dict[str, str] = {
             "query": query,
             "mode": "artlist",
@@ -471,42 +487,66 @@ class GDELTCollector(ArenaCollector):
         if date_to:
             params["enddatetime"] = date_to
 
-        try:
-            response = await client.get(GDELT_DOC_API_BASE, params=params)
-        except httpx.RequestError as exc:
-            # Build detailed error message with URL, exception type, and message
-            exc_msg = str(exc)
-            error_detail = (
-                f"{type(exc).__name__}: {exc_msg}"
-                if exc_msg
-                else f"{type(exc).__name__} (connection error)"
-            )
-            raise ArenaCollectionError(
-                f"gdelt: request error for term='{term}' url='{GDELT_DOC_API_BASE}' — {error_detail}",
-                arena="news_media",
-                platform=self.platform_name,
-            ) from exc
+        max_attempts = 8
+        base_wait = 10.0  # seconds
 
-        if response.status_code == 429:
-            retry_after = float(response.headers.get("Retry-After", 60))
-            # Include response body snippet for diagnostic value
-            body_snippet = response.text[:500] if response.text else "(empty body)"
-            raise ArenaRateLimitError(
-                f"gdelt: HTTP 429 for term='{term}' — {body_snippet}",
-                retry_after=retry_after,
-                arena="news_media",
-                platform=self.platform_name,
-            )
+        for attempt in range(1, max_attempts + 1):
+            await self._rate_limit_wait()
 
-        if response.status_code >= 500:
-            # Capture first 500 chars of response body for server errors
-            body_snippet = response.text[:500] if response.text else "(empty body)"
-            raise ArenaCollectionError(
-                f"gdelt: server error HTTP {response.status_code} for term='{term}' "
-                f"url='{GDELT_DOC_API_BASE}' — {body_snippet}",
-                arena="news_media",
-                platform=self.platform_name,
-            )
+            try:
+                response = await client.get(GDELT_DOC_API_BASE, params=params)
+            except httpx.RequestError as exc:
+                if attempt < max_attempts:
+                    wait = base_wait * attempt
+                    logger.warning(
+                        "gdelt: connection error for term='%s' (attempt %d/%d) — "
+                        "retrying in %.0fs: %s",
+                        term, attempt, max_attempts, wait, exc,
+                    )
+                    await _aio.sleep(wait)
+                    continue
+                raise ArenaCollectionError(
+                    f"gdelt: request error for term='{term}' after {max_attempts} "
+                    f"attempts — {type(exc).__name__}: {exc}",
+                    arena="news_media",
+                    platform=self.platform_name,
+                ) from exc
+
+            if response.status_code == 429:
+                retry_after = float(response.headers.get("Retry-After", base_wait * attempt))
+                wait = max(retry_after, base_wait * attempt)
+                if attempt < max_attempts:
+                    logger.warning(
+                        "gdelt: HTTP 429 for term='%s' (attempt %d/%d) — "
+                        "waiting %.0fs before retry",
+                        term, attempt, max_attempts, wait,
+                    )
+                    await _aio.sleep(wait)
+                    continue
+                logger.error(
+                    "gdelt: HTTP 429 for term='%s' — exhausted all %d attempts",
+                    term, max_attempts,
+                )
+                return 0  # give up on this term, continue with next
+
+            if response.status_code >= 500:
+                if attempt < max_attempts:
+                    wait = base_wait * attempt
+                    logger.warning(
+                        "gdelt: server error HTTP %d for term='%s' (attempt %d/%d) — "
+                        "retrying in %.0fs",
+                        response.status_code, term, attempt, max_attempts, wait,
+                    )
+                    await _aio.sleep(wait)
+                    continue
+                body_snippet = response.text[:500] if response.text else "(empty body)"
+                logger.error(
+                    "gdelt: server error HTTP %d for term='%s' after %d attempts — %s",
+                    response.status_code, term, max_attempts, body_snippet,
+                )
+                return 0  # give up on this term, continue with next
+
+            break  # success or 4xx (handled below)
 
         if response.status_code >= 400:
             # Log detailed error for 4xx (but don't raise — these are skipped)
@@ -519,7 +559,7 @@ class GDELTCollector(ArenaCollector):
                 GDELT_DOC_API_BASE,
                 body_snippet,
             )
-            return []
+            return 0
 
         # GDELT sometimes returns HTML on errors — check content-type
         content_type = response.headers.get("content-type", "")
@@ -533,11 +573,11 @@ class GDELTCollector(ArenaCollector):
                 content_type,
                 body_snippet,
             )
-            return []
+            return 0
 
         try:
             data = response.json()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             # Include exception type and first 500 chars of response body
             body_snippet = response.text[:500] if response.text else "(empty body)"
             exc_msg = str(exc)
@@ -553,26 +593,27 @@ class GDELTCollector(ArenaCollector):
                 error_detail,
                 body_snippet,
             )
-            return []
+            return 0
 
         articles = data.get("articles") or []
-        records: list[dict[str, Any]] = []
+        collected = 0
 
         for article in articles:
             url = article.get("url")
             if not url or url in seen_urls:
                 continue
             seen_urls.add(url)
-            records.append(self.normalize(article))
+            self._emit(self.normalize(article))
+            collected += 1
 
         logger.debug(
             "gdelt: term='%s' filter='%s' — %d articles (%d new)",
             term,
             extra_filter,
             len(articles),
-            len(records),
+            collected,
         )
-        return records
+        return collected
 
 
 # ---------------------------------------------------------------------------
@@ -600,7 +641,7 @@ def _format_gdelt_datetime(value: datetime | str | None) -> str | None:
         try:
             dt = datetime.strptime(value, fmt)
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             return dt.strftime(GDELT_DATETIME_FORMAT)
         except ValueError:
             continue
@@ -624,7 +665,7 @@ def _parse_seendate(seendate: str | None) -> str | None:
         return None
     try:
         dt = datetime.strptime(seendate, GDELT_SEENDATE_FORMAT)
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
         return dt.isoformat()
     except ValueError:
         logger.debug("gdelt: could not parse seendate '%s'", seendate)

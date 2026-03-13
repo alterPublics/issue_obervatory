@@ -22,8 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from issue_observatory.arenas.base import Tier
@@ -193,7 +192,7 @@ async def collect_by_terms(
         )
     except NotImplementedError as exc:
         raise HTTPException(status_code=501, detail=str(exc))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.error("majestic: collect_by_terms error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -241,7 +240,7 @@ async def collect_by_actors(
         )
     except NotImplementedError as exc:
         raise HTTPException(status_code=501, detail=str(exc))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.error("majestic: collect_by_actors error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 

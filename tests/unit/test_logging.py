@@ -8,13 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 from io import StringIO
 
-import pytest
-
 from issue_observatory.core.logging_config import configure_logging, request_id_var
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -17,7 +17,7 @@ import hashlib
 import re
 import unicodedata
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import factory
 
@@ -60,10 +60,10 @@ class ContentRecordFactory(factory.Factory):
 
     # Timestamps (UTC-aware)
     published_at = factory.LazyFunction(
-        lambda: datetime(2024, 6, 15, 10, 0, 0, tzinfo=timezone.utc).isoformat()
+        lambda: datetime(2024, 6, 15, 10, 0, 0, tzinfo=UTC).isoformat()
     )
     collected_at = factory.LazyFunction(
-        lambda: datetime.now(tz=timezone.utc).isoformat()
+        lambda: datetime.now(tz=UTC).isoformat()
     )
 
     # Author
@@ -122,5 +122,5 @@ class GoogleSearchResultFactory(factory.Factory):
     )
     position = factory.Sequence(lambda n: n + 1)
     date = "1 jan 2024"
-    displayLink = factory.Sequence(lambda n: f"dr.dk")
+    displayLink = factory.Sequence(lambda n: "dr.dk")
     content_type = "search_result"

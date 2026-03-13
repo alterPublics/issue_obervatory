@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import UTC
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -148,7 +149,7 @@ class EntityResolver:
         from issue_observatory.core.exceptions import EntityResolutionError
 
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             from sqlalchemy import select, update
 
@@ -174,7 +175,7 @@ class EntityResolver:
                         platform_username=actor_data.get("platform_username"),
                         profile_url=actor_data.get("profile_url"),
                         follower_count=actor_data.get("follower_count"),
-                        last_checked_at=datetime.now(tz=timezone.utc),
+                        last_checked_at=datetime.now(tz=UTC),
                     )
                 )
                 await self._session.execute(update_stmt)
@@ -203,7 +204,7 @@ class EntityResolver:
                 platform_username=actor_data.get("platform_username"),
                 profile_url=actor_data.get("profile_url"),
                 follower_count=actor_data.get("follower_count"),
-                last_checked_at=datetime.now(tz=timezone.utc),
+                last_checked_at=datetime.now(tz=UTC),
             )
             self._session.add(new_presence)
             await self._session.commit()
@@ -264,7 +265,6 @@ class EntityResolver:
             - ``platforms`` (list[str]): Platforms this candidate appears on.
         """
         from sqlalchemy import func, select, text
-        from sqlalchemy.dialects.postgresql import ARRAY
 
         from issue_observatory.core.models.actors import Actor, ActorPlatformPresence
 

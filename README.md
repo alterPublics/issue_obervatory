@@ -62,7 +62,7 @@ alembic upgrade head
 python scripts/bootstrap_admin.py
 
 # Start the application
-uvicorn issue_observatory.api.main:app --reload --port 8011
+uvicorn issue_observatory.api.main:app --reload --port 8022
 
 # Start Celery worker (separate terminal)
 celery -A issue_observatory.workers.celery_app worker --loglevel=info

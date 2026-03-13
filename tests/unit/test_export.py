@@ -18,7 +18,6 @@ All DB calls are mocked at the session level; file output uses io.BytesIO.
 
 from __future__ import annotations
 
-import io
 import json
 import os
 import xml.etree.ElementTree as ET
@@ -34,8 +33,12 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.analysis.export import ContentExporter, _COLUMN_HEADERS, _FLAT_COLUMNS, _safe_str  # noqa: E402
-
+from issue_observatory.analysis.export import (
+    _COLUMN_HEADERS,
+    _FLAT_COLUMNS,
+    ContentExporter,
+    _safe_str,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -381,7 +384,7 @@ class TestExportJson:
         result = await EXPORTER.export_json(records)
         # If ensure_ascii=True were used, æ would be \\u00e6
         assert b"\\u00e6" not in result
-        assert "æ".encode("utf-8") in result
+        assert "æ".encode() in result
 
 
 # ---------------------------------------------------------------------------

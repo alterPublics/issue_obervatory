@@ -15,8 +15,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -29,9 +28,8 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.api.routes.content import content_records_fragment  # noqa: E402
-from issue_observatory.core.models.users import User  # noqa: E402
-
+from issue_observatory.api.routes.content import content_records_fragment
+from issue_observatory.core.models.users import User
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -81,7 +79,7 @@ def _make_content_record_orm(
     if record_id is None:
         record_id = uuid.uuid4()
     if published_at is None:
-        published_at = datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc)
+        published_at = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)
 
     record = MagicMock()
     record.id = record_id
@@ -94,7 +92,7 @@ def _make_content_record_orm(
     record.author_platform_id = "author_123"
     record.url = f"https://example.com/{record_id}"
     record.published_at = published_at
-    record.collected_at = datetime(2024, 1, 15, 13, 0, tzinfo=timezone.utc)
+    record.collected_at = datetime(2024, 1, 15, 13, 0, tzinfo=UTC)
     record.language = "da"
     record.engagement_score = 42
     record.search_terms_matched = ["test", "example"]
@@ -273,7 +271,7 @@ class TestContentRecordsJsonAPI:
         """JSON records contain all expected fields."""
         record_id = uuid.uuid4()
         run_id = uuid.uuid4()
-        published_at = datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc)
+        published_at = datetime(2024, 1, 15, 12, 0, tzinfo=UTC)
 
         record = _make_content_record_orm(
             record_id=record_id,

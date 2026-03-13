@@ -39,7 +39,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -124,9 +124,10 @@ def _make_actor_dict(
     platform_username: str,
     profile_url: str,
     discovery_method: str,
+    record_count: int | None = None,
 ) -> ActorDict:
     """Build a well-typed actor discovery dict."""
-    return {
+    d: ActorDict = {
         "canonical_name": canonical_name,
         "platform": platform,
         "platform_user_id": platform_user_id,
@@ -134,6 +135,9 @@ def _make_actor_dict(
         "profile_url": profile_url,
         "discovery_method": discovery_method,
     }
+    if record_count is not None:
+        d["record_count"] = record_count
+    return d
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +160,7 @@ class NetworkExpander:
 
     def __init__(
         self,
-        http_client: Optional[httpx.AsyncClient] = None,
+        http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._http_client = http_client
 
@@ -169,7 +173,7 @@ class NetworkExpander:
         actor_id: uuid.UUID,
         platforms: list[str],
         db: Any,
-        credential_pool: Optional[Any] = None,
+        credential_pool: Any | None = None,
         depth: int = 1,
         min_comention_records: int = _COMENTION_MIN_RECORDS,
     ) -> list[ActorDict]:
@@ -303,8 +307,9 @@ class NetworkExpander:
                 )
 
         # Cross-platform content link mining: search content authored by this
-        # actor across ALL platforms (not scoped to a single platform) and
-        # extract URLs that point to other actors on known platforms.
+        # actor across all platforms and extract URLs that point to other
+        # actors.  Results are filtered to only include the requested platforms.
+        platforms_set = set(platforms)
         try:
             link_results = await self._expand_via_content_links(
                 actor_id=actor_id,
@@ -316,6 +321,8 @@ class NetworkExpander:
                 f"{d['platform']}:{d['platform_user_id']}" for d in discovered
             }
             for actor_dict in link_results:
+                if actor_dict.get("platform", "") not in platforms_set:
+                    continue
                 key = f"{actor_dict['platform']}:{actor_dict['platform_user_id']}"
                 if key not in existing_keys:
                     existing_keys.add(key)
@@ -414,7 +421,7 @@ class NetworkExpander:
         self,
         actor_list_id: uuid.UUID,
         db: Any,
-        credential_pool: Optional[Any] = None,
+        credential_pool: Any | None = None,
     ) -> list[ActorDict]:
         """Suggest new actors for an existing actor list.
 
@@ -525,7 +532,7 @@ class NetworkExpander:
             ("getFollows", "bluesky_follows"),
             ("getFollowers", "bluesky_followers"),
         ):
-            cursor: Optional[str] = None
+            cursor: str | None = None
             fetched = 0
             max_per_direction = 500
 
@@ -573,7 +580,7 @@ class NetworkExpander:
     async def _expand_reddit(
         self,
         username: str,
-        credentials: Optional[dict[str, str]],
+        credentials: dict[str, str] | None,
     ) -> list[ActorDict]:
         """Expand a Reddit actor by mining u/ mentions in their comments.
 
@@ -642,7 +649,7 @@ class NetworkExpander:
     async def _expand_youtube(
         self,
         channel_id: str,
-        credentials: Optional[dict[str, str]],
+        credentials: dict[str, str] | None,
     ) -> list[ActorDict]:
         """Expand a YouTube actor via featured channels metadata.
 
@@ -912,7 +919,7 @@ class NetworkExpander:
         self,
         client_key: str,
         client_secret: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Obtain a TikTok Research API bearer token via client credentials.
 
         The TikTok OAuth endpoint only accepts ``application/x-www-form-urlencoded``
@@ -947,7 +954,7 @@ class NetworkExpander:
     async def _expand_tiktok(
         self,
         username: str,
-        credentials: Optional[dict[str, str]],
+        credentials: dict[str, str] | None,
     ) -> list[ActorDict]:
         """Expand a TikTok actor via Research API follower/following endpoints.
 
@@ -1040,7 +1047,7 @@ class NetworkExpander:
     async def _expand_gab(
         self,
         username: str,
-        credentials: Optional[dict[str, str]],
+        credentials: dict[str, str] | None,
     ) -> list[ActorDict]:
         """Expand a Gab actor via Mastodon-compatible follower/following API.
 
@@ -1080,7 +1087,7 @@ class NetworkExpander:
             ("followers", "gab_followers"),
             ("following", "gab_following"),
         ):
-            max_id: Optional[str] = None
+            max_id: str | None = None
             fetched = 0
             max_per_direction = 500
 
@@ -1134,7 +1141,7 @@ class NetworkExpander:
     async def _expand_x_twitter(
         self,
         username: str,
-        credentials: Optional[dict[str, str]],
+        credentials: dict[str, str] | None,
     ) -> list[ActorDict]:
         """Expand an X/Twitter actor via TwitterAPI.io follower/following endpoints.
 
@@ -1162,7 +1169,7 @@ class NetworkExpander:
             (_TWITTERAPIIO_FOLLOWERS_URL, "x_twitter_followers"),
             (_TWITTERAPIIO_FOLLOWING_URL, "x_twitter_following"),
         ):
-            cursor: Optional[str] = None
+            cursor: str | None = None
             fetched = 0
             max_per_direction = 500
 
@@ -1348,7 +1355,7 @@ class NetworkExpander:
         qualified = qualified[:top_n]
 
         results: list[ActorDict] = []
-        for (target_platform, target_id), _count in qualified:
+        for (target_platform, target_id), link_count in qualified:
             results.append(
                 _make_actor_dict(
                     canonical_name=target_id,
@@ -1357,6 +1364,7 @@ class NetworkExpander:
                     platform_username=target_id,
                     profile_url="",
                     discovery_method="content_link_mining",
+                    record_count=link_count,
                 )
             )
 
@@ -1555,7 +1563,7 @@ class NetworkExpander:
         qualified = qualified[:top_n]
 
         results: list[ActorDict] = []
-        for comentioned_username, record_count in qualified:
+        for comentioned_username, rec_count in qualified:
             results.append(
                 _make_actor_dict(
                     canonical_name=f"@{comentioned_username}",
@@ -1564,6 +1572,7 @@ class NetworkExpander:
                     platform_username=comentioned_username,
                     profile_url="",
                     discovery_method="comention_fallback",
+                    record_count=rec_count,
                 )
             )
 
@@ -1578,7 +1587,7 @@ class NetworkExpander:
         ]
         url_qualified.sort(key=lambda x: x[1], reverse=True)
 
-        for (url_platform, url_target), record_count in url_qualified:
+        for (url_platform, url_target), url_rec_count in url_qualified:
             dedup_key = f"{url_platform}:{url_target}"
             if dedup_key in seen_mention_keys:
                 continue
@@ -1591,6 +1600,7 @@ class NetworkExpander:
                     platform_username=url_target,
                     profile_url="",
                     discovery_method="url_comention",
+                    record_count=url_rec_count,
                 )
             )
             if len(results) >= top_n:
@@ -1656,10 +1666,10 @@ class NetworkExpander:
 
     async def _get_credentials(
         self,
-        credential_pool: Optional[Any],
+        credential_pool: Any | None,
         platform: str,
         tier: str,
-    ) -> Optional[dict[str, str]]:
+    ) -> dict[str, str] | None:
         """Acquire credentials from the pool, returning ``None`` on failure.
 
         Args:
@@ -1684,9 +1694,9 @@ class NetworkExpander:
     async def _get_json_list(
         self,
         url: str,
-        params: Optional[dict[str, Any]] = None,
-        headers: Optional[dict[str, str]] = None,
-    ) -> Optional[list[dict[str, Any]]]:
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> list[dict[str, Any]] | None:
         """Perform a GET request and return the parsed JSON list body.
 
         Like ``_get_json`` but for endpoints that return a JSON array
@@ -1730,9 +1740,9 @@ class NetworkExpander:
     async def _post_json(
         self,
         url: str,
-        json_body: Optional[dict[str, Any]] = None,
-        headers: Optional[dict[str, str]] = None,
-    ) -> Optional[dict[str, Any]]:
+        json_body: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
         """Perform a POST request and return the parsed JSON body.
 
         Uses the injected ``_http_client`` if available; otherwise creates
@@ -1776,9 +1786,9 @@ class NetworkExpander:
     async def _get_json(
         self,
         url: str,
-        params: Optional[dict[str, Any]] = None,
-        headers: Optional[dict[str, str]] = None,
-    ) -> Optional[dict[str, Any]]:
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
         """Perform a GET request and return the parsed JSON body.
 
         Uses the injected ``_http_client`` if available; otherwise creates

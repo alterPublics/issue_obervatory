@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import delete
@@ -75,10 +75,10 @@ class RetentionService:
         Returns:
             Number of rows deleted.
         """
-        threshold = datetime.now(tz=timezone.utc) - timedelta(days=retention_days)
+        threshold = datetime.now(tz=UTC) - timedelta(days=retention_days)
 
         # Import lazily to avoid circular imports at module level.
-        from issue_observatory.core.models.content import UniversalContentRecord  # noqa: PLC0415
+        from issue_observatory.core.models.content import UniversalContentRecord
 
         stmt = delete(UniversalContentRecord).where(UniversalContentRecord.collected_at < threshold)
         result = await db.execute(stmt)
@@ -120,13 +120,13 @@ class RetentionService:
             ``aliases``, ``list_memberships``, ``actors`` mapping to the
             number of rows deleted for each table.
         """
-        from issue_observatory.core.models.actors import (  # noqa: PLC0415
+        from issue_observatory.core.models.actors import (
             Actor,
             ActorAlias,
             ActorListMember,
             ActorPlatformPresence,
         )
-        from issue_observatory.core.models.content import UniversalContentRecord  # noqa: PLC0415
+        from issue_observatory.core.models.content import UniversalContentRecord
 
         # 1. Content records authored by this actor
         cr_result = await db.execute(

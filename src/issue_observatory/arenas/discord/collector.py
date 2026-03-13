@@ -25,7 +25,7 @@ All messages are normalized to the universal ``content_records`` schema by
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -46,7 +46,6 @@ from issue_observatory.arenas.registry import register
 from issue_observatory.config.tiers import TierConfig
 from issue_observatory.core.exceptions import (
     ArenaCollectionError,
-    ArenaRateLimitError,
     NoCredentialAvailableError,
 )
 from issue_observatory.core.normalizer import Normalizer
@@ -90,6 +89,8 @@ class DiscordCollector(ArenaCollector):
     platform_name: str = "discord"
     supported_tiers: list[Tier] = [Tier.FREE]
     temporal_mode: TemporalMode = TemporalMode.RECENT
+    source_list_config_key: str | None = "custom_channel_ids"
+    supports_actor_collection: bool = True
 
     def __init__(
         self,
@@ -197,12 +198,13 @@ class DiscordCollector(ArenaCollector):
         date_to_dt = parse_date_bound(date_to)
 
         bot_token = await self._acquire_bot_token()
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         async with self._build_http_client(bot_token) as client:
             for channel_id in effective_channel_ids:
-                if len(all_records) >= effective_max:
+                if self._total_emitted >= effective_max:
                     break
+                count_before = self._total_emitted
 
                 channel_meta = await self._fetch_channel_metadata(client, channel_id)
                 messages = await fetch_channel_messages(
@@ -212,7 +214,7 @@ class DiscordCollector(ArenaCollector):
                     platform_name=self.platform_name,
                     date_from_dt=date_from_dt,
                     date_to_dt=date_to_dt,
-                    max_count=effective_max - len(all_records),
+                    max_count=effective_max - self._total_emitted,
                 )
 
                 for msg in messages:
@@ -225,17 +227,21 @@ class DiscordCollector(ArenaCollector):
                         continue
 
                     record = self.normalize(enrich_message(msg, channel_id, channel_meta))
-                    all_records.append(record)
+                    self._emit(record)
 
-                    if len(all_records) >= effective_max:
+                    if self._total_emitted >= effective_max:
                         break
 
+                self._record_input_count(channel_id, self._total_emitted - count_before)
+                self._flush()
+
+        self._flush()
         logger.info(
             "discord: collect_by_terms complete — matched=%d across %d channel(s)",
-            len(all_records),
+            self._total_emitted,
             len(effective_channel_ids),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     async def collect_by_actors(
         self,
@@ -304,11 +310,11 @@ class DiscordCollector(ArenaCollector):
         date_to_dt = parse_date_bound(date_to)
 
         bot_token = await self._acquire_bot_token()
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         async with self._build_http_client(bot_token) as client:
             for channel_id in effective_channel_ids:
-                if len(all_records) >= effective_max:
+                if self._total_emitted >= effective_max:
                     break
 
                 channel_meta = await self._fetch_channel_metadata(client, channel_id)
@@ -319,7 +325,7 @@ class DiscordCollector(ArenaCollector):
                     platform_name=self.platform_name,
                     date_from_dt=date_from_dt,
                     date_to_dt=date_to_dt,
-                    max_count=effective_max - len(all_records),
+                    max_count=effective_max - self._total_emitted,
                 )
 
                 for msg in messages:
@@ -328,17 +334,20 @@ class DiscordCollector(ArenaCollector):
                         continue
 
                     record = self.normalize(enrich_message(msg, channel_id, channel_meta))
-                    all_records.append(record)
+                    self._emit(record)
 
-                    if len(all_records) >= effective_max:
+                    if self._total_emitted >= effective_max:
                         break
 
+                self._flush()
+
+        self._flush()
         logger.info(
             "discord: collect_by_actors complete — matched=%d across %d channel(s)",
-            len(all_records),
+            self._total_emitted,
             len(effective_channel_ids),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     def get_tier_config(self, tier: Tier) -> TierConfig:
         """Return tier configuration for the Discord arena.
@@ -467,7 +476,7 @@ class DiscordCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"down"``), ``arena``,
             ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -504,7 +513,7 @@ class DiscordCollector(ArenaCollector):
             }
         except httpx.RequestError as exc:
             return {**base, "status": "down", "detail": f"Connection error: {exc}"}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {**base, "status": "down", "detail": f"Unexpected error: {exc}"}
 
     # ------------------------------------------------------------------
@@ -579,7 +588,7 @@ class DiscordCollector(ArenaCollector):
                 arena_name=self.arena_name,
                 platform_name=self.platform_name,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 "discord: could not fetch metadata for channel %s: %s",
                 channel_id,

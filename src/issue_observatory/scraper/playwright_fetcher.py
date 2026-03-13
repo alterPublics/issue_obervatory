@@ -90,7 +90,7 @@ async def fetch_url_playwright(url: str, *, timeout: int) -> FetchResult:
             finally:
                 await browser.close()
 
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("scraper: playwright fetch failed for %s: %s", url, exc)
         return FetchResult(
             html=None,

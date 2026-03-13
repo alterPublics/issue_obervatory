@@ -29,7 +29,7 @@ import logging
 import re
 import uuid
 from collections import Counter
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -65,7 +65,7 @@ def _make_actor_dict(
     platform_username: str,
     profile_url: str,
     discovery_method: str,
-    similarity_score: Optional[float] = None,
+    similarity_score: float | None = None,
 ) -> ActorDict:
     """Build a well-typed actor similarity dict."""
     result: ActorDict = {
@@ -129,7 +129,9 @@ def _tfidf_cosine(
         List of ``(actor_id_str, similarity_score)`` pairs, descending.
     """
     try:
-        from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore[import-not-found]
+        from sklearn.feature_extraction.text import (
+            TfidfVectorizer,  # type: ignore[import-not-found]
+        )
         from sklearn.metrics.pairwise import cosine_similarity  # type: ignore[import-not-found]
 
         docs = [" ".join(target_tokens)] + [
@@ -145,7 +147,7 @@ def _tfidf_cosine(
         sims = cosine_similarity(matrix[0:1], matrix[1:]).flatten()
         return [
             (actor_id, float(score))
-            for (actor_id, _), score in zip(other_tokens_list, sims)
+            for (actor_id, _), score in zip(other_tokens_list, sims, strict=False)
         ]
 
     except ImportError:
@@ -179,7 +181,7 @@ class SimilarityFinder:
 
     def __init__(
         self,
-        http_client: Optional[httpx.AsyncClient] = None,
+        http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._http_client = http_client
 
@@ -191,8 +193,8 @@ class SimilarityFinder:
         self,
         actor_id: uuid.UUID,
         platform: str,
-        credential_pool: Optional[Any] = None,
-        db: Optional[Any] = None,
+        credential_pool: Any | None = None,
+        db: Any | None = None,
         top_n: int = 25,
     ) -> list[ActorDict]:
         """Find actors similar to *actor_id* using platform recommendations.
@@ -366,7 +368,7 @@ class SimilarityFinder:
         self,
         name_or_handle: str,
         platforms: list[str],
-        credential_pool: Optional[Any] = None,
+        credential_pool: Any | None = None,
         top_n: int = 5,
     ) -> list[ActorDict]:
         """Search for a name/handle across multiple platforms.
@@ -469,7 +471,7 @@ class SimilarityFinder:
     async def _similar_reddit(
         self,
         username: str,
-        credentials: Optional[dict[str, str]],
+        credentials: dict[str, str] | None,
         top_n: int,
     ) -> list[ActorDict]:
         """Find similar Reddit users via shared subreddits.
@@ -525,7 +527,7 @@ class SimilarityFinder:
             if posts_data is None:
                 continue
             for child in posts_data.get("data", {}).get("children", []):
-                post_author: Optional[str] = child.get("data", {}).get("author")
+                post_author: str | None = child.get("data", {}).get("author")
                 if not post_author or post_author == username:
                     continue
                 if post_author in ("[deleted]", "[removed]"):
@@ -548,7 +550,7 @@ class SimilarityFinder:
     async def _similar_youtube(
         self,
         channel_id: str,
-        credentials: Optional[dict[str, str]],
+        credentials: dict[str, str] | None,
         top_n: int,
     ) -> list[ActorDict]:
         """Find similar YouTube channels via related playlists.
@@ -607,8 +609,8 @@ class SimilarityFinder:
         seen: dict[str, ActorDict] = {}
         for item in pl_data.get("items", []):
             snippet = item.get("snippet", {})
-            owner_id: Optional[str] = snippet.get("videoOwnerChannelId")
-            owner_title: Optional[str] = snippet.get("videoOwnerChannelTitle")
+            owner_id: str | None = snippet.get("videoOwnerChannelId")
+            owner_title: str | None = snippet.get("videoOwnerChannelTitle")
             if not owner_id or owner_id == channel_id:
                 continue
             if owner_id not in seen:
@@ -675,7 +677,7 @@ class SimilarityFinder:
     async def _search_reddit(
         self,
         query: str,
-        credentials: Optional[dict[str, str]],
+        credentials: dict[str, str] | None,
         top_n: int,
     ) -> list[ActorDict]:
         """Search Reddit for users/subreddits matching *query*.
@@ -726,7 +728,7 @@ class SimilarityFinder:
     async def _search_youtube(
         self,
         query: str,
-        credentials: Optional[dict[str, str]],
+        credentials: dict[str, str] | None,
         top_n: int,
     ) -> list[ActorDict]:
         """Search YouTube channels for *query*.
@@ -786,8 +788,8 @@ class SimilarityFinder:
         self,
         actor_id: uuid.UUID,
         platform: str,
-        db: Optional[Any],
-    ) -> Optional[dict[str, str]]:
+        db: Any | None,
+    ) -> dict[str, str] | None:
         """Return the actor's platform presence dict for a given platform.
 
         Args:
@@ -866,10 +868,10 @@ class SimilarityFinder:
 
     async def _get_credentials(
         self,
-        credential_pool: Optional[Any],
+        credential_pool: Any | None,
         platform: str,
         tier: str,
-    ) -> Optional[dict[str, str]]:
+    ) -> dict[str, str] | None:
         """Acquire credentials from pool, returning ``None`` on failure.
 
         Args:
@@ -895,9 +897,9 @@ class SimilarityFinder:
     async def _get_json(
         self,
         url: str,
-        params: Optional[dict[str, Any]] = None,
-        headers: Optional[dict[str, str]] = None,
-    ) -> Optional[dict[str, Any]]:
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
         """Perform a GET request and return the parsed JSON body.
 
         Args:

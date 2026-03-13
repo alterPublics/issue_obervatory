@@ -52,6 +52,9 @@ FACEBOOK_DATASET_ID_GROUPS: str = "gd_lz11l67o2cb3r0lkj3"
 FACEBOOK_DATASET_ID_REELS: str = "gd_lyclm3ey2q6rww027t"
 """Web Scraper API dataset ID for Facebook Reels (profile URL input)."""
 
+FACEBOOK_DATASET_ID_COMMENTS: str = "gd_lkay758p1eanlolqw8"
+"""Web Scraper API dataset ID for Facebook Comments (post URL input)."""
+
 # ---------------------------------------------------------------------------
 # Trigger URL builder helper
 # ---------------------------------------------------------------------------
@@ -106,19 +109,34 @@ def to_brightdata_date(value: object) -> str | None:
         Date string in ``MM-DD-YYYY`` format, or ``None`` if *value* is ``None``
         or cannot be parsed.
     """
-    from datetime import datetime  # noqa: PLC0415
+    from datetime import datetime
 
     if value is None:
         return None
     if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            from zoneinfo import ZoneInfo
+
+            value = value.astimezone(ZoneInfo("Europe/Copenhagen"))
         return value.strftime("%m-%d-%Y")
     if isinstance(value, str) and len(value) >= 10:
-        # Try ISO 8601 parse (YYYY-MM-DD prefix).
+        # Parse the full ISO 8601 string (including timezone) so that
+        # "2026-03-10T23:00:00+00:00" (CET midnight) correctly becomes
+        # "03-11-2026" in Danish local time, not "03-10-2026".
         try:
-            dt = datetime.fromisoformat(value[:10])
+            dt = datetime.fromisoformat(value)
+            # Convert to Danish local time (CET/CEST) for the date portion.
+            from zoneinfo import ZoneInfo
+
+            dt = dt.astimezone(ZoneInfo("Europe/Copenhagen"))
             return dt.strftime("%m-%d-%Y")
-        except ValueError:
-            return None
+        except (ValueError, KeyError):
+            # Fallback: plain date string without timezone.
+            try:
+                dt = datetime.fromisoformat(value[:10])
+                return dt.strftime("%m-%d-%Y")
+            except ValueError:
+                return None
     return None
 
 

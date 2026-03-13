@@ -16,7 +16,6 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -30,16 +29,14 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.google_autocomplete.collector import (  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.google_autocomplete.collector import (
     GoogleAutocompleteCollector,
 )
-from issue_observatory.arenas.google_autocomplete.config import (  # noqa: E402
+from issue_observatory.arenas.google_autocomplete.config import (
     FREE_AUTOCOMPLETE_URL,
-    SERPER_AUTOCOMPLETE_URL,
-    SERPAPI_AUTOCOMPLETE_URL,
 )
-from issue_observatory.core.exceptions import ArenaRateLimitError  # noqa: E402
+from issue_observatory.core.exceptions import ArenaRateLimitError
 
 # ---------------------------------------------------------------------------
 # Fixture paths

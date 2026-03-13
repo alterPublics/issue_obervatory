@@ -22,7 +22,7 @@ These tests run without a live database or network connection.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -40,23 +40,22 @@ os.environ.setdefault(
     "CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA=="
 )
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.wikipedia.collector import (  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.wikipedia.collector import (
     WikipediaCollector,
     _is_bot_edit,
     _resolve_pageview_date_range,
     _to_mediawiki_timestamp,
 )
-from issue_observatory.arenas.wikipedia.config import (  # noqa: E402
+from issue_observatory.arenas.wikipedia.config import (
     DEFAULT_USER_AGENT,
     DEFAULT_WIKI_PROJECTS,
     WIKIPEDIA_TIERS,
 )
-from issue_observatory.core.exceptions import (  # noqa: E402
+from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
 )
-
 
 # ---------------------------------------------------------------------------
 # Shared raw-record builder helpers
@@ -698,7 +697,7 @@ class TestToMediawikiTimestamp:
 
     def test_converts_datetime_with_utc_timezone(self) -> None:
         """_to_mediawiki_timestamp() formats timezone-aware datetime to ISO 8601 with Z suffix."""
-        dt = datetime(2026, 2, 17, 12, 0, 0, tzinfo=timezone.utc)
+        dt = datetime(2026, 2, 17, 12, 0, 0, tzinfo=UTC)
         result = _to_mediawiki_timestamp(dt)
         assert result == "2026-02-17T12:00:00Z"
 
@@ -752,10 +751,9 @@ class TestResolvePageviewDateRange:
 
     def test_accepts_datetime_objects(self) -> None:
         """_resolve_pageview_date_range() accepts datetime objects in addition to strings."""
-        from datetime import timedelta
 
-        dt_from = datetime(2026, 1, 15, tzinfo=timezone.utc)
-        dt_to = datetime(2026, 1, 31, tzinfo=timezone.utc)
+        dt_from = datetime(2026, 1, 15, tzinfo=UTC)
+        dt_to = datetime(2026, 1, 31, tzinfo=UTC)
         start, end = _resolve_pageview_date_range(dt_from, dt_to)
         assert start == "20260115"
         assert end == "20260131"

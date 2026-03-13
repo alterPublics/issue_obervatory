@@ -34,29 +34,29 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
-from issue_observatory.arenas.google_search._client import fetch_serper, fetch_serpapi
-from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
+from issue_observatory.arenas.google_search._client import fetch_serpapi, fetch_serper
 from issue_observatory.arenas.google_search.config import (
     DANISH_PARAMS,
     GOOGLE_SEARCH_TIERS,
     MAX_RESULTS_PER_PAGE,
     SERPER_API_URL,
 )
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.registry import register
 from issue_observatory.config.tiers import TierConfig
 from issue_observatory.core.exceptions import (
     ArenaAuthError,
-    ArenaCollectionError,
     ArenaRateLimitError,
     NoCredentialAvailableError,
 )
+from issue_observatory.core.language_utils import resolve_google_params, resolve_language_label
 from issue_observatory.core.normalizer import Normalizer
 
 logger = logging.getLogger(__name__)
@@ -133,8 +133,8 @@ class GoogleSearchCollector(ArenaCollector):
             term_groups: Optional boolean AND/OR group structure.  When
                 provided, one request is issued per group (group terms are
                 ANDed via implicit space syntax).
-            language_filter: Not used by this arena (Danish locale params
-                are always applied via DANISH_PARAMS).
+            language_filter: Optional language codes.  The first code
+                overrides the default Danish locale parameters.
 
         Returns:
             List of normalized content record dicts.
@@ -160,6 +160,10 @@ class GoogleSearchCollector(ArenaCollector):
         effective_max = max_results if max_results is not None else tier_config.max_results_per_run
         cred = await self._acquire_credential(tier)
 
+        # Resolve locale parameters for this collection run.
+        self._locale_params = resolve_google_params(language_filter)
+        self._language_label = resolve_language_label(language_filter)
+
         # Build the list of query strings to issue.
         # Boolean mode: one query per AND-group (groups are ORed by running separately).
         # Simple mode: one query per term.
@@ -171,32 +175,34 @@ class GoogleSearchCollector(ArenaCollector):
         else:
             query_strings = list(terms)
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         try:
             async with self._build_http_client() as client:
                 for query in query_strings:
-                    if len(all_records) >= effective_max:
+                    if self._total_emitted >= effective_max:
                         break
                     records = await self._collect_term(
                         client=client,
                         term=query,
                         tier=tier,
                         credential=cred,
-                        max_results=effective_max - len(all_records),
+                        max_results=effective_max - self._total_emitted,
                     )
-                    all_records.extend(records)
+                    self._emit_many(records)
+                    self._flush()
         finally:
             if self.credential_pool is not None:
                 await self.credential_pool.release(credential_id=cred["id"])
 
+        self._flush()
         logger.info(
             "google_search: collected %d records for %d queries at tier=%s",
-            len(all_records),
+            self._total_emitted,
             len(query_strings),
             tier.value,
         )
-        return all_records
+        return list(self._batch_buffer)
 
     async def collect_by_actors(
         self,
@@ -282,14 +288,16 @@ class GoogleSearchCollector(ArenaCollector):
         """
         enriched = dict(raw_item)
         enriched.setdefault("content_type", "search_result")
-        # Set language based on Danish locale settings (gl=dk, hl=da)
-        enriched.setdefault("language", "da")
+        # Set language based on the resolved locale for this collection run.
+        enriched.setdefault(
+            "language", getattr(self, "_language_label", "da")
+        )
 
         # author_display_name = domain extracted from the result URL
         result_url: str = raw_item.get("link", "") or ""
         try:
             enriched["author_display_name"] = urlparse(result_url).netloc.removeprefix("www.")
-        except Exception:  # noqa: BLE001
+        except Exception:
             enriched["author_display_name"] = ""
 
         # text_content is set to None — the scraper will populate it later.
@@ -326,7 +334,7 @@ class GoogleSearchCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
             ``arena``, ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -474,6 +482,7 @@ class GoogleSearchCollector(ArenaCollector):
             remaining = max_results - len(records)
             num = min(MAX_RESULTS_PER_PAGE, remaining)
 
+            locale = getattr(self, "_locale_params", DANISH_PARAMS)
             try:
                 if tier == Tier.MEDIUM:
                     raw_results = await fetch_serper(
@@ -485,6 +494,7 @@ class GoogleSearchCollector(ArenaCollector):
                         rate_limiter=self.rate_limiter,
                         arena_name=self.arena_name,
                         platform_name=self.platform_name,
+                        locale_params=locale,
                     )
                 else:
                     raw_results = await fetch_serpapi(
@@ -496,6 +506,7 @@ class GoogleSearchCollector(ArenaCollector):
                         rate_limiter=self.rate_limiter,
                         arena_name=self.arena_name,
                         platform_name=self.platform_name,
+                        locale_params=locale,
                     )
             except (ArenaRateLimitError, ArenaAuthError) as exc:
                 if self.credential_pool:

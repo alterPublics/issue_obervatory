@@ -27,7 +27,6 @@ from typing import Any
 import httpx
 
 from issue_observatory.arenas.ai_chat_search.config import (
-    CHAT_SYSTEM_PROMPT,
     OPENROUTER_API_URL,
     OPENROUTER_RATE_LIMITER_KEY,
 )
@@ -88,7 +87,7 @@ async def chat_completion(
     }
 
     if rate_limiter is not None:
-        from issue_observatory.workers.rate_limiter import rate_limited_request  # noqa: PLC0415
+        from issue_observatory.workers.rate_limiter import rate_limited_request
 
         async with rate_limited_request(
             rate_limiter, arena=arena_name, provider=OPENROUTER_RATE_LIMITER_KEY
@@ -132,7 +131,7 @@ async def _post_completion(
         if code == 429:
             retry_after = float(exc.response.headers.get("Retry-After", 60))
             raise ArenaRateLimitError(
-                f"ai_chat_search (openrouter): HTTP 429 — rate limited",
+                "ai_chat_search (openrouter): HTTP 429 — rate limited",
                 retry_after=retry_after,
                 arena=arena_name,
                 platform=platform_name,
@@ -157,7 +156,7 @@ async def _post_completion(
 
     try:
         return response.json()  # type: ignore[no-any-return]
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise ArenaCollectionError(
             f"ai_chat_search (openrouter): JSON parse error — {exc}",
             arena=arena_name,

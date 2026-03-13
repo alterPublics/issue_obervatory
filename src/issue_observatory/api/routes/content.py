@@ -24,13 +24,14 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
-from typing import Annotated, Any, Optional
+from datetime import UTC, datetime
+from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from sqlalchemy import Text as SAText, func, select, text
+from sqlalchemy import Text as SAText
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from issue_observatory.analysis.export import ContentExporter
@@ -45,7 +46,6 @@ from issue_observatory.core.models.actors import Actor
 from issue_observatory.core.models.collection import CollectionRun
 from issue_observatory.core.models.content import UniversalContentRecord
 from issue_observatory.core.models.users import User
-from issue_observatory.api.limiter import limiter
 
 logger = structlog.get_logger(__name__)
 
@@ -59,7 +59,7 @@ _EXPORT_SYNC_LIMIT = 10_000
 # ---------------------------------------------------------------------------
 
 
-def _prefers_json(request: Request, format_param: Optional[str]) -> bool:
+def _prefers_json(request: Request, format_param: str | None) -> bool:
     """Return True when the client explicitly prefers JSON over HTML.
 
     Checks both the ``format`` query parameter and the ``Accept`` header.
@@ -118,7 +118,7 @@ _EXPORT_EXTENSIONS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
-def _parse_uuid(value: Optional[str]) -> Optional[uuid.UUID]:
+def _parse_uuid(value: str | None) -> uuid.UUID | None:
     """Parse an optional string as UUID, treating empty/whitespace as None.
 
     HTMX form serialization sends empty strings for ``<select>`` elements with
@@ -140,19 +140,19 @@ def _parse_uuid(value: Optional[str]) -> Optional[uuid.UUID]:
 
 def _build_content_stmt(
     current_user: User,
-    platform: Optional[str],
-    arena: Optional[str],
-    query_design_id: Optional[uuid.UUID],
-    date_from: Optional[datetime],
-    date_to: Optional[datetime],
-    search_term: Optional[str],
-    language: Optional[str],
-    run_id: Optional[uuid.UUID],
-    limit: Optional[int],
-    project_id: Optional[uuid.UUID] = None,
+    platform: str | None,
+    arena: str | None,
+    query_design_id: uuid.UUID | None,
+    date_from: datetime | None,
+    date_to: datetime | None,
+    search_term: str | None,
+    language: str | None,
+    run_id: uuid.UUID | None,
+    limit: int | None,
+    project_id: uuid.UUID | None = None,
     show_all: bool = False,
-    scrape_status: Optional[str] = None,
-) -> Any:  # noqa: ANN401
+    scrape_status: str | None = None,
+) -> Any:
     """Build a SELECT statement against ``content_records`` with ownership scope.
 
     Non-admin users are restricted to records that belong to their own
@@ -214,7 +214,7 @@ def _build_content_stmt(
         )
         stmt = stmt.where(UniversalContentRecord.collection_run_id.in_(project_run_ids))
     if search_term:
-        from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY  # noqa: PLC0415
+        from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 
         stmt = stmt.where(
             UniversalContentRecord.search_terms_matched.cast(PG_ARRAY(SAText)).contains(
@@ -277,7 +277,7 @@ def _record_to_dict(record: UniversalContentRecord) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _encode_cursor(published_at: Optional[datetime], record_id: uuid.UUID) -> str:
+def _encode_cursor(published_at: datetime | None, record_id: uuid.UUID) -> str:
     """Encode a keyset cursor as a URL-safe string.
 
     Format: ``{published_at_iso}|{record_id_hex}``.  When ``published_at`` is
@@ -294,7 +294,7 @@ def _encode_cursor(published_at: Optional[datetime], record_id: uuid.UUID) -> st
     return f"{ts}|{record_id}"
 
 
-def _decode_cursor(cursor: str) -> tuple[Optional[datetime], Optional[uuid.UUID]]:
+def _decode_cursor(cursor: str) -> tuple[datetime | None, uuid.UUID | None]:
     """Decode a keyset cursor produced by ``_encode_cursor``.
 
     Args:
@@ -313,7 +313,7 @@ def _decode_cursor(cursor: str) -> tuple[Optional[datetime], Optional[uuid.UUID]
         return None, None
 
 
-def _parse_date_param(value: Optional[str], *, end_of_day: bool = False) -> Optional[datetime]:
+def _parse_date_param(value: str | None, *, end_of_day: bool = False) -> datetime | None:
     """Parse a YYYY-MM-DD date string into a timezone-aware ``datetime``.
 
     Returns ``None`` if the value is missing or cannot be parsed.
@@ -330,7 +330,7 @@ def _parse_date_param(value: Optional[str], *, end_of_day: bool = False) -> Opti
     if not value:
         return None
     try:
-        dt = datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+        dt = datetime.fromisoformat(value).replace(tzinfo=UTC)
         if end_of_day:
             dt = dt.replace(hour=23, minute=59, second=59)
         return dt
@@ -345,25 +345,26 @@ def _parse_date_param(value: Optional[str], *, end_of_day: bool = False) -> Opti
 
 def _build_browse_stmt(
     current_user: User,
-    q: Optional[str],
-    platform: Optional[str],
-    arena: Optional[str],
-    date_from: Optional[datetime],
-    date_to: Optional[datetime],
-    language: Optional[str],
-    search_term: Optional[str],
-    run_id: Optional[uuid.UUID],
-    mode: Optional[str],
-    cursor_published_at: Optional[datetime],
-    cursor_id: Optional[uuid.UUID],
+    q: str | None,
+    platform: str | None,
+    arena: str | None,
+    date_from: datetime | None,
+    date_to: datetime | None,
+    language: str | None,
+    search_term: str | None,
+    run_id: uuid.UUID | None,
+    mode: str | None,
+    cursor_published_at: datetime | None,
+    cursor_id: uuid.UUID | None,
     limit: int,
-    project_id: Optional[uuid.UUID] = None,
+    project_id: uuid.UUID | None = None,
     show_all: bool = False,
-    scrape_status: Optional[str] = None,
-    sort_by: Optional[str] = None,
-    sort_dir: Optional[str] = None,
+    scrape_status: str | None = None,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
     page_offset: int = 0,
-) -> Any:  # noqa: ANN401
+    content_types: list[str] | None = None,
+) -> Any:
     """Build a paginated SELECT for the content browser.
 
     Default ordering is ``(published_at DESC NULLS LAST, id DESC)`` with keyset
@@ -437,7 +438,7 @@ def _build_browse_stmt(
     if search_term:
         # Use PostgreSQL array containment operator (@>) via cast to avoid
         # SQLAlchemy's base ARRAY.contains() NotImplementedError.
-        from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY  # noqa: PLC0415
+        from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 
         stmt = stmt.where(
             ucr.search_terms_matched.cast(PG_ARRAY(SAText)).contains([search_term])
@@ -468,6 +469,9 @@ def _build_browse_stmt(
     # Default: only show term-matched content unless show_all is True
     if not show_all:
         stmt = stmt.where(ucr.term_matched.is_(True))
+    # Content type filter (posts vs comments)
+    if content_types:
+        stmt = stmt.where(ucr.content_type.in_(content_types))
     # Scrape status filter
     if scrape_status:
         stmt = stmt.where(ucr.scrape_status == scrape_status)
@@ -549,7 +553,7 @@ async def _fetch_recent_runs(
         A list of dicts with keys ``id``, ``status``, ``query_design_name``,
         ``created_at``, ``formatted_date``, ``records_collected``.
     """
-    from sqlalchemy.orm import selectinload  # noqa: PLC0415
+    from sqlalchemy.orm import selectinload
 
     if current_user.role == "admin":
         stmt = (
@@ -607,19 +611,20 @@ async def _fetch_recent_runs(
 async def _count_matching(
     db: AsyncSession,
     current_user: User,
-    q: Optional[str],
-    platform: Optional[str],
-    arena: Optional[str],
-    date_from: Optional[datetime],
-    date_to: Optional[datetime],
-    language: Optional[str],
-    search_term: Optional[str],
-    run_id: Optional[uuid.UUID],
-    mode: Optional[str],
-    arenas_list: Optional[list[str]] = None,
-    project_id: Optional[uuid.UUID] = None,
+    q: str | None,
+    platform: str | None,
+    arena: str | None,
+    date_from: datetime | None,
+    date_to: datetime | None,
+    language: str | None,
+    search_term: str | None,
+    run_id: uuid.UUID | None,
+    mode: str | None,
+    arenas_list: list[str] | None = None,
+    project_id: uuid.UUID | None = None,
     show_all: bool = False,
-    scrape_status: Optional[str] = None,
+    scrape_status: str | None = None,
+    content_types: list[str] | None = None,
 ) -> int:
     """Return the total number of records matching the current browser filters.
 
@@ -644,7 +649,7 @@ async def _count_matching(
     Returns:
         Integer row count (may be approximate on very large datasets).
     """
-    from sqlalchemy import func  # noqa: PLC0415
+    from sqlalchemy import func
 
     stmt = _build_browse_stmt(
         current_user=current_user,
@@ -663,6 +668,7 @@ async def _count_matching(
         project_id=project_id,
         show_all=show_all,
         scrape_status=scrape_status,
+        content_types=content_types,
     )
 
     # Apply multi-arena IN filter if provided
@@ -679,7 +685,7 @@ async def _count_matching(
 # ---------------------------------------------------------------------------
 
 
-def _orm_row_to_template_dict(row: Any) -> dict[str, Any]:  # noqa: ANN401
+def _orm_row_to_template_dict(row: Any) -> dict[str, Any]:
     """Convert a SQLAlchemy mapping row or ORM instance to a template-safe dict.
 
     Args:
@@ -690,7 +696,7 @@ def _orm_row_to_template_dict(row: Any) -> dict[str, Any]:  # noqa: ANN401
         expect.
     """
     # Supports both RowMapping (dict-like) and ORM instances.
-    def _get(key: str) -> Any:  # noqa: ANN401
+    def _get(key: str) -> Any:
         try:
             return row[key]
         except (TypeError, KeyError):
@@ -787,7 +793,7 @@ def _orm_to_detail_dict(
 async def content_record_count(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    run_id: Optional[str] = Query(default=None, description="Filter by specific collection run UUID."),
+    run_id: str | None = Query(default=None, description="Filter by specific collection run UUID."),
 ) -> dict[str, int]:
     """Return total content record count for the current user's collection runs.
 
@@ -828,22 +834,23 @@ async def content_browser_page(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    q: Optional[str] = Query(default=None, description="Full-text search query."),
-    arenas: Optional[list[str]] = Query(default=None, description="Multi-value platform filter from checkboxes."),
-    platform: Optional[str] = Query(default=None),
-    arena: Optional[str] = Query(default=None),
-    date_from: Optional[str] = Query(default=None),
-    date_to: Optional[str] = Query(default=None),
-    language: Optional[str] = Query(default=None),
-    search_term: Optional[str] = Query(default=None),
-    run_id: Optional[str] = Query(default=None),
-    mode: Optional[str] = Query(default=None, description="Collection mode filter: 'batch' or 'live'."),
-    query_design_id: Optional[str] = Query(default=None, description="Active query design for quick-add actor flow."),
-    project_id: Optional[str] = Query(default=None, description="Filter content to a specific project."),
+    q: str | None = Query(default=None, description="Full-text search query."),
+    arenas: list[str] | None = Query(default=None, description="Multi-value platform filter from checkboxes."),
+    platform: str | None = Query(default=None),
+    arena: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    language: str | None = Query(default=None),
+    search_term: str | None = Query(default=None),
+    run_id: str | None = Query(default=None),
+    mode: str | None = Query(default=None, description="Collection mode filter: 'batch' or 'live'."),
+    query_design_id: str | None = Query(default=None, description="Active query design for quick-add actor flow."),
+    project_id: str | None = Query(default=None, description="Filter content to a specific project."),
     show_all: bool = Query(default=False, description="Show all content including non-term-matched records."),
-    scrape_status_filter: Optional[str] = Query(default=None, alias="scrape_status", description="Filter by scrape status: pending, scraped, failed."),
-    sort_by: Optional[str] = Query(default=None, description="Column to sort by."),
-    sort_dir: Optional[str] = Query(default=None, description="Sort direction: asc or desc."),
+    scrape_status_filter: str | None = Query(default=None, alias="scrape_status", description="Filter by scrape status: pending, scraped, failed."),
+    sort_by: str | None = Query(default=None, description="Column to sort by."),
+    sort_dir: str | None = Query(default=None, description="Sort direction: asc or desc."),
+    content_types: list[str] | None = Query(default=None, description="Content type filter: post, comment."),
 ) -> Response:
     """Render the full content browser HTML page.
 
@@ -903,9 +910,19 @@ async def content_browser_page(
 
     # Handle arenas multi-value filter (same logic as /content/records)
     arenas_list: list[str] = arenas or []
-    platform_filter: Optional[str] = platform
+    platform_filter: str | None = platform
     if len(arenas_list) == 1:
         platform_filter = arenas_list[0]
+
+    # When the user explicitly selects arena filters, show all content from
+    # those arenas regardless of term_matched status.  Actor-only arenas like
+    # Facebook/Instagram have term_matched=False on all records, so the
+    # default filter would hide them entirely.
+    effective_show_all = show_all or len(arenas_list) > 0
+
+    # Default content_types to ["post"] when not specified so existing users
+    # don't see comments mixed in unless they explicitly opt in.
+    effective_content_types = content_types if content_types else ["post"]
 
     stmt = _build_browse_stmt(
         current_user=current_user,
@@ -922,10 +939,11 @@ async def content_browser_page(
         cursor_id=None,
         limit=_BROWSE_LIMIT,
         project_id=project_id,
-        show_all=show_all,
+        show_all=effective_show_all,
         scrape_status=scrape_status_filter,
         sort_by=sort_by,
         sort_dir=sort_dir,
+        content_types=effective_content_types,
     )
 
     # Apply multi-arena IN filter when multiple checkboxes selected
@@ -949,7 +967,7 @@ async def content_browser_page(
     effective_sort_page = sort_by if sort_by in {"published_at", "platform", "author", "arena", "engagement_score"} else "published_at"
     use_keyset_page = effective_sort_page == "published_at"
 
-    cursor: Optional[str] = None
+    cursor: str | None = None
     if len(records) == _BROWSE_LIMIT:
         if use_keyset_page:
             last_rec = records[-1]
@@ -964,7 +982,7 @@ async def content_browser_page(
     recent_runs = await _fetch_recent_runs(db, current_user)
 
     # Fetch user's projects for the project filter dropdown.
-    from issue_observatory.core.models.project import Project as ProjectModel  # noqa: PLC0415
+    from issue_observatory.core.models.project import Project as ProjectModel
 
     projects_stmt = (
         select(ProjectModel)
@@ -996,6 +1014,7 @@ async def content_browser_page(
         project_id=project_id,
         show_all=show_all,
         scrape_status=scrape_status_filter,
+        content_types=effective_content_types,
     )
 
     filter_ctx = {
@@ -1013,6 +1032,7 @@ async def content_browser_page(
         "scrape_status": scrape_status_filter or "",
         "sort_by": sort_by or "published_at",
         "sort_dir": sort_dir or "desc",
+        "content_types": effective_content_types,
     }
 
     return templates.TemplateResponse(
@@ -1041,27 +1061,28 @@ async def content_records_fragment(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    cursor: Optional[str] = Query(default=None, description="Opaque keyset cursor."),
-    q: Optional[str] = Query(default=None),
-    arenas: Optional[list[str]] = Query(default=None),
-    platform: Optional[str] = Query(default=None),
-    date_from: Optional[str] = Query(default=None),
-    date_to: Optional[str] = Query(default=None),
-    language: Optional[str] = Query(default=None),
-    search_term: Optional[str] = Query(default=None),
-    run_id: Optional[str] = Query(default=None),
-    mode: Optional[str] = Query(default=None, description="Collection mode filter: 'batch' or 'live'."),
-    project_id: Optional[str] = Query(default=None, description="Filter content to a specific project."),
+    cursor: str | None = Query(default=None, description="Opaque keyset cursor."),
+    q: str | None = Query(default=None),
+    arenas: list[str] | None = Query(default=None),
+    platform: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    language: str | None = Query(default=None),
+    search_term: str | None = Query(default=None),
+    run_id: str | None = Query(default=None),
+    mode: str | None = Query(default=None, description="Collection mode filter: 'batch' or 'live'."),
+    project_id: str | None = Query(default=None, description="Filter content to a specific project."),
     show_all: bool = Query(default=False, description="Show all content including non-term-matched records."),
-    scrape_status_filter: Optional[str] = Query(default=None, alias="scrape_status", description="Filter by scrape status: pending, scraped, failed."),
+    scrape_status_filter: str | None = Query(default=None, alias="scrape_status", description="Filter by scrape status: pending, scraped, failed."),
     offset: int = Query(default=0, ge=0, description="Running total of rows already sent."),
     limit: int = Query(default=_BROWSE_LIMIT, ge=1, le=_MAX_LIMIT),
-    format: Optional[str] = Query(
+    format: str | None = Query(
         default=None,
         description="Response format: 'json' or omit for HTML. Also checks Accept header.",
     ),
-    sort_by: Optional[str] = Query(default=None, description="Column to sort by."),
-    sort_dir: Optional[str] = Query(default=None, description="Sort direction: asc or desc."),
+    sort_by: str | None = Query(default=None, description="Column to sort by."),
+    sort_dir: str | None = Query(default=None, description="Sort direction: asc or desc."),
+    content_types: list[str] | None = Query(default=None, description="Content type filter: post, comment."),
 ) -> Response:
     """Return content records as HTML fragment or JSON array.
 
@@ -1136,8 +1157,8 @@ async def content_records_fragment(
 
     remaining = min(limit, _BROWSE_CAP - offset)
 
-    cursor_published_at: Optional[datetime] = None
-    cursor_id_val: Optional[uuid.UUID] = None
+    cursor_published_at: datetime | None = None
+    cursor_id_val: uuid.UUID | None = None
     if cursor:
         cursor_published_at, cursor_id_val = _decode_cursor(cursor)
 
@@ -1147,16 +1168,24 @@ async def content_records_fragment(
     # Merge arenas multi-value list with singular platform/arena params.
     # Note: 'arenas' checkbox group sends platform_name values, so we filter on platform column.
     arenas_list: list[str] = arenas or []
-    platform_filter: Optional[str] = platform  # explicit single platform param
+    platform_filter: str | None = platform  # explicit single platform param
 
     # When a single arena checkbox is checked, use it as platform filter
     if len(arenas_list) == 1:
         platform_filter = arenas_list[0]
     # When multiple arenas checked we build an IN filter below.
 
+    # When the user explicitly selects arena filters, show all content from
+    # those arenas regardless of term_matched status.  Actor-only arenas like
+    # Facebook/Instagram have term_matched=False on all records, so the
+    # default filter would hide them entirely.
+    effective_show_all = show_all or len(arenas_list) > 0
+
     # Determine if we're using non-default sort (offset pagination).
     effective_sort = sort_by if sort_by in {"published_at", "platform", "author", "arena", "engagement_score"} else "published_at"
     use_keyset = effective_sort == "published_at"
+
+    effective_content_types = content_types if content_types else ["post"]
 
     stmt = _build_browse_stmt(
         current_user=current_user,
@@ -1173,11 +1202,12 @@ async def content_records_fragment(
         cursor_id=cursor_id_val if use_keyset else None,
         limit=remaining,
         project_id=project_id,
-        show_all=show_all,
+        show_all=effective_show_all,
         scrape_status=scrape_status_filter,
         sort_by=sort_by,
         sort_dir=sort_dir,
         page_offset=offset if not use_keyset else 0,
+        content_types=effective_content_types,
     )
 
     # Multiple arena filter (IN clause) applied post-base when >1 selected.
@@ -1198,7 +1228,7 @@ async def content_records_fragment(
         records.append(ucr_obj)
 
     new_offset = offset + len(records)
-    next_cursor: Optional[str] = None
+    next_cursor: str | None = None
     if len(records) == remaining and new_offset < _BROWSE_CAP:
         if use_keyset:
             last_rec = records[-1]
@@ -1283,6 +1313,7 @@ async def content_records_fragment(
                 project_id=project_id,
                 show_all=show_all,
                 scrape_status=scrape_status_filter,
+                content_types=effective_content_types,
             )
             if total_count > _BROWSE_CAP:
                 count_text = "2,000+ records"
@@ -1307,7 +1338,7 @@ async def content_records_fragment(
 async def get_search_terms_for_run(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    run_id: Optional[str] = Query(default=None, description="Collection run UUID."),
+    run_id: str | None = Query(default=None, description="Collection run UUID."),
 ) -> HTMLResponse:
     """Return HTML ``<option>`` elements for the search-term filter dropdown.
 
@@ -1385,14 +1416,14 @@ async def get_search_terms_for_run(
 async def get_discovered_links(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    query_design_id: Optional[str] = Query(
+    query_design_id: str | None = Query(
         default=None,
         description=(
             "Optional UUID of a query design to scope to. "
             "If omitted, mines all content from all the current user's query designs."
         ),
     ),
-    platform: Optional[str] = Query(
+    platform: str | None = Query(
         default=None,
         description=(
             "Optional platform slug to filter results "
@@ -1452,7 +1483,7 @@ async def get_discovered_links(
     """
     query_design_id = _parse_uuid(query_design_id)  # type: ignore[assignment]
 
-    from issue_observatory.analysis.link_miner import LinkMiner  # noqa: PLC0415
+    from issue_observatory.analysis.link_miner import LinkMiner
 
     miner = LinkMiner()
     links = await miner.mine(
@@ -1520,17 +1551,17 @@ async def export_content_sync(  # type: ignore[misc]
             "One of: actor, term, bipartite."
         ),
     ),
-    arenas: Optional[list[str]] = Query(default=None, description="Multi-value platform filter from checkboxes."),
-    platform: Optional[str] = Query(default=None, description="Filter by platform name."),
-    arena: Optional[str] = Query(default=None, description="Filter by arena name."),
-    query_design_id: Optional[str] = Query(default=None),
-    date_from: Optional[str] = Query(default=None),
-    date_to: Optional[str] = Query(default=None),
-    language: Optional[str] = Query(default=None),
-    run_id: Optional[str] = Query(
+    arenas: list[str] | None = Query(default=None, description="Multi-value platform filter from checkboxes."),
+    platform: str | None = Query(default=None, description="Filter by platform name."),
+    arena: str | None = Query(default=None, description="Filter by arena name."),
+    query_design_id: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    language: str | None = Query(default=None),
+    run_id: str | None = Query(
         default=None, description="Filter by specific collection run UUID."
     ),
-    search_term: Optional[str] = Query(default=None),
+    search_term: str | None = Query(default=None),
     limit: int = Query(
         default=_EXPORT_SYNC_LIMIT,
         ge=1,
@@ -1604,7 +1635,7 @@ async def export_content_sync(  # type: ignore[misc]
 
     # Handle arenas multi-value filter (same logic as content browser)
     arenas_list: list[str] = arenas or []
-    platform_filter: Optional[str] = platform
+    platform_filter: str | None = platform
     if len(arenas_list) == 1:
         platform_filter = arenas_list[0]
 
@@ -1724,14 +1755,14 @@ async def export_content_async(
             "One of: actor, term, bipartite."
         ),
     ),
-    platform: Optional[str] = Query(default=None),
-    arena: Optional[str] = Query(default=None),
-    query_design_id: Optional[str] = Query(default=None),
-    date_from: Optional[str] = Query(default=None),
-    date_to: Optional[str] = Query(default=None),
-    language: Optional[str] = Query(default=None),
-    run_id: Optional[str] = Query(default=None),
-    search_term: Optional[str] = Query(default=None),
+    platform: str | None = Query(default=None),
+    arena: str | None = Query(default=None),
+    query_design_id: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    language: str | None = Query(default=None),
+    run_id: str | None = Query(default=None),
+    search_term: str | None = Query(default=None),
 ) -> dict[str, str]:
     """Dispatch an asynchronous export job for large datasets.
 
@@ -1813,8 +1844,9 @@ async def export_content_async(
     # Write initial pending status to Redis before dispatching the task
     # so that a status poll immediately after this response returns something
     # meaningful rather than a key-not-found.
-    from issue_observatory.config.settings import get_settings
     import redis as redis_lib
+
+    from issue_observatory.config.settings import get_settings
 
     settings = get_settings()
     redis_client = redis_lib.from_url(settings.redis_url, decode_responses=True)
@@ -1880,8 +1912,9 @@ async def get_export_job_status(
         HTTPException 404: If no status entry exists for the given job_id
             (job never started or TTL expired).
     """
-    from issue_observatory.config.settings import get_settings
     import redis as redis_lib
+
+    from issue_observatory.config.settings import get_settings
 
     settings = get_settings()
     redis_client = redis_lib.from_url(settings.redis_url, decode_responses=True)
@@ -1958,7 +1991,7 @@ async def download_export_file(
             ),
         )
 
-    object_key: Optional[str] = job_status.get("object_key")
+    object_key: str | None = job_status.get("object_key")
     if not object_key:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -2075,7 +2108,7 @@ async def get_content_record_html(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    hx_request: Optional[str] = Header(default=None, alias="HX-Request"),
+    hx_request: str | None = Header(default=None, alias="HX-Request"),
 ) -> Response:
     """Return a content record as an HTML detail panel or standalone page.
 
@@ -2215,9 +2248,12 @@ async def fetch_content_for_record(
         )
 
     # Lazy imports for scraper modules
-    from issue_observatory.scraper.http_fetcher import fetch_url as scraper_fetch  # noqa: PLC0415
-    from issue_observatory.scraper.content_extractor import extract_from_html as scraper_extract  # noqa: PLC0415
-    import httpx as _httpx  # noqa: PLC0415
+    import httpx as _httpx
+
+    from issue_observatory.scraper.content_extractor import (
+        extract_from_html as scraper_extract,
+    )
+    from issue_observatory.scraper.http_fetcher import fetch_url as scraper_fetch
 
     # Fetch the page content
     try:
@@ -2274,7 +2310,7 @@ async def fetch_content_for_record(
 
     # Update the record
     metadata["content_fetched"] = True
-    metadata["content_fetched_at"] = datetime.now(tz=timezone.utc).isoformat()
+    metadata["content_fetched_at"] = datetime.now(tz=UTC).isoformat()
 
     # Use raw SQL for partition-pruned update
     update_stmt = text("""

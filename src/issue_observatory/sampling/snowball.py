@@ -23,9 +23,9 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Optional
+from typing import Any
 
-from issue_observatory.sampling.network_expander import NetworkExpander, ActorDict
+from issue_observatory.sampling.network_expander import ActorDict, NetworkExpander
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ class SnowballSampler:
 
     def __init__(
         self,
-        expander: Optional[NetworkExpander] = None,
+        expander: NetworkExpander | None = None,
     ) -> None:
         self._expander = expander or NetworkExpander()
 
@@ -96,7 +96,7 @@ class SnowballSampler:
         seed_actor_ids: list[uuid.UUID],
         platforms: list[str],
         db: Any,
-        credential_pool: Optional[Any] = None,
+        credential_pool: Any | None = None,
         max_depth: int = 2,
         max_actors_per_step: int = 20,
         min_comention_records: int = 2,
@@ -270,7 +270,7 @@ class SnowballSampler:
         self,
         result: SnowballResult,
         db: Any,
-        created_by: Optional[uuid.UUID] = None,
+        created_by: uuid.UUID | None = None,
     ) -> list[uuid.UUID]:
         """Create ``Actor`` and ``ActorPlatformPresence`` records for new discoveries.
 

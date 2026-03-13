@@ -155,7 +155,7 @@ async def list_available_arenas(
     # Arenas that require no credentials at all — always ready.
     _NO_CREDENTIALS_NEEDED: set[str] = {
         "rss_feeds", "gdelt", "ritzau_via", "wikipedia",
-        "common_crawl", "wayback", "url_scraper", "vkontakte",
+        "common_crawl", "wayback", "url_scraper",
     }
     for platform, env_keys in _ENV_CREDENTIAL_MAP.items():
         if platform in platforms_with_credentials:

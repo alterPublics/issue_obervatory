@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import pytest
 
-from issue_observatory.arenas.google_search.collector import GoogleSearchCollector
 from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.google_search.collector import GoogleSearchCollector
 from issue_observatory.core.normalizer import Normalizer
 from tests.factories.content import GoogleSearchResultFactory
 
@@ -148,7 +148,7 @@ class TestGoogleSearchNormalize:
 
         assert result["content_hash"] is not None
         # The hash should match what we'd get from the URL
-        from issue_observatory.core.normalizer import Normalizer  # noqa: PLC0415
+        from issue_observatory.core.normalizer import Normalizer
         expected_norm = Normalizer(pseudonymization_salt=TEST_SALT)
         assert result["content_hash"] == expected_norm.compute_content_hash(
             "https://berlingske.dk/article-no-snippet"

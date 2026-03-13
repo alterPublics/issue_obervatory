@@ -27,13 +27,12 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
-from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.gab.config import (
     GAB_ACCOUNT_LOOKUP_ENDPOINT,
     GAB_ACCOUNT_STATUSES_ENDPOINT,
@@ -46,6 +45,7 @@ from issue_observatory.arenas.gab.config import (
     GAB_SEARCH_ENDPOINT,
     GAB_TIERS,
 )
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.registry import register
 from issue_observatory.config.tiers import TierConfig
 from issue_observatory.core.exceptions import (
@@ -84,6 +84,8 @@ class GabCollector(ArenaCollector):
     platform_name: str = "gab"
     supported_tiers: list[Tier] = [Tier.FREE]
     temporal_mode: TemporalMode = TemporalMode.RECENT
+    supports_actor_collection: bool = True
+    source_list_config_key: str | None = "custom_accounts"
 
     def __init__(
         self,
@@ -173,18 +175,19 @@ class GabCollector(ArenaCollector):
         else:
             effective_terms = list(terms)
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         async with self._build_http_client() as client:
             for term in effective_terms:
-                if len(all_records) >= effective_max:
+                if self._total_emitted >= effective_max:
                     break
-                remaining = effective_max - len(all_records)
+                remaining = effective_max - self._total_emitted
+                count_before = self._total_emitted
 
                 if term.startswith("#"):
                     # Hashtag: try search first, fall back to hashtag timeline.
                     hashtag = term.lstrip("#")
-                    records = await self._search_or_hashtag(
+                    await self._search_or_hashtag(
                         client=client,
                         token=token,
                         cred_id=cred["id"],
@@ -196,7 +199,7 @@ class GabCollector(ArenaCollector):
                     )
                 else:
                     # Plain keyword: use search endpoint.
-                    records = await self._search_statuses(
+                    await self._search_statuses(
                         client=client,
                         token=token,
                         cred_id=cred["id"],
@@ -205,15 +208,16 @@ class GabCollector(ArenaCollector):
                         date_from=date_from_dt,
                         date_to=date_to_dt,
                     )
-                all_records.extend(records)
+                self._record_input_count(term, self._total_emitted - count_before)
+                self._flush()
 
         await self._release_credential(cred)
         logger.info(
             "gab: collected %d posts for %d queries",
-            len(all_records),
+            self._total_emitted,
             len(effective_terms),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     async def collect_by_actors(
         self,
@@ -272,13 +276,13 @@ class GabCollector(ArenaCollector):
                 platform=self.platform_name,
             )
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         async with self._build_http_client() as client:
             for actor_id in actor_ids:
-                if len(all_records) >= effective_max:
+                if self._total_emitted >= effective_max:
                     break
-                remaining = effective_max - len(all_records)
+                remaining = effective_max - self._total_emitted
 
                 # Resolve username to account ID if needed.
                 account_id = await self._resolve_account_id(
@@ -288,7 +292,7 @@ class GabCollector(ArenaCollector):
                     logger.warning("gab: could not resolve account for actor='%s'", actor_id)
                     continue
 
-                records = await self._fetch_account_statuses(
+                await self._fetch_account_statuses(
                     client=client,
                     token=token,
                     cred_id=cred["id"],
@@ -297,15 +301,15 @@ class GabCollector(ArenaCollector):
                     date_from=date_from_dt,
                     date_to=date_to_dt,
                 )
-                all_records.extend(records)
+                self._flush()
 
         await self._release_credential(cred)
         logger.info(
             "gab: collected %d posts for %d actors",
-            len(all_records),
+            self._total_emitted,
             len(actor_ids),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     def get_tier_config(self, tier: Tier) -> TierConfig | None:
         """Return the tier configuration for this arena.
@@ -422,7 +426,7 @@ class GabCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
             ``arena``, ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -585,11 +589,12 @@ class GabCollector(ArenaCollector):
         max_results: int,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> int:
         """Search for statuses matching a keyword query.
 
         Uses offset-based pagination on ``/api/v2/search?type=statuses``.
-        Applies client-side date filtering.
+        Applies client-side date filtering.  Records are emitted via
+        ``self._emit()`` during pagination for incremental persistence.
 
         Args:
             client: Shared HTTP client.
@@ -601,13 +606,13 @@ class GabCollector(ArenaCollector):
             date_to: Client-side upper date filter.
 
         Returns:
-            List of normalized records.
+            Count of emitted records.
         """
-        records: list[dict[str, Any]] = []
+        collected = 0
         offset = 0
 
-        while len(records) < max_results:
-            page_size = min(GAB_MAX_RESULTS_PER_PAGE, max_results - len(records))
+        while collected < max_results:
+            page_size = min(GAB_MAX_RESULTS_PER_PAGE, max_results - collected)
             params: dict[str, Any] = {
                 "q": query,
                 "type": "statuses",
@@ -641,17 +646,18 @@ class GabCollector(ArenaCollector):
                 break
 
             for status in statuses:
-                if len(records) >= max_results:
+                if collected >= max_results:
                     break
                 if not _passes_date_filter(status, date_from, date_to):
                     continue
-                records.append(self.normalize(status))
+                self._emit(self.normalize(status))
+                collected += 1
 
             if len(statuses) < page_size:
                 break  # Last page.
             offset += len(statuses)
 
-        return records
+        return collected
 
     async def _search_or_hashtag(
         self,
@@ -663,7 +669,7 @@ class GabCollector(ArenaCollector):
         max_results: int,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> int:
         """Try search endpoint first, fall back to hashtag timeline for hashtags.
 
         Args:
@@ -677,10 +683,10 @@ class GabCollector(ArenaCollector):
             date_to: Client-side upper date filter.
 
         Returns:
-            List of normalized records.
+            Count of emitted records.
         """
         try:
-            records = await self._search_statuses(
+            count = await self._search_statuses(
                 client=client,
                 token=token,
                 cred_id=cred_id,
@@ -689,8 +695,8 @@ class GabCollector(ArenaCollector):
                 date_from=date_from,
                 date_to=date_to,
             )
-            if records:
-                return records
+            if count:
+                return count
         except ArenaCollectionError:
             pass
 
@@ -717,8 +723,11 @@ class GabCollector(ArenaCollector):
         max_results: int,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> int:
         """Paginate through the hashtag timeline using ``max_id`` cursor.
+
+        Records are emitted via ``self._emit()`` during pagination for
+        incremental persistence.
 
         Args:
             client: Shared HTTP client.
@@ -730,14 +739,14 @@ class GabCollector(ArenaCollector):
             date_to: Client-side upper date filter.
 
         Returns:
-            List of normalized records.
+            Count of emitted records.
         """
         url = GAB_HASHTAG_TIMELINE_ENDPOINT.format(hashtag=hashtag)
-        records: list[dict[str, Any]] = []
+        collected = 0
         max_id: str | None = None
 
-        while len(records) < max_results:
-            page_size = min(GAB_MAX_RESULTS_PER_PAGE, max_results - len(records))
+        while collected < max_results:
+            page_size = min(GAB_MAX_RESULTS_PER_PAGE, max_results - collected)
             params: dict[str, Any] = {"limit": page_size}
             if max_id:
                 params["max_id"] = max_id
@@ -750,7 +759,7 @@ class GabCollector(ArenaCollector):
 
             stop_early = False
             for status in statuses:
-                if len(records) >= max_results:
+                if collected >= max_results:
                     break
                 # Stop pagination if posts are older than date_from.
                 if date_from:
@@ -760,7 +769,8 @@ class GabCollector(ArenaCollector):
                         break
                 if not _passes_date_filter(status, date_from, date_to):
                     continue
-                records.append(self.normalize(status))
+                self._emit(self.normalize(status))
+                collected += 1
 
             if stop_early or len(statuses) < page_size:
                 break
@@ -770,7 +780,7 @@ class GabCollector(ArenaCollector):
             if not max_id:
                 break
 
-        return records
+        return collected
 
     async def _resolve_account_id(
         self,
@@ -819,8 +829,11 @@ class GabCollector(ArenaCollector):
         max_results: int,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> int:
         """Paginate through account statuses using ``max_id`` cursor.
+
+        Records are emitted via ``self._emit()`` during pagination for
+        incremental persistence.
 
         Args:
             client: Shared HTTP client.
@@ -832,14 +845,14 @@ class GabCollector(ArenaCollector):
             date_to: Client-side upper date filter.
 
         Returns:
-            List of normalized records.
+            Count of emitted records.
         """
         url = GAB_ACCOUNT_STATUSES_ENDPOINT.format(account_id=account_id)
-        records: list[dict[str, Any]] = []
+        collected = 0
         max_id: str | None = None
 
-        while len(records) < max_results:
-            page_size = min(GAB_MAX_RESULTS_PER_PAGE, max_results - len(records))
+        while collected < max_results:
+            page_size = min(GAB_MAX_RESULTS_PER_PAGE, max_results - collected)
             params: dict[str, Any] = {
                 "limit": page_size,
                 "exclude_replies": "false",
@@ -856,7 +869,7 @@ class GabCollector(ArenaCollector):
 
             stop_early = False
             for status in statuses:
-                if len(records) >= max_results:
+                if collected >= max_results:
                     break
                 # Posts are in reverse-chronological order; stop if past date_from.
                 if date_from:
@@ -866,7 +879,8 @@ class GabCollector(ArenaCollector):
                         break
                 if not _passes_date_filter(status, date_from, date_to):
                     continue
-                records.append(self.normalize(status))
+                self._emit(self.normalize(status))
+                collected += 1
 
             if stop_early or len(statuses) < page_size:
                 break
@@ -875,7 +889,7 @@ class GabCollector(ArenaCollector):
             if not max_id:
                 break
 
-        return records
+        return collected
 
 
 # ---------------------------------------------------------------------------
@@ -917,7 +931,7 @@ def _parse_datetime(value: str | datetime | None) -> datetime | None:
         return None
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
+            return value.replace(tzinfo=UTC)
         return value
     if isinstance(value, str):
         for fmt in (
@@ -929,7 +943,7 @@ def _parse_datetime(value: str | datetime | None) -> datetime | None:
             try:
                 dt = datetime.strptime(value, fmt)
                 if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
+                    dt = dt.replace(tzinfo=UTC)
                 return dt
             except ValueError:
                 continue

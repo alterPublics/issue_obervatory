@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -36,7 +36,6 @@ from issue_observatory.arenas.youtube._client import (
     search_videos_page,
 )
 from issue_observatory.arenas.youtube.config import (
-    DANISH_PARAMS,
     MAX_RESULTS_PER_SEARCH_PAGE,
     MAX_VIDEO_IDS_PER_BATCH,
     QUOTA_COSTS,
@@ -52,6 +51,7 @@ from issue_observatory.core.exceptions import (
     ArenaRateLimitError,
     NoCredentialAvailableError,
 )
+from issue_observatory.core.language_utils import resolve_youtube_params
 from issue_observatory.core.normalizer import Normalizer
 
 logger = logging.getLogger(__name__)
@@ -98,6 +98,8 @@ class YouTubeCollector(ArenaCollector):
     platform_name: str = "youtube"
     supported_tiers: list[Tier] = [Tier.FREE]
     temporal_mode: TemporalMode = TemporalMode.MIXED
+    supports_actor_collection: bool = True
+    source_list_config_key: str | None = "custom_channels"
 
     def __init__(
         self,
@@ -155,8 +157,12 @@ class YouTubeCollector(ArenaCollector):
             NoCredentialAvailableError: When no API key is available.
         """
         self._validate_tier(tier)
+        self._reset_batch_state()
         tier_config = self.get_tier_config(tier)
         effective_max = max_results if max_results is not None else tier_config.max_results_per_run
+
+        # Resolve locale parameters for this collection run.
+        yt_locale = resolve_youtube_params(language_filter)
 
         cred = await self._acquire_credential()
         published_after = self._to_iso8601(date_from) if date_from else None
@@ -180,44 +186,74 @@ class YouTubeCollector(ArenaCollector):
                 for term in query_strings:
                     if len(all_video_ids) >= effective_max:
                         break
+                    count_before = len(all_video_ids)
                     page_token: str | None = None
                     while len(all_video_ids) < effective_max:
                         remaining = effective_max - len(all_video_ids)
                         await self._throttle_request(cred["id"])
-                        ids, page_token = await search_videos_page(
-                            client=client,
-                            api_key=cred["api_key"],
-                            credential_pool=self.credential_pool,
-                            cred_id=cred["id"],
-                            term=term,
-                            max_results_page=min(MAX_RESULTS_PER_SEARCH_PAGE, remaining),
-                            page_token=page_token,
-                            published_after=published_after,
-                            published_before=published_before,
-                            danish_params=DANISH_PARAMS,
-                        )
+                        try:
+                            ids, page_token = await search_videos_page(
+                                client=client,
+                                api_key=cred["api_key"],
+                                credential_pool=self.credential_pool,
+                                cred_id=cred["id"],
+                                term=term,
+                                max_results_page=min(MAX_RESULTS_PER_SEARCH_PAGE, remaining),
+                                page_token=page_token,
+                                published_after=published_after,
+                                published_before=published_before,
+                                locale_params=yt_locale,
+                            )
+                        except ArenaRateLimitError:
+                            # Quota exhausted — rotate to the next credential.
+                            if self.credential_pool is not None:
+                                await self.credential_pool.release(credential_id=cred["id"])
+                            logger.warning(
+                                "youtube: quota exhausted for cred=%s, rotating",
+                                cred["id"],
+                            )
+                            cred = await self._acquire_credential()
+                            continue
                         for video_id in ids:
                             video_id_to_term[video_id] = term
                         all_video_ids.extend(ids)
                         if not page_token or not ids:
                             break
+                    self._record_input_count(term, len(all_video_ids) - count_before)
 
-                records = await self._enrich_videos(
-                    client=client,
-                    api_key=cred["api_key"],
-                    cred_id=cred["id"],
-                    video_ids=all_video_ids[:effective_max],
-                    video_id_to_term=video_id_to_term,
-                )
+                try:
+                    await self._enrich_videos(
+                        client=client,
+                        api_key=cred["api_key"],
+                        cred_id=cred["id"],
+                        video_ids=all_video_ids[:effective_max],
+                        video_id_to_term=video_id_to_term,
+                    )
+                except ArenaRateLimitError:
+                    if self.credential_pool is not None:
+                        await self.credential_pool.release(credential_id=cred["id"])
+                    logger.warning(
+                        "youtube: quota exhausted during enrichment for cred=%s, rotating",
+                        cred["id"],
+                    )
+                    cred = await self._acquire_credential()
+                    await self._enrich_videos(
+                        client=client,
+                        api_key=cred["api_key"],
+                        cred_id=cred["id"],
+                        video_ids=all_video_ids[:effective_max],
+                        video_id_to_term=video_id_to_term,
+                    )
         finally:
             if self.credential_pool is not None:
                 await self.credential_pool.release(credential_id=cred["id"])
 
+        self._flush()
         logger.info(
-            "youtube: collect_by_terms — queries=%d, records=%d, tier=%s",
-            len(query_strings), len(records), tier.value,
+            "youtube: collect_by_terms — queries=%d, emitted=%d, tier=%s",
+            len(query_strings), self._total_emitted, tier.value,
         )
-        return records
+        return list(self._batch_buffer)
 
     async def collect_by_actors(
         self,
@@ -250,6 +286,7 @@ class YouTubeCollector(ArenaCollector):
             NoCredentialAvailableError: When no API key is available.
         """
         self._validate_tier(tier)
+        self._reset_batch_state()
         tier_config = self.get_tier_config(tier)
         effective_max = max_results if max_results is not None else tier_config.max_results_per_run
 
@@ -261,6 +298,7 @@ class YouTubeCollector(ArenaCollector):
         for channel_id in actor_ids:
             if len(all_video_ids) >= effective_max:
                 break
+            count_before = len(all_video_ids)
             try:
                 rss_ids = await poll_channel_rss(
                     channel_id=channel_id,
@@ -277,25 +315,42 @@ class YouTubeCollector(ArenaCollector):
                 )
                 continue
             all_video_ids.extend(rss_ids)
+            self._record_input_count(channel_id, len(all_video_ids) - count_before)
 
         cred = await self._acquire_credential()
         try:
             async with self._build_http_client() as client:
-                records = await self._enrich_videos(
-                    client=client,
-                    api_key=cred["api_key"],
-                    cred_id=cred["id"],
-                    video_ids=all_video_ids[:effective_max],
-                )
+                try:
+                    await self._enrich_videos(
+                        client=client,
+                        api_key=cred["api_key"],
+                        cred_id=cred["id"],
+                        video_ids=all_video_ids[:effective_max],
+                    )
+                except ArenaRateLimitError:
+                    if self.credential_pool is not None:
+                        await self.credential_pool.release(credential_id=cred["id"])
+                    logger.warning(
+                        "youtube: quota exhausted during actor enrichment for cred=%s, rotating",
+                        cred["id"],
+                    )
+                    cred = await self._acquire_credential()
+                    await self._enrich_videos(
+                        client=client,
+                        api_key=cred["api_key"],
+                        cred_id=cred["id"],
+                        video_ids=all_video_ids[:effective_max],
+                    )
         finally:
             if self.credential_pool is not None:
                 await self.credential_pool.release(credential_id=cred["id"])
 
+        self._flush()
         logger.info(
-            "youtube: collect_by_actors — channels=%d, rss_ids=%d, records=%d, skipped=%d",
-            len(actor_ids), len(all_video_ids), len(records), len(self._skipped_actors),
+            "youtube: collect_by_actors — channels=%d, rss_ids=%d, emitted=%d, skipped=%d",
+            len(actor_ids), len(all_video_ids), self._total_emitted, len(self._skipped_actors),
         )
-        return records
+        return list(self._batch_buffer)
 
     def get_tier_config(self, tier: Tier) -> TierConfig:
         """Return tier configuration for the YouTube arena.
@@ -372,7 +427,7 @@ class YouTubeCollector(ArenaCollector):
         normalized_published_at = self._normalizer._extract_datetime(
             {"published_at": published_at}, ["published_at"]
         )
-        collected_at = datetime.now(timezone.utc).isoformat() + "Z"
+        collected_at = datetime.now(UTC).isoformat() + "Z"
 
         # Extract search term matched if present
         search_term = raw_item.get("_search_term")
@@ -424,7 +479,7 @@ class YouTubeCollector(ArenaCollector):
             Dict with ``status``, ``arena``, ``platform``, ``checked_at``,
             and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -442,7 +497,7 @@ class YouTubeCollector(ArenaCollector):
                 "detail": "No YOUTUBE_FREE_API_KEY credential available.",
             }
         try:
-            from issue_observatory.arenas.youtube._client import (  # noqa: PLC0415
+            from issue_observatory.arenas.youtube._client import (
                 make_api_request,
             )
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -460,7 +515,7 @@ class YouTubeCollector(ArenaCollector):
             return {**base, "status": "degraded", "detail": f"Quota exhausted: {exc}"}
         except (ArenaAuthError, ArenaCollectionError) as exc:
             return {**base, "status": "degraded", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {**base, "status": "down", "detail": f"Unexpected error: {exc}"}
         finally:
             if self.credential_pool is not None and cred is not None:
@@ -511,9 +566,312 @@ class YouTubeCollector(ArenaCollector):
         total_units += math.ceil(total_ids / MAX_VIDEO_IDS_PER_BATCH) * QUOTA_COSTS["videos.list"]
         return total_units
 
+    async def collect_comments(
+        self,
+        post_ids: list[dict[str, Any]],
+        tier: Tier,
+        max_comments_per_post: int = 100,
+        depth: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Collect comments for YouTube videos using ``commentThreads.list``.
+
+        Fetches top-level comment threads for each video via the YouTube Data
+        API v3 ``commentThreads.list`` endpoint (1 quota unit per call).  When
+        ``depth`` is greater than zero, replies nested under each top-level
+        thread are also included.
+
+        Pagination is performed via ``nextPageToken`` until either
+        ``max_comments_per_post`` is reached or the API returns no further
+        pages.  Each comment is normalized into the universal content record
+        schema with ``content_type="comment"``.
+
+        Args:
+            post_ids: List of dicts each containing a ``platform_id`` key
+                whose value is a YouTube video ID (e.g. ``"dQw4w9WgXcQ"``).
+            tier: Operational tier.  Only ``Tier.FREE`` is supported.
+            max_comments_per_post: Maximum comment threads to collect per
+                video.  Defaults to 100.
+            depth: Depth of reply collection.  ``0`` = top-level threads
+                only.  ``1`` = include replies from each thread's
+                ``replies.comments`` list (does not issue additional requests
+                beyond what ``part=snippet,replies`` returns).
+
+        Returns:
+            List of normalized comment record dicts conforming to the
+            ``content_records`` universal schema.
+
+        Raises:
+            ArenaRateLimitError: On HTTP 403 with ``quotaExceeded``.
+            ArenaAuthError: On HTTP 401 or non-quota 403.
+            ArenaCollectionError: On other unrecoverable API errors.
+            NoCredentialAvailableError: When no API key is available.
+        """
+        self._validate_tier(tier)
+        self._reset_batch_state()
+
+        cred = await self._acquire_credential()
+
+        try:
+            async with self._build_http_client() as client:
+                from issue_observatory.arenas.youtube._client import (
+                    make_api_request,
+                )
+
+                for post in post_ids:
+                    video_id: str | None = post.get("platform_id")
+                    if not video_id:
+                        logger.warning(
+                            "youtube: collect_comments — skipping entry missing 'platform_id': %s",
+                            post,
+                        )
+                        continue
+
+                    collected_for_video = 0
+                    page_token: str | None = None
+
+                    while collected_for_video < max_comments_per_post:
+                        remaining = max_comments_per_post - collected_for_video
+                        params: dict[str, Any] = {
+                            "part": "snippet,replies",
+                            "videoId": video_id,
+                            "maxResults": min(100, remaining),
+                            "key": cred["api_key"],
+                        }
+                        if page_token:
+                            params["pageToken"] = page_token
+
+                        await self._throttle_request(cred["id"])
+                        try:
+                            data = await make_api_request(
+                                client=client,
+                                endpoint="commentThreads",
+                                params=params,
+                                credential_pool=self.credential_pool,
+                                cred_id=cred["id"],
+                            )
+                        except ArenaRateLimitError:
+                            if self.credential_pool is not None:
+                                await self.credential_pool.release(
+                                    credential_id=cred["id"]
+                                )
+                            logger.warning(
+                                "youtube: quota exhausted during collect_comments cred=%s, rotating",
+                                cred["id"],
+                            )
+                            cred = await self._acquire_credential()
+                            continue
+                        except ArenaCollectionError as exc:
+                            # 404 = comments disabled or video deleted; skip this video
+                            logger.warning(
+                                "youtube: collect_comments — skipping video %s: %s",
+                                video_id,
+                                exc,
+                            )
+                            break
+
+                        items: list[dict[str, Any]] = data.get("items", [])
+                        page_token = data.get("nextPageToken")
+
+                        for thread in items:
+                            if collected_for_video >= max_comments_per_post:
+                                break
+                            top_snippet = (
+                                thread.get("snippet", {})
+                                .get("topLevelComment", {})
+                                .get("snippet", {})
+                            )
+                            comment_id: str = (
+                                thread.get("snippet", {})
+                                .get("topLevelComment", {})
+                                .get("id", "")
+                            )
+                            author_channel_id: str | None = (
+                                top_snippet.get("authorChannelId", {}).get("value")
+                            )
+                            raw_comment: dict[str, Any] = {
+                                "_comment_type": "top_level",
+                                "id": comment_id,
+                                "videoId": video_id,
+                                "content_type": "comment",
+                                "text": top_snippet.get("textDisplay"),
+                                "author_platform_id": author_channel_id,
+                                "author_display_name": top_snippet.get(
+                                    "authorDisplayName"
+                                ),
+                                "published_at": top_snippet.get("publishedAt"),
+                                "likes_count": self._parse_int(
+                                    top_snippet.get("likeCount")
+                                ),
+                                "parent_post_id": video_id,
+                                "url": (
+                                    f"https://www.youtube.com/watch?v={video_id}"
+                                    f"&lc={comment_id}"
+                                ),
+                            }
+                            try:
+                                self._emit(self._normalize_comment(raw_comment))
+                                collected_for_video += 1
+                            except Exception as exc:
+                                logger.warning(
+                                    "youtube: normalization failed for comment id=%s: %s",
+                                    comment_id,
+                                    exc,
+                                )
+
+                            if depth > 0:
+                                for reply in thread.get("replies", {}).get(
+                                    "comments", []
+                                ):
+                                    if collected_for_video >= max_comments_per_post:
+                                        break
+                                    reply_snippet = reply.get("snippet", {})
+                                    reply_id: str = reply.get("id", "")
+                                    reply_author_channel_id: str | None = (
+                                        reply_snippet.get("authorChannelId", {}).get(
+                                            "value"
+                                        )
+                                    )
+                                    raw_reply: dict[str, Any] = {
+                                        "_comment_type": "reply",
+                                        "id": reply_id,
+                                        "videoId": video_id,
+                                        "content_type": "comment",
+                                        "text": reply_snippet.get("textDisplay"),
+                                        "author_platform_id": reply_author_channel_id,
+                                        "author_display_name": reply_snippet.get(
+                                            "authorDisplayName"
+                                        ),
+                                        "published_at": reply_snippet.get(
+                                            "publishedAt"
+                                        ),
+                                        "likes_count": self._parse_int(
+                                            reply_snippet.get("likeCount")
+                                        ),
+                                        "parent_post_id": video_id,
+                                        "parent_comment_id": comment_id,
+                                        "url": (
+                                            f"https://www.youtube.com/watch?v={video_id}"
+                                            f"&lc={reply_id}"
+                                        ),
+                                    }
+                                    try:
+                                        self._emit(
+                                            self._normalize_comment(raw_reply)
+                                        )
+                                        collected_for_video += 1
+                                    except Exception as exc:
+                                        logger.warning(
+                                            "youtube: normalization failed for reply id=%s: %s",
+                                            reply_id,
+                                            exc,
+                                        )
+
+                        if not page_token or not items:
+                            break
+
+                    # Flush after each video so comments are persisted
+                    # immediately — the coverage check can then skip this
+                    # video on retry.
+                    self._flush()
+
+                    logger.debug(
+                        "youtube: collect_comments video=%s collected=%d",
+                        video_id,
+                        collected_for_video,
+                    )
+        finally:
+            if self.credential_pool is not None:
+                await self.credential_pool.release(credential_id=cred["id"])
+
+        # Final flush for any stragglers.
+        self._flush()
+
+        logger.info(
+            "youtube: collect_comments — videos=%d, total_comments=%d, tier=%s",
+            len(post_ids),
+            self._total_emitted,
+            tier.value,
+        )
+        return list(self._batch_buffer)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _normalize_comment(self, raw: dict[str, Any]) -> dict[str, Any]:
+        """Normalize a raw YouTube comment dict to the universal schema.
+
+        Builds a universal content record from a comment or reply dict
+        produced inside :meth:`collect_comments`.  The ``raw_metadata``
+        field stores the original raw dict for downstream use.
+
+        Args:
+            raw: Raw comment dict with keys such as ``id``, ``text``,
+                ``author_platform_id``, ``published_at``, ``likes_count``,
+                ``parent_post_id``, and ``url``.
+
+        Returns:
+            Dict conforming to the ``content_records`` universal schema with
+            ``content_type="comment"``.
+        """
+        comment_id: str = raw.get("id", "")
+        text: str | None = raw.get("text")
+        author_platform_id: str | None = raw.get("author_platform_id")
+        published_at_raw: str | None = raw.get("published_at")
+
+        content_hash = (
+            self._normalizer.compute_content_hash(text)
+            if text and text.strip()
+            else None
+        )
+        pseudonymized_author_id = (
+            self._normalizer.pseudonymize_author(
+                platform=self.platform_name, platform_user_id=author_platform_id
+            )
+            if author_platform_id
+            else None
+        )
+        normalized_published_at = self._normalizer._extract_datetime(
+            {"published_at": published_at_raw}, ["published_at"]
+        )
+        collected_at = datetime.now(UTC).isoformat() + "Z"
+
+        # Store parent linkage in raw_metadata — content_records has no
+        # parent_post_id column.
+        enriched_raw = {**raw}
+        enriched_raw["parent_post_id"] = raw.get("parent_post_id")
+        if raw.get("parent_comment_id"):
+            enriched_raw["parent_comment_id"] = raw["parent_comment_id"]
+
+        return {
+            "platform": self.platform_name,
+            "arena": self.arena_name,
+            "platform_id": comment_id or None,
+            "content_type": "comment",
+            "text_content": text,
+            "title": None,
+            "url": raw.get("url"),
+            "language": None,
+            "published_at": normalized_published_at,
+            "collected_at": collected_at,
+            "author_platform_id": author_platform_id,
+            "author_display_name": raw.get("author_display_name"),
+            "author_id": None,
+            "pseudonymized_author_id": pseudonymized_author_id,
+            "views_count": None,
+            "likes_count": raw.get("likes_count"),
+            "shares_count": None,
+            "comments_count": None,
+            "engagement_score": None,
+            "collection_run_id": None,
+            "query_design_id": None,
+            "search_terms_matched": [],
+            "collection_tier": "free",
+            "raw_metadata": enriched_raw,
+            "media_urls": [],
+            "content_hash": content_hash,
+        }
+
 
     async def _enrich_videos(
         self,
@@ -522,8 +880,11 @@ class YouTubeCollector(ArenaCollector):
         cred_id: str,
         video_ids: list[str],
         video_id_to_term: dict[str, str] | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> int:
         """Batch-enrich video IDs with full metadata via ``videos.list``.
+
+        Records are emitted incrementally via ``_emit()`` for batch persistence
+        during enrichment.
 
         Args:
             client: Shared HTTP client.
@@ -533,11 +894,11 @@ class YouTubeCollector(ArenaCollector):
             video_id_to_term: Optional mapping from video ID to search term.
 
         Returns:
-            List of normalized content record dicts.
+            Number of records emitted.
         """
         if not video_ids:
-            return []
-        records: list[dict[str, Any]] = []
+            return 0
+        collected = 0
         for i in range(0, len(video_ids), MAX_VIDEO_IDS_PER_BATCH):
             batch = video_ids[i : i + MAX_VIDEO_IDS_PER_BATCH]
             await self._throttle_request(cred_id)
@@ -553,13 +914,14 @@ class YouTubeCollector(ArenaCollector):
                     # Mark item with search term if available
                     if video_id_to_term and item.get("id") in video_id_to_term:
                         item["_search_term"] = video_id_to_term[item["id"]]
-                    records.append(self.normalize(item))
-                except Exception as exc:  # noqa: BLE001
+                    self._emit(self.normalize(item))
+                    collected += 1
+                except Exception as exc:
                     logger.warning(
                         "youtube: normalization failed for video id=%s: %s",
                         item.get("id"), exc,
                     )
-        return records
+        return collected
 
     async def _throttle_request(self, key_suffix: str) -> None:
         """Gate a request through the rate limiter if one is injected.
@@ -631,9 +993,8 @@ class YouTubeCollector(ArenaCollector):
             RFC 3339 string (suitable for ``publishedAfter``/``publishedBefore``).
         """
         if isinstance(value, datetime):
-            from datetime import timezone  # noqa: PLC0415
             if value.tzinfo is None:
-                value = value.replace(tzinfo=timezone.utc)
+                value = value.replace(tzinfo=UTC)
             return value.isoformat().replace("+00:00", "Z")
         s = str(value).strip()
         if s.endswith("+00:00"):
@@ -653,11 +1014,9 @@ class YouTubeCollector(ArenaCollector):
         if value is None:
             return None
         if isinstance(value, datetime):
-            from datetime import timezone  # noqa: PLC0415
             if value.tzinfo is None:
-                return value.replace(tzinfo=timezone.utc)
+                return value.replace(tzinfo=UTC)
             return value
-        from datetime import timezone  # noqa: PLC0415
         for fmt in (
             "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ",
             "%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%d",
@@ -665,7 +1024,7 @@ class YouTubeCollector(ArenaCollector):
             try:
                 dt = datetime.strptime(str(value), fmt)
                 if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
+                    dt = dt.replace(tzinfo=UTC)
                 return dt
             except ValueError:
                 continue

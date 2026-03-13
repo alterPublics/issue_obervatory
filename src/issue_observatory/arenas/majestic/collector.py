@@ -32,14 +32,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
-from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.majestic.config import (
     CMD_GET_BACKLINK_DATA,
     CMD_GET_INDEX_ITEM_INFO,
@@ -174,7 +173,7 @@ class MajesticCollector(ArenaCollector):
         domains = [_extract_domain(term) for term in effective_terms]
         domains = [d for d in domains if d][:effective_max]
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         try:
             async with self._build_http_client() as client:
@@ -192,19 +191,26 @@ class MajesticCollector(ArenaCollector):
                     items = _extract_index_items(raw_response)
                     for item in items:
                         item["_record_type"] = "domain_metrics"
-                        all_records.append(self.normalize(item))
+                        self._emit(self.normalize(item))
+                    self._flush()
+                # Record per-term coverage: each valid domain produces exactly 1 record.
+                for term in effective_terms:
+                    domain = _extract_domain(term)
+                    if domain and domain in domains:
+                        self._record_input_count(term, 1)
         finally:
             if self.credential_pool is not None:
                 await self.credential_pool.release(
                     credential_id=credential_id, task_id=None
                 )
 
+        self._flush()
         logger.info(
             "majestic: collect_by_terms — %d domain_metrics records for %d domains",
-            len(all_records),
+            self._total_emitted,
             len(domains),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     async def collect_by_actors(
         self,
@@ -262,12 +268,12 @@ class MajesticCollector(ArenaCollector):
         date_from_str = _format_date(date_from)
         date_to_str = _format_date(date_to)
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         try:
             async with self._build_http_client() as client:
                 for domain in actor_ids:
-                    if len(all_records) >= effective_max:
+                    if self._total_emitted >= effective_max:
                         break
 
                     # 1. Domain metrics
@@ -281,13 +287,13 @@ class MajesticCollector(ArenaCollector):
                     )
                     for item in _extract_index_items(metrics_response):
                         item["_record_type"] = "domain_metrics"
-                        all_records.append(self.normalize(item))
+                        self._emit(self.normalize(item))
 
-                    if len(all_records) >= effective_max:
+                    if self._total_emitted >= effective_max:
                         break
 
                     # 2. Individual backlinks
-                    remaining = effective_max - len(all_records)
+                    remaining = effective_max - self._total_emitted
                     backlink_count = min(MAJESTIC_MAX_BACKLINKS_PER_DOMAIN, remaining)
                     await self._rate_limit_wait(credential_id)
                     backlinks_response = await self._call_majestic(
@@ -305,7 +311,8 @@ class MajesticCollector(ArenaCollector):
                     for backlink in _extract_backlinks(backlinks_response, domain):
                         backlink["_record_type"] = "backlink"
                         backlink["_target_domain"] = domain
-                        all_records.append(self.normalize(backlink))
+                        self._emit(self.normalize(backlink))
+                    self._flush()
 
         finally:
             if self.credential_pool is not None:
@@ -313,12 +320,13 @@ class MajesticCollector(ArenaCollector):
                     credential_id=credential_id, task_id=None
                 )
 
+        self._flush()
         logger.info(
             "majestic: collect_by_actors — %d records for %d domains",
-            len(all_records),
+            self._total_emitted,
             len(actor_ids),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     def get_tier_config(self, tier: Tier) -> TierConfig:
         """Return tier configuration for the Majestic arena.
@@ -382,7 +390,7 @@ class MajesticCollector(ArenaCollector):
             ``arena``, ``platform``, ``checked_at``, and optionally
             ``trust_flow``, ``ref_domains``, and ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -395,7 +403,7 @@ class MajesticCollector(ArenaCollector):
         try:
             credential = await self._acquire_credential()
             credential_id = credential.get("id", "unknown")
-        except (NoCredentialAvailableError, Exception) as exc:  # noqa: BLE001
+        except (NoCredentialAvailableError, Exception) as exc:
             return {**base, "status": "down", "detail": f"No credential available: {exc}"}
 
         try:
@@ -446,7 +454,7 @@ class MajesticCollector(ArenaCollector):
             return {**base, "status": "down", "detail": str(exc)}
         except httpx.RequestError as exc:
             return {**base, "status": "down", "detail": f"Connection error: {exc}"}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {**base, "status": "down", "detail": f"Unexpected error: {exc}"}
         finally:
             if self.credential_pool is not None and credential is not None:
@@ -471,7 +479,7 @@ class MajesticCollector(ArenaCollector):
             NoCredentialAvailableError: If no credential is available.
         """
         if self.credential_pool is None:
-            import os  # noqa: PLC0415
+            import os
 
             api_key = os.environ.get("MAJESTIC_PREMIUM_API_KEY")
             if not api_key:
@@ -527,7 +535,7 @@ class MajesticCollector(ArenaCollector):
                     timeout=MAJESTIC_RATE_LIMIT_TIMEOUT,
                 )
                 return
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "majestic: rate_limiter.wait_for_slot failed (%s) — "
                     "falling back to sleep(1.0)",
@@ -616,7 +624,7 @@ class MajesticCollector(ArenaCollector):
 
         try:
             data: dict[str, Any] = response.json()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ArenaCollectionError(
                 f"majestic: JSON parse error (HTTP {response.status_code}): {exc}",
                 arena=self.arena_name,
@@ -686,11 +694,11 @@ class MajesticCollector(ArenaCollector):
             Dict conforming to the ``content_records`` universal schema.
         """
         domain: str = raw_item.get("Item", "")
-        collected_at_str = datetime.now(tz=timezone.utc).isoformat()
-        date_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+        collected_at_str = datetime.now(tz=UTC).isoformat()
+        date_str = datetime.now(tz=UTC).strftime("%Y-%m-%d")
 
         platform_id = hashlib.sha256(
-            f"{domain}_{date_str}".encode("utf-8")
+            f"{domain}_{date_str}".encode()
         ).hexdigest()
 
         trust_flow = raw_item.get("TrustFlow")
@@ -720,7 +728,7 @@ class MajesticCollector(ArenaCollector):
         url = f"https://{domain}" if domain and not domain.startswith("http") else domain
 
         content_hash = hashlib.sha256(
-            f"{domain}_{date_str}".encode("utf-8")
+            f"{domain}_{date_str}".encode()
         ).hexdigest()
 
         return {
@@ -769,7 +777,7 @@ class MajesticCollector(ArenaCollector):
         first_indexed_date: str | None = raw_item.get("FirstIndexedDate") or None
 
         platform_id = hashlib.sha256(
-            f"{source_url}{target_url}".encode("utf-8")
+            f"{source_url}{target_url}".encode()
         ).hexdigest()
 
         content_hash = platform_id  # Same key — dedup on link pair
@@ -785,7 +793,7 @@ class MajesticCollector(ArenaCollector):
         # Extract linking domain as proxy "author"
         linking_domain: str = _extract_domain(source_url) or source_url
 
-        collected_at_str = datetime.now(tz=timezone.utc).isoformat()
+        collected_at_str = datetime.now(tz=UTC).isoformat()
 
         raw_metadata: dict[str, Any] = {
             "SourceURL": source_url,
@@ -895,7 +903,7 @@ def _extract_domain(term: str) -> str:
             if netloc.startswith("www."):
                 netloc = netloc[4:]
             return netloc
-        except Exception:  # noqa: BLE001
+        except Exception:
             return term
     return term.lower().strip()
 

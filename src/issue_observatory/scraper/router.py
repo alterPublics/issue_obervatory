@@ -20,7 +20,8 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from typing import Annotated, AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
+from typing import Annotated
 
 import structlog
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
@@ -166,7 +167,7 @@ async def create_scraping_job(
     await db.refresh(job)
 
     # Dispatch Celery task
-    from issue_observatory.scraper.tasks import scrape_urls_task  # noqa: PLC0415
+    from issue_observatory.scraper.tasks import scrape_urls_task
 
     scrape_urls_task.apply_async(
         kwargs={"job_id": str(job.id)},
@@ -188,15 +189,15 @@ async def create_scraping_job_form(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     source_type: Annotated[str, Form()],
-    source_collection_run_id: Annotated[Optional[str], Form()] = None,
-    source_urls: Annotated[Optional[str], Form()] = None,
-    query_design_id: Annotated[Optional[str], Form()] = None,
+    source_collection_run_id: Annotated[str | None, Form()] = None,
+    source_urls: Annotated[str | None, Form()] = None,
+    query_design_id: Annotated[str | None, Form()] = None,
     delay_min: Annotated[float, Form()] = 2.0,
     delay_max: Annotated[float, Form()] = 5.0,
     timeout_seconds: Annotated[int, Form()] = 30,
-    respect_robots_txt: Annotated[Optional[str], Form()] = None,
-    use_playwright_fallback: Annotated[Optional[str], Form()] = None,
-    max_retries: Annotated[Optional[int], Form()] = None,
+    respect_robots_txt: Annotated[str | None, Form()] = None,
+    use_playwright_fallback: Annotated[str | None, Form()] = None,
+    max_retries: Annotated[int | None, Form()] = None,
 ) -> HTMLResponse:
     """Create a scraping job from a browser form submission.
 
@@ -229,7 +230,7 @@ async def create_scraping_job_form(
         HTTPException 422: If source parameters are inconsistent or invalid UUIDs.
     """
     # Parse UUIDs
-    parsed_collection_run_id: Optional[uuid.UUID] = None
+    parsed_collection_run_id: uuid.UUID | None = None
     if source_collection_run_id:
         try:
             parsed_collection_run_id = uuid.UUID(source_collection_run_id)
@@ -239,7 +240,7 @@ async def create_scraping_job_form(
                 detail="Invalid source_collection_run_id format",
             ) from exc
 
-    parsed_query_design_id: Optional[uuid.UUID] = None
+    parsed_query_design_id: uuid.UUID | None = None
     if query_design_id:
         try:
             parsed_query_design_id = uuid.UUID(query_design_id)
@@ -250,7 +251,7 @@ async def create_scraping_job_form(
             ) from exc
 
     # Parse source URLs from textarea (newline-separated)
-    parsed_urls: Optional[list[str]] = None
+    parsed_urls: list[str] | None = None
     if source_urls:
         parsed_urls = [
             line.strip()
@@ -299,7 +300,7 @@ async def list_scraping_jobs(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
     pagination: Annotated[PaginationParams, Depends(get_pagination)],
-    status_filter: Optional[str] = None,
+    status_filter: str | None = None,
 ):
     """List scraping jobs created by the current user.
 
@@ -424,7 +425,7 @@ async def cancel_scraping_job(
         )
 
     # Dispatch cancel task (updates DB status to 'cancelled' asynchronously)
-    from issue_observatory.scraper.tasks import cancel_scraping_job_task  # noqa: PLC0415
+    from issue_observatory.scraper.tasks import cancel_scraping_job_task
 
     cancel_scraping_job_task.apply_async(kwargs={"job_id": str(job_id)})
 

@@ -32,7 +32,7 @@ The app access token (Client Credentials grant) is obtained on demand.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -177,34 +177,36 @@ class TwitchCollector(ArenaCollector):
         creds = await self._acquire_credentials()
         app_token = await self._get_app_token(creds)
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
         language_set = set(language_filter) if language_filter else None
 
         async with self._build_http_client(creds["client_id"], app_token) as client:
             for term in terms:
-                if len(all_records) >= effective_max:
+                if self._total_emitted >= effective_max:
                     break
 
                 channels = await self._search_channels(
                     client=client,
                     query=term,
-                    max_count=effective_max - len(all_records),
+                    max_count=effective_max - self._total_emitted,
                 )
 
                 for ch in channels:
                     if language_set and ch.get("broadcaster_language") not in language_set:
                         continue
 
-                    record = self.normalize(ch)
-                    all_records.append(record)
+                    self._emit(self.normalize(ch))
 
-                    if len(all_records) >= effective_max:
+                    if self._total_emitted >= effective_max:
                         break
 
+                self._flush()
+
+        self._flush()
         logger.info(
-            "twitch: collect_by_terms complete — channels=%d", len(all_records)
+            "twitch: collect_by_terms complete — channels=%d", self._total_emitted
         )
-        return all_records
+        return list(self._batch_buffer)
 
     async def collect_by_actors(
         self,
@@ -255,18 +257,18 @@ class TwitchCollector(ArenaCollector):
         creds = await self._acquire_credentials()
         app_token = await self._get_app_token(creds)
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         async with self._build_http_client(creds["client_id"], app_token) as client:
             for actor_id in actor_ids:
-                if len(all_records) >= effective_max:
+                if self._total_emitted >= effective_max:
                     break
 
                 # Search by exact broadcaster login name
                 channels = await self._search_channels(
                     client=client,
                     query=actor_id,
-                    max_count=effective_max - len(all_records),
+                    max_count=effective_max - self._total_emitted,
                 )
 
                 # Filter to exact login match where possible
@@ -280,16 +282,18 @@ class TwitchCollector(ArenaCollector):
                     matched = channels
 
                 for ch in matched:
-                    record = self.normalize(ch)
-                    all_records.append(record)
+                    self._emit(self.normalize(ch))
 
-                    if len(all_records) >= effective_max:
+                    if self._total_emitted >= effective_max:
                         break
 
+                self._flush()
+
+        self._flush()
         logger.info(
-            "twitch: collect_by_actors complete — channels=%d", len(all_records)
+            "twitch: collect_by_actors complete — channels=%d", self._total_emitted
         )
-        return all_records
+        return list(self._batch_buffer)
 
     def get_tier_config(self, tier: Tier) -> TierConfig:
         """Return tier configuration for the Twitch arena.
@@ -382,7 +386,7 @@ class TwitchCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"down"``), ``arena``,
             ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -432,7 +436,7 @@ class TwitchCollector(ArenaCollector):
             }
         except httpx.RequestError as exc:
             return {**base, "status": "down", "detail": f"Connection error: {exc}"}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {**base, "status": "down", "detail": f"Unexpected error: {exc}"}
 
     # ------------------------------------------------------------------

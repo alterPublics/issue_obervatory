@@ -22,12 +22,12 @@ from typing import Any
 
 import httpx
 
+from issue_observatory.arenas.ai_chat_search._openrouter import chat_completion
 from issue_observatory.arenas.ai_chat_search.config import (
     EXPANSION_MODEL,
+    EXPANSION_PROMPTS,
     EXPANSION_SYSTEM_PROMPT_TEMPLATE,
-    OPENROUTER_RATE_LIMITER_KEY,
 )
-from issue_observatory.arenas.ai_chat_search._openrouter import chat_completion
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +42,18 @@ async def expand_term(
     n_phrasings: int,
     api_key: str,
     rate_limiter: Any = None,
+    model_override: str | None = None,
+    language: str = "da",
 ) -> list[str]:
-    """Generate N realistic Danish phrasings from a search term.
+    """Generate N realistic phrasings from a search term.
 
-    Calls the ``google/gemma-3-27b-it:free`` model on OpenRouter to expand a
-    short search term (e.g. ``"CO2 afgift"``) into ``n_phrasings`` natural-
-    language questions that a Danish user might ask an AI chatbot.
+    Calls an LLM on OpenRouter to expand a short search term (e.g.
+    ``"CO2 afgift"``) into ``n_phrasings`` natural-language questions that a
+    user might ask an AI chatbot in the specified language.
+
+    By default uses ``google/gemma-3-27b-it:free`` (zero cost), but callers
+    should pass ``model_override`` with the tier's chat model to avoid
+    upstream rate limits on the free model.
 
     Response parsing:
     1. Extract the text content from ``choices[0].message.content``.
@@ -64,9 +70,13 @@ async def expand_term(
         n_phrasings: Number of phrasings to generate and return.
         api_key: OpenRouter API key.
         rate_limiter: Optional shared Redis-backed RateLimiter.
+        model_override: Model to use instead of the default free model.
+            Pass the tier's chat model for reliable operation.
+        language: ISO 639-1 language code for the expansion prompt.
+            Defaults to ``"da"`` (Danish).
 
     Returns:
-        List of up to ``n_phrasings`` cleaned Danish phrasing strings.
+        List of up to ``n_phrasings`` cleaned phrasing strings.
         May return fewer if the model produces fewer valid lines.
 
     Raises:
@@ -74,11 +84,13 @@ async def expand_term(
         ArenaAuthError: On HTTP 401/403 from OpenRouter.
         ArenaCollectionError: On other API errors or network failures.
     """
-    system_prompt = EXPANSION_SYSTEM_PROMPT_TEMPLATE.replace("{N}", str(n_phrasings))
+    expansion_model = model_override or EXPANSION_MODEL
+    prompt_template = EXPANSION_PROMPTS.get(language, EXPANSION_SYSTEM_PROMPT_TEMPLATE)
+    system_prompt = prompt_template.replace("{N}", str(n_phrasings))
 
     response = await chat_completion(
         client=client,
-        model=EXPANSION_MODEL,
+        model=expansion_model,
         system_prompt=system_prompt,
         user_message=term,
         api_key=api_key,

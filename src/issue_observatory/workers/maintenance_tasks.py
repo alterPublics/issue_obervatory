@@ -16,8 +16,6 @@ Owned by the Core Application Engineer (engagement refresh) and DB Engineer (ded
 
 from __future__ import annotations
 
-import logging
-import uuid
 from typing import Any
 
 import structlog
@@ -158,7 +156,7 @@ def _run_dedup_sync(sync_dsn: str, run_id: str) -> dict[str, Any]:
 
 @celery_app.task(name="deduplicate_run", bind=True)  # type: ignore[misc]
 def deduplicate_run(
-    self: Any,  # noqa: ANN401
+    self: Any,
     run_id: str,
 ) -> dict[str, Any]:
     """Run a full cross-arena near-duplicate detection pass for a collection run.
@@ -207,7 +205,7 @@ def deduplicate_run(
 
 @celery_app.task(name="refresh_engagement_metrics", bind=True)  # type: ignore[misc]
 def refresh_engagement_metrics(
-    self: Any,  # noqa: ANN401
+    self: Any,
     run_id: str,
 ) -> dict[str, Any]:
     """Re-fetch engagement metrics for content records in a collection run.
@@ -250,7 +248,7 @@ def refresh_engagement_metrics(
         raise
 
 
-def _refresh_engagement_sync(sync_dsn: str, run_id: str, settings: Any) -> dict[str, Any]:  # noqa: ANN401
+def _refresh_engagement_sync(sync_dsn: str, run_id: str, settings: Any) -> dict[str, Any]:
     """Execute engagement refresh inside a synchronous psycopg2 connection.
 
     Args:

@@ -20,7 +20,6 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -118,23 +117,23 @@ class SearchTermCreate(BaseModel):
         default="keyword",
         description="Interpretation type: keyword, phrase, hashtag, url_pattern.",
     )
-    group_id: Optional[uuid.UUID] = Field(
+    group_id: uuid.UUID | None = Field(
         default=None,
         description="UUID grouping this term with others in the same named group.",
     )
-    group_label: Optional[str] = Field(
+    group_label: str | None = Field(
         default=None,
         max_length=200,
         description="Display name for the group (e.g. 'Primary terms').",
     )
-    target_arenas: Optional[list[str]] = Field(
+    target_arenas: list[str] | None = Field(
         default=None,
         description=(
             "Optional list of arena platform_names to which this term applies. "
             "NULL or empty list means all enabled arenas."
         ),
     )
-    translations: Optional[dict[str, str]] = Field(
+    translations: dict[str, str] | None = Field(
         default=None,
         description=(
             "Optional dict mapping ISO 639-1 language codes to translated terms. "
@@ -162,8 +161,8 @@ class SearchTermRead(SearchTermCreate):
     query_design_id: uuid.UUID
     is_active: bool
     added_at: datetime
-    parent_term_id: Optional[uuid.UUID] = None
-    override_arena: Optional[str] = None
+    parent_term_id: uuid.UUID | None = None
+    override_arena: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -184,7 +183,7 @@ class QueryDesignCreate(BaseModel):
     """
 
     name: str = Field(..., min_length=1, max_length=200)
-    description: Optional[str] = None
+    description: str | None = None
     visibility: str = Field(default="private", pattern="^(private|team|public)$")
     default_tier: str = Field(default="free", pattern="^(free|medium|premium)$")
     language: str = Field(
@@ -239,7 +238,7 @@ class QueryDesignRead(BaseModel):
     id: uuid.UUID
     owner_id: uuid.UUID
     name: str
-    description: Optional[str]
+    description: str | None
     visibility: str
     created_at: datetime
     updated_at: datetime
@@ -268,13 +267,13 @@ class QueryDesignUpdate(BaseModel):
         is_active: Set to ``false`` to soft-delete.
     """
 
-    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    description: Optional[str] = None
-    visibility: Optional[str] = Field(default=None, pattern="^(private|team|public)$")
-    default_tier: Optional[str] = Field(
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+    visibility: str | None = Field(default=None, pattern="^(private|team|public)$")
+    default_tier: str | None = Field(
         default=None, pattern="^(free|medium|premium)$"
     )
-    language: Optional[str] = Field(
+    language: str | None = Field(
         default=None,
         max_length=10,
         description=(
@@ -282,7 +281,7 @@ class QueryDesignUpdate(BaseModel):
             "Limited to 10 characters to match the database column size."
         ),
     )
-    is_active: Optional[bool] = None
+    is_active: bool | None = None
 
     @field_validator("language")
     @classmethod

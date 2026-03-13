@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -160,7 +160,7 @@ class RitzauViaCollector(ArenaCollector):
         else:
             effective_terms = list(terms)
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         # Build a flat list of all individual search terms for client-side filtering.
         # This ensures we match ANY term from the query design, not just the API's
@@ -174,9 +174,9 @@ class RitzauViaCollector(ArenaCollector):
 
         async with self._build_http_client() as client:
             for term in effective_terms:
-                if len(all_records) >= effective_max:
+                if self._total_emitted >= effective_max:
                     break
-                remaining = effective_max - len(all_records)
+                remaining = effective_max - self._total_emitted
                 params: dict[str, Any] = {
                     "search": term,
                     "language": lang_code,
@@ -193,14 +193,16 @@ class RitzauViaCollector(ArenaCollector):
                     max_results=remaining,
                     search_terms=all_search_terms,
                 )
-                all_records.extend(records)
+                self._emit_many(records)
+                self._flush()
 
+        self._flush()
         logger.info(
             "ritzau_via: collected %d press releases for %d queries",
-            len(all_records),
+            self._total_emitted,
             len(effective_terms),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     async def collect_by_actors(
         self,
@@ -248,13 +250,13 @@ class RitzauViaCollector(ArenaCollector):
         # Default language filter for actor-based collection (Danish).
         self._language_filter = {RITZAU_DEFAULT_LANGUAGE}
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         async with self._build_http_client() as client:
             for publisher_id in actor_ids:
-                if len(all_records) >= effective_max:
+                if self._total_emitted >= effective_max:
                     break
-                remaining = effective_max - len(all_records)
+                remaining = effective_max - self._total_emitted
                 params: dict[str, Any] = {
                     "publisherId": publisher_id,
                     "language": RITZAU_DEFAULT_LANGUAGE,
@@ -271,14 +273,16 @@ class RitzauViaCollector(ArenaCollector):
                     max_results=remaining,
                     search_terms=None,  # No filtering for actor-based collection.
                 )
-                all_records.extend(records)
+                self._emit_many(records)
+                self._flush()
 
+        self._flush()
         logger.info(
             "ritzau_via: collected %d press releases for %d publishers",
-            len(all_records),
+            self._total_emitted,
             len(actor_ids),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     def get_tier_config(self, tier: Tier) -> TierConfig | None:
         """Return the tier configuration for this arena.
@@ -380,7 +384,7 @@ class RitzauViaCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
             ``arena``, ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -635,6 +639,11 @@ def _strip_html(html: str) -> str:
 def _to_date_str(value: datetime | str | None) -> str | None:
     """Convert a datetime or string to an ISO 8601 date string (YYYY-MM-DD).
 
+    Parses the full ISO 8601 string (including timezone) and converts to
+    Danish local time before extracting the date, so that
+    ``"2026-03-10T23:00:00+00:00"`` (CET midnight) becomes ``"2026-03-11"``
+    rather than ``"2026-03-10"``.
+
     Args:
         value: Datetime object, ISO 8601 string, or None.
 
@@ -644,8 +653,20 @@ def _to_date_str(value: datetime | str | None) -> str | None:
     if value is None:
         return None
     if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            from zoneinfo import ZoneInfo
+
+            value = value.astimezone(ZoneInfo("Europe/Copenhagen"))
         return value.strftime("%Y-%m-%d")
+    if isinstance(value, str) and len(value) > 10:
+        try:
+            dt = datetime.fromisoformat(value)
+            from zoneinfo import ZoneInfo
+
+            dt = dt.astimezone(ZoneInfo("Europe/Copenhagen"))
+            return dt.strftime("%Y-%m-%d")
+        except (ValueError, KeyError):
+            return value.split("T")[0] if "T" in value else value
     if isinstance(value, str):
-        # Return as-is if already looks like a date.
         return value.split("T")[0] if "T" in value else value
     return None

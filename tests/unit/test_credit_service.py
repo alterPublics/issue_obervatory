@@ -11,13 +11,12 @@ live in tests/integration/test_credit_service_integration.py.
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from issue_observatory.core.credit_service import CreditService
 from issue_observatory.core.exceptions import InsufficientCreditError
-
 
 # ---------------------------------------------------------------------------
 # Mock session factory

@@ -16,8 +16,6 @@ import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -31,9 +29,9 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.rss_feeds.collector import RSSFeedsCollector  # noqa: E402
-from issue_observatory.arenas.rss_feeds.config import HEALTH_CHECK_FEED_URL  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.rss_feeds.collector import RSSFeedsCollector
+from issue_observatory.arenas.rss_feeds.config import HEALTH_CHECK_FEED_URL
 
 # ---------------------------------------------------------------------------
 # Fixture paths
@@ -54,7 +52,6 @@ def _load_dr_feed_xml() -> str:
 
 def _time_struct_from_epoch(epoch: float):
     """Convert a Unix epoch to a time.struct_time in UTC."""
-    import time
     return time.gmtime(int(epoch))
 
 

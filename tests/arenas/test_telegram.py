@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -40,14 +40,14 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.telegram.collector import (  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.telegram.collector import (
     TelegramCollector,
-    _message_to_dict,
     _build_channel_list,
+    _message_to_dict,
     _parse_datetime,
 )
-from issue_observatory.core.exceptions import (  # noqa: E402
+from issue_observatory.core.exceptions import (
     ArenaCollectionError,
     ArenaRateLimitError,
     NoCredentialAvailableError,
@@ -101,7 +101,7 @@ def _make_message(
     msg = MagicMock()
     msg.id = msg_id
     msg.message = text
-    msg.date = date or datetime(2026, 2, 15, 10, 0, 0, tzinfo=timezone.utc)
+    msg.date = date or datetime(2026, 2, 15, 10, 0, 0, tzinfo=UTC)
     msg.views = views
     msg.forwards = forwards
     msg.fwd_from = fwd_from
@@ -490,7 +490,7 @@ class TestParseDatetime:
         naive = datetime(2026, 2, 15, 10, 0, 0)
         result = _parse_datetime(naive)
         assert result is not None
-        assert result.tzinfo == timezone.utc
+        assert result.tzinfo == UTC
 
 
 # ---------------------------------------------------------------------------

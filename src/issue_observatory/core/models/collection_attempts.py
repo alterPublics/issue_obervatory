@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import TIMESTAMP, UUID
@@ -71,12 +70,12 @@ class CollectionAttempt(Base):
         TIMESTAMP(timezone=True),
         nullable=False,
     )
-    records_returned: Mapped[Optional[int]] = mapped_column(
+    records_returned: Mapped[int | None] = mapped_column(
         sa.Integer,
         nullable=True,
         comment="Number of records returned by the API. NULL if the attempt failed.",
     )
-    collection_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    collection_run_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("collection_runs.id", ondelete="CASCADE"),
         nullable=True,
@@ -85,7 +84,7 @@ class CollectionAttempt(Base):
             "fallback when data exists but no recent attempt metadata was found."
         ),
     )
-    query_design_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    query_design_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("query_designs.id", ondelete="SET NULL"),
         nullable=True,

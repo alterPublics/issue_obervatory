@@ -211,6 +211,15 @@ async def create_credential(
         if value and value.strip():
             payload[field] = value.strip()
 
+    # Reject empty payloads for platforms that require credentials.
+    if not payload and platform not in _NO_CREDENTIAL_PLATFORMS:
+        return HTMLResponse(
+            '<div class="text-red-600 text-sm py-2">'
+            "No credential values provided. Please fill in the required fields."
+            "</div>",
+            status_code=422,
+        )
+
     # Encrypt the credential payload with Fernet.
     if payload:
         fernet = _get_fernet()

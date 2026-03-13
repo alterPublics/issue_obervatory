@@ -48,10 +48,8 @@ import logging
 import os
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-
-from issue_observatory.core.exceptions import NoCredentialAvailableError
 
 logger = logging.getLogger(__name__)
 
@@ -139,10 +137,10 @@ def _get_fernet() -> Any:
         ImportError: If the ``cryptography`` package is not installed.
         ValueError: If ``CREDENTIAL_ENCRYPTION_KEY`` is not set or invalid.
     """
-    from cryptography.fernet import Fernet  # noqa: PLC0415
+    from cryptography.fernet import Fernet
 
     try:
-        from issue_observatory.config.settings import get_settings  # noqa: PLC0415
+        from issue_observatory.config.settings import get_settings
 
         settings = get_settings()
         key = settings.credential_encryption_key
@@ -237,12 +235,12 @@ class CredentialPool:
         """
         if self._redis is not None:
             return self._redis
-        import redis.asyncio as aioredis  # noqa: PLC0415
+        import redis.asyncio as aioredis
 
         url = self._redis_url
         if url is None:
             try:
-                from issue_observatory.config.settings import get_settings  # noqa: PLC0415
+                from issue_observatory.config.settings import get_settings
 
                 url = get_settings().redis_url
             except Exception:
@@ -324,10 +322,10 @@ class CredentialPool:
         Returns:
             Integer seconds.
         """
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         # Advance to next day's midnight
-        from datetime import timedelta  # noqa: PLC0415
+        from datetime import timedelta
 
         midnight = midnight + timedelta(days=1)
         return max(1, int((midnight - now).total_seconds()))
@@ -339,10 +337,10 @@ class CredentialPool:
         Returns:
             Integer seconds.
         """
-        import calendar  # noqa: PLC0415
-        from datetime import timedelta  # noqa: PLC0415
+        import calendar
+        from datetime import timedelta
 
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         # Last day of current month
         last_day = calendar.monthrange(now.year, now.month)[1]
         month_end = now.replace(
@@ -368,10 +366,10 @@ class CredentialPool:
             ORM instances sorted by ``last_used_at`` nulls first (LRU).
         """
         try:
-            from sqlalchemy import select  # noqa: PLC0415
+            from sqlalchemy import select
 
-            from issue_observatory.core.database import AsyncSessionLocal  # noqa: PLC0415
-            from issue_observatory.core.models.credentials import ApiCredential  # noqa: PLC0415
+            from issue_observatory.core.database import AsyncSessionLocal
+            from issue_observatory.core.models.credentials import ApiCredential
 
             async with AsyncSessionLocal() as db:
                 result = await db.execute(
@@ -408,16 +406,16 @@ class CredentialPool:
             credential_id: UUID of the credential to update.
         """
         try:
-            from sqlalchemy import update  # noqa: PLC0415
+            from sqlalchemy import update
 
-            from issue_observatory.core.database import AsyncSessionLocal  # noqa: PLC0415
-            from issue_observatory.core.models.credentials import ApiCredential  # noqa: PLC0415
+            from issue_observatory.core.database import AsyncSessionLocal
+            from issue_observatory.core.models.credentials import ApiCredential
 
             async with AsyncSessionLocal() as db:
                 await db.execute(
                     update(ApiCredential)
                     .where(ApiCredential.id == credential_id)
-                    .values(last_used_at=datetime.now(tz=timezone.utc))
+                    .values(last_used_at=datetime.now(tz=UTC))
                 )
                 await db.commit()
         except Exception:
@@ -433,10 +431,10 @@ class CredentialPool:
             error_count: New error count value.
         """
         try:
-            from sqlalchemy import update  # noqa: PLC0415
+            from sqlalchemy import update
 
-            from issue_observatory.core.database import AsyncSessionLocal  # noqa: PLC0415
-            from issue_observatory.core.models.credentials import ApiCredential  # noqa: PLC0415
+            from issue_observatory.core.database import AsyncSessionLocal
+            from issue_observatory.core.models.credentials import ApiCredential
 
             async with AsyncSessionLocal() as db:
                 await db.execute(
@@ -444,7 +442,7 @@ class CredentialPool:
                     .where(ApiCredential.id == credential_id)
                     .values(
                         error_count=error_count,
-                        last_error_at=datetime.now(tz=timezone.utc),
+                        last_error_at=datetime.now(tz=UTC),
                     )
                 )
                 await db.commit()
@@ -773,7 +771,10 @@ class CredentialPool:
             error: The exception that caused the error report.
             platform: Unused parameter retained for backward compatibility.
         """
-        from issue_observatory.core.exceptions import ArenaAuthError, ArenaRateLimitError  # noqa: PLC0415
+        from issue_observatory.core.exceptions import (
+            ArenaAuthError,
+            ArenaRateLimitError,
+        )
 
         # Determine if this is a DB credential (UUID-shaped ID) or env var
         is_db_credential = _is_uuid(credential_id)
@@ -806,7 +807,10 @@ class CredentialPool:
             credential_id: String UUID of the DB credential.
             error: The exception that triggered the report.
         """
-        from issue_observatory.core.exceptions import ArenaAuthError, ArenaRateLimitError  # noqa: PLC0415
+        from issue_observatory.core.exceptions import (
+            ArenaAuthError,
+            ArenaRateLimitError,
+        )
 
         # Fetch current error_count from DB (or assume 0 if unavailable)
         current_count = await self._get_db_error_count(credential_id)
@@ -859,10 +863,10 @@ class CredentialPool:
             Current error count, or 0 if unavailable.
         """
         try:
-            from sqlalchemy import select  # noqa: PLC0415
+            from sqlalchemy import select
 
-            from issue_observatory.core.database import AsyncSessionLocal  # noqa: PLC0415
-            from issue_observatory.core.models.credentials import ApiCredential  # noqa: PLC0415
+            from issue_observatory.core.database import AsyncSessionLocal
+            from issue_observatory.core.models.credentials import ApiCredential
 
             cred_uuid = uuid.UUID(credential_id)
             async with AsyncSessionLocal() as db:
@@ -895,13 +899,13 @@ class CredentialPool:
         results: list[tuple[str, str]] = []
 
         primary = f"{prefix}API_KEY"
-        if primary in self._env and self._env[primary]:
+        if self._env.get(primary):
             results.append((primary, self._env[primary]))
 
         index = 2
         while True:
             candidate = f"{prefix}API_KEY_{index}"
-            if candidate in self._env and self._env[candidate]:
+            if self._env.get(candidate):
                 results.append((candidate, self._env[candidate]))
                 index += 1
             else:
@@ -930,7 +934,7 @@ def get_credential_pool() -> CredentialPool:
     Returns:
         The shared :class:`CredentialPool` instance.
     """
-    global _pool_singleton  # noqa: PLW0603
+    global _pool_singleton
     if _pool_singleton is None:
         _pool_singleton = CredentialPool()
     return _pool_singleton

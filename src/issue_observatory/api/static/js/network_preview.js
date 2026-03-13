@@ -273,8 +273,10 @@ window.initNetworkPreview = function initNetworkPreview(containerId, graphData, 
     // Instantiate the sigma renderer.
     const sigma = new window.Sigma(graph, container, {
         renderEdgeLabels: false,
-        // Show node labels only when zoomed in enough to keep the graph readable.
-        labelRenderedSizeThreshold: 6,
+        // Lower threshold so labels are visible at default zoom.
+        // A value of 1 renders labels for all nodes with a rendered size of ≥ 1px.
+        labelRenderedSizeThreshold: 1,
+        labelSize: 12,
         labelFont: 'Inter, system-ui, sans-serif',
         defaultEdgeColor: 'rgba(139, 92, 246, 0.2)',
         defaultEdgeType: 'line',

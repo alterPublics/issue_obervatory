@@ -24,7 +24,8 @@ import hashlib
 import logging
 import time
 import urllib.parse
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 from typing import Any
 
@@ -88,7 +89,7 @@ def _normalize_link_url(href: str) -> str:
         return urllib.parse.urlunparse(
             (parsed.scheme, parsed.netloc.lower(), path, parsed.params, new_query, "")
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         return href
 
 
@@ -114,7 +115,7 @@ def _extract_same_domain_links(
     parser = _LinkExtractor()
     try:
         parser.feed(html)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
     seen: set[str] = set()
@@ -130,7 +131,7 @@ def _extract_same_domain_links(
         # Resolve relative URLs
         try:
             absolute = urllib.parse.urljoin(base_url, href)
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
 
         parsed = urllib.parse.urlparse(absolute)
@@ -208,6 +209,11 @@ class DomainCrawlerCollector(ArenaCollector):
         super().__init__(credential_pool=credential_pool, rate_limiter=rate_limiter)
         self._http_client = http_client
         self._normalizer = Normalizer()
+        self._known_urls: set[str] = set()
+
+    def set_known_urls(self, urls: set[str]) -> None:
+        """Set URLs already collected so they can be skipped during crawling."""
+        self._known_urls = urls
 
     # ------------------------------------------------------------------
     # ArenaCollector abstract method implementations
@@ -223,6 +229,7 @@ class DomainCrawlerCollector(ArenaCollector):
         term_groups: list[list[str]] | None = None,
         language_filter: list[str] | None = None,
         extra_domains: list[str] | None = None,
+        on_batch: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> list[dict[str, Any]]:
         """Crawl domains and return articles matching the search terms.
 
@@ -236,6 +243,10 @@ class DomainCrawlerCollector(ArenaCollector):
             language_filter: Not applied.
             extra_domains: Researcher-configured domains from
                 ``arenas_config["domain_crawler"]["target_domains"]``.
+            on_batch: Optional callback invoked with each batch of normalized
+                records as they become available.  Enables incremental
+                persistence so records are browsable before the full crawl
+                finishes.
 
         Returns:
             List of normalized content record dicts matching search terms.
@@ -264,26 +275,44 @@ class DomainCrawlerCollector(ArenaCollector):
             len(effective_domains),
         )
 
-        all_articles = await self._crawl_domains(effective_domains, tier)
-
-        # Client-side term filtering
+        # When on_batch is provided, filter+normalize each batch incrementally
+        # and persist via the callback so records are visible immediately.
         matched_records: list[dict[str, Any]] = []
-        for article in all_articles:
-            if len(matched_records) >= effective_max:
-                break
 
-            searchable = self._build_searchable_text(article)
-            matched_terms = match_groups_in_text(lower_groups, searchable)
-            if not matched_terms:
-                continue
+        def _filter_and_flush(raw_articles: list[dict[str, Any]]) -> None:
+            batch_matched: list[dict[str, Any]] = []
+            for article in raw_articles:
+                if len(matched_records) >= effective_max:
+                    break
+                searchable = self._build_searchable_text(article)
+                matched_terms = match_groups_in_text(lower_groups, searchable)
+                if not matched_terms:
+                    continue
+                normalized = self._normalize_article(article, tier, matched_terms)
+                matched_records.append(normalized)
+                batch_matched.append(normalized)
 
-            normalized = self._normalize_article(article, tier, matched_terms)
-            matched_records.append(normalized)
+            if on_batch and batch_matched:
+                on_batch(batch_matched)
+
+        if on_batch is not None:
+            await self._crawl_domains(effective_domains, tier, on_batch=_filter_and_flush)
+        else:
+            all_articles = await self._crawl_domains(effective_domains, tier)
+            for article in all_articles:
+                if len(matched_records) >= effective_max:
+                    break
+                searchable = self._build_searchable_text(article)
+                matched_terms = match_groups_in_text(lower_groups, searchable)
+                if not matched_terms:
+                    continue
+                normalized = self._normalize_article(article, tier, matched_terms)
+                matched_records.append(normalized)
+                self._flush()
 
         logger.info(
-            "domain_crawler: collect_by_terms — %d/%d articles matched terms.",
+            "domain_crawler: collect_by_terms — %d articles matched terms.",
             len(matched_records),
-            len(all_articles),
         )
         return matched_records
 
@@ -295,6 +324,7 @@ class DomainCrawlerCollector(ArenaCollector):
         date_to: datetime | str | None = None,
         max_results: int | None = None,
         extra_domains: list[str] | None = None,
+        on_batch: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> list[dict[str, Any]]:
         """Crawl actor domains and return all articles (no term filtering).
 
@@ -307,6 +337,8 @@ class DomainCrawlerCollector(ArenaCollector):
             date_to: Not applied.
             max_results: Upper bound on returned records.
             extra_domains: Not used (actor_ids are the domains).
+            on_batch: Optional callback invoked with each batch of normalized
+                records as they become available.
 
         Returns:
             List of normalized content record dicts.
@@ -327,13 +359,28 @@ class DomainCrawlerCollector(ArenaCollector):
             len(domains),
         )
 
-        all_articles = await self._crawl_domains(domains, tier)
-
         records: list[dict[str, Any]] = []
-        for article in all_articles:
-            if len(records) >= effective_max:
-                break
-            records.append(self._normalize_article(article, tier, []))
+
+        def _normalize_and_flush(raw_articles: list[dict[str, Any]]) -> None:
+            batch_records: list[dict[str, Any]] = []
+            for article in raw_articles:
+                if len(records) >= effective_max:
+                    break
+                normalized = self._normalize_article(article, tier, [])
+                records.append(normalized)
+                batch_records.append(normalized)
+            if on_batch and batch_records:
+                on_batch(batch_records)
+
+        if on_batch is not None:
+            await self._crawl_domains(domains, tier, on_batch=_normalize_and_flush)
+        else:
+            all_articles = await self._crawl_domains(domains, tier)
+            for article in all_articles:
+                if len(records) >= effective_max:
+                    break
+                records.append(self._normalize_article(article, tier, []))
+                self._flush()
 
         logger.info(
             "domain_crawler: collect_by_actors — %d records from %d domains.",
@@ -359,7 +406,7 @@ class DomainCrawlerCollector(ArenaCollector):
 
     async def health_check(self) -> dict[str, Any]:
         """Verify that the fetch-and-extract pipeline is functional."""
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -376,7 +423,7 @@ class DomainCrawlerCollector(ArenaCollector):
                     respect_robots=True,
                     robots_cache=robots_cache,
                 )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {**base, "status": "down", "detail": f"HTTP fetch failed: {exc}"}
 
         if result.error or result.html is None:
@@ -426,6 +473,7 @@ class DomainCrawlerCollector(ArenaCollector):
         self,
         domains: list[str],
         tier: Tier,
+        on_batch: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> list[dict[str, Any]]:
         """Crawl all domains: fetch front page, discover links, fetch articles.
 
@@ -438,6 +486,9 @@ class DomainCrawlerCollector(ArenaCollector):
         Args:
             domains: List of domain names to crawl.
             tier: Operational tier.
+            on_batch: Optional callback invoked with each batch's raw article
+                dicts immediately after the batch completes.  Enables the task
+                layer to persist records incrementally.
 
         Returns:
             Flat list of raw article dicts from all domains.
@@ -475,8 +526,8 @@ class DomainCrawlerCollector(ArenaCollector):
                 ]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                batch_record_count = 0
-                for domain, result in zip(batch, results):
+                batch_articles: list[dict[str, Any]] = []
+                for domain, result in zip(batch, results, strict=False):
                     if isinstance(result, Exception):
                         logger.error(
                             "domain_crawler: error crawling domain '%s': %s",
@@ -484,19 +535,24 @@ class DomainCrawlerCollector(ArenaCollector):
                             result,
                         )
                         continue
-                    batch_record_count += len(result)
-                    all_articles.extend(result)
+                    batch_articles.extend(result)
 
-                if batch_record_count > 0:
+                all_articles.extend(batch_articles)
+
+                if batch_articles:
                     last_record_at = time.monotonic()
 
                 logger.info(
                     "domain_crawler: batch %d/%d done — %d articles from %s",
                     batch_idx + 1,
                     len(batches),
-                    batch_record_count,
+                    len(batch_articles),
                     [d for d in batch],
                 )
+
+                # Flush batch to caller for incremental persistence.
+                if on_batch and batch_articles:
+                    on_batch(batch_articles)
 
         return all_articles
 
@@ -527,7 +583,7 @@ class DomainCrawlerCollector(ArenaCollector):
                 respect_robots=True,
                 robots_cache=robots_cache,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 "domain_crawler: failed to fetch front page '%s': %s",
                 front_page_url, exc,
@@ -547,6 +603,18 @@ class DomainCrawlerCollector(ArenaCollector):
             front_result.final_url or front_page_url,
             domain,
         )
+
+        # Skip URLs already collected in previous runs
+        if self._known_urls:
+            before = len(article_urls)
+            article_urls = [u for u in article_urls if u not in self._known_urls]
+            skipped = before - len(article_urls)
+            if skipped > 0:
+                logger.info(
+                    "domain_crawler: '%s' — skipped %d already-collected URLs",
+                    domain,
+                    skipped,
+                )
 
         # Cap at MAX_LINKS_PER_DOMAIN
         if len(article_urls) > MAX_LINKS_PER_DOMAIN:
@@ -599,7 +667,7 @@ class DomainCrawlerCollector(ArenaCollector):
                 respect_robots=True,
                 robots_cache=robots_cache,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.debug("domain_crawler: fetch error for '%s': %s", url, exc)
             return None
 
@@ -610,7 +678,7 @@ class DomainCrawlerCollector(ArenaCollector):
 
         try:
             extracted: ExtractedContent = extract_from_html(result.html, final_url)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.debug("domain_crawler: extraction error for '%s': %s", url, exc)
             return None
 
@@ -676,7 +744,7 @@ class DomainCrawlerCollector(ArenaCollector):
         elif published_at:
             published_at_str = str(published_at)
         else:
-            published_at_str = datetime.now(tz=timezone.utc).isoformat()
+            published_at_str = datetime.now(tz=UTC).isoformat()
 
         raw_metadata: dict[str, Any] = {
             "source_domain": domain,

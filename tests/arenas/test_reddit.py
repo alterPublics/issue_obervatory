@@ -32,9 +32,9 @@ os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5
 os.environ.setdefault("REDDIT_CLIENT_ID", "test_client_id")
 os.environ.setdefault("REDDIT_CLIENT_SECRET", "test_client_secret")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.reddit.collector import RedditCollector  # noqa: E402
-from issue_observatory.core.exceptions import ArenaRateLimitError  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.reddit.collector import RedditCollector
+from issue_observatory.core.exceptions import ArenaRateLimitError
 
 # ---------------------------------------------------------------------------
 # Raw item helpers (mirrors what _post_to_raw / _comment_to_raw produce)

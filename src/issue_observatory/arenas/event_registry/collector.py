@@ -27,13 +27,12 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
-from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.event_registry.config import (
     EVENT_REGISTRY_ARTICLE_ENDPOINT,
     EVENT_REGISTRY_DANISH_LANG,
@@ -51,6 +50,7 @@ from issue_observatory.arenas.event_registry.config import (
     TOKEN_BUDGET_WARNING_PCT,
     map_language,
 )
+from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.registry import register
 from issue_observatory.config.tiers import TierConfig
 from issue_observatory.core.exceptions import (
@@ -172,7 +172,7 @@ class EventRegistryCollector(ArenaCollector):
         er_lang = er_lang_list[0] if er_lang_list else EVENT_REGISTRY_DANISH_LANG
 
         seen_uris: set[str] = set()
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         # Determine list of keyword queries to issue.
         if term_groups is not None:
@@ -189,11 +189,12 @@ class EventRegistryCollector(ArenaCollector):
         try:
             async with self._build_http_client() as client:
                 for term in query_strings:
-                    if len(all_records) >= effective_max:
+                    if self._total_emitted >= effective_max:
                         break
+                    count_before = self._total_emitted
 
                     page = 1
-                    while len(all_records) < effective_max:
+                    while self._total_emitted < effective_max:
                         await self._rate_limit_wait(credential_id)
 
                         payload = self._build_terms_payload(
@@ -204,7 +205,7 @@ class EventRegistryCollector(ArenaCollector):
                             page=page,
                             articles_count=min(
                                 EVENT_REGISTRY_DEFAULT_MAX_RESULTS,
-                                effective_max - len(all_records),
+                                effective_max - self._total_emitted,
                             ),
                         )
                         # Override language if expanded
@@ -227,14 +228,17 @@ class EventRegistryCollector(ArenaCollector):
                             if not uri or uri in seen_uris:
                                 continue
                             seen_uris.add(uri)
-                            all_records.append(self.normalize(article))
+                            self._emit(self.normalize(article))
 
-                        if not articles or len(all_records) >= effective_max:
+                        if not articles or self._total_emitted >= effective_max:
                             break
                         if total_results is not None and page * EVENT_REGISTRY_DEFAULT_MAX_RESULTS >= total_results:
                             break
 
                         page += 1
+
+                    self._record_input_count(term, self._total_emitted - count_before)
+                    self._flush()
 
         finally:
             if self.credential_pool is not None:
@@ -242,12 +246,13 @@ class EventRegistryCollector(ArenaCollector):
                     credential_id=credential_id, task_id=None
                 )
 
+        self._flush()
         logger.info(
             "event_registry: collect_by_terms — %d records for %d queries",
-            len(all_records),
+            self._total_emitted,
             len(query_strings),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     async def collect_by_actors(
         self,
@@ -294,16 +299,16 @@ class EventRegistryCollector(ArenaCollector):
         date_end_str = _format_date(date_to)
 
         seen_uris: set[str] = set()
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         try:
             async with self._build_http_client() as client:
                 for concept_uri in actor_ids:
-                    if len(all_records) >= effective_max:
+                    if self._total_emitted >= effective_max:
                         break
 
                     page = 1
-                    while len(all_records) < effective_max:
+                    while self._total_emitted < effective_max:
                         await self._rate_limit_wait(credential_id)
 
                         payload = self._build_actors_payload(
@@ -314,7 +319,7 @@ class EventRegistryCollector(ArenaCollector):
                             page=page,
                             articles_count=min(
                                 EVENT_REGISTRY_DEFAULT_MAX_RESULTS,
-                                effective_max - len(all_records),
+                                effective_max - self._total_emitted,
                             ),
                         )
 
@@ -334,14 +339,16 @@ class EventRegistryCollector(ArenaCollector):
                             if not uri or uri in seen_uris:
                                 continue
                             seen_uris.add(uri)
-                            all_records.append(self.normalize(article))
+                            self._emit(self.normalize(article))
 
-                        if not articles or len(all_records) >= effective_max:
+                        if not articles or self._total_emitted >= effective_max:
                             break
                         if total_results is not None and page * EVENT_REGISTRY_DEFAULT_MAX_RESULTS >= total_results:
                             break
 
                         page += 1
+
+                    self._flush()
 
         finally:
             if self.credential_pool is not None:
@@ -349,12 +356,13 @@ class EventRegistryCollector(ArenaCollector):
                     credential_id=credential_id, task_id=None
                 )
 
+        self._flush()
         logger.info(
             "event_registry: collect_by_actors — %d records for %d concept URIs",
-            len(all_records),
+            self._total_emitted,
             len(actor_ids),
         )
-        return all_records
+        return list(self._batch_buffer)
 
     def get_tier_config(self, tier: Tier) -> TierConfig:
         """Return tier configuration for the Event Registry arena.
@@ -574,7 +582,7 @@ class EventRegistryCollector(ArenaCollector):
             Health check requires a valid credential.  If no credential is
             available, returns ``status="down"`` with an explanatory ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -588,13 +596,13 @@ class EventRegistryCollector(ArenaCollector):
             credential = await self._acquire_credential(Tier.MEDIUM)
             api_key: str = credential["api_key"]
             credential_id = credential.get("id", "unknown")
-        except (NoCredentialAvailableError, Exception) as exc:  # noqa: BLE001
+        except (NoCredentialAvailableError, Exception):
             # Try PREMIUM if MEDIUM is unavailable
             try:
                 credential = await self._acquire_credential(Tier.PREMIUM)
                 api_key = credential["api_key"]
                 credential_id = credential.get("id", "unknown")
-            except Exception as exc2:  # noqa: BLE001
+            except Exception as exc2:
                 return {
                     **base,
                     "status": "down",
@@ -653,7 +661,7 @@ class EventRegistryCollector(ArenaCollector):
             }
         except httpx.RequestError as exc:
             return {**base, "status": "down", "detail": f"Connection error: {exc}"}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {**base, "status": "down", "detail": f"Unexpected error: {exc}"}
         finally:
             if self.credential_pool is not None and credential is not None:
@@ -679,7 +687,7 @@ class EventRegistryCollector(ArenaCollector):
                 pool for this platform/tier combination.
         """
         if self.credential_pool is None:
-            import os  # noqa: PLC0415
+            import os
 
             env_key = f"EVENT_REGISTRY_{tier.value.upper()}_API_KEY"
             api_key = os.environ.get(env_key)
@@ -733,14 +741,14 @@ class EventRegistryCollector(ArenaCollector):
                     timeout=EVENT_REGISTRY_RATE_LIMIT_TIMEOUT,
                 )
                 return
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "event_registry: rate_limiter.wait_for_slot failed (%s) — "
                     "falling back to sleep(0.2)",
                     exc,
                 )
 
-        import asyncio  # noqa: PLC0415
+        import asyncio
 
         await asyncio.sleep(0.2)
 
@@ -808,7 +816,7 @@ class EventRegistryCollector(ArenaCollector):
         if response.status_code == 429:
             retry_after = float(response.headers.get("Retry-After", 60))
             raise ArenaRateLimitError(
-                f"event_registry: HTTP 429 rate limit",
+                "event_registry: HTTP 429 rate limit",
                 retry_after=retry_after,
                 arena=self.arena_name,
                 platform=self.platform_name,
@@ -823,7 +831,7 @@ class EventRegistryCollector(ArenaCollector):
 
         try:
             return response.json()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ArenaCollectionError(
                 f"event_registry: JSON parse error (HTTP {response.status_code}): {exc}",
                 arena=self.arena_name,

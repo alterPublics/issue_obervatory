@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from issue_observatory.api.dependencies import get_current_active_user, require_admin
@@ -99,7 +98,7 @@ async def allocate_credits(
         allocation = CreditAllocation(
             user_id=target_user_id,
             credits_amount=credits_amount,
-            valid_from=datetime.now(tz=timezone.utc).date(),
+            valid_from=datetime.now(tz=UTC).date(),
             valid_until=valid_until_date,
             allocated_by=admin_user.id,
             memo=memo or "",
@@ -118,14 +117,14 @@ async def allocate_credits(
     except ValueError as e:
         return HTMLResponse(
             f"""<div class="p-3 bg-red-50 border border-red-200 rounded text-sm text-red-800">
-            Invalid input: {str(e)}
+            Invalid input: {e!s}
             </div>""",
             status_code=400,
         )
     except Exception as e:
         return HTMLResponse(
             f"""<div class="p-3 bg-red-50 border border-red-200 rounded text-sm text-red-800">
-            Allocation failed: {str(e)}
+            Allocation failed: {e!s}
             </div>""",
             status_code=500,
         )

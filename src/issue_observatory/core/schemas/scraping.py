@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -34,9 +33,9 @@ class ScrapingJobCreate(BaseModel):
     """
 
     source_type: str = Field(pattern="^(collection_run|manual_urls)$")
-    source_collection_run_id: Optional[uuid.UUID] = None
-    source_urls: Optional[List[str]] = None
-    query_design_id: Optional[uuid.UUID] = None
+    source_collection_run_id: uuid.UUID | None = None
+    source_urls: list[str] | None = None
+    query_design_id: uuid.UUID | None = None
 
     delay_min: float = Field(default=2.0, ge=0.0)
     delay_max: float = Field(default=5.0, ge=0.0)
@@ -54,10 +53,10 @@ class ScrapingJobRead(BaseModel):
 
     id: uuid.UUID
     created_by: uuid.UUID
-    query_design_id: Optional[uuid.UUID]
+    query_design_id: uuid.UUID | None
     source_type: str
-    source_collection_run_id: Optional[uuid.UUID]
-    source_urls: Optional[list]
+    source_collection_run_id: uuid.UUID | None
+    source_urls: list | None
 
     delay_min: float
     delay_max: float
@@ -67,8 +66,8 @@ class ScrapingJobRead(BaseModel):
     max_retries: int
 
     status: str
-    celery_task_id: Optional[str]
-    error_message: Optional[str]
+    celery_task_id: str | None
+    error_message: str | None
 
     total_urls: int
     urls_enriched: int
@@ -76,7 +75,7 @@ class ScrapingJobRead(BaseModel):
     urls_skipped: int
 
     created_at: datetime
-    started_at: Optional[datetime]
-    completed_at: Optional[datetime]
+    started_at: datetime | None
+    completed_at: datetime | None
 
     model_config = ConfigDict(from_attributes=True)

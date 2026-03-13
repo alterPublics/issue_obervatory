@@ -18,7 +18,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -32,8 +32,8 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.x_twitter.collector import (  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.x_twitter.collector import (
     XTwitterCollector,
     _build_query,
     _detect_tweet_type_twitterapiio,
@@ -42,11 +42,11 @@ from issue_observatory.arenas.x_twitter.collector import (  # noqa: E402
     _index_v2_users,
     _normalize_handle,
 )
-from issue_observatory.arenas.x_twitter.config import (  # noqa: E402
-    TWITTERAPIIO_BASE_URL,
+from issue_observatory.arenas.x_twitter.config import (
     TWITTER_V2_SEARCH_ALL,
+    TWITTERAPIIO_BASE_URL,
 )
-from issue_observatory.core.exceptions import ArenaRateLimitError  # noqa: E402
+from issue_observatory.core.exceptions import ArenaRateLimitError
 
 # ---------------------------------------------------------------------------
 # Fixture paths

@@ -39,13 +39,13 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.web.wayback.collector import WaybackCollector  # noqa: E402
-from issue_observatory.arenas.web.wayback.config import (  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.web.wayback.collector import WaybackCollector
+from issue_observatory.arenas.web.wayback.config import (
     WB_CDX_BASE_URL,
     WB_PLAYBACK_URL_TEMPLATE,
 )
-from issue_observatory.core.exceptions import ArenaRateLimitError  # noqa: E402
+from issue_observatory.core.exceptions import ArenaRateLimitError
 
 # ---------------------------------------------------------------------------
 # Fixture paths
@@ -81,7 +81,7 @@ def _make_cdx_entry() -> dict[str, Any]:
     data = _load_cdx_fixture()
     field_names: list[str] = data[0]
     first_row: list[str] = data[1]
-    return dict(zip(field_names, first_row))
+    return dict(zip(field_names, first_row, strict=False))
 
 
 # ---------------------------------------------------------------------------
@@ -124,14 +124,14 @@ class TestNormalize:
 
     def test_normalize_platform_id_is_sha256_of_url_and_timestamp(self) -> None:
         """normalize() computes platform_id as SHA-256(url+timestamp)."""
-        import hashlib  # noqa: PLC0415
+        import hashlib
 
         collector = self._collector()
         entry = _make_cdx_entry()
         result = collector.normalize(entry)
 
         expected = hashlib.sha256(
-            f"{entry['original']}{entry['timestamp']}".encode("utf-8")
+            f"{entry['original']}{entry['timestamp']}".encode()
         ).hexdigest()
         assert result["platform_id"] == expected
 

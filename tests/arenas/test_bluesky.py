@@ -28,10 +28,10 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.bluesky.collector import BlueskyCollector  # noqa: E402
-from issue_observatory.arenas.bluesky.config import BSKY_SEARCH_POSTS_ENDPOINT  # noqa: E402
-from issue_observatory.core.exceptions import ArenaRateLimitError  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.bluesky.collector import BlueskyCollector
+from issue_observatory.arenas.bluesky.config import BSKY_SEARCH_POSTS_ENDPOINT
+from issue_observatory.core.exceptions import ArenaRateLimitError
 
 # ---------------------------------------------------------------------------
 # Fixture paths
@@ -330,7 +330,6 @@ class TestCollectByTerms:
     @respx.mock
     async def test_collect_by_terms_malformed_json_raises_collection_error(self) -> None:
         """collect_by_terms() raises ArenaCollectionError on malformed JSON response."""
-        from issue_observatory.core.exceptions import ArenaCollectionError
 
         respx.get(BSKY_SEARCH_POSTS_ENDPOINT).mock(
             return_value=httpx.Response(500)

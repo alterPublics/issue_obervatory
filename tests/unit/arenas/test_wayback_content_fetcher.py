@@ -38,7 +38,7 @@ def test_wayback_content_fetcher_importable() -> None:
     It confirms that the cross-module import from arenas into the scraper module
     does not create a circular dependency at import time.
     """
-    from issue_observatory.arenas.web.wayback._content_fetcher import (  # noqa: PLC0415
+    from issue_observatory.arenas.web.wayback._content_fetcher import (
         fetch_content_for_records,
         fetch_single_record_content,
     )
@@ -95,7 +95,7 @@ class TestFetchSingleRecordContentHttpError:
         the function must catch it, set raw_metadata['content_fetch_error'], and
         return the (mutated) record dict.
         """
-        from issue_observatory.arenas.web.wayback._content_fetcher import (  # noqa: PLC0415
+        from issue_observatory.arenas.web.wayback._content_fetcher import (
             fetch_single_record_content,
         )
 
@@ -132,7 +132,7 @@ class TestFetchSingleRecordContentHttpError:
         When fetch_url returns a FetchResult with .error set (e.g. HTTP 404),
         the function must record the error string without raising.
         """
-        from issue_observatory.arenas.web.wayback._content_fetcher import (  # noqa: PLC0415
+        from issue_observatory.arenas.web.wayback._content_fetcher import (
             fetch_single_record_content,
         )
 
@@ -169,7 +169,7 @@ class TestFetchSingleRecordContentHttpError:
         A record without raw_metadata['wayback_url'] must be returned immediately
         with content_fetch_error set — no network call attempted.
         """
-        from issue_observatory.arenas.web.wayback._content_fetcher import (  # noqa: PLC0415
+        from issue_observatory.arenas.web.wayback._content_fetcher import (
             fetch_single_record_content,
         )
 
@@ -208,10 +208,10 @@ class TestFetchSingleRecordContentSizeGuard:
         extraction must be skipped and raw_metadata['content_skipped_size_bytes']
         must be set to the actual byte count.  No text_content must be set.
         """
-        from issue_observatory.arenas.web.wayback._content_fetcher import (  # noqa: PLC0415
+        from issue_observatory.arenas.web.wayback._content_fetcher import (
             fetch_single_record_content,
         )
-        from issue_observatory.arenas.web.wayback.config import (  # noqa: PLC0415
+        from issue_observatory.arenas.web.wayback.config import (
             WB_CONTENT_FETCH_SIZE_LIMIT,
         )
 
@@ -259,7 +259,7 @@ class TestFetchSingleRecordContentSizeGuard:
         When the response body is within the size limit, the extraction path
         must be followed (no content_skipped_size_bytes set).
         """
-        from issue_observatory.arenas.web.wayback._content_fetcher import (  # noqa: PLC0415
+        from issue_observatory.arenas.web.wayback._content_fetcher import (
             fetch_single_record_content,
         )
 

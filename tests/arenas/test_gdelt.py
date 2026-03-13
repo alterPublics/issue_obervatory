@@ -31,10 +31,10 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.gdelt.collector import GDELTCollector  # noqa: E402
-from issue_observatory.arenas.gdelt.config import GDELT_DOC_API_BASE  # noqa: E402
-from issue_observatory.core.exceptions import ArenaRateLimitError  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.gdelt.collector import GDELTCollector
+from issue_observatory.arenas.gdelt.config import GDELT_DOC_API_BASE
+from issue_observatory.core.exceptions import ArenaRateLimitError
 
 # ---------------------------------------------------------------------------
 # Fixture paths

@@ -30,10 +30,8 @@ from __future__ import annotations
 
 import uuid
 from collections import namedtuple
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
 
 from issue_observatory.core.deduplication import (
     DeduplicationService,
@@ -42,7 +40,6 @@ from issue_observatory.core.deduplication import (
     hamming_distance,
     normalise_url,
 )
-
 
 # ---------------------------------------------------------------------------
 # normalise_url — pure function tests (no mocking needed)
@@ -288,7 +285,7 @@ class TestFindUrlDuplicates:
                 url=shared_url,
                 platform="twitter",
                 arena="social_media",
-                published_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                published_at=datetime(2024, 1, 1, tzinfo=UTC),
             ),
             _UrlRow(
                 id=uuid.uuid4(),

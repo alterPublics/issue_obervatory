@@ -14,7 +14,7 @@ asyncpg connections on a second ``asyncio.run()`` call.
 from __future__ import annotations
 
 import json
-import uuid  # noqa: F401 — kept for the type hint on write_enrichment signature
+import uuid
 from typing import Any
 
 from sqlalchemy import text

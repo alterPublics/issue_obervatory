@@ -38,10 +38,10 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.majestic.collector import MajesticCollector  # noqa: E402
-from issue_observatory.arenas.majestic.config import MAJESTIC_API_BASE  # noqa: E402
-from issue_observatory.core.exceptions import (  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.majestic.collector import MajesticCollector
+from issue_observatory.arenas.majestic.config import MAJESTIC_API_BASE
+from issue_observatory.core.exceptions import (
     ArenaAuthError,
     ArenaCollectionError,
     ArenaRateLimitError,

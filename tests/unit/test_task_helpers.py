@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
@@ -224,7 +224,7 @@ async def test_preserves_insertion_order(db_session, sample_design):
                 term_type="keyword",
                 target_arenas=None,
                 is_active=True,
-                added_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                added_at=datetime(2024, 1, 1, tzinfo=UTC),
             ),
             SearchTerm(
                 query_design_id=sample_design.id,
@@ -232,7 +232,7 @@ async def test_preserves_insertion_order(db_session, sample_design):
                 term_type="keyword",
                 target_arenas=None,
                 is_active=True,
-                added_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                added_at=datetime(2024, 1, 2, tzinfo=UTC),
             ),
             SearchTerm(
                 query_design_id=sample_design.id,
@@ -240,7 +240,7 @@ async def test_preserves_insertion_order(db_session, sample_design):
                 term_type="keyword",
                 target_arenas=None,
                 is_active=True,
-                added_at=datetime(2024, 1, 3, tzinfo=timezone.utc),
+                added_at=datetime(2024, 1, 3, tzinfo=UTC),
             ),
         ]
     )

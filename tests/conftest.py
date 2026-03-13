@@ -24,10 +24,10 @@ import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
+import bcrypt
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # ---------------------------------------------------------------------------
@@ -67,10 +67,10 @@ get_settings.cache_clear()
 # Password helper (shared by user factories)
 # ---------------------------------------------------------------------------
 
-_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 TEST_PASSWORD = "password123"
-TEST_PASSWORD_HASH: str = _pwd_context.hash(TEST_PASSWORD)
+TEST_PASSWORD_HASH: str = bcrypt.hashpw(
+    TEST_PASSWORD.encode(), bcrypt.gensalt()
+).decode()
 
 
 # ---------------------------------------------------------------------------
@@ -106,10 +106,10 @@ def _ensure_tables(test_database_url: str) -> None:
     In CI the Alembic migration step (``alembic upgrade head``) runs before
     pytest, so this is a safety net for local runs that skip migrations.
     """
-    import sqlalchemy as sa  # noqa: PLC0415
-    from sqlalchemy import create_engine as create_sync_engine  # noqa: PLC0415
+    import sqlalchemy as sa
+    from sqlalchemy import create_engine as create_sync_engine
 
-    global _tables_created  # noqa: PLW0603
+    global _tables_created
     if _tables_created:
         return
     sync_url = test_database_url.replace(
@@ -217,7 +217,7 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     Yields:
         :class:`httpx.AsyncClient` configured for the test app.
     """
-    from issue_observatory.core.database import get_db  # noqa: PLC0415
+    from issue_observatory.core.database import get_db
 
     async def _override_get_db() -> AsyncGenerator[AsyncSession, None]:
         yield db_session
@@ -402,7 +402,7 @@ async def funded_user(db_session: AsyncSession) -> User:
         :class:`User` with a :class:`CreditAllocation` of 1,000 credits valid
         indefinitely from today.
     """
-    import datetime  # noqa: PLC0415
+    import datetime
 
     user = await _create_user(
         db_session,
@@ -438,7 +438,7 @@ def normalizer() -> Any:
     Returns:
         :class:`issue_observatory.core.normalizer.Normalizer` instance.
     """
-    from issue_observatory.core.normalizer import Normalizer  # noqa: PLC0415
+    from issue_observatory.core.normalizer import Normalizer
 
     return Normalizer(pseudonymization_salt="test-pseudonymization-salt-for-unit-tests")
 
@@ -459,7 +459,7 @@ def mock_http_client() -> Any:
     should override it with a parametrized version that loads from
     ``tests/fixtures/api_responses/<platform>/``.
     """
-    import httpx  # noqa: PLC0415
+    import httpx
 
     # Default: returns 200 with empty organic results (safe default).
     return httpx.AsyncClient(

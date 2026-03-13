@@ -43,7 +43,7 @@ for Phase 1 collection.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
@@ -106,6 +106,8 @@ class TelegramCollector(ArenaCollector):
     platform_name: str = "telegram"
     supported_tiers: list[Tier] = [Tier.FREE]
     temporal_mode: TemporalMode = TemporalMode.RECENT
+    source_list_config_key: str | None = "custom_channels"
+    supports_actor_collection: bool = True
 
     def __init__(
         self,
@@ -203,9 +205,11 @@ class TelegramCollector(ArenaCollector):
         else:
             effective_terms = list(terms)
 
+        self._reset_batch_state()
+
         cred = await self._acquire_credential()
         try:
-            records = await self._collect_terms_with_credential(
+            await self._collect_terms_with_credential(
                 cred=cred,
                 terms=effective_terms,
                 channels=channels,
@@ -217,13 +221,14 @@ class TelegramCollector(ArenaCollector):
             if self.credential_pool is not None:
                 await self.credential_pool.release(credential_id=cred["id"])
 
+        self._flush()
         logger.info(
             "telegram: collect_by_terms collected %d records for %d queries across %d channels",
-            len(records),
+            self._total_emitted,
             len(effective_terms),
             len(channels),
         )
-        return records
+        return list(self._batch_buffer)
 
     async def collect_by_actors(
         self,
@@ -273,9 +278,11 @@ class TelegramCollector(ArenaCollector):
         date_from_dt = _parse_datetime(date_from)
         date_to_dt = _parse_datetime(date_to)
 
+        self._reset_batch_state()
+
         cred = await self._acquire_credential()
         try:
-            records = await self._collect_actors_with_credential(
+            await self._collect_actors_with_credential(
                 cred=cred,
                 actor_ids=actor_ids,
                 date_from=date_from_dt,
@@ -286,12 +293,13 @@ class TelegramCollector(ArenaCollector):
             if self.credential_pool is not None:
                 await self.credential_pool.release(credential_id=cred["id"])
 
+        self._flush()
         logger.info(
             "telegram: collect_by_actors collected %d records for %d channels",
-            len(records),
+            self._total_emitted,
             len(actor_ids),
         )
-        return records
+        return list(self._batch_buffer)
 
     def get_tier_config(self, tier: Tier) -> TierConfig | None:
         """Return the tier configuration for this arena.
@@ -387,7 +395,7 @@ class TelegramCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
             ``arena``, ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -406,8 +414,8 @@ class TelegramCollector(ArenaCollector):
             }
 
         try:
-            from telethon import TelegramClient  # noqa: PLC0415
-            from telethon.sessions import StringSession  # noqa: PLC0415
+            from telethon import TelegramClient
+            from telethon.sessions import StringSession
 
             api_id = int(cred["api_id"])
             api_hash = str(cred["api_hash"])
@@ -511,8 +519,12 @@ class TelegramCollector(ArenaCollector):
         date_from: datetime | None,
         date_to: datetime | None,
         max_results: int,
-    ) -> list[dict[str, Any]]:
+    ) -> None:
         """Collect term-matched messages using the given credential.
+
+        Records are emitted incrementally via ``self._emit()`` rather than
+        accumulated in memory.  The caller is responsible for calling
+        ``self._flush()`` after this method returns.
 
         Args:
             cred: Decrypted credential dict.
@@ -522,23 +534,19 @@ class TelegramCollector(ArenaCollector):
             date_to: Latest date filter.
             max_results: Maximum records to collect.
 
-        Returns:
-            Deduplicated list of normalized records.
-
         Raises:
             ArenaRateLimitError: On FloodWaitError.
             ArenaCollectionError: On unrecoverable errors.
         """
-        from telethon import TelegramClient  # noqa: PLC0415
-        from telethon.errors import FloodWaitError, UserDeactivatedBanError  # noqa: PLC0415
-        from telethon.sessions import StringSession  # noqa: PLC0415
+        from telethon import TelegramClient
+        from telethon.errors import FloodWaitError, UserDeactivatedBanError
+        from telethon.sessions import StringSession
 
         api_id = int(cred["api_id"])
         api_hash = str(cred["api_hash"])
         session_string = str(cred["session_string"])
         cred_id = cred["id"]
 
-        records: list[dict[str, Any]] = []
         seen: set[str] = set()
 
         client = TelegramClient(StringSession(session_string), api_id, api_hash)
@@ -559,13 +567,14 @@ class TelegramCollector(ArenaCollector):
                 )
             try:
                 for term in terms:
-                    if len(records) >= max_results:
+                    if self._total_emitted >= max_results:
                         break
                     for channel_id in channels:
-                        if len(records) >= max_results:
+                        if self._total_emitted >= max_results:
                             break
-                        remaining = max_results - len(records)
-                        channel_records = await self._search_channel_for_term(
+                        remaining = max_results - self._total_emitted
+                        count_before = self._total_emitted
+                        await self._search_channel_for_term(
                             client=client,
                             cred_id=cred_id,
                             channel=channel_id,
@@ -575,7 +584,9 @@ class TelegramCollector(ArenaCollector):
                             max_results=remaining,
                             seen=seen,
                         )
-                        records.extend(channel_records)
+                        self._record_input_count(channel_id, self._total_emitted - count_before)
+                    # Flush after each term so records persist immediately.
+                    self._flush()
             finally:
                 await client.disconnect()
         except ArenaCollectionError:
@@ -599,8 +610,6 @@ class TelegramCollector(ArenaCollector):
                 platform=self.platform_name,
             ) from exc
 
-        return records
-
     async def _collect_actors_with_credential(
         self,
         cred: dict[str, Any],
@@ -608,8 +617,12 @@ class TelegramCollector(ArenaCollector):
         date_from: datetime | None,
         date_to: datetime | None,
         max_results: int,
-    ) -> list[dict[str, Any]]:
+    ) -> None:
         """Collect messages from specific channels using the given credential.
+
+        Records are emitted incrementally via ``self._emit()`` rather than
+        accumulated in memory.  The caller is responsible for calling
+        ``self._flush()`` after this method returns.
 
         Args:
             cred: Decrypted credential dict.
@@ -618,23 +631,19 @@ class TelegramCollector(ArenaCollector):
             date_to: Latest date filter.
             max_results: Maximum records to collect.
 
-        Returns:
-            List of normalized records.
-
         Raises:
             ArenaRateLimitError: On FloodWaitError.
             ArenaCollectionError: On unrecoverable errors.
         """
-        from telethon import TelegramClient  # noqa: PLC0415
-        from telethon.errors import FloodWaitError, UserDeactivatedBanError  # noqa: PLC0415
-        from telethon.sessions import StringSession  # noqa: PLC0415
+        from telethon import TelegramClient
+        from telethon.errors import FloodWaitError, UserDeactivatedBanError
+        from telethon.sessions import StringSession
 
         api_id = int(cred["api_id"])
         api_hash = str(cred["api_hash"])
         session_string = str(cred["session_string"])
         cred_id = cred["id"]
 
-        records: list[dict[str, Any]] = []
         seen: set[str] = set()
 
         client = TelegramClient(StringSession(session_string), api_id, api_hash)
@@ -651,11 +660,18 @@ class TelegramCollector(ArenaCollector):
                     platform=self.platform_name,
                 )
             try:
-                for channel_id in actor_ids:
-                    if len(records) >= max_results:
+                for actor_idx, channel_id in enumerate(actor_ids, 1):
+                    if self._total_emitted >= max_results:
                         break
-                    remaining = max_results - len(records)
-                    channel_records = await self._fetch_channel_messages(
+                    remaining = max_results - self._total_emitted
+                    count_before = self._total_emitted
+                    logger.info(
+                        "telegram: collecting channel %d/%d: %s",
+                        actor_idx,
+                        len(actor_ids),
+                        channel_id,
+                    )
+                    await self._fetch_channel_messages(
                         client=client,
                         cred_id=cred_id,
                         channel=channel_id,
@@ -664,7 +680,9 @@ class TelegramCollector(ArenaCollector):
                         max_results=remaining,
                         seen=seen,
                     )
-                    records.extend(channel_records)
+                    self._record_input_count(channel_id, self._total_emitted - count_before)
+                    # Flush after each channel so records persist immediately.
+                    self._flush()
             finally:
                 await client.disconnect()
         except ArenaCollectionError:
@@ -688,8 +706,6 @@ class TelegramCollector(ArenaCollector):
                 platform=self.platform_name,
             ) from exc
 
-        return records
-
     async def _search_channel_for_term(
         self,
         client: Any,
@@ -700,11 +716,12 @@ class TelegramCollector(ArenaCollector):
         date_to: datetime | None,
         max_results: int,
         seen: set[str],
-    ) -> list[dict[str, Any]]:
+    ) -> None:
         """Search a single channel for messages matching a term.
 
         Paginates via ``offset_id`` until ``date_from`` is exceeded or
-        ``max_results`` is reached.
+        ``max_results`` is reached.  Records are emitted via ``self._emit()``
+        rather than returned in a list.
 
         Args:
             client: Active Telethon client.
@@ -715,37 +732,34 @@ class TelegramCollector(ArenaCollector):
             date_to: Latest date boundary.
             max_results: Maximum records to collect from this channel.
             seen: Mutable set of already-seen platform_ids (deduplification).
-
-        Returns:
-            List of normalized records from this channel for the term.
         """
-        from telethon.errors import ChannelPrivateError, PeerIdInvalidError  # noqa: PLC0415
+        import asyncio
+        import random
 
-        import asyncio  # noqa: PLC0415
-        import random  # noqa: PLC0415
+        from telethon.errors import ChannelPrivateError, PeerIdInvalidError
 
-        records: list[dict[str, Any]] = []
         offset_id = 0
+        channel_emitted = 0
 
         try:
             await asyncio.sleep(TELEGRAM_CHANNEL_RESOLUTION_DELAY)
             entity = await client.get_entity(channel)
         except ChannelPrivateError:
             logger.warning("telegram: channel %r is private — skipping.", channel)
-            return records
+            return
         except PeerIdInvalidError:
             logger.warning("telegram: invalid peer ID %r — skipping.", channel)
-            return records
+            return
         except Exception as exc:
             logger.warning("telegram: could not resolve channel %r: %s — skipping.", channel, exc)
-            return records
+            return
 
-        while len(records) < max_results:
+        while channel_emitted < max_results:
             await self._wait_for_rate_limit(cred_id)
             await asyncio.sleep(
                 random.uniform(TELEGRAM_INTER_REQUEST_DELAY_MIN, TELEGRAM_INTER_REQUEST_DELAY_MAX)
             )
-            batch_limit = min(MAX_MESSAGES_PER_REQUEST, max_results - len(records))
+            batch_limit = min(MAX_MESSAGES_PER_REQUEST, max_results - channel_emitted)
 
             messages = await client.get_messages(
                 entity,
@@ -764,10 +778,10 @@ class TelegramCollector(ArenaCollector):
                 if not msg.message:
                     # Skip service messages with no text
                     continue
-                if date_from and msg.date and msg.date.replace(tzinfo=timezone.utc) < date_from:
+                if date_from and msg.date and msg.date.replace(tzinfo=UTC) < date_from:
                     stop_early = True
                     break
-                if date_to and msg.date and msg.date.replace(tzinfo=timezone.utc) > date_to:
+                if date_to and msg.date and msg.date.replace(tzinfo=UTC) > date_to:
                     continue
 
                 raw_dict = _message_to_dict(msg, entity)
@@ -775,9 +789,10 @@ class TelegramCollector(ArenaCollector):
                 if pid in seen:
                     continue
                 seen.add(pid)
-                records.append(self.normalize(raw_dict))
+                self._emit(self.normalize(raw_dict))
+                channel_emitted += 1
 
-                if len(records) >= max_results:
+                if channel_emitted >= max_results:
                     break
 
             if stop_early or len(messages) < batch_limit:
@@ -785,8 +800,6 @@ class TelegramCollector(ArenaCollector):
 
             # Advance offset_id to the ID of the last message in this batch
             offset_id = messages[-1].id
-
-        return records
 
     async def _fetch_channel_messages(
         self,
@@ -797,11 +810,12 @@ class TelegramCollector(ArenaCollector):
         date_to: datetime | None,
         max_results: int,
         seen: set[str],
-    ) -> list[dict[str, Any]]:
+    ) -> None:
         """Fetch messages from a channel with date filtering.
 
         Paginates via ``offset_id`` until ``date_from`` is exceeded or
-        ``max_results`` is reached.
+        ``max_results`` is reached.  Records are emitted via ``self._emit()``
+        rather than returned in a list.
 
         Args:
             client: Active Telethon client.
@@ -811,37 +825,34 @@ class TelegramCollector(ArenaCollector):
             date_to: Latest date boundary.
             max_results: Maximum records to collect from this channel.
             seen: Mutable set of already-seen platform_ids (deduplication).
-
-        Returns:
-            List of normalized records.
         """
-        from telethon.errors import ChannelPrivateError, PeerIdInvalidError  # noqa: PLC0415
+        import asyncio
+        import random
 
-        import asyncio  # noqa: PLC0415
-        import random  # noqa: PLC0415
+        from telethon.errors import ChannelPrivateError, PeerIdInvalidError
 
-        records: list[dict[str, Any]] = []
         offset_id = 0
+        channel_emitted = 0
 
         try:
             await asyncio.sleep(TELEGRAM_CHANNEL_RESOLUTION_DELAY)
             entity = await client.get_entity(channel)
         except ChannelPrivateError:
             logger.warning("telegram: channel %r is private — skipping.", channel)
-            return records
+            return
         except PeerIdInvalidError:
             logger.warning("telegram: invalid peer ID %r — skipping.", channel)
-            return records
+            return
         except Exception as exc:
             logger.warning("telegram: could not resolve channel %r: %s — skipping.", channel, exc)
-            return records
+            return
 
-        while len(records) < max_results:
+        while channel_emitted < max_results:
             await self._wait_for_rate_limit(cred_id)
             await asyncio.sleep(
                 random.uniform(TELEGRAM_INTER_REQUEST_DELAY_MIN, TELEGRAM_INTER_REQUEST_DELAY_MAX)
             )
-            batch_limit = min(MAX_MESSAGES_PER_REQUEST, max_results - len(records))
+            batch_limit = min(MAX_MESSAGES_PER_REQUEST, max_results - channel_emitted)
 
             messages = await client.get_messages(
                 entity,
@@ -858,7 +869,7 @@ class TelegramCollector(ArenaCollector):
                     continue
                 msg_date = msg.date
                 if msg_date and msg_date.tzinfo is None:
-                    msg_date = msg_date.replace(tzinfo=timezone.utc)
+                    msg_date = msg_date.replace(tzinfo=UTC)
 
                 if date_from and msg_date and msg_date < date_from:
                     stop_early = True
@@ -871,17 +882,16 @@ class TelegramCollector(ArenaCollector):
                 if pid in seen:
                     continue
                 seen.add(pid)
-                records.append(self.normalize(raw_dict))
+                self._emit(self.normalize(raw_dict))
+                channel_emitted += 1
 
-                if len(records) >= max_results:
+                if channel_emitted >= max_results:
                     break
 
             if stop_early or len(messages) < batch_limit:
                 break
 
             offset_id = messages[-1].id
-
-        return records
 
 
 # ---------------------------------------------------------------------------
@@ -914,7 +924,7 @@ def _message_to_dict(message: Any, channel_entity: Any) -> dict[str, Any]:
     if message.date:
         dt = message.date
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         published_at = dt.isoformat()
 
     # Edit date
@@ -922,7 +932,7 @@ def _message_to_dict(message: Any, channel_entity: Any) -> dict[str, Any]:
     if getattr(message, "edit_date", None):
         ed = message.edit_date
         if ed.tzinfo is None:
-            ed = ed.replace(tzinfo=timezone.utc)
+            ed = ed.replace(tzinfo=UTC)
         edit_date = ed.isoformat()
 
     # Forwarded message metadata
@@ -1017,7 +1027,7 @@ def _parse_datetime(value: datetime | str | None) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
     if isinstance(value, str):
         value = value.strip()
         if not value:
@@ -1030,7 +1040,7 @@ def _parse_datetime(value: datetime | str | None) -> datetime | None:
         ):
             try:
                 dt = datetime.strptime(value, fmt)
-                return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+                return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
             except ValueError:
                 continue
     return None

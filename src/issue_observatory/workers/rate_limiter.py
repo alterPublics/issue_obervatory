@@ -20,9 +20,9 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import AsyncGenerator
 
 import redis.asyncio as aioredis
 
@@ -694,7 +694,7 @@ async def get_redis_client() -> aioredis.Redis:
         A connected :class:`redis.asyncio.Redis` instance.
     """
     try:
-        from issue_observatory.config.settings import get_settings  # noqa: PLC0415
+        from issue_observatory.config.settings import get_settings
 
         settings = get_settings()
         redis_url = str(settings.redis_url)

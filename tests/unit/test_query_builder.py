@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import uuid
 
-import pytest
-
 from issue_observatory.arenas.query_builder import (
     build_boolean_query_groups,
     format_boolean_query_for_platform,
@@ -20,7 +18,6 @@ from issue_observatory.arenas.query_builder import (
     match_groups_in_text,
     term_in_text,
 )
-
 
 # ---------------------------------------------------------------------------
 # H-06: build_boolean_query_groups()

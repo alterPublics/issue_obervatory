@@ -101,7 +101,7 @@ async def _check_celery_workers() -> str:
     """
     try:
         # Import Celery app here to avoid circular imports at module load.
-        from issue_observatory.workers.celery_app import (  # noqa: PLC0415
+        from issue_observatory.workers.celery_app import (
             celery_app,
         )
 
@@ -221,7 +221,7 @@ async def arenas_health() -> JSONResponse:
     autodiscover()
     arenas = list_arenas()
 
-    from issue_observatory.arenas.registry import get_arena  # noqa: PLC0415
+    from issue_observatory.arenas.registry import get_arena
 
     tasks = [
         _arena_health(info["platform_name"], get_arena(info["platform_name"]))
@@ -272,7 +272,7 @@ async def cleanup_stale_runs(
     Requires:
         Admin role via ``require_admin`` dependency.
     """
-    from issue_observatory.workers._task_helpers import (  # noqa: PLC0415
+    from issue_observatory.workers._task_helpers import (
         fetch_stale_runs,
         mark_runs_failed,
     )

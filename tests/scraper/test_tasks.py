@@ -7,22 +7,16 @@ using mocked DB session and mocked HTTP fetcher.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from issue_observatory.scraper.tasks import (
-    _get_thin_records,
-    _increment_counter,
-    _insert_manual_record,
     _load_job,
     _run_scraping,
-    _update_content_record_v2,
-    _update_job,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -82,7 +76,7 @@ class TestRunScrapingCollectionRun:
         job_id = str(uuid.uuid4())
         run_id = str(uuid.uuid4())
         record_id = str(uuid.uuid4())
-        pub_at = datetime.now(tz=timezone.utc)
+        pub_at = datetime.now(tz=UTC)
         url = "https://example.com/article"
 
         job = _make_job(source_type="collection_run", source_collection_run_id=run_id)

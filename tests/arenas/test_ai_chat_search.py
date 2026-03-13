@@ -46,15 +46,15 @@ os.environ.setdefault(
     "CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA=="
 )
 
-from issue_observatory.arenas.ai_chat_search import _openrouter, _query_expander  # noqa: E402
-from issue_observatory.arenas.ai_chat_search._records import (  # noqa: E402
+from issue_observatory.arenas.ai_chat_search import _openrouter, _query_expander
+from issue_observatory.arenas.ai_chat_search._records import (
     make_citation_record,
     make_response_record,
 )
-from issue_observatory.arenas.ai_chat_search.collector import AiChatSearchCollector  # noqa: E402
-from issue_observatory.arenas.ai_chat_search.config import OPENROUTER_API_URL  # noqa: E402
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.core.exceptions import (  # noqa: E402
+from issue_observatory.arenas.ai_chat_search.collector import AiChatSearchCollector
+from issue_observatory.arenas.ai_chat_search.config import OPENROUTER_API_URL
+from issue_observatory.arenas.base import Tier
+from issue_observatory.core.exceptions import (
     ArenaAuthError,
     ArenaCollectionError,
     ArenaRateLimitError,

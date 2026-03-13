@@ -1,6 +1,55 @@
 # QA Guardian — Status
 
-_Last updated: 2026-02-19 (Greenland Roadmap GR-01 through GR-22 post-implementation QA review — conditional pass, no blockers, 4 warnings)_
+_Last updated: 2026-03-05 (Actor Workflow Redesign QA review -- BLOCKED, 1 blocker, 2 major issues)_
+
+---
+
+## Blocked
+
+- **Actor Workflow Redesign**: `executePort()` in `actors/list.html` overwrites existing source lists (data loss). See B-1 below. Additionally, dual-mode arenas get incorrectly marked failed before actor dispatch (M-1), and 5 collectors are missing `supports_actor_collection = True` (M-2).
+
+---
+
+## Actor Workflow Redesign -- QA Review (2026-03-05)
+
+### BLOCKER B-1: `executePort()` overwrites existing source lists (DATA LOSS)
+
+- **File**: `src/issue_observatory/api/templates/actors/list.html`, line 1472
+- **Impact**: When porting accounts from the staging area, existing source list entries are silently replaced instead of appended.
+- **Root cause**: `executePort()` calls `PATCH /query-designs/{id}/arena-config/{arenaName}` with only the new identifiers. The PATCH endpoint replaces the key value. But the dedicated `POST /actors/port-to-project` endpoint (which correctly deduplicates and appends) is implemented but not called.
+- **Fix**: Change `executePort()` to call `POST /actors/port-to-project` instead of the PATCH endpoint.
+
+### MAJOR M-1: Dual-mode arena prematurely marked failed before actor dispatch
+
+- **File**: `src/issue_observatory/workers/tasks.py`, lines 1392-1438
+- **Impact**: If a Bluesky (or similar dual-mode) arena has a source list but no search terms, the CollectionTask is marked "failed" BEFORE the source list check runs. An actor-based collection task is then dispatched against an already-failed CollectionTask row, creating a race condition.
+- **Fix**: Move the "no search terms" failure to after the source list check. Only fail when neither terms nor source list exist.
+
+### MAJOR M-2: Five collectors missing `supports_actor_collection = True`
+
+- **Files**: `telegram/collector.py`, `rss_feeds/collector.py`, `reddit/collector.py`, `discord/collector.py`, `wikipedia/collector.py`
+- **Impact**: Registry API reports incorrect arena capabilities. These arenas implement `collect_by_actors()` and have `source_list_config_key` set, but `supports_actor_collection` defaults to `False`.
+- **Fix**: Add `supports_actor_collection: bool = True` to each.
+
+### MINOR m-1: Dual-mode dispatch overwrites celery_task_id (debugging only)
+
+- **File**: `src/issue_observatory/workers/tasks.py`, lines 1764-1767
+- **Impact**: When both `collect_by_terms` and `collect_by_actors` are dispatched, the second celery_task_id overwrites the first in the DB.
+
+### MINOR m-2: `POST /actors/port-to-project` endpoint is implemented but unused
+
+- **File**: `src/issue_observatory/api/routes/actors.py`, lines 3046-3205
+- **Impact**: Dead code; resolves itself when B-1 is fixed by switching `executePort()` to this endpoint.
+
+### MINOR m-3: Two unused `noqa: PLC0415` directives in `actors.py`
+
+- **File**: `src/issue_observatory/api/routes/actors.py`, lines 3084-3085
+- **Fix**: Remove the `# noqa: PLC0415` comments.
+
+### MINOR m-4: New arenas missing from `ARENA_CUSTOM_CONFIG` registry
+
+- **File**: `src/issue_observatory/arenas/registry.py`, lines 188-279
+- **Impact**: Collection launcher UI will not show source list hints for Bluesky, X/Twitter, YouTube, TikTok, Threads, Gab.
 
 ---
 

@@ -19,7 +19,7 @@ The normalization logic here is based on 4CAT's SearchLinkedIn.map_item() implem
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -240,7 +240,7 @@ class LinkedInNormalizer:
         if not timestamp_collected_ms or not time_ago_str:
             return None
 
-        collected_at = datetime.fromtimestamp(timestamp_collected_ms / 1000, tz=timezone.utc)
+        collected_at = datetime.fromtimestamp(timestamp_collected_ms / 1000, tz=UTC)
 
         # Parse time_ago_str to timedelta
         offset = self._parse_time_ago(time_ago_str)

@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -54,7 +54,6 @@ from issue_observatory.arenas.web.common_crawl.config import (
     CC_TIERS,
 )
 from issue_observatory.config.tiers import TierConfig
-from issue_observatory.core.exceptions import ArenaRateLimitError
 from issue_observatory.core.normalizer import Normalizer
 
 logger = logging.getLogger(__name__)
@@ -172,6 +171,8 @@ class CommonCrawlCollector(ArenaCollector):
                     client, semaphore, term, cc_from, cc_to, remaining, seen_keys
                 )
                 all_records.extend(term_records)
+                self._record_input_count(term, len(term_records))
+                self._flush()
 
         logger.info(
             "common_crawl: collect_by_terms — %d records for %d queries",
@@ -228,6 +229,7 @@ class CommonCrawlCollector(ArenaCollector):
                     client, semaphore, domain, cc_from, cc_to, remaining, seen_keys
                 )
                 all_records.extend(domain_records)
+                self._flush()
 
         logger.info(
             "common_crawl: collect_by_actors — %d records for %d domains",
@@ -344,7 +346,7 @@ class CommonCrawlCollector(ArenaCollector):
             Dict with ``status``, ``arena``, ``platform``, ``checked_at``,
             and optionally ``latest_index`` and ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -380,7 +382,7 @@ class CommonCrawlCollector(ArenaCollector):
             }
         except httpx.RequestError as exc:
             return {**base, "status": "down", "detail": f"Connection error: {exc}"}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {**base, "status": "down", "detail": f"Unexpected error: {exc}"}
 
     # ------------------------------------------------------------------
@@ -413,7 +415,7 @@ class CommonCrawlCollector(ArenaCollector):
                     timeout=CC_RATE_LIMIT_TIMEOUT,
                 )
                 return
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "common_crawl: rate_limiter.wait_for_slot failed (%s) — sleeping 1s", exc
                 )

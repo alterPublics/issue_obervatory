@@ -38,7 +38,7 @@ import json
 import uuid as uuid_mod
 import xml.etree.ElementTree as ET
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -104,7 +104,7 @@ _COLUMN_HEADERS: dict[str, str] = {
 }
 
 
-def _safe_str(value: Any) -> str:  # noqa: ANN401
+def _safe_str(value: Any) -> str:
     """Coerce a record value to a safe UTF-8 string for CSV/XLSX output.
 
     Lists (e.g. ``search_terms_matched``) are joined with ``|`` so that each
@@ -190,7 +190,7 @@ class ContentExporter:
             writer.writerow(row)
 
         # UTF-8 BOM so Excel auto-detects encoding for Danish characters (æøå).
-        return "\ufeff".encode("utf-8") + buf.getvalue().encode("utf-8")
+        return "\ufeff".encode() + buf.getvalue().encode("utf-8")
 
     # ------------------------------------------------------------------
     # XLSX
@@ -295,7 +295,7 @@ class ContentExporter:
         """
         import uuid
 
-        def _default(obj: Any) -> str:  # noqa: ANN401
+        def _default(obj: Any) -> str:
             if isinstance(obj, datetime):
                 return obj.isoformat()
             if isinstance(obj, uuid.UUID):
@@ -364,7 +364,7 @@ class ContentExporter:
                     if isinstance(val, datetime):
                         # Convert to UTC-aware, then to microseconds timestamp
                         if val.tzinfo is None:
-                            val = val.replace(tzinfo=timezone.utc)
+                            val = val.replace(tzinfo=UTC)
                         column_data[col].append(val)
                     else:
                         column_data[col].append(None)
@@ -444,7 +444,7 @@ class ContentExporter:
         Returns:
             A ``(gexf_root, graph_element)`` tuple ready for node/edge children.
         """
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         gexf = ET.Element(
             "gexf",
             {
@@ -946,7 +946,7 @@ class ContentExporter:
         Returns:
             UTF-8 encoded GEXF XML bytes with ``mode="dynamic"``.
         """
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
 
         gexf = ET.Element(
             "gexf",
@@ -1118,7 +1118,7 @@ class ContentExporter:
                 try:
                     year = str(published_at.year) if hasattr(published_at, "year") else str(published_at)[:4]
                     lines.append(f"PY  - {year}")
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
 
             platform = rec.get("platform") or ""
@@ -1169,7 +1169,7 @@ class ContentExporter:
         Returns:
             UTF-8 encoded BibTeX bytes.
         """
-        import hashlib  # stdlib — always available  # noqa: PLC0415
+        import hashlib  # stdlib — always available
 
         _LATEX_ESCAPE: list[tuple[str, str]] = [
             ("\\", "\\textbackslash{}"),
@@ -1224,7 +1224,7 @@ class ContentExporter:
                 try:
                     year = str(published_at.year) if hasattr(published_at, "year") else str(published_at)[:4]
                     lines.append(f"  year = {{{year}}},")
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
 
             terms = rec.get("search_terms_matched") or []

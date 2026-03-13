@@ -10,11 +10,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-from issue_observatory.core.models.actors import ActorType
 
 #: All valid actor type string values, derived from the ActorType enum.
 #: Used as a Literal type constraint in Pydantic schemas.
@@ -49,9 +47,9 @@ class ActorPresenceCreate(BaseModel):
     """
 
     platform: str = Field(..., min_length=1, max_length=50)
-    platform_user_id: Optional[str] = Field(default=None, max_length=500)
-    platform_username: Optional[str] = Field(default=None, max_length=500)
-    profile_url: Optional[str] = Field(default=None, max_length=2000)
+    platform_user_id: str | None = Field(default=None, max_length=500)
+    platform_username: str | None = Field(default=None, max_length=500)
+    profile_url: str | None = Field(default=None, max_length=2000)
 
     @field_validator("platform_user_id", "platform_username", mode="before")
     @classmethod
@@ -82,12 +80,12 @@ class PresenceResponse(BaseModel):
     id: uuid.UUID
     actor_id: uuid.UUID
     platform: str
-    platform_user_id: Optional[str]
-    platform_username: Optional[str]
-    profile_url: Optional[str]
+    platform_user_id: str | None
+    platform_username: str | None
+    profile_url: str | None
     verified: bool
-    follower_count: Optional[int]
-    last_checked_at: Optional[datetime]
+    follower_count: int | None
+    last_checked_at: datetime | None
 
 
 # ---------------------------------------------------------------------------
@@ -118,8 +116,8 @@ class ActorCreate(BaseModel):
     """
 
     canonical_name: str = Field(..., min_length=1, max_length=500)
-    actor_type: Optional[ACTOR_TYPE_VALUES] = Field(default=None)
-    description: Optional[str] = Field(default=None)
+    actor_type: ACTOR_TYPE_VALUES | None = Field(default=None)
+    description: str | None = Field(default=None)
     is_shared: bool = Field(default=False)
     public_figure: bool = Field(
         default=False,
@@ -128,7 +126,7 @@ class ActorCreate(BaseModel):
             "Use only for elected/appointed officials in official capacity."
         ),
     )
-    presence: Optional[ActorPresenceCreate] = Field(default=None)
+    presence: ActorPresenceCreate | None = Field(default=None)
 
 
 class ActorUpdate(BaseModel):
@@ -150,11 +148,11 @@ class ActorUpdate(BaseModel):
             must remain pseudonymized regardless of public prominence.
     """
 
-    canonical_name: Optional[str] = Field(default=None, min_length=1, max_length=500)
-    actor_type: Optional[ACTOR_TYPE_VALUES] = Field(default=None)
-    description: Optional[str] = Field(default=None)
-    is_shared: Optional[bool] = Field(default=None)
-    public_figure: Optional[bool] = Field(
+    canonical_name: str | None = Field(default=None, min_length=1, max_length=500)
+    actor_type: ACTOR_TYPE_VALUES | None = Field(default=None)
+    description: str | None = Field(default=None)
+    is_shared: bool | None = Field(default=None)
+    public_figure: bool | None = Field(
         default=None,
         description=(
             "GR-14 GDPR Art. 89(1) exemption: bypasses SHA-256 pseudonymization. "
@@ -184,9 +182,9 @@ class ActorResponse(BaseModel):
 
     id: uuid.UUID
     canonical_name: str
-    actor_type: Optional[ACTOR_TYPE_VALUES]
-    description: Optional[str]
-    created_by: Optional[uuid.UUID]
+    actor_type: ACTOR_TYPE_VALUES | None
+    description: str | None
+    created_by: uuid.UUID | None
     is_shared: bool
     public_figure: bool = False
     created_at: datetime

@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Generator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
 
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import (
@@ -39,9 +38,6 @@ from sqlalchemy.orm import Session, sessionmaker
 # ---------------------------------------------------------------------------
 from issue_observatory.core.models.base import Base  # noqa: F401
 
-if TYPE_CHECKING:
-    pass
-
 
 def _build_engine(database_url: str):
     """Create the async engine from a database URL.
@@ -52,9 +48,11 @@ def _build_engine(database_url: str):
     return create_async_engine(
         database_url,
         echo=False,
-        pool_size=10,
-        max_overflow=20,
+        pool_size=5,
+        max_overflow=10,
         pool_pre_ping=True,
+        pool_timeout=30,
+        pool_recycle=600,
     )
 
 
@@ -64,7 +62,7 @@ def _get_database_url() -> str:
     Imported lazily so that test code can patch settings before the engine
     is created.
     """
-    from issue_observatory.config.settings import get_settings  # noqa: PLC0415
+    from issue_observatory.config.settings import get_settings
 
     return str(get_settings().database_url)
 
@@ -102,9 +100,10 @@ AsyncSessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
 
 _sync_engine = create_engine(
     _get_sync_database_url(),
-    pool_size=5,
-    max_overflow=10,
+    pool_size=1,
+    max_overflow=2,
     pool_pre_ping=True,
+    pool_recycle=600,
 )
 
 SyncSessionLocal: sessionmaker[Session] = sessionmaker(

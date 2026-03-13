@@ -29,7 +29,7 @@ os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test_observatory")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 
-from issue_observatory.api.routes.arenas import list_available_arenas  # noqa: E402
+from issue_observatory.api.routes.arenas import list_available_arenas
 
 # ---------------------------------------------------------------------------
 # Sample arena registry data returned by the mocked list_arenas()

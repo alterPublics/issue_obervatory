@@ -68,8 +68,8 @@ must be redacted before the record reaches any renderer."""
 
 
 def _redact_secrets(
-    logger: WrappedLogger,  # noqa: ARG001
-    method_name: str,  # noqa: ARG001
+    logger: WrappedLogger,
+    method_name: str,
     event_dict: EventDict,
 ) -> EventDict:
     """Replace values of secret-bearing keys with a redaction marker.
@@ -101,8 +101,8 @@ def _redact_secrets(
 
 
 def _inject_request_id(
-    logger: WrappedLogger,  # noqa: ARG001
-    method_name: str,  # noqa: ARG001
+    logger: WrappedLogger,
+    method_name: str,
     event_dict: EventDict,
 ) -> EventDict:
     """Inject the current request ID into the log event dict if set.

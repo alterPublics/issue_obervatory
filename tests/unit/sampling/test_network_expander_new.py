@@ -36,19 +36,13 @@ os.environ.setdefault(
     "CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA=="
 )
 
-from issue_observatory.sampling.network_expander import (  # noqa: E402
-    NetworkExpander,
+from issue_observatory.sampling.network_expander import (
     _COMENTION_MIN_RECORDS,
-    _GAB_API_BASE,
-    _TIKTOK_FOLLOWERS_URL,
-    _TIKTOK_FOLLOWING_URL,
     _TIKTOK_OAUTH_URL,
-    _TWITTERAPIIO_FOLLOWERS_URL,
-    _TWITTERAPIIO_FOLLOWING_URL,
     _URL_PLATFORM_MAP,
+    NetworkExpander,
     _make_actor_dict,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

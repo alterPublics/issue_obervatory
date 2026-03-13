@@ -251,6 +251,32 @@
                 </p>
             </div>
 
+            {# Content type filter (posts vs comments) #}
+            <div>
+                <p class="text-xs font-medium text-gray-700 mb-1.5 uppercase tracking-wider">Content Type</p>
+                <div class="space-y-1">
+                    <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                        <input type="checkbox"
+                               name="content_types"
+                               value="post"
+                               {% if "post" in (filter.content_types | default(["post"])) %}checked{% endif %}
+                               class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                        Posts
+                    </label>
+                    <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                        <input type="checkbox"
+                               name="content_types"
+                               value="comment"
+                               {% if "comment" in (filter.content_types | default([])) %}checked{% endif %}
+                               class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                        Comments
+                    </label>
+                </div>
+                <p class="text-xs text-gray-400 mt-0.5">
+                    Comments are unchecked by default. Check to include comment records.
+                </p>
+            </div>
+
             {# Reset filters button #}
             <div class="pt-2">
                 <a href="/content"

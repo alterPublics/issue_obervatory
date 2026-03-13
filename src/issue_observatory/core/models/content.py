@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
@@ -88,7 +88,7 @@ class UniversalContentRecord(Base):
         primary_key=True,
         server_default=sa.text("gen_random_uuid()"),
     )
-    published_at: Mapped[Optional[datetime]] = mapped_column(
+    published_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True),
         primary_key=True,
         nullable=True,
@@ -105,7 +105,7 @@ class UniversalContentRecord(Base):
         sa.String(50),
         nullable=False,
     )
-    platform_id: Mapped[Optional[str]] = mapped_column(
+    platform_id: Mapped[str | None] = mapped_column(
         sa.String(500),
         nullable=True,
     )
@@ -113,7 +113,7 @@ class UniversalContentRecord(Base):
         sa.String(50),
         nullable=False,
     )
-    url: Mapped[Optional[str]] = mapped_column(
+    url: Mapped[str | None] = mapped_column(
         sa.String(2000),
         nullable=True,
     )
@@ -121,15 +121,15 @@ class UniversalContentRecord(Base):
     # ------------------------------------------------------------------
     # Text payload
     # ------------------------------------------------------------------
-    text_content: Mapped[Optional[str]] = mapped_column(
+    text_content: Mapped[str | None] = mapped_column(
         sa.Text,
         nullable=True,
     )
-    title: Mapped[Optional[str]] = mapped_column(
+    title: Mapped[str | None] = mapped_column(
         sa.Text,
         nullable=True,
     )
-    language: Mapped[Optional[str]] = mapped_column(
+    language: Mapped[str | None] = mapped_column(
         sa.String(10),
         nullable=True,
     )
@@ -146,21 +146,21 @@ class UniversalContentRecord(Base):
     # ------------------------------------------------------------------
     # Author — denormalized for query speed
     # ------------------------------------------------------------------
-    author_platform_id: Mapped[Optional[str]] = mapped_column(
+    author_platform_id: Mapped[str | None] = mapped_column(
         sa.String(500),
         nullable=True,
     )
-    author_display_name: Mapped[Optional[str]] = mapped_column(
+    author_display_name: Mapped[str | None] = mapped_column(
         sa.String(500),
         nullable=True,
     )
-    author_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    author_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("actors.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
-    pseudonymized_author_id: Mapped[Optional[str]] = mapped_column(
+    pseudonymized_author_id: Mapped[str | None] = mapped_column(
         sa.String(64),
         nullable=True,
     )
@@ -168,23 +168,23 @@ class UniversalContentRecord(Base):
     # ------------------------------------------------------------------
     # Engagement metrics
     # ------------------------------------------------------------------
-    views_count: Mapped[Optional[int]] = mapped_column(
+    views_count: Mapped[int | None] = mapped_column(
         sa.BigInteger,
         nullable=True,
     )
-    likes_count: Mapped[Optional[int]] = mapped_column(
+    likes_count: Mapped[int | None] = mapped_column(
         sa.BigInteger,
         nullable=True,
     )
-    shares_count: Mapped[Optional[int]] = mapped_column(
+    shares_count: Mapped[int | None] = mapped_column(
         sa.BigInteger,
         nullable=True,
     )
-    comments_count: Mapped[Optional[int]] = mapped_column(
+    comments_count: Mapped[int | None] = mapped_column(
         sa.BigInteger,
         nullable=True,
     )
-    engagement_score: Mapped[Optional[float]] = mapped_column(
+    engagement_score: Mapped[float | None] = mapped_column(
         sa.Float,
         nullable=True,
     )
@@ -192,17 +192,17 @@ class UniversalContentRecord(Base):
     # ------------------------------------------------------------------
     # Collection context
     # ------------------------------------------------------------------
-    collection_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    collection_run_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("collection_runs.id", ondelete="SET NULL"),
         nullable=True,
     )
-    query_design_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    query_design_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         sa.ForeignKey("query_designs.id", ondelete="SET NULL"),
         nullable=True,
     )
-    search_terms_matched: Mapped[Optional[list]] = mapped_column(
+    search_terms_matched: Mapped[list | None] = mapped_column(
         sa.ARRAY(sa.Text),
         nullable=True,
     )
@@ -214,12 +214,12 @@ class UniversalContentRecord(Base):
     # ------------------------------------------------------------------
     # Platform-specific payload (Layer 2)
     # ------------------------------------------------------------------
-    raw_metadata: Mapped[Optional[dict]] = mapped_column(
+    raw_metadata: Mapped[dict | None] = mapped_column(
         JSONB,
         nullable=True,
         server_default=sa.text("'{}'"),
     )
-    media_urls: Mapped[Optional[list]] = mapped_column(
+    media_urls: Mapped[list | None] = mapped_column(
         sa.ARRAY(sa.Text),
         nullable=True,
     )
@@ -227,7 +227,7 @@ class UniversalContentRecord(Base):
     # ------------------------------------------------------------------
     # Scrape & match status
     # ------------------------------------------------------------------
-    scrape_status: Mapped[Optional[str]] = mapped_column(
+    scrape_status: Mapped[str | None] = mapped_column(
         sa.String(20),
         nullable=True,
         comment=(
@@ -248,11 +248,11 @@ class UniversalContentRecord(Base):
     # ------------------------------------------------------------------
     # Deduplication
     # ------------------------------------------------------------------
-    content_hash: Mapped[Optional[str]] = mapped_column(
+    content_hash: Mapped[str | None] = mapped_column(
         sa.String(64),
         nullable=True,
     )
-    simhash: Mapped[Optional[int]] = mapped_column(
+    simhash: Mapped[int | None] = mapped_column(
         sa.BigInteger,
         nullable=True,
     )
@@ -312,17 +312,17 @@ class UniversalContentRecord(Base):
     # Relationships (load-time only; partitioned tables work normally for
     # SELECT queries that include published_at in the WHERE clause)
     # ------------------------------------------------------------------
-    author: Mapped[Optional[Actor]] = relationship(
+    author: Mapped[Actor | None] = relationship(
         "Actor",
         foreign_keys=[author_id],
         lazy="select",
     )
-    collection_run: Mapped[Optional[CollectionRun]] = relationship(
+    collection_run: Mapped[CollectionRun | None] = relationship(
         "CollectionRun",
         foreign_keys=[collection_run_id],
         lazy="select",
     )
-    query_design: Mapped[Optional[QueryDesign]] = relationship(
+    query_design: Mapped[QueryDesign | None] = relationship(
         "QueryDesign",
         foreign_keys=[query_design_id],
         lazy="select",

@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -49,7 +49,7 @@ def parse_date_bound(value: datetime | str | None) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
     for fmt in (
         "%Y-%m-%dT%H:%M:%S%z",
         "%Y-%m-%dT%H:%M:%SZ",
@@ -58,7 +58,7 @@ def parse_date_bound(value: datetime | str | None) -> datetime | None:
     ):
         try:
             dt = datetime.strptime(value, fmt)
-            return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+            return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
         except ValueError:
             continue
     logger.warning("discord: could not parse date bound '%s'", value)
@@ -80,7 +80,7 @@ def parse_iso_timestamp(value: str | None) -> datetime | None:
         return None
     try:
         dt = datetime.fromisoformat(value)
-        return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
     except ValueError:
         return None
 

@@ -25,18 +25,16 @@ from __future__ import annotations
 
 import asyncio
 import calendar
-import hashlib
 import logging
 import re
-import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import feedparser
 import httpx
 
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
-from issue_observatory.arenas.query_builder import build_boolean_query_groups, match_groups_in_text
+from issue_observatory.arenas.query_builder import match_groups_in_text
 from issue_observatory.arenas.registry import register
 from issue_observatory.arenas.rss_feeds.config import (
     FETCH_CONCURRENCY,
@@ -105,6 +103,8 @@ class RSSFeedsCollector(ArenaCollector):
     platform_name: str = "rss_feeds"
     supported_tiers: list[Tier] = [Tier.FREE]
     temporal_mode: TemporalMode = TemporalMode.FORWARD_ONLY
+    source_list_config_key: str | None = "custom_feeds"
+    supports_actor_collection: bool = True
 
     # The logical arena group stored in the content_records ``arena`` column.
     # Distinct from ``arena_name`` which is used as the registry key.
@@ -189,7 +189,7 @@ class RSSFeedsCollector(ArenaCollector):
             lower_terms = [t.lower() for t in terms]
             lower_groups = [[t] for t in lower_terms]  # each term = own OR group
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         # Merge extra researcher-supplied feed URLs into the active feed dict.
         effective_feeds = _merge_extra_feeds(self._feeds, extra_feed_urls)
@@ -227,7 +227,7 @@ class RSSFeedsCollector(ArenaCollector):
         entries_after_date_filter = 0
 
         for feed_key, outlet_slug, entry in raw_entries:
-            if len(all_records) >= effective_max:
+            if self._total_emitted >= effective_max:
                 break
 
             entries_checked += 1
@@ -254,12 +254,13 @@ class RSSFeedsCollector(ArenaCollector):
                 outlet_slug=outlet_slug,
                 search_terms_matched=matched_terms,
             )
-            all_records.append(record)
+            self._emit(record)
+            self._flush()
 
         logger.info(
             "rss_feeds: collect_by_terms — %d entries matched (checked %d entries, "
             "%d passed date filters) from %d total entries across %d feeds",
-            len(all_records),
+            self._total_emitted,
             entries_checked,
             entries_after_date_filter,
             len(raw_entries),
@@ -267,7 +268,7 @@ class RSSFeedsCollector(ArenaCollector):
         )
 
         # If no matches found, log diagnostic information
-        if not all_records and raw_entries:
+        if self._total_emitted == 0 and raw_entries:
             logger.warning(
                 "rss_feeds: NO MATCHES FOUND for search terms %s. "
                 "%d entries were fetched but none matched the search criteria. "
@@ -287,7 +288,8 @@ class RSSFeedsCollector(ArenaCollector):
                     title,
                     summary_preview,
                 )
-        return all_records
+        self._flush()
+        return list(self._batch_buffer)
 
     async def collect_by_actors(
         self,
@@ -345,13 +347,13 @@ class RSSFeedsCollector(ArenaCollector):
             )
             return []
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
 
         async with self._build_http_client() as client:
             raw_entries = await self._fetch_feeds(client, target_feeds)
 
         for feed_key, outlet_slug, entry in raw_entries:
-            if len(all_records) >= effective_max:
+            if self._total_emitted >= effective_max:
                 break
 
             pub_dt = _entry_datetime(entry)
@@ -366,14 +368,16 @@ class RSSFeedsCollector(ArenaCollector):
                 outlet_slug=outlet_slug,
                 search_terms_matched=[],
             )
-            all_records.append(record)
+            self._emit(record)
+            self._flush()
 
         logger.info(
             "rss_feeds: collect_by_actors — %d entries from %d feeds",
-            len(all_records),
+            self._total_emitted,
             len(target_feeds),
         )
-        return all_records
+        self._flush()
+        return list(self._batch_buffer)
 
     def get_tier_config(self, tier: Tier) -> TierConfig:
         """Return tier configuration for the RSS Feeds arena.
@@ -423,7 +427,7 @@ class RSSFeedsCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
             ``arena``, ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -461,7 +465,7 @@ class RSSFeedsCollector(ArenaCollector):
             }
         except httpx.RequestError as exc:
             return {**base, "status": "down", "detail": f"Connection error: {exc}"}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {**base, "status": "down", "detail": f"Unexpected error: {exc}"}
 
     # ------------------------------------------------------------------
@@ -520,7 +524,7 @@ class RSSFeedsCollector(ArenaCollector):
         failed_feeds = 0
         empty_feeds = 0
 
-        for feed_key, result in zip(feeds.keys(), results):
+        for feed_key, result in zip(feeds.keys(), results, strict=False):
             if isinstance(result, Exception):
                 failed_feeds += 1
                 logger.warning(
@@ -618,7 +622,7 @@ class RSSFeedsCollector(ArenaCollector):
         # Parse feed (feedparser is CPU-bound but fast enough to run inline)
         try:
             feed = feedparser.parse(response.text)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("rss_feeds: feedparser error for '%s': %s", feed_key, exc)
             return []
 
@@ -694,7 +698,7 @@ class RSSFeedsCollector(ArenaCollector):
         if pub_struct:
             try:
                 ts = calendar.timegm(pub_struct)
-                dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                dt = datetime.fromtimestamp(ts, tz=UTC)
                 published_at = dt.isoformat()
             except (TypeError, ValueError, OverflowError):
                 pass
@@ -761,14 +765,14 @@ def _parse_date_bound(value: datetime | str | None) -> datetime | None:
         return None
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
+            return value.replace(tzinfo=UTC)
         return value
     # Try ISO 8601 string
     for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
         try:
             dt = datetime.strptime(value, fmt)
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             return dt
         except ValueError:
             continue
@@ -790,7 +794,7 @@ def _entry_datetime(entry: Any) -> datetime | None:
         return None
     try:
         ts = calendar.timegm(pub_struct)
-        return datetime.fromtimestamp(ts, tz=timezone.utc)
+        return datetime.fromtimestamp(ts, tz=UTC)
     except (TypeError, ValueError, OverflowError):
         return None
 

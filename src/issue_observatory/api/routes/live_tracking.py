@@ -12,16 +12,15 @@ Routes:
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timedelta, timezone
-from typing import Annotated, Optional
+from datetime import UTC, date, datetime, timedelta
+from typing import Annotated
 
 import structlog
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from issue_observatory.api.dependencies import (
     get_current_active_user,
@@ -344,8 +343,8 @@ async def start_live_tracking(
             query_design_id=qd_id,
             mode="batch",
             tier=query_design.default_tier or "free",
-            date_from=datetime(yesterday.year, yesterday.month, yesterday.day, tzinfo=timezone.utc),
-            date_to=datetime(yesterday.year, yesterday.month, yesterday.day, 23, 59, 59, tzinfo=timezone.utc),
+            date_from=datetime(yesterday.year, yesterday.month, yesterday.day, tzinfo=UTC),
+            date_to=datetime(yesterday.year, yesterday.month, yesterday.day, 23, 59, 59, tzinfo=UTC),
         )
         try:
             await create_collection_run(request, backfill_payload, db, current_user)
@@ -367,8 +366,8 @@ async def start_live_tracking(
                 query_design_id=qd_id,
                 mode="batch",
                 tier=query_design.default_tier or "free",
-                date_from=datetime(gap_start.year, gap_start.month, gap_start.day, tzinfo=timezone.utc),
-                date_to=datetime(yesterday.year, yesterday.month, yesterday.day, 23, 59, 59, tzinfo=timezone.utc),
+                date_from=datetime(gap_start.year, gap_start.month, gap_start.day, tzinfo=UTC),
+                date_to=datetime(yesterday.year, yesterday.month, yesterday.day, 23, 59, 59, tzinfo=UTC),
             )
             try:
                 await create_collection_run(request, backfill_payload, db, current_user)

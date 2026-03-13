@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 from fastapi import Depends
 from sqlalchemy import func, select, update
@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 def _today() -> date:
     """Return today's date in UTC."""
-    return datetime.now(tz=timezone.utc).date()
+    return datetime.now(tz=UTC).date()
 
 
 # ---------------------------------------------------------------------------
@@ -222,11 +222,15 @@ class CreditService:
         """
         # Lazy imports to avoid circular dependencies and to allow tests to
         # run without a fully-wired arena registry.
-        from issue_observatory.arenas import registry as _registry  # noqa: PLC0415
-        from issue_observatory.config.tiers import TIER_DEFAULTS, Tier as TierEnum  # noqa: PLC0415
+        from issue_observatory.arenas import registry as _registry
+        from issue_observatory.config.tiers import TIER_DEFAULTS
+        from issue_observatory.config.tiers import Tier as TierEnum
 
         # Load query design to extract search terms for estimation
-        from issue_observatory.core.models.query_design import QueryDesign, SearchTerm  # noqa: PLC0415
+        from issue_observatory.core.models.query_design import (
+            QueryDesign,
+            SearchTerm,
+        )
 
         qd_stmt = select(QueryDesign).where(QueryDesign.id == query_design_id)
         qd_result = await self.session.execute(qd_stmt)
@@ -280,7 +284,7 @@ class CreditService:
                     platform_name,
                     credits_for_arena,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "estimate_credits() failed for platform '%s' (tier=%s): %s; defaulting to 0",
                     platform_name,
@@ -506,7 +510,7 @@ class CreditService:
             )
 
         # Update the parent CollectionRun.credits_spent aggregate
-        from issue_observatory.core.models.collection import CollectionRun  # noqa: PLC0415
+        from issue_observatory.core.models.collection import CollectionRun
 
         spent_stmt = (
             select(func.coalesce(func.sum(CreditTransaction.credits_consumed), 0))

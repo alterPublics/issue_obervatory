@@ -22,7 +22,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -36,13 +36,13 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.arenas.base import Tier  # noqa: E402
-from issue_observatory.arenas.tiktok.collector import TikTokCollector  # noqa: E402
-from issue_observatory.arenas.tiktok.config import (  # noqa: E402
+from issue_observatory.arenas.base import Tier
+from issue_observatory.arenas.tiktok.collector import TikTokCollector
+from issue_observatory.arenas.tiktok.config import (
     TIKTOK_OAUTH_URL,
     TIKTOK_VIDEO_QUERY_URL,
 )
-from issue_observatory.core.exceptions import (  # noqa: E402
+from issue_observatory.core.exceptions import (
     ArenaAuthError,
     ArenaRateLimitError,
     NoCredentialAvailableError,

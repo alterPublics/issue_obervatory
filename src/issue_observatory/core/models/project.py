@@ -13,17 +13,17 @@ Owned by the DB Engineer.
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from issue_observatory.core.models.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
     from issue_observatory.core.models.collection import CollectionRun
-    from issue_observatory.core.models.query_design import QueryDesign
+    from issue_observatory.core.models.query_design import ActorList, QueryDesign
     from issue_observatory.core.models.users import User
 
 
@@ -61,7 +61,7 @@ class Project(Base, TimestampMixin):
         sa.String(200),
         nullable=False,
     )
-    description: Mapped[Optional[str]] = mapped_column(
+    description: Mapped[str | None] = mapped_column(
         sa.Text,
         nullable=True,
     )
@@ -75,6 +75,24 @@ class Project(Base, TimestampMixin):
         sa.String(20),
         nullable=False,
         server_default=sa.text("'private'"),
+    )
+    source_config: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=sa.text("'{}'::jsonb"),
+        comment="Per-arena source lists shared by all query designs in this project.",
+    )
+    arenas_config: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=sa.text("'{}'::jsonb"),
+        comment="Project-level arena enable/disable. Intersection filter with QD arenas_config.",
+    )
+    comments_config: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=sa.text("'{}'::jsonb"),
+        comment="Per-platform comment collection config. Keys=platform, values={enabled, mode, ...}.",
     )
 
     # Relationships
@@ -90,6 +108,10 @@ class Project(Base, TimestampMixin):
     )
     collection_runs: Mapped[list[CollectionRun]] = relationship(
         "CollectionRun",
+        back_populates="project",
+    )
+    actor_lists: Mapped[list[ActorList]] = relationship(
+        "ActorList",
         back_populates="project",
     )
 

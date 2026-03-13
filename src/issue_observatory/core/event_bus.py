@@ -61,7 +61,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +73,7 @@ def publish_task_update(
     status: str,
     records_collected: int = 0,
     duplicates_skipped: int = 0,
-    error_message: Optional[str] = None,
+    error_message: str | None = None,
     elapsed_seconds: float = 0.0,
 ) -> None:
     """Publish a task-update event to the collection run's Redis pub/sub channel.
@@ -102,7 +101,7 @@ def publish_task_update(
             if not tracked by the caller.
     """
     try:
-        import redis as redis_lib  # noqa: PLC0415
+        import redis as redis_lib
 
         payload: dict = {
             "event": "task_update",
@@ -126,7 +125,7 @@ def publish_task_update(
             )
         finally:
             r.close()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "event_bus: failed to publish task_update for run=%s arena=%s: %s",
             run_id,
@@ -157,7 +156,7 @@ def publish_run_complete(
         credits_spent: Total credits consumed by this run.
     """
     try:
-        import redis as redis_lib  # noqa: PLC0415
+        import redis as redis_lib
 
         payload: dict = {
             "event": "run_complete",
@@ -177,7 +176,7 @@ def publish_run_complete(
             )
         finally:
             r.close()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(
             "event_bus: failed to publish run_complete for run=%s: %s",
             run_id,

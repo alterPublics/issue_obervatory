@@ -14,6 +14,7 @@ Owned by the Core Application Engineer.
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import Any
 
 import structlog
@@ -86,9 +87,9 @@ class NamedEntityExtractor(ContentEnricher):
             EnrichmentError: If spaCy raises an unexpected error during
                 entity extraction (does not apply in stub mode).
         """
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        processed_at = datetime.now(timezone.utc).isoformat()
+        processed_at = datetime.now(UTC).isoformat()
 
         try:
             import spacy  # noqa: F401

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -49,29 +48,29 @@ class ContentRecordRead(BaseModel):
     id: uuid.UUID
     platform: str
     arena: str
-    platform_id: Optional[str]
+    platform_id: str | None
     content_type: str
-    text_content: Optional[str]
-    title: Optional[str]
-    url: Optional[str]
-    language: Optional[str]
-    published_at: Optional[datetime]
+    text_content: str | None
+    title: str | None
+    url: str | None
+    language: str | None
+    published_at: datetime | None
     collected_at: datetime
-    author_platform_id: Optional[str]
-    author_display_name: Optional[str]
-    author_id: Optional[uuid.UUID]
-    pseudonymized_author_id: Optional[str]
-    views_count: Optional[int]
-    likes_count: Optional[int]
-    shares_count: Optional[int]
-    comments_count: Optional[int]
-    engagement_score: Optional[float]
-    collection_run_id: Optional[uuid.UUID]
-    query_design_id: Optional[uuid.UUID]
-    search_terms_matched: Optional[list[str]]
+    author_platform_id: str | None
+    author_display_name: str | None
+    author_id: uuid.UUID | None
+    pseudonymized_author_id: str | None
+    views_count: int | None
+    likes_count: int | None
+    shares_count: int | None
+    comments_count: int | None
+    engagement_score: float | None
+    collection_run_id: uuid.UUID | None
+    query_design_id: uuid.UUID | None
+    search_terms_matched: list[str] | None
     collection_tier: str
-    content_hash: Optional[str]
-    media_urls: Optional[list[str]]
-    raw_metadata: Optional[dict]
+    content_hash: str | None
+    media_urls: list[str] | None
+    raw_metadata: dict | None
 
     model_config = ConfigDict(from_attributes=True)

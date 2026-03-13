@@ -8,10 +8,9 @@ correctly handles both single-design and user-scope modes.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
 
 from issue_observatory.analysis.link_miner import LinkMiner
 from issue_observatory.core.models.collection import CollectionRun
@@ -57,7 +56,7 @@ async def test_link_miner_user_scope_mode(db_session, test_user):
     # Create content records with links in each run
     record1 = UniversalContentRecord(
         id=uuid.uuid4(),
-        published_at=datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc),
+        published_at=datetime(2024, 1, 15, 12, 0, tzinfo=UTC),
         collection_run_id=run1.id,
         query_design_id=qd1.id,
         platform="bluesky",
@@ -65,12 +64,12 @@ async def test_link_miner_user_scope_mode(db_session, test_user):
         content_type="post",
         text_content="Check out this Telegram channel: https://t.me/climateaction",
         url="https://bsky.app/profile/user1/post/abc123",
-        collected_at=datetime.now(tz=timezone.utc),
+        collected_at=datetime.now(tz=UTC),
         collection_tier="free",
     )
     record2 = UniversalContentRecord(
         id=uuid.uuid4(),
-        published_at=datetime(2024, 1, 16, 12, 0, tzinfo=timezone.utc),
+        published_at=datetime(2024, 1, 16, 12, 0, tzinfo=UTC),
         collection_run_id=run2.id,
         query_design_id=qd2.id,
         platform="reddit",
@@ -78,12 +77,12 @@ async def test_link_miner_user_scope_mode(db_session, test_user):
         content_type="post",
         text_content="Join the discussion at https://t.me/climateaction",
         url="https://reddit.com/r/politics/comments/xyz",
-        collected_at=datetime.now(tz=timezone.utc),
+        collected_at=datetime.now(tz=UTC),
         collection_tier="free",
     )
     record3 = UniversalContentRecord(
         id=uuid.uuid4(),
-        published_at=datetime(2024, 1, 17, 12, 0, tzinfo=timezone.utc),
+        published_at=datetime(2024, 1, 17, 12, 0, tzinfo=UTC),
         collection_run_id=run2.id,
         query_design_id=qd2.id,
         platform="reddit",
@@ -91,7 +90,7 @@ async def test_link_miner_user_scope_mode(db_session, test_user):
         content_type="post",
         text_content="Follow us on YouTube: https://www.youtube.com/@climatetv",
         url="https://reddit.com/r/politics/comments/abc",
-        collected_at=datetime.now(tz=timezone.utc),
+        collected_at=datetime.now(tz=UTC),
         collection_tier="free",
     )
     db_session.add_all([record1, record2, record3])
@@ -161,7 +160,7 @@ async def test_link_miner_single_design_mode(db_session, test_user):
     # Add content to design 1
     record1 = UniversalContentRecord(
         id=uuid.uuid4(),
-        published_at=datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc),
+        published_at=datetime(2024, 1, 15, 12, 0, tzinfo=UTC),
         collection_run_id=run1.id,
         query_design_id=qd1.id,
         platform="bluesky",
@@ -169,13 +168,13 @@ async def test_link_miner_single_design_mode(db_session, test_user):
         content_type="post",
         text_content="https://t.me/channel1",
         url="https://bsky.app/profile/user/post/1",
-        collected_at=datetime.now(tz=timezone.utc),
+        collected_at=datetime.now(tz=UTC),
         collection_tier="free",
     )
     # Add content to design 2
     record2 = UniversalContentRecord(
         id=uuid.uuid4(),
-        published_at=datetime(2024, 1, 16, 12, 0, tzinfo=timezone.utc),
+        published_at=datetime(2024, 1, 16, 12, 0, tzinfo=UTC),
         collection_run_id=run2.id,
         query_design_id=qd2.id,
         platform="bluesky",
@@ -183,7 +182,7 @@ async def test_link_miner_single_design_mode(db_session, test_user):
         content_type="post",
         text_content="https://t.me/channel2",
         url="https://bsky.app/profile/user/post/2",
-        collected_at=datetime.now(tz=timezone.utc),
+        collected_at=datetime.now(tz=UTC),
         collection_tier="free",
     )
     db_session.add_all([record1, record2])
@@ -255,7 +254,7 @@ async def test_link_miner_user_isolation(db_session, test_user, test_user_2):
     # User 1's content
     record1 = UniversalContentRecord(
         id=uuid.uuid4(),
-        published_at=datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc),
+        published_at=datetime(2024, 1, 15, 12, 0, tzinfo=UTC),
         collection_run_id=run1.id,
         query_design_id=qd1.id,
         platform="bluesky",
@@ -263,13 +262,13 @@ async def test_link_miner_user_isolation(db_session, test_user, test_user_2):
         content_type="post",
         text_content="https://t.me/user1channel",
         url="https://bsky.app/profile/user1/post/1",
-        collected_at=datetime.now(tz=timezone.utc),
+        collected_at=datetime.now(tz=UTC),
         collection_tier="free",
     )
     # User 2's content
     record2 = UniversalContentRecord(
         id=uuid.uuid4(),
-        published_at=datetime(2024, 1, 16, 12, 0, tzinfo=timezone.utc),
+        published_at=datetime(2024, 1, 16, 12, 0, tzinfo=UTC),
         collection_run_id=run2.id,
         query_design_id=qd2.id,
         platform="bluesky",
@@ -277,7 +276,7 @@ async def test_link_miner_user_isolation(db_session, test_user, test_user_2):
         content_type="post",
         text_content="https://t.me/user2channel",
         url="https://bsky.app/profile/user2/post/2",
-        collected_at=datetime.now(tz=timezone.utc),
+        collected_at=datetime.now(tz=UTC),
         collection_tier="free",
     )
     db_session.add_all([record1, record2])

@@ -54,7 +54,7 @@ Design notes
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -85,7 +85,7 @@ def _parse_published_at(value: Any) -> datetime | None:
         return None
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
+            return value.replace(tzinfo=UTC)
         return value
     if isinstance(value, str):
         stripped = value.strip()
@@ -94,7 +94,7 @@ def _parse_published_at(value: Any) -> datetime | None:
         try:
             dt = datetime.fromisoformat(stripped)
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             return dt
         except ValueError:
             logger.warning(
@@ -310,7 +310,7 @@ class CoordinationDetector(ContentEnricher):
                 "CoordinationDetector.enrich_cluster: empty cluster"
             )
 
-        computed_at: str = datetime.now(tz=timezone.utc).isoformat()
+        computed_at: str = datetime.now(tz=UTC).isoformat()
         cluster_id: str = str(records[0].get("near_duplicate_cluster_id") or "")
 
         # Build a sorted list of (published_at, author_id, platform) for

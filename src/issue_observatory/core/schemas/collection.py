@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -31,8 +30,8 @@ class CollectionRunCreate(BaseModel):
     query_design_id: uuid.UUID
     mode: str = Field(default="batch", pattern="^(batch|live)$")
     tier: str = Field(default="free", pattern="^(free|medium|premium)$")
-    date_from: Optional[datetime] = None
-    date_to: Optional[datetime] = None
+    date_from: datetime | None = None
+    date_to: datetime | None = None
     arenas_config: dict = Field(default_factory=dict)
 
 
@@ -64,17 +63,17 @@ class CollectionRunRead(BaseModel):
     """
 
     id: uuid.UUID
-    query_design_id: Optional[uuid.UUID]
-    project_id: Optional[uuid.UUID] = None
+    query_design_id: uuid.UUID | None
+    project_id: uuid.UUID | None = None
     initiated_by: uuid.UUID
     mode: str
     status: str
     tier: str
-    started_at: Optional[datetime]
-    completed_at: Optional[datetime]
-    suspended_at: Optional[datetime]
-    date_from: Optional[datetime]
-    date_to: Optional[datetime]
+    started_at: datetime | None
+    completed_at: datetime | None
+    suspended_at: datetime | None
+    date_from: datetime | None
+    date_to: datetime | None
     estimated_credits: int
     credits_spent: int
     records_collected: int
@@ -101,8 +100,8 @@ class ProjectCollectionCreate(BaseModel):
     project_id: uuid.UUID
     mode: str = Field(default="batch", pattern="^(batch|live)$")
     tier: str = Field(default="free", pattern="^(free|medium|premium)$")
-    date_from: Optional[datetime] = None
-    date_to: Optional[datetime] = None
+    date_from: datetime | None = None
+    date_to: datetime | None = None
     arenas_config: dict = Field(default_factory=dict)
 
 
@@ -124,8 +123,8 @@ class CreditEstimateRequest(BaseModel):
     query_design_id: uuid.UUID
     tier: str = Field(default="free", pattern="^(free|medium|premium)$")
     arenas_config: dict = Field(default_factory=dict)
-    date_from: Optional[datetime] = None
-    date_to: Optional[datetime] = None
+    date_from: datetime | None = None
+    date_to: datetime | None = None
 
 
 class CreditEstimateResponse(BaseModel):

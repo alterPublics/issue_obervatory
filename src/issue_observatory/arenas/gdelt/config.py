@@ -33,10 +33,14 @@ GDELT_RATE_LIMIT_KEY: str = "ratelimit:news_media:gdelt:shared"
 """Redis key for the GDELT shared rate limit slot."""
 
 GDELT_MAX_CALLS_PER_SECOND: int = 1
-"""Maximum GDELT DOC API calls per second (empirical limit)."""
+"""Maximum GDELT DOC API calls per window (empirical limit: ~1 per 5s)."""
 
-GDELT_RATE_WINDOW_SECONDS: int = 1
-"""Sliding window duration for the GDELT rate limit."""
+GDELT_RATE_WINDOW_SECONDS: int = 5
+"""Sliding window duration for the GDELT rate limit (seconds).
+
+The GDELT DOC 2.0 API returns HTTP 429 when queried faster than roughly
+once every 5 seconds.  Using a 5-second window with max_calls=1 ensures
+concurrent tasks (from different collection runs) share the budget."""
 
 GDELT_RATE_LIMIT_TIMEOUT: float = 30.0
 """Maximum seconds to wait for a rate-limit slot before raising."""

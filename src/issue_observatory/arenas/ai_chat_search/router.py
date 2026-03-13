@@ -43,8 +43,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from issue_observatory.api.dependencies import get_current_active_user
-from issue_observatory.arenas.base import Tier
 from issue_observatory.arenas.ai_chat_search.collector import AiChatSearchCollector
+from issue_observatory.arenas.base import Tier
 from issue_observatory.core.exceptions import (
     ArenaAuthError,
     ArenaCollectionError,

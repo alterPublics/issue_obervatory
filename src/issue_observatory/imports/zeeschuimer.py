@@ -17,7 +17,7 @@ temporary file.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -148,7 +148,7 @@ class ZeeschuimerProcessor:
                             # Zeeschuimer timestamps are in milliseconds (Section 7.5)
                             ts_ms = int(envelope["timestamp_collected"])
                             timestamp_collected = datetime.fromtimestamp(
-                                ts_ms / 1000, tz=timezone.utc
+                                ts_ms / 1000, tz=UTC
                             )
                         except (ValueError, TypeError) as exc:
                             logger.warning(
@@ -186,7 +186,7 @@ class ZeeschuimerProcessor:
 
                     # BLOCKER-4: Fall back to collected_at if published_at is None
                     if not record.get("published_at"):
-                        fallback_timestamp = timestamp_collected or datetime.now(tz=timezone.utc)
+                        fallback_timestamp = timestamp_collected or datetime.now(tz=UTC)
                         record["published_at"] = fallback_timestamp.isoformat()
                         if "raw_metadata" not in record or record["raw_metadata"] is None:
                             record["raw_metadata"] = {}
@@ -271,7 +271,7 @@ class ZeeschuimerProcessor:
 
             # BLOCKER-1: Use ON CONFLICT with WHERE clause to match partial unique index
             stmt = text(
-                f"INSERT INTO content_records ({col_list}) "  # noqa: S608
+                f"INSERT INTO content_records ({col_list}) "
                 f"VALUES ({placeholders}) "
                 f"ON CONFLICT (content_hash, published_at) WHERE content_hash IS NOT NULL DO NOTHING"
             )

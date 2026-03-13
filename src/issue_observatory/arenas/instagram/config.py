@@ -72,6 +72,9 @@ results in ``error_code: "dead_page"``. Reserved for future targeted reel
 collection; not used in the current profile-level collection path.
 """
 
+INSTAGRAM_DATASET_ID_COMMENTS: str = "gd_ltppn085pokosxh13"
+"""Web Scraper API dataset ID for Instagram Comments (post URL input)."""
+
 # ---------------------------------------------------------------------------
 # Trigger URL builder helper
 # ---------------------------------------------------------------------------
@@ -128,18 +131,32 @@ def to_brightdata_date(value: object) -> str | None:
         Date string in ``MM-DD-YYYY`` format, or ``None`` if *value* is ``None``
         or cannot be parsed.
     """
-    from datetime import datetime  # noqa: PLC0415
+    from datetime import datetime
 
     if value is None:
         return None
     if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            from zoneinfo import ZoneInfo
+
+            value = value.astimezone(ZoneInfo("Europe/Copenhagen"))
         return value.strftime("%m-%d-%Y")
     if isinstance(value, str) and len(value) >= 10:
+        # Parse the full ISO 8601 string (including timezone) so that
+        # "2026-03-10T23:00:00+00:00" (CET midnight) correctly becomes
+        # "03-11-2026" in Danish local time, not "03-10-2026".
         try:
-            dt = datetime.fromisoformat(value[:10])
+            dt = datetime.fromisoformat(value)
+            from zoneinfo import ZoneInfo
+
+            dt = dt.astimezone(ZoneInfo("Europe/Copenhagen"))
             return dt.strftime("%m-%d-%Y")
-        except ValueError:
-            return None
+        except (ValueError, KeyError):
+            try:
+                dt = datetime.fromisoformat(value[:10])
+                return dt.strftime("%m-%d-%Y")
+            except ValueError:
+                return None
     return None
 
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -32,18 +32,17 @@ os.environ.setdefault(
     "CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA=="
 )
 
-from issue_observatory.analysis.enrichments.base import EnrichmentError  # noqa: E402
-from issue_observatory.analysis.enrichments.coordination_detector import (  # noqa: E402
+from issue_observatory.analysis.enrichments.base import EnrichmentError
+from issue_observatory.analysis.enrichments.coordination_detector import (
     CoordinationDetector,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 _CLUSTER_ID = str(uuid.uuid4())
-_BASE_TIME = datetime(2026, 2, 19, 12, 0, 0, tzinfo=timezone.utc)
+_BASE_TIME = datetime(2026, 2, 19, 12, 0, 0, tzinfo=UTC)
 
 
 def _make_record(

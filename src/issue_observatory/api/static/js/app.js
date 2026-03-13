@@ -18,10 +18,31 @@
 //    @click handlers, x-ref, x-show etc. are dead after boost navigation.
 // ---------------------------------------------------------------------------
 
+// Track whether the initial page load htmx:load event has fired.
+// HTMX fires htmx:load on <body> during initial page load, but Alpine's
+// deferred script has already processed the DOM by then. Calling initTree()
+// again would duplicate x-for rendered items.
+var _htmxInitialLoadDone = false;
 document.addEventListener('htmx:load', function (evt) {
-  if (window.Alpine) {
-    window.Alpine.initTree(evt.detail.elt);
+  if (!window.Alpine) return;
+  if (!_htmxInitialLoadDone) {
+    _htmxInitialLoadDone = true;
+    return; // Alpine already initialised the DOM on first load
   }
+  // Defer to next macrotask so inline <script> tags in the swapped content
+  // have executed (defining component functions like collectionLauncher).
+  // Alpine's MutationObserver may have already auto-initialised x-data
+  // elements during the DOM swap — check _x_dataStack to avoid calling
+  // initTree twice, which causes x-for to render duplicate items and
+  // registers duplicate event handlers (e.g. double form submissions).
+  var el = evt.detail.elt;
+  setTimeout(function () {
+    var xDataEl = el.querySelector ? el.querySelector('[x-data]') : null;
+    if ((xDataEl && xDataEl._x_dataStack) || (el._x_dataStack)) {
+      return; // Already initialised by MutationObserver
+    }
+    window.Alpine.initTree(el);
+  }, 0);
 });
 
 // ---------------------------------------------------------------------------

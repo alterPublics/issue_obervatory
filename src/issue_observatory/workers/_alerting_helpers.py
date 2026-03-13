@@ -117,7 +117,7 @@ async def run_spike_detection(
                 query_design_id=query_design_id,
                 spikes=spikes,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning(
                 "run_spike_detection: alert email failed",
                 error=str(exc),

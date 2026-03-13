@@ -24,11 +24,13 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from issue_observatory.core.credential_pool import CredentialPool
     from issue_observatory.workers.rate_limiter import RateLimiter
 
@@ -97,6 +99,13 @@ class ArenaCollector(ABC):
         temporal_mode: ``TemporalMode`` value describing the arena's date
             range capabilities. Used to warn researchers when date filters
             may be ignored or incomplete.
+        supports_actor_collection: ``True`` if the arena implements
+            ``collect_by_actors()`` without raising :exc:`NotImplementedError`.
+            Used by the orchestration layer to determine whether a source list
+            in ``arenas_config`` should trigger an actor-based dispatch.
+        source_list_config_key: The ``arenas_config`` JSONB sub-key for this
+            arena's researcher-curated source list (e.g. ``"custom_accounts"``
+            for Bluesky). ``None`` when no source list is supported.
 
     Args:
         credential_pool: Optional shared credential pool. If ``None``,
@@ -123,12 +132,73 @@ class ArenaCollector(ABC):
     with a clear guidance message (in case it is ever accidentally dispatched).
     """
 
+    supports_actor_collection: bool = False
+    """Whether this arena supports actor-based collection via ``collect_by_actors()``.
+
+    Set to ``True`` for arenas that implement ``collect_by_actors()`` without
+    raising :exc:`NotImplementedError`.  Used by the orchestration layer and the
+    query design editor to determine which arenas can accept a researcher-curated
+    source list (e.g. ``arenas_config["bluesky"]["custom_accounts"]``).
+
+    Arenas with ``supports_term_search = False`` (actor-only arenas such as
+    Facebook and Instagram) should also set this to ``True``.
+
+    Arenas that raise :exc:`NotImplementedError` from ``collect_by_actors()``
+    (e.g. Google Search, GDELT) should leave this at the default ``False``.
+    """
+
+    source_list_daily_chunk_size: int | None = None
+    """Maximum number of source-list actors to dispatch per daily collection run.
+
+    When set, the orchestration layer splits the full source list into chunks
+    of this size and dispatches only one chunk per run, rotating daily via
+    ``date.today().toordinal() % num_chunks``.  This prevents arenas with
+    large actor lists from exceeding daily API quotas (e.g. TikTok's 1,000
+    requests/day Research API limit).
+
+    ``None`` (the default) means the full source list is dispatched every run.
+    """
+
+    source_list_config_key: str | None = None
+    """The ``arenas_config`` JSONB key for this arena's researcher-curated source list.
+
+    When set, the orchestration layer reads
+    ``arenas_config[platform_name][source_list_config_key]`` to obtain a list
+    of source identifiers (handles, URLs, channel names, etc.) and dispatches
+    ``collect_by_actors()`` with those identifiers.
+
+    Examples by platform:
+
+    - ``"custom_pages"``       — Facebook page / group URLs
+    - ``"custom_profiles"``    — Instagram profile URLs
+    - ``"custom_accounts"``    — Bluesky / X/Twitter / TikTok / Threads / Gab handles
+    - ``"custom_channels"``    — YouTube channel IDs, Telegram channel usernames
+    - ``"custom_feeds"``       — RSS feed URLs
+    - ``"custom_subreddits"``  — Reddit subreddit names
+    - ``"custom_channel_ids"`` — Discord channel snowflake IDs
+    - ``"seed_articles"``      — Wikipedia article titles
+
+    ``None`` means this arena has no configurable source list (e.g. arenas that
+    only support term-based collection or that have no actor concept at all).
+    """
+
     def __init__(
         self,
         credential_pool: CredentialPool | None = None,
         rate_limiter: RateLimiter | None = None,
     ) -> None:
         self.credential_pool = credential_pool
+        # Auto-create a shared Redis-backed rate limiter when none is injected.
+        # This ensures all arena tasks respect cross-worker rate limits even if
+        # the task file forgets to pass one.  The helper returns None on failure
+        # (e.g. Redis unavailable), preserving the existing no-op fallback.
+        if rate_limiter is None:
+            try:
+                from issue_observatory.workers._task_helpers import make_rate_limiter
+
+                rate_limiter = make_rate_limiter()
+            except Exception:
+                pass
         self.rate_limiter = rate_limiter
         # GR-14: set of platform_user_id strings for actors whose content
         # should bypass SHA-256 pseudonymization.  Populated by the Celery
@@ -139,6 +209,18 @@ class ArenaCollector(ABC):
         # Graceful actor skipping: tracks actors that failed during
         # collect_by_actors() so the remaining actors can still be collected.
         self._skipped_actors: list[dict[str, str]] = []
+        # Batch persistence: incrementally persist records during collection
+        # to survive task interruptions (OOM, timeout, worker crash).
+        self._record_sink: Callable[[list[dict[str, Any]]], tuple[int, int]] | None = None
+        self._batch_buffer: list[dict[str, Any]] = []
+        self._batch_size: int = 100
+        self._total_emitted: int = 0
+        self._total_inserted: int = 0
+        self._total_skipped: int = 0
+        self._batch_errors: list[str] = []
+        # Cancellation awareness: set via configure_batch_persistence() so
+        # long-running loops (e.g. Bright Data polling) can bail out early.
+        self._collection_run_id: str | None = None
 
     @property
     def skipped_actors(self) -> list[dict[str, str]]:
@@ -170,6 +252,141 @@ class ArenaCollector(ABC):
             "reason": reason,
             "error": error,
         })
+
+    # ------------------------------------------------------------------
+    # Batch persistence — incremental record flushing
+    # ------------------------------------------------------------------
+
+    def configure_batch_persistence(
+        self,
+        sink: Callable[[list[dict[str, Any]]], tuple[int, int]],
+        batch_size: int = 100,
+        collection_run_id: str | None = None,
+    ) -> None:
+        """Configure incremental batch persistence for this collector.
+
+        When a sink is configured, ``_emit()`` will auto-flush records to the
+        database every *batch_size* records instead of accumulating them all
+        in memory.  This protects against data loss on task interruption.
+
+        Args:
+            sink: Callable that accepts a list of record dicts and returns
+                ``(inserted_count, skipped_count)``.  Typically created via
+                :func:`~workers._task_helpers.make_batch_sink`.
+            batch_size: Number of records to buffer before flushing.
+            collection_run_id: Optional UUID string of the parent run.
+                When set, enables ``check_cancelled()`` to bail out of
+                long-running loops (e.g. Bright Data polling).
+        """
+        self._record_sink = sink
+        self._batch_size = batch_size
+        if collection_run_id:
+            self._collection_run_id = collection_run_id
+
+    def check_cancelled(self) -> None:
+        """Raise ``RunCancelledError`` if the parent run has been cancelled.
+
+        Safe to call from async code (uses a sync DB query internally).
+        No-op if ``_collection_run_id`` was never set.
+        """
+        if self._collection_run_id is None:
+            return
+        from issue_observatory.workers._task_helpers import check_run_cancelled
+
+        check_run_cancelled(self._collection_run_id)
+
+    def _reset_batch_state(self) -> None:
+        """Clear batch counters and buffer.  Call at the start of each collect method."""
+        self._batch_buffer = []
+        self._total_emitted = 0
+        self._total_inserted = 0
+        self._total_skipped = 0
+        self._batch_errors = []
+        self._per_input_counts: dict[str, int] = {}
+
+    def _emit(self, record: dict[str, Any]) -> None:
+        """Buffer a single record, auto-flushing when the batch is full.
+
+        Args:
+            record: Normalized content record dict.
+        """
+        self._batch_buffer.append(record)
+        self._total_emitted += 1
+        if len(self._batch_buffer) >= self._batch_size:
+            self._flush()
+
+    def _emit_many(self, records: list[dict[str, Any]]) -> None:
+        """Buffer multiple records, auto-flushing as needed.
+
+        Args:
+            records: List of normalized content record dicts.
+        """
+        for record in records:
+            self._emit(record)
+
+    def _flush(self) -> None:
+        """Persist buffered records via the sink, if configured.
+
+        On sink error: logs a warning, keeps records in the buffer for
+        end-of-task fallback persistence.  ``RunCancelledError`` is always
+        re-raised so the task can bail out promptly.
+        """
+        if not self._batch_buffer or self._record_sink is None:
+            return
+        batch = self._batch_buffer
+        self._batch_buffer = []
+        try:
+            inserted, skipped = self._record_sink(batch)
+            self._total_inserted += inserted
+            self._total_skipped += skipped
+        except Exception as exc:
+            # Let RunCancelledError propagate so the task stops immediately.
+            from issue_observatory.workers._task_helpers import RunCancelledError
+
+            if isinstance(exc, RunCancelledError):
+                raise
+            logger.warning(
+                "%s: batch flush failed (%d records), keeping in buffer for fallback: %s",
+                getattr(self, "platform_name", "unknown"),
+                len(batch),
+                exc,
+            )
+            self._batch_errors.append(str(exc))
+            # Put records back so the task-level fallback can persist them.
+            self._batch_buffer = batch + self._batch_buffer
+
+    def _record_input_count(self, input_key: str, count: int) -> None:
+        """Record how many records a specific input (term/actor) produced.
+
+        Accumulates counts so multiple date windows for the same input are
+        summed correctly.  The task layer reads ``per_input_counts`` to pass
+        accurate per-input data to the coverage checker.
+
+        Args:
+            input_key: The search term or actor ID.
+            count: Number of records emitted for this input.
+        """
+        self._per_input_counts[input_key] = (
+            self._per_input_counts.get(input_key, 0) + count
+        )
+
+    @property
+    def per_input_counts(self) -> dict[str, int]:
+        """Per-input (term/actor) record counts from the last collection run."""
+        return dict(self._per_input_counts)
+
+    @property
+    def batch_stats(self) -> dict[str, int]:
+        """Return cumulative batch persistence statistics.
+
+        Returns:
+            Dict with keys ``emitted``, ``inserted``, ``skipped``.
+        """
+        return {
+            "emitted": self._total_emitted,
+            "inserted": self._total_inserted,
+            "skipped": self._total_skipped,
+        }
 
     # ------------------------------------------------------------------
     # Abstract interface — must be implemented by every arena
@@ -450,7 +667,7 @@ class ArenaCollector(ABC):
             "status": "not_implemented",
             "arena": getattr(self, "arena_name", "unknown"),
             "platform": getattr(self, "platform_name", "unknown"),
-            "checked_at": datetime.now(timezone.utc).isoformat() + "Z",
+            "checked_at": datetime.now(UTC).isoformat() + "Z",
         }
 
     def _validate_tier(self, tier: Tier) -> None:

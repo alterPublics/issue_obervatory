@@ -39,11 +39,12 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 
+from issue_observatory.arenas._brightdata_comments import BrightDataCommentCollector
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.facebook.config import (
     BRIGHTDATA_MAX_POLL_ATTEMPTS,
@@ -52,6 +53,7 @@ from issue_observatory.arenas.facebook.config import (
     BRIGHTDATA_RATE_LIMIT_MAX_CALLS,
     BRIGHTDATA_RATE_LIMIT_WINDOW_SECONDS,
     BRIGHTDATA_SNAPSHOT_URL,
+    FACEBOOK_DATASET_ID_COMMENTS,
     FACEBOOK_DATASET_ID_GROUPS,
     FACEBOOK_DATASET_ID_POSTS,
     FACEBOOK_TIERS,
@@ -75,6 +77,35 @@ _PLATFORM: str = "facebook"
 
 # Number of posts to request per actor per API call.
 _DEFAULT_NUM_POSTS: int = 100
+
+
+
+def _normalize_facebook_url(actor_id: str) -> str | None:
+    """Ensure an actor identifier is a full Facebook URL.
+
+    Source lists (``arenas_config.facebook.custom_pages``) may contain bare
+    usernames (``"socialdemokratiet"``), numeric page IDs (``"100065402262765"``),
+    or partial paths (``"profile.php?id=12345"``).  Bright Data requires full
+    ``https://www.facebook.com/...`` URLs.
+
+    Returns ``None`` for obviously invalid entries (e.g. the literal word
+    ``"groups"`` which appeared in some legacy configs).
+    """
+    actor_id = actor_id.strip()
+    if not actor_id:
+        return None
+
+    # Already a full URL — pass through.
+    if actor_id.startswith("http://") or actor_id.startswith("https://"):
+        return actor_id
+
+    # Skip the bare word "groups" (legacy config artifact).
+    if actor_id.lower() == "groups":
+        logger.debug("facebook: skipping bare 'groups' entry in source list")
+        return None
+
+    # Bare username, numeric ID, or partial path — prepend base URL.
+    return f"https://www.facebook.com/{actor_id}"
 
 
 def _detect_facebook_dataset_id(url: str) -> str:
@@ -121,6 +152,8 @@ class FacebookCollector(ArenaCollector):
     # Actor-only arena: keyword search is not supported by the Bright Data API.
     # The orchestration layer will dispatch collect_by_actors() instead.
     supports_term_search: bool = False
+    supports_actor_collection: bool = True
+    source_list_config_key: str | None = "custom_pages"
 
     def __init__(
         self,
@@ -238,31 +271,56 @@ class FacebookCollector(ArenaCollector):
         cred_id: str = cred["id"]
         api_token: str = cred.get("api_token") or cred.get("api_key", "")
 
-        # Group actor_ids by dataset ID so each content type gets one request.
-        dataset_groups: dict[str, list[str]] = {}
+        # Normalize bare usernames/IDs to full URLs and filter invalid entries.
+        normalized_urls: list[str] = []
         for actor_id in actor_ids:
-            dataset_id = _detect_facebook_dataset_id(actor_id)
-            dataset_groups.setdefault(dataset_id, []).append(actor_id)
+            url = _normalize_facebook_url(actor_id)
+            if url is not None:
+                normalized_urls.append(url)
+        if not normalized_urls:
+            logger.warning(
+                "facebook: no valid URLs after normalization (input=%d)",
+                len(actor_ids),
+            )
+            return []
 
-        all_records: list[dict[str, Any]] = []
+        self._reset_batch_state()
+
+        # Initialize all submitted URLs with count 0 — actual counts are
+        # updated in _collect_brightdata_single_actor() from Bright Data's
+        # input.url echo field.  URLs that produce no valid records stay at 0.
+        for url in normalized_urls:
+            self._record_input_count(url, 0)
+
+        self._bd_errors: list[dict[str, str]] = []
 
         try:
             async with self._build_http_client() as client:
-                for dataset_id, urls in dataset_groups.items():
-                    if len(all_records) >= effective_max:
+                for actor_idx, url in enumerate(normalized_urls, 1):
+                    if self._total_emitted >= effective_max:
                         break
-                    remaining = effective_max - len(all_records)
-                    records = await self._collect_brightdata_actors(
+                    remaining = effective_max - self._total_emitted
+                    dataset_id = _detect_facebook_dataset_id(url)
+                    logger.info(
+                        "facebook: [%d/%d] collecting %s (dataset=%s)",
+                        actor_idx,
+                        len(normalized_urls),
+                        url.split("/")[-1],
+                        dataset_id[:12],
+                    )
+                    records, errors = await self._collect_brightdata_single_actor(
                         client,
                         api_token,
                         cred_id,
                         dataset_id,
-                        urls,
+                        url,
                         remaining,
                         date_from,
                         date_to,
                     )
-                    all_records.extend(records)
+                    self._bd_errors.extend(errors)
+                    self._emit_many(records)
+                    self._flush()
         finally:
             if self.credential_pool:
                 await self.credential_pool.release(credential_id=cred_id)
@@ -271,9 +329,17 @@ class FacebookCollector(ArenaCollector):
             "facebook: collect_by_actors completed — tier=%s actors=%d records=%d",
             tier.value,
             len(actor_ids),
-            len(all_records),
+            self._total_emitted,
         )
-        return all_records
+        return list(self._batch_buffer)
+
+    @property
+    def brightdata_errors(self) -> list[dict[str, str]]:
+        """Error entries from the most recent Bright Data collection.
+
+        Each entry has ``url``, ``error_code``, and ``error_detail`` keys.
+        """
+        return getattr(self, "_bd_errors", [])
 
     def get_tier_config(self, tier: Tier) -> TierConfig | None:
         """Return tier configuration for the Facebook arena.
@@ -332,67 +398,122 @@ class FacebookCollector(ArenaCollector):
     # Tier-specific collection helpers
     # ------------------------------------------------------------------
 
-    async def _collect_brightdata_actors(
+    async def _collect_brightdata_single_actor(
         self,
         client: httpx.AsyncClient,
         api_token: str,
         cred_id: str,
         dataset_id: str,
-        urls: list[str],
+        url: str,
         max_results: int,
         date_from: datetime | str | None,
         date_to: datetime | str | None,
-    ) -> list[dict[str, Any]]:
-        """Submit a Web Scraper API request targeting Facebook URLs and return records.
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+        """Submit a Web Scraper API request for a single Facebook URL and return records.
 
-        Builds a list payload where each entry specifies a URL, a post count
-        cap, and optional date bounds. All URLs share the same dataset ID (and
-        therefore the same scraper type — Posts or Groups).
+        Builds a single-entry payload specifying the URL, a post count cap,
+        and optional date bounds.
 
         Args:
             client: Shared HTTP client.
             api_token: Bright Data API token.
             cred_id: Credential ID for rate limiting.
             dataset_id: Bright Data dataset ID (Posts or Groups scraper).
-            urls: List of Facebook page/group URLs to collect from.
-            max_results: Maximum total records to return.
+            url: Facebook page, group, or profile URL to collect from.
+            max_results: Maximum records to return for this actor.
             date_from: Date range lower bound (optional, ``MM-DD-YYYY`` format).
             date_to: Date range upper bound (optional, ``MM-DD-YYYY`` format).
 
         Returns:
-            List of normalized Facebook post records.
+            Tuple of (normalized records, error entries). Error entries are
+            dicts with ``url``, ``error_code``, ``error_detail`` keys.
         """
         await self._wait_rate_limit(cred_id)
 
-        # Distribute max_results evenly across all URLs; minimum 10 per URL.
-        per_actor_limit = max(10, min(_DEFAULT_NUM_POSTS, max_results // max(1, len(urls))))
+        per_actor_limit = min(_DEFAULT_NUM_POSTS, max_results)
 
         start_date_str = to_brightdata_date(date_from)
         end_date_str = to_brightdata_date(date_to)
 
-        payload: list[dict[str, Any]] = []
-        for url in urls:
-            entry: dict[str, Any] = {
-                "url": url,
-                "num_of_posts": per_actor_limit,
-            }
-            if start_date_str:
-                entry["start_date"] = start_date_str
-            if end_date_str:
-                entry["end_date"] = end_date_str
-            payload.append(entry)
+        entry: dict[str, Any] = {
+            "url": url,
+            "num_of_posts": per_actor_limit,
+        }
+        if start_date_str:
+            entry["start_date"] = start_date_str
+        if end_date_str:
+            entry["end_date"] = end_date_str
+        payload: list[dict[str, Any]] = [entry]
+
+        logger.info(
+            "facebook: BD trigger payload for %s — %s",
+            url.split("/")[-1],
+            entry,
+        )
 
         trigger_url = build_trigger_url(dataset_id)
         snapshot_id = await self._trigger_dataset(client, api_token, trigger_url, payload)
         raw_items = await self._poll_and_download(client, api_token, snapshot_id)
 
+        # Filter out Bright Data error records (e.g. dead_page, login_required).
+        # When include_errors=true is set on the trigger URL, failed scrapes are
+        # returned as items with an ``error_code`` key instead of post data.
+        valid_items: list[dict[str, Any]] = []
+        error_entries: list[dict[str, str]] = []
+        for item in raw_items:
+            error_code = item.get("error_code")
+            if error_code:
+                input_url = (item.get("input") or {}).get("url", "unknown")
+                logger.warning(
+                    "facebook: Bright Data error record skipped — "
+                    "url=%s error_code=%s error=%s",
+                    input_url,
+                    error_code,
+                    item.get("error", ""),
+                )
+                error_entries.append({
+                    "url": input_url,
+                    "error_code": str(error_code),
+                    "error_detail": str(item.get("error", "")),
+                })
+                continue
+            valid_items.append(item)
+
+        error_count = len(raw_items) - len(valid_items)
+        if error_count > 0:
+            logger.info(
+                "facebook: filtered %d/%d Bright Data error records (valid=%d)",
+                error_count,
+                len(raw_items),
+                len(valid_items),
+            )
+        if valid_items:
+            logger.info(
+                "facebook: downloaded %d raw → %d valid → normalizing for %s",
+                len(raw_items),
+                len(valid_items),
+                url.split("/")[-1],
+            )
+        elif raw_items:
+            logger.warning(
+                "facebook: ALL %d items from snapshot %s are error records — "
+                "0 valid items to persist (credits were consumed). URL: %s",
+                len(raw_items),
+                snapshot_id,
+                url.split("/")[-1],
+            )
+
         records: list[dict[str, Any]] = []
-        for item in raw_items[:max_results]:
+        for item in valid_items[:max_results]:
             try:
                 records.append(self.normalize(item, source="brightdata"))
-            except Exception as exc:  # noqa: BLE001
+                # Attribute this record to its source actor via BD's input echo.
+                input_url = (item.get("input") or {}).get("url", "")
+                if input_url:
+                    self._record_input_count(input_url, 1)
+            except Exception as exc:
                 logger.warning("facebook: normalization error for item: %s", exc)
-        return records
+        return records, error_entries
 
     # ------------------------------------------------------------------
     # Normalizer parsing paths
@@ -645,7 +766,7 @@ class FacebookCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
             ``arena``, ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -697,6 +818,86 @@ class FacebookCollector(ArenaCollector):
         finally:
             if self.credential_pool:
                 await self.credential_pool.release(credential_id=cred_id)
+
+    # ------------------------------------------------------------------
+    # Comment collection
+    # ------------------------------------------------------------------
+
+    async def collect_comments(
+        self,
+        post_ids: list[dict],
+        tier: Tier,
+        max_comments_per_post: int = 200,
+        depth: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Collect comments for Facebook posts via Bright Data.
+
+        Args:
+            post_ids: List of dicts with ``url`` key (Facebook post URL).
+            tier: Collection tier (MEDIUM for Bright Data).
+            max_comments_per_post: Max comments per post.
+            depth: Unused (Bright Data returns flat comment list).
+
+        Returns:
+            List of normalized comment records.
+        """
+        post_urls: list[str] = [
+            entry["url"]
+            for entry in post_ids
+            if entry.get("url")
+        ]
+        if not post_urls:
+            logger.warning("facebook: collect_comments called with no valid post URLs")
+            return []
+
+        cred = await self._acquire_medium_credential()
+        if cred is None:
+            raise NoCredentialAvailableError(platform="brightdata_facebook", tier="medium")
+
+        cred_id: str = cred["id"]
+        api_token: str = cred.get("api_token") or cred.get("api_key", "")
+
+        try:
+            bd = BrightDataCommentCollector()
+            async with httpx.AsyncClient(timeout=60) as client:
+                raw_comments = await bd.collect_comments_brightdata(
+                    client,
+                    api_token,
+                    post_urls,
+                    FACEBOOK_DATASET_ID_COMMENTS,
+                    "facebook",
+                    max_comments_per_post,
+                )
+        finally:
+            if self.credential_pool:
+                await self.credential_pool.release(credential_id=cred_id)
+
+        records: list[dict[str, Any]] = []
+        for item in raw_comments:
+            # Build a flat dict using the field names that _parse_brightdata_facebook
+            # expects so that normalize() can extract values correctly.
+            # - "content" is the primary text field read by _parse_brightdata_facebook.
+            # - "comment_id" triggers content_type="comment" detection in the parser.
+            text: str = item.get("text") or item.get("comment_text") or item.get("content", "")
+            raw_dict: dict[str, Any] = {
+                "comment_id": item.get("id") or item.get("comment_id"),
+                "id": item.get("id") or item.get("comment_id"),
+                "content": text,
+                "page_name": item.get("author_name") or item.get("page_name"),
+                "user_url": item.get("author_id") or item.get("author_url") or item.get("user_url"),
+                "date_posted": item.get("date_posted") or item.get("date") or item.get("timestamp"),
+                "num_likes": item.get("num_likes") or item.get("likes") or item.get("like_count") or 0,
+                "url": item.get("comment_url") or item.get("url"),
+                "parent_post_id": item.get("post_url") or item.get("post_id"),
+            }
+            records.append(self.normalize(raw_dict))
+
+        logger.info(
+            "facebook: collect_comments — normalized %d comment records from %d post URLs",
+            len(records),
+            len(post_urls),
+        )
+        return records
 
     # ------------------------------------------------------------------
     # Bright Data low-level HTTP helpers
@@ -762,8 +963,14 @@ class FacebookCollector(ArenaCollector):
         except (ArenaRateLimitError, ArenaAuthError, ArenaCollectionError):
             raise
         except httpx.HTTPStatusError as exc:
+            body = exc.response.text[:300] if exc.response else ""
+            logger.error(
+                "facebook: Bright Data trigger HTTP %d — %s",
+                exc.response.status_code,
+                body,
+            )
             raise ArenaCollectionError(
-                f"facebook: Bright Data trigger HTTP {exc.response.status_code}",
+                f"facebook: Bright Data trigger HTTP {exc.response.status_code}: {body}",
                 arena=self.arena_name,
                 platform=self.platform_name,
             ) from exc
@@ -801,6 +1008,9 @@ class FacebookCollector(ArenaCollector):
         snapshot_url = BRIGHTDATA_SNAPSHOT_URL.format(snapshot_id=snapshot_id)
 
         for attempt in range(1, BRIGHTDATA_MAX_POLL_ATTEMPTS + 1):
+            # Bail out early if the run was cancelled while polling.
+            self.check_cancelled()
+
             try:
                 prog_response = await client.get(progress_url, headers=headers)
                 prog_response.raise_for_status()

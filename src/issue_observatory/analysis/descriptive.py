@@ -398,6 +398,7 @@ async def get_top_actors(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     limit: int = 20,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> list[dict]:
     """Top authors by post volume and total engagement.
 
@@ -439,7 +440,8 @@ async def get_top_actors(
     params: dict[str, Any] = {"limit": limit}
     # Note: arena filter is not exposed on this function — topic not relevant.
     where = _build_content_filters(
-        query_design_id, run_id, None, platform, date_from, date_to, params
+        query_design_id, run_id, None, platform, date_from, date_to, params,
+        query_design_ids=query_design_ids,
     )
     # _build_content_filters always returns a WHERE clause, so additional
     # conditions always use AND.
@@ -499,6 +501,7 @@ async def get_top_terms(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     limit: int = 20,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> list[dict]:
     """Top search terms by match frequency across content records.
 
@@ -523,7 +526,8 @@ async def get_top_terms(
     # _build_content_filters always returns a WHERE clause, so additional
     # conditions always use AND.
     where = _build_content_filters(
-        query_design_id, run_id, None, None, date_from, date_to, params
+        query_design_id, run_id, None, None, date_from, date_to, params,
+        query_design_ids=query_design_ids,
     )
 
     sql = text(
@@ -555,6 +559,7 @@ async def get_engagement_distribution(
     platform: str | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> dict:
     """Statistical distribution of per-post engagement metrics.
 
@@ -585,7 +590,8 @@ async def get_engagement_distribution(
     """
     params: dict[str, Any] = {}
     where = _build_content_filters(
-        query_design_id, run_id, arena, platform, date_from, date_to, params
+        query_design_id, run_id, arena, platform, date_from, date_to, params,
+        query_design_ids=query_design_ids,
     )
 
     sql = text(
@@ -666,6 +672,7 @@ async def get_emergent_terms(
     top_n: int = 50,
     exclude_search_terms: bool = True,
     min_doc_frequency: int = 2,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> list[dict]:
     """Extract frequently-occurring terms from collected text content using TF-IDF.
 
@@ -702,7 +709,8 @@ async def get_emergent_terms(
 
     params: dict[str, Any] = {}
     where = _build_content_filters(
-        query_design_id, run_id, None, None, None, None, params
+        query_design_id, run_id, None, None, None, None, params,
+        query_design_ids=query_design_ids,
     )
 
     text_sql = text(
@@ -739,31 +747,28 @@ async def get_emergent_terms(
         "hen", "ad", "meg", "dig", "ham", "hende", "dem", "os", "jer", "mig",
         "mit", "min", "mine", "dit", "din", "dine", "hans", "hennes", "dens",
         "dets", "vores", "jeres", "deres", "denne", "dette", "disse", "her",
-        "der", "hvor", "når", "da", "hvis", "fordi", "men", "eller", "så",
+        "hvor", "når", "da", "hvis", "fordi", "men", "eller", "så",
         "end", "også", "kun", "jo", "nu", "ved", "se", "gå", "gøre", "gør",
         "have", "hav", "gik", "blev", "fået", "fik", "aldrig", "ingen", "alle",
         "mange", "få", "noget", "intet", "nogen", "hver", "meget", "mere",
         "mest", "andet", "andre", "hvad", "hvilken", "hvilket", "hvilke",
         "hvem", "hvordan", "hvorfor", "hvorhen", "hvornår", "ja", "nej", "ikke",
-        "være", "været", "bliver", "bliver", "bliver", "blive", "havde", "havde",
-        "skulle", "kunne", "ville", "måtte", "blevet", "været", "gjort", "sagt",
-        "kom", "kommer", "komme", "gør", "gjorde", "gjort", "tag", "tage",
+        "være", "været", "bliver", "blive", "havde", "skulle", "kunne", "ville", "måtte", "blevet", "gjort", "sagt",
+        "kom", "kommer", "komme", "gjorde", "tag", "tage",
         "tager", "tog", "taget", "før", "siden", "senere", "længe", "altid",
-        "ofte", "aldrig", "nogle", "heller", "hverken", "enten", "både",
+        "ofte", "nogle", "heller", "hverken", "enten", "både",
         # Additional common Danish words from UX testing
-        "vi", "du", "siger", "sige", "sige", "sagde", "fortæller", "fortælle",
-        "fortalt", "fortæller", "laver", "lave", "lavet", "lavede", "får",
-        "giver", "give", "givet", "gav", "tager", "stor", "store", "lidt",
+        "vi", "du", "siger", "sige", "sagde", "fortæller", "fortælle",
+        "fortalt", "laver", "lave", "lavet", "lavede", "får",
+        "giver", "give", "givet", "gav", "stor", "store", "lidt",
         "helt", "godt", "god", "dårlig", "dårligt", "nye", "ny", "nyt",
         "gammel", "gamle", "lang", "langt", "lange", "kort", "korte", "høj",
-        "høje", "lav", "lave", "rigtig", "rigtigt", "forkert", "gerne",
+        "høje", "lav", "rigtig", "rigtigt", "forkert", "gerne",
         "vist", "nok", "vel", "lige", "blot", "bare", "især", "særligt",
-        "omkring", "cirka", "cirka", "altså", "nemlig", "dog", "imidlertid",
+        "omkring", "cirka", "altså", "nemlig", "dog", "imidlertid",
         "derfor", "dermed", "derudover", "desuden", "dertil", "således",
         "samtidig", "imens", "mens", "selvom", "skønt", "undtagen", "uden",
-        "indtil", "gennem", "blandt", "samt", "eller", "hverken", "enten",
-        "både", "end", "som", "ligesom", "eftersom", "fordi", "da", "når",
-        "hvis", "såfremt", "medmindre", "så", "derfor", "dermed", "altså",
+        "indtil", "gennem", "blandt", "samt", "ligesom", "eftersom", "såfremt", "medmindre",
     }
     stop_words_set.update(danish_stop_words)
 
@@ -782,8 +787,7 @@ async def get_emergent_terms(
         "until", "it", "its", "this", "that", "these", "those", "i", "me",
         "my", "mine", "we", "us", "our", "ours", "you", "your", "yours",
         "he", "him", "his", "she", "her", "hers", "they", "them", "their",
-        "theirs", "what", "which", "who", "whom", "whose", "am", "been",
-        "being", "become", "becomes", "became", "get", "gets", "got", "gotten",
+        "theirs", "what", "which", "who", "whom", "whose", "am", "become", "becomes", "became", "get", "gets", "got", "gotten",
         "make", "makes", "made", "go", "goes", "went", "gone", "take", "takes",
         "took", "taken", "come", "comes", "came", "know", "knows", "knew",
         "known", "think", "thinks", "thought", "see", "sees", "saw", "seen",
@@ -883,6 +887,7 @@ async def get_top_actors_unified(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     limit: int = 20,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> list[dict]:
     """Top authors by post volume, grouped by canonical Actor identity.
 
@@ -921,7 +926,8 @@ async def get_top_actors_unified(
     """
     params: dict[str, Any] = {"limit": limit}
     where = _build_content_filters(
-        query_design_id, run_id, None, None, date_from, date_to, params
+        query_design_id, run_id, None, None, date_from, date_to, params,
+        query_design_ids=query_design_ids,
     )
 
     sql = text(
@@ -1186,6 +1192,7 @@ async def get_temporal_comparison(
     period: str = "week",
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> dict:
     """Period-over-period volume comparison (current vs previous).
 
@@ -1243,6 +1250,11 @@ async def get_temporal_comparison(
     if run_id is not None:
         scope_clause = "collection_run_id = :run_id"
         params["run_id"] = str(run_id)
+    elif query_design_ids:
+        ph = ", ".join(f":qdi_{i}" for i in range(len(query_design_ids)))
+        scope_clause = f"query_design_id IN ({ph})"
+        for i, qdi in enumerate(query_design_ids):
+            params[f"qdi_{i}"] = str(qdi)
     elif query_design_id is not None:
         scope_clause = "query_design_id = :query_design_id"
         params["query_design_id"] = str(query_design_id)
@@ -1403,6 +1415,7 @@ async def get_arena_comparison(
     db: AsyncSession,
     run_id: uuid.UUID | None = None,
     query_design_id: uuid.UUID | None = None,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> dict:
     """Side-by-side platform metrics for a collection run or query design.
 
@@ -1453,6 +1466,13 @@ async def get_arena_comparison(
         aliased_scope_clause = "c.collection_run_id = :run_id"
         inner_scope_clause = "cr.collection_run_id = :run_id"
         params["run_id"] = str(run_id)
+    elif query_design_ids:
+        ph = ", ".join(f":qdi_{i}" for i in range(len(query_design_ids)))
+        scope_clause = f"query_design_id IN ({ph})"
+        aliased_scope_clause = f"c.query_design_id IN ({ph})"
+        inner_scope_clause = f"cr.query_design_id IN ({ph})"
+        for i, qdi in enumerate(query_design_ids):
+            params[f"qdi_{i}"] = str(qdi)
     elif query_design_id is not None:
         scope_clause = "query_design_id = :query_design_id"
         aliased_scope_clause = "c.query_design_id = :query_design_id"
@@ -1575,6 +1595,7 @@ async def get_language_distribution(
     db: AsyncSession,
     run_id: uuid.UUID | None = None,
     query_design_id: uuid.UUID | None = None,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> list[dict]:
     """Query language detection enrichment results and return language counts.
 
@@ -1600,7 +1621,8 @@ async def get_language_distribution(
     """
     params: dict[str, Any] = {}
     where = _build_content_filters(
-        query_design_id, run_id, None, None, None, None, params
+        query_design_id, run_id, None, None, None, None, params,
+        query_design_ids=query_design_ids,
     )
 
     sql = text(
@@ -1639,6 +1661,7 @@ async def get_top_named_entities(
     run_id: uuid.UUID | None = None,
     query_design_id: uuid.UUID | None = None,
     limit: int = 20,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> list[dict]:
     """Query NER enrichment results and return most frequent entities.
 
@@ -1666,7 +1689,8 @@ async def get_top_named_entities(
     """
     params: dict[str, Any] = {"limit": limit}
     where = _build_content_filters(
-        query_design_id, run_id, None, None, None, None, params
+        query_design_id, run_id, None, None, None, None, params,
+        query_design_ids=query_design_ids,
     )
 
     # Unnest the entities array and aggregate by entity text.
@@ -1706,6 +1730,7 @@ async def get_propagation_patterns(
     db: AsyncSession,
     run_id: uuid.UUID | None = None,
     query_design_id: uuid.UUID | None = None,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> list[dict]:
     """Query propagation enrichment results and return cross-arena clusters.
 
@@ -1737,7 +1762,8 @@ async def get_propagation_patterns(
     """
     params: dict[str, Any] = {}
     where = _build_content_filters(
-        query_design_id, run_id, None, None, None, None, params
+        query_design_id, run_id, None, None, None, None, params,
+        query_design_ids=query_design_ids,
     )
 
     sql = text(
@@ -1779,6 +1805,7 @@ async def get_sentiment_distribution(
     db: AsyncSession,
     run_id: uuid.UUID | None = None,
     query_design_id: uuid.UUID | None = None,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> dict[str, Any]:
     """Query sentiment enrichment results and return sentiment distribution.
 
@@ -1810,6 +1837,11 @@ async def get_sentiment_distribution(
     if run_id is not None:
         scope_clause = "collection_run_id = :run_id"
         params["run_id"] = str(run_id)
+    elif query_design_ids:
+        ph = ", ".join(f":qdi_{i}" for i in range(len(query_design_ids)))
+        scope_clause = f"query_design_id IN ({ph})"
+        for i, qdi in enumerate(query_design_ids):
+            params[f"qdi_{i}"] = str(qdi)
     elif query_design_id is not None:
         scope_clause = "query_design_id = :query_design_id"
         params["query_design_id"] = str(query_design_id)
@@ -1869,6 +1901,7 @@ async def get_coordination_signals(
     db: AsyncSession,
     run_id: uuid.UUID | None = None,
     query_design_id: uuid.UUID | None = None,
+    query_design_ids: list[uuid.UUID] | None = None,
 ) -> list[dict]:
     """Query coordination enrichment results and return detected patterns.
 
@@ -1902,7 +1935,8 @@ async def get_coordination_signals(
     """
     params: dict[str, Any] = {}
     where = _build_content_filters(
-        query_design_id, run_id, None, None, None, None, params
+        query_design_id, run_id, None, None, None, None, params,
+        query_design_ids=query_design_ids,
     )
 
     # Aggregate coordination signals by content_hash to identify clusters.

@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -35,13 +35,13 @@ import httpx
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.query_builder import format_boolean_query_for_platform
 from issue_observatory.arenas.registry import register
+from issue_observatory.arenas.web.wayback._content_fetcher import fetch_content_for_records
 from issue_observatory.arenas.web.wayback._fetcher import (
     extract_domain,
     fetch_cdx_page,
     format_wb_timestamp,
     parse_wb_timestamp,
 )
-from issue_observatory.arenas.web.wayback._content_fetcher import fetch_content_for_records
 from issue_observatory.arenas.web.wayback.config import (
     WB_CDX_BASE_URL,
     WB_CONCURRENT_FETCH_LIMIT,
@@ -55,7 +55,6 @@ from issue_observatory.arenas.web.wayback.config import (
     WB_TIERS,
 )
 from issue_observatory.config.tiers import TierConfig
-from issue_observatory.core.exceptions import ArenaRateLimitError
 from issue_observatory.core.normalizer import Normalizer
 
 logger = logging.getLogger(__name__)
@@ -182,6 +181,8 @@ class WaybackCollector(ArenaCollector):
                     client, semaphore, term, wb_from, wb_to, remaining, seen_keys
                 )
                 all_records.extend(term_records)
+                self._record_input_count(term, len(term_records))
+                self._flush()
 
         if fetch_content and all_records:
             all_records = await self._fetch_content_for_records(all_records, tier)
@@ -254,6 +255,7 @@ class WaybackCollector(ArenaCollector):
                     wb_from, wb_to, remaining, seen_keys,
                 )
                 all_records.extend(actor_records)
+                self._flush()
 
         if fetch_content and all_records:
             all_records = await self._fetch_content_for_records(all_records, tier)
@@ -306,7 +308,7 @@ class WaybackCollector(ArenaCollector):
         platform_id: str | None = None
         if original_url and timestamp:
             platform_id = hashlib.sha256(
-                f"{original_url}{timestamp}".encode("utf-8")
+                f"{original_url}{timestamp}".encode()
             ).hexdigest()
         elif original_url:
             platform_id = hashlib.sha256(original_url.encode("utf-8")).hexdigest()
@@ -336,7 +338,7 @@ class WaybackCollector(ArenaCollector):
                 hostname = parsed.hostname or ""
                 if hostname.endswith(".dk") or hostname == "dk":
                     language = "da"
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
         raw_metadata: dict[str, Any] = {
@@ -388,7 +390,7 @@ class WaybackCollector(ArenaCollector):
             Dict with ``status`` (``"ok"`` | ``"degraded"`` | ``"down"``),
             ``arena``, ``platform``, ``checked_at``, and optionally ``detail``.
         """
-        checked_at = datetime.now(timezone.utc).isoformat() + "Z"
+        checked_at = datetime.now(UTC).isoformat() + "Z"
         base: dict[str, Any] = {
             "arena": self.arena_name,
             "platform": self.platform_name,
@@ -430,7 +432,7 @@ class WaybackCollector(ArenaCollector):
             }
         except httpx.RequestError as exc:
             return {**base, "status": "down", "detail": f"Connection error: {exc}"}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {**base, "status": "down", "detail": f"Unexpected error: {exc}"}
 
     # ------------------------------------------------------------------
@@ -463,7 +465,7 @@ class WaybackCollector(ArenaCollector):
                     timeout=WB_RATE_LIMIT_TIMEOUT,
                 )
                 return
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "wayback: rate_limiter.wait_for_slot failed (%s) — sleeping 1s", exc
                 )
