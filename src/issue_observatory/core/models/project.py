@@ -23,6 +23,7 @@ from issue_observatory.core.models.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
     from issue_observatory.core.models.collection import CollectionRun
+    from issue_observatory.core.models.project_collaborator import ProjectCollaborator
     from issue_observatory.core.models.query_design import ActorList, QueryDesign
     from issue_observatory.core.models.users import User
 
@@ -94,6 +95,12 @@ class Project(Base, TimestampMixin):
         server_default=sa.text("'{}'::jsonb"),
         comment="Per-platform comment collection config. Keys=platform, values={enabled, mode, ...}.",
     )
+    collection_mode: Mapped[str] = mapped_column(
+        sa.String(30),
+        nullable=False,
+        server_default=sa.text("'default'"),
+        comment="Collection mode: 'default' or 'actors_only'.",
+    )
 
     # Relationships
     owner: Mapped[User] = relationship(
@@ -113,6 +120,11 @@ class Project(Base, TimestampMixin):
     actor_lists: Mapped[list[ActorList]] = relationship(
         "ActorList",
         back_populates="project",
+    )
+    collaborators: Mapped[list[ProjectCollaborator]] = relationship(
+        "ProjectCollaborator",
+        back_populates="project",
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:

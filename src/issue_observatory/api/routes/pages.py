@@ -41,7 +41,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -54,7 +54,9 @@ from issue_observatory.api.dependencies import (
 from issue_observatory.core.database import get_db
 from issue_observatory.core.models.collection import CollectionRun, CollectionTask
 from issue_observatory.core.models.content import UniversalContentRecord
+from issue_observatory.core.models.content_links import ContentRecordLink
 from issue_observatory.core.models.project import Project
+from issue_observatory.core.models.project_collaborator import ProjectCollaborator
 from issue_observatory.core.models.query_design import QueryDesign, SearchTerm
 from issue_observatory.core.models.users import CreditAllocation, User
 
@@ -127,22 +129,76 @@ async def root_redirect() -> RedirectResponse:
 async def dashboard(
     request: Request,
     current_user: Annotated[User, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> HTMLResponse:
     """Render the dashboard overview page.
 
-    Shows active collection runs, credit balance, and recent activity feed.
+    Shows project-scoped analytics, credit balance, and quick actions.
 
     Args:
         request: The current HTTP request.
         current_user: The authenticated, active user.
+        db: Injected async database session.
 
     Returns:
         Rendered ``dashboard/index.html`` template.
     """
+    # Fetch user's projects (owned + collaborated) with most recent collection run
+    collaborated_project_ids = (
+        select(ProjectCollaborator.project_id)
+        .where(ProjectCollaborator.user_id == current_user.id)
+        .scalar_subquery()
+    )
+    stmt = (
+        select(
+            Project.id,
+            Project.name,
+            func.max(CollectionRun.started_at).label("last_run_at"),
+        )
+        .outerjoin(CollectionRun, CollectionRun.project_id == Project.id)
+        .where(
+            or_(
+                Project.owner_id == current_user.id,
+                Project.id.in_(collaborated_project_ids),
+            )
+        )
+        .group_by(Project.id, Project.name)
+        .order_by(func.max(CollectionRun.started_at).desc().nulls_last())
+    )
+    result = await db.execute(stmt)
+    projects = [
+        {
+            "id": str(row.id),
+            "name": row.name,
+            "last_run_at": row.last_run_at.isoformat() if row.last_run_at else None,
+        }
+        for row in result.fetchall()
+    ]
+
+    default_project_id = projects[0]["id"] if projects else None
+
+    # Resolve the default project's language from its query designs.
+    default_language = "da"
+    if default_project_id:
+        lang_result = await db.execute(
+            select(QueryDesign.language)
+            .where(QueryDesign.project_id == uuid.UUID(default_project_id))
+            .limit(1)
+        )
+        qd_lang = lang_result.scalar_one_or_none()
+        if qd_lang:
+            default_language = qd_lang
+
     tpl = _templates(request)
     return tpl.TemplateResponse(
         "dashboard/index.html",
-        {"request": request, "user": current_user},
+        {
+            "request": request,
+            "user": current_user,
+            "projects": projects,
+            "default_project_id": default_project_id,
+            "default_language": default_language,
+        },
     )
 
 
@@ -172,6 +228,35 @@ async def explore_page(
     tpl = _templates(request)
     return tpl.TemplateResponse(
         "explore/index.html",
+        {"request": request, "user": current_user},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Networks (keyword and entity network analysis)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/networks", response_class=HTMLResponse)
+async def networks_page(
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> HTMLResponse:
+    """Render the networks analysis page.
+
+    Provides keyword and named entity network construction with bipartite and
+    unipartite projection modes, Sigma.js visualization, and GEXF export.
+
+    Args:
+        request: The current HTTP request.
+        current_user: The authenticated, active user.
+
+    Returns:
+        Rendered ``networks/index.html`` template.
+    """
+    tpl = _templates(request)
+    return tpl.TemplateResponse(
+        "networks/index.html",
         {"request": request, "user": current_user},
     )
 
@@ -232,9 +317,20 @@ async def query_designs_list(
     Returns:
         Rendered ``query_designs/list.html`` template.
     """
+    # Include owned designs + designs from projects shared with user
+    collaborated_project_ids = (
+        select(ProjectCollaborator.project_id)
+        .where(ProjectCollaborator.user_id == current_user.id)
+        .scalar_subquery()
+    )
     stmt = (
         select(QueryDesign)
-        .where(QueryDesign.owner_id == current_user.id)
+        .where(
+            or_(
+                QueryDesign.owner_id == current_user.id,
+                QueryDesign.project_id.in_(collaborated_project_ids),
+            )
+        )
         .order_by(QueryDesign.created_at.desc())
     )
     result = await db.execute(stmt)
@@ -537,13 +633,24 @@ async def collections_list(
         Rendered ``collections/list.html`` template.
     """
 
+    # Include runs user initiated OR from projects shared with them
+    collaborated_project_ids = (
+        select(ProjectCollaborator.project_id)
+        .where(ProjectCollaborator.user_id == current_user.id)
+        .scalar_subquery()
+    )
     stmt = (
         select(CollectionRun)
         .options(
             selectinload(CollectionRun.query_design),
             selectinload(CollectionRun.project),
         )
-        .where(CollectionRun.initiated_by == current_user.id)
+        .where(
+            or_(
+                CollectionRun.initiated_by == current_user.id,
+                CollectionRun.project_id.in_(collaborated_project_ids),
+            )
+        )
         .order_by(CollectionRun.started_at.desc().nulls_last())
         .limit(200)
     )
@@ -664,13 +771,17 @@ async def project_collection_detail(
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # Verify access: owner, admin, or collaborator
+    from issue_observatory.api.dependencies import is_project_collaborator
+
+    if current_user.role != "admin" and project.owner_id != current_user.id:
+        if not await is_project_collaborator(db, project_id, current_user.id):
+            raise HTTPException(status_code=403, detail="Access denied")
+
     # Load all collection runs for this project with QD and tasks
     runs_result = await db.execute(
         select(CollectionRun)
-        .where(
-            CollectionRun.project_id == project_id,
-            CollectionRun.initiated_by == current_user.id,
-        )
+        .where(CollectionRun.project_id == project_id)
         .options(
             selectinload(CollectionRun.query_design),
             selectinload(CollectionRun.tasks),
@@ -698,16 +809,29 @@ async def project_collection_detail(
 
     any_running = overall_status == "running"
 
-    # Per-platform record counts across all runs
+    # Per-platform record counts across all runs, including linked records
     run_ids = [r.id for r in runs]
     platform_counts: dict[str, int] = {}
     if run_ids:
+        _linked_exists = exists(
+            select(ContentRecordLink.id).where(
+                ContentRecordLink.collection_run_id.in_(run_ids),
+                ContentRecordLink.content_record_id == UniversalContentRecord.id,
+                ContentRecordLink.content_record_published_at
+                == UniversalContentRecord.published_at,
+            )
+        )
         pc_result = await db.execute(
             select(
                 UniversalContentRecord.platform,
                 func.count(UniversalContentRecord.id).label("count"),
             )
-            .where(UniversalContentRecord.collection_run_id.in_(run_ids))
+            .where(
+                or_(
+                    UniversalContentRecord.collection_run_id.in_(run_ids),
+                    _linked_exists,
+                )
+            )
             .group_by(UniversalContentRecord.platform)
         )
         platform_counts = {row.platform: row.count for row in pc_result.all()}
@@ -980,16 +1104,33 @@ async def collections_detail(
                 "duration_seconds": duration_seconds,
             })
 
-        # Query per-platform record counts for this run.
+        # Query per-platform record counts for this run, including records
+        # linked from other runs via content_record_links (cross-project reindex).
+        _ucr = UniversalContentRecord
+        _linked_exists = exists(
+            select(ContentRecordLink.id).where(
+                ContentRecordLink.collection_run_id == run_id,
+                ContentRecordLink.content_record_id == _ucr.id,
+                ContentRecordLink.content_record_published_at == _ucr.published_at,
+            )
+        )
         platform_counts_result = await db.execute(
             select(
-                UniversalContentRecord.platform,
-                func.count(UniversalContentRecord.id).label("count"),
+                _ucr.platform,
+                func.count(_ucr.id).label("count"),
             )
-            .where(UniversalContentRecord.collection_run_id == run_id)
-            .group_by(UniversalContentRecord.platform)
+            .where(or_(_ucr.collection_run_id == run_id, _linked_exists))
+            .group_by(_ucr.platform)
         )
         platform_counts = {row.platform: row.count for row in platform_counts_result.all()}
+
+        # Also count how many records came from linking (not direct collection).
+        linked_count_result = await db.execute(
+            select(func.count(ContentRecordLink.id)).where(
+                ContentRecordLink.collection_run_id == run_id,
+            )
+        )
+        run_context["records_linked"] = linked_count_result.scalar() or 0
         run_context["platform_counts"] = platform_counts
     else:
         run_context["search_terms"] = []
@@ -1046,10 +1187,20 @@ async def discovered_links_page(
 
     tpl = _templates(request)
 
-    # Fetch user's query designs for the dropdown selector.
+    # Fetch user's query designs (owned + from collaborated projects).
+    collaborated_project_ids = (
+        select(ProjectCollaborator.project_id)
+        .where(ProjectCollaborator.user_id == current_user.id)
+        .scalar_subquery()
+    )
     stmt = (
         select(QueryDesign)
-        .where(QueryDesign.owner_id == current_user.id)
+        .where(
+            or_(
+                QueryDesign.owner_id == current_user.id,
+                QueryDesign.project_id.in_(collaborated_project_ids),
+            )
+        )
         .order_by(QueryDesign.created_at.desc())
     )
     result = await db.execute(stmt)
@@ -1294,6 +1445,42 @@ async def actors_detail(
 
 
 # ---------------------------------------------------------------------------
+# Settings (user self-service)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/settings", response_class=HTMLResponse)
+async def settings_page(
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> HTMLResponse:
+    """Render the user settings page.
+
+    Displays account info, profile editing, password change, API key
+    management, and preference toggles.
+    """
+    from issue_observatory.core.credit_service import CreditService
+
+    credit_svc = CreditService(db)
+    balance = await credit_svc.get_balance(current_user.id)
+    prefs = (current_user.metadata_ or {}).get("preferences", {})
+
+    tpl = _templates(request)
+    return tpl.TemplateResponse(
+        "settings/index.html",
+        {
+            "request": request,
+            "user": current_user,
+            "credits_available": balance.get("available", 0),
+            "credits_reserved": balance.get("reserved", 0),
+            "credits_unlimited": balance.get("unlimited", False),
+            "preferences": prefs,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Auth pages
 # ---------------------------------------------------------------------------
 
@@ -1425,22 +1612,53 @@ async def admin_users(
     admin_user: Annotated[User, Depends(require_admin)],
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
-    """Render the admin user management page.
+    """Render the admin user management page."""
+    from issue_observatory.core.models.user_template import UserTemplate
 
-    Args:
-        request: The current HTTP request.
-        admin_user: Verified admin user from the ``require_admin`` dependency.
-        db: Injected async database session.
-
-    Returns:
-        Rendered ``admin/users.html`` template.
-    """
     result = await db.execute(select(User).order_by(User.created_at))
     users = result.scalars().all()
+    tpl_result = await db.execute(
+        select(UserTemplate).order_by(UserTemplate.name)
+    )
+    templates = tpl_result.scalars().all()
     tpl = _templates(request)
     return tpl.TemplateResponse(
         "admin/users.html",
-        {"request": request, "user": admin_user, "users": users},
+        {
+            "request": request,
+            "user": admin_user,
+            "users": users,
+            "templates": templates,
+        },
+    )
+
+
+@router.get("/admin/templates", response_class=HTMLResponse)
+async def admin_templates(
+    request: Request,
+    admin_user: Annotated[User, Depends(require_admin)],
+    db: AsyncSession = Depends(get_db),
+) -> HTMLResponse:
+    """Render the admin user template management page."""
+    from issue_observatory.arenas.registry import autodiscover, list_arenas
+    from issue_observatory.core.models.user_template import UserTemplate
+
+    autodiscover()
+    arenas = list_arenas()
+
+    result = await db.execute(
+        select(UserTemplate).order_by(UserTemplate.created_at.desc())
+    )
+    templates = result.scalars().all()
+    tpl = _templates(request)
+    return tpl.TemplateResponse(
+        "admin/templates.html",
+        {
+            "request": request,
+            "user": admin_user,
+            "templates": templates,
+            "arenas": arenas,
+        },
     )
 
 
@@ -1560,24 +1778,88 @@ async def admin_health(
 @router.get("/scraping-jobs", response_class=HTMLResponse)
 async def scraping_jobs_page(
     request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
 ) -> HTMLResponse:
-    """Render the scraping jobs management page.
+    """Render the scraping & URL browser page.
 
-    Allows researchers to create and monitor scraping jobs that enrich
-    collected URLs with full-text content extraction.
+    Provides context for filter dropdowns: projects, query designs, and
+    distinct platforms from extracted URLs.
 
     Args:
         request: The current HTTP request.
+        db: Async database session.
         current_user: The authenticated, active user.
 
     Returns:
         Rendered ``scraping/index.html`` template.
     """
+    from sqlalchemy import text
+
+    # Fetch user's projects (owned + collaborated) for filter dropdown
+    collaborated_project_ids = (
+        select(ProjectCollaborator.project_id)
+        .where(ProjectCollaborator.user_id == current_user.id)
+        .scalar_subquery()
+    )
+    projects_result = await db.execute(
+        select(Project)
+        .where(
+            or_(
+                Project.owner_id == current_user.id,
+                Project.id.in_(collaborated_project_ids),
+            )
+        )
+        .order_by(Project.name)
+    )
+    projects = [{"id": str(p.id), "name": p.name} for p in projects_result.scalars().all()]
+
+    # Fetch user's query designs (owned + from collaborated projects) for filter dropdown
+    qd_result = await db.execute(
+        select(QueryDesign, Project.name.label("project_name"))
+        .outerjoin(Project, QueryDesign.project_id == Project.id)
+        .where(
+            or_(
+                QueryDesign.owner_id == current_user.id,
+                QueryDesign.project_id.in_(collaborated_project_ids),
+            )
+        )
+        .order_by(Project.name.nulls_last(), QueryDesign.name)
+    )
+    query_designs = [
+        {
+            "id": str(row[0].id),
+            "name": (
+                f"{row[0].name} ({row.project_name})"
+                if row.project_name
+                else row[0].name
+            ),
+        }
+        for row in qd_result.all()
+    ]
+
+    # Fetch distinct platforms from extracted_urls
+    try:
+        platforms_result = await db.execute(
+            text("SELECT DISTINCT platform FROM extracted_urls ORDER BY platform")
+        )
+        platforms = [row[0] for row in platforms_result if row[0]]
+    except Exception:
+        platforms = []
+
+    from issue_observatory.arenas.categories import ARENA_CATEGORY_LABELS
+
     tpl = _templates(request)
     return tpl.TemplateResponse(
         "scraping/index.html",
-        {"request": request, "user": current_user},
+        {
+            "request": request,
+            "user": current_user,
+            "projects": projects,
+            "query_designs": query_designs,
+            "platforms": platforms,
+            "categories": ARENA_CATEGORY_LABELS,
+        },
     )
 
 

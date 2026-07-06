@@ -488,6 +488,7 @@ def event_registry_collect_actors(
                 collection_run_id=collection_run_id,
                 query_design_id=query_design_id,
                 actor_ids=actor_ids,
+                require_term_match=True,
                 date_from=date_from,
                 date_to=date_to,
             )

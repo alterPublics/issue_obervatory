@@ -30,6 +30,7 @@
                     </span>
                 </div>
             </div>
+            {% if is_owner %}
             <div class="flex items-center gap-2">
                 <button
                     onclick="cloneProject()"
@@ -47,6 +48,11 @@
                     Delete
                 </button>
             </div>
+            {% else %}
+            <span class="px-3 py-1 text-sm bg-blue-50 text-blue-700 rounded-full">
+                Shared with you (view only)
+            </span>
+            {% endif %}
         </div>
     </div>
 
@@ -60,13 +66,13 @@
                 </p>
             </div>
             <div class="flex items-center gap-2">
-                <a href="/analysis/project/{{ project.id }}"
+                <a href="/dashboard?project_id={{ project.id }}"
                    class="inline-flex items-center gap-2 px-3 py-2 text-gray-700 text-sm font-medium border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
                     <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
                          stroke="currentColor" stroke-width="2">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
                     </svg>
-                    Analyse Project
+                    Project Dashboard
                 </a>
                 <a href="/collections/project/{{ project.id }}"
                    class="inline-flex items-center gap-2 px-3 py-2 text-gray-700 text-sm font-medium border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
@@ -76,6 +82,7 @@
                     </svg>
                     Collection History
                 </a>
+                {% if is_owner %}
                 <a href="/collections/new?project_id={{ project.id }}"
                    class="inline-flex items-center gap-2 px-3 py-2 bg-green-600 text-white text-sm font-medium rounded-md hover:bg-green-700 transition-colors">
                     <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
@@ -94,6 +101,7 @@
                     </svg>
                     New Query Design
                 </a>
+                {% endif %}
             </div>
         </div>
 
@@ -135,6 +143,7 @@
                         <p class="text-xs text-gray-400 mt-2">No collection runs yet</p>
                         {% endif %}
                     </div>
+                    {% if is_owner %}
                     <div class="flex items-center gap-2">
                         <a href="/query-designs/{{ design.id }}/edit"
                            class="text-sm text-gray-600 hover:text-blue-600 px-2 py-1 rounded hover:bg-gray-100">
@@ -146,6 +155,7 @@
                             Remove
                         </button>
                     </div>
+                    {% endif %}
                 </div>
             </div>
             {% endfor %}
@@ -157,6 +167,7 @@
                 <path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
             </svg>
             <h3 class="text-base font-medium text-gray-900 mb-1">No query designs yet</h3>
+            {% if is_owner %}
             <p class="text-sm text-gray-500 mb-4">Add query designs to this project to start collecting data</p>
             <a href="/query-designs/new?project_id={{ project.id }}"
                class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
@@ -166,10 +177,14 @@
                 </svg>
                 Create Query Design
             </a>
+            {% else %}
+            <p class="text-sm text-gray-500">No query designs have been added to this project yet</p>
+            {% endif %}
         </div>
         {% endif %}
     </div>
 
+    {% if is_owner %}
     {# Arena Settings Section — project-level enable/disable #}
     <div class="bg-white rounded-lg shadow"
          x-data='projectArenaToggle("{{ project.id }}", {{ (project.arenas_config or {}) | tojson }})'>
@@ -228,6 +243,124 @@
                 </span>
                 <span x-show="savedOk" x-cloak x-transition class="text-xs text-green-700 font-medium ml-auto">Saved</span>
                 <span x-show="saveError" x-cloak class="text-xs text-red-600 ml-auto" x-text="saveError"></span>
+            </div>
+        </div>
+    </div>
+    {% endif %}{# end is_owner: arena settings #}
+
+    {# Collaborators Section (owner only) #}
+    {% if is_owner %}
+    <div class="bg-white rounded-lg shadow" x-data="collaboratorPanel()">
+        <div class="px-6 py-4 border-b border-gray-200">
+            <h2 class="text-base font-semibold text-gray-900">Collaborators</h2>
+            <p class="text-sm text-gray-500 mt-0.5">Share read-only access with other researchers</p>
+        </div>
+        <div class="p-6 space-y-4">
+            {# Add collaborator form #}
+            <form @submit.prevent="addCollaborator()" class="flex items-end gap-3">
+                <div class="flex-1">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Email address</label>
+                    <input type="email" x-model="newEmail" placeholder="researcher@example.com" required
+                           class="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <button type="submit" :disabled="adding"
+                        class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                    <span x-show="!adding">Add</span>
+                    <span x-show="adding" x-cloak>Adding...</span>
+                </button>
+            </form>
+
+            <template x-if="message">
+                <div :class="messageType === 'error' ? 'bg-red-50 text-red-700 border-red-200' : 'bg-green-50 text-green-700 border-green-200'"
+                     class="px-3 py-2 text-sm rounded-md border" x-text="message"></div>
+            </template>
+
+            {# Collaborator list #}
+            <div class="divide-y divide-gray-100">
+                <template x-if="collaborators.length === 0">
+                    <p class="py-4 text-sm text-gray-500 text-center">No collaborators yet</p>
+                </template>
+                <template x-for="collab in collaborators" :key="collab.user_id">
+                    <div class="flex items-center justify-between py-3">
+                        <div>
+                            <p class="text-sm font-medium text-gray-900" x-text="collab.display_name || collab.email"></p>
+                            <p class="text-xs text-gray-500" x-text="collab.email" x-show="collab.display_name"></p>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <span class="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded" x-text="collab.role"></span>
+                            <button @click="removeCollaborator(collab.user_id)" class="text-red-500 hover:text-red-700 text-xs">
+                                Remove
+                            </button>
+                        </div>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if is_owner %}
+    {# Collection Mode Section #}
+    <div class="bg-white rounded-lg shadow"
+         x-data="{
+            mode: '{{ project.collection_mode or 'default' }}',
+            saving: false,
+            saved: false,
+            error: '',
+            async save() {
+                this.saving = true;
+                this.saved = false;
+                this.error = '';
+                try {
+                    const form = new FormData();
+                    form.append('collection_mode', this.mode);
+                    const resp = await fetch('/projects/{{ project.id }}', {
+                        method: 'PATCH',
+                        body: form,
+                    });
+                    if (!resp.ok) throw new Error('Save failed');
+                    this.saved = true;
+                    setTimeout(() => this.saved = false, 2000);
+                } catch (e) {
+                    this.error = e.message || 'Save failed';
+                } finally {
+                    this.saving = false;
+                }
+            }
+         }">
+        <div class="px-6 py-4 border-b border-gray-200">
+            <h2 class="text-base font-semibold text-gray-900">Collection Mode</h2>
+            <p class="text-sm text-gray-500 mt-0.5">
+                Controls whether collection uses search terms, source lists, or both.
+            </p>
+        </div>
+        <div class="px-6 py-4">
+            <div class="flex flex-col sm:flex-row gap-3">
+                <label class="flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all"
+                       :class="mode === 'default' ? 'bg-blue-50 border-blue-300' : 'bg-gray-50 border-gray-200 hover:border-gray-300'">
+                    <input type="radio" name="collection_mode" value="default"
+                           x-model="mode" @change="save()"
+                           class="mt-0.5 text-blue-600 focus:ring-blue-500">
+                    <div>
+                        <span class="text-sm font-medium text-gray-900">Default</span>
+                        <p class="text-xs text-gray-500 mt-0.5">Collect by search terms and source lists</p>
+                    </div>
+                </label>
+                <label class="flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all"
+                       :class="mode === 'actors_only' ? 'bg-blue-50 border-blue-300' : 'bg-gray-50 border-gray-200 hover:border-gray-300'">
+                    <input type="radio" name="collection_mode" value="actors_only"
+                           x-model="mode" @change="save()"
+                           class="mt-0.5 text-blue-600 focus:ring-blue-500">
+                    <div>
+                        <span class="text-sm font-medium text-gray-900">Actors Only</span>
+                        <p class="text-xs text-gray-500 mt-0.5">Skip term-based search; only collect from source lists</p>
+                    </div>
+                </label>
+            </div>
+            <div class="mt-3 flex items-center gap-2">
+                <span x-show="saved" x-cloak x-transition class="text-xs text-green-700 font-medium">Saved</span>
+                <span x-show="error" x-cloak class="text-xs text-red-600" x-text="error"></span>
+                <span x-show="saving" class="text-xs text-gray-400">Saving...</span>
             </div>
         </div>
     </div>
@@ -424,13 +557,23 @@
                                   @change="updatePostUrls('{{ platform_id }}', $event.target.value)"
                                   placeholder="https://example.com/post/123"></textarea>
                     </div>
-                    {# Max comments per post #}
-                    <div>
-                        <label class="text-xs font-medium text-gray-600">Max comments per post</label>
-                        <input type="number" min="1" max="5000"
-                               :value="config['{{ platform_id }}']?.max_comments_per_post || 50"
-                               @change="updateMax('{{ platform_id }}', parseInt($event.target.value))"
-                               class="ml-2 w-20 text-xs border border-gray-300 rounded px-2 py-1 focus:ring-indigo-500 focus:border-indigo-500">
+                    {# Min comments on post (filter) + Max comments per post #}
+                    <div class="flex items-center gap-6">
+                        <div>
+                            <label class="text-xs font-medium text-gray-600">Min comments on post</label>
+                            <input type="number" min="0" max="10000"
+                                   :value="config['{{ platform_id }}']?.min_comments || 0"
+                                   @change="updateMinComments('{{ platform_id }}', parseInt($event.target.value))"
+                                   class="ml-2 w-20 text-xs border border-gray-300 rounded px-2 py-1 focus:ring-indigo-500 focus:border-indigo-500">
+                            <p class="text-[10px] text-gray-400 mt-0.5">Skip posts with fewer comments</p>
+                        </div>
+                        <div>
+                            <label class="text-xs font-medium text-gray-600">Max comments per post</label>
+                            <input type="number" min="1" max="5000"
+                                   :value="config['{{ platform_id }}']?.max_comments_per_post || 50"
+                                   @change="updateMax('{{ platform_id }}', parseInt($event.target.value))"
+                                   class="ml-2 w-20 text-xs border border-gray-300 rounded px-2 py-1 focus:ring-indigo-500 focus:border-indigo-500">
+                        </div>
                     </div>
                     {# Save feedback #}
                     <div class="flex items-center gap-2">
@@ -444,9 +587,11 @@
             {% endfor %}
         </div>
     </div>
+    {% endif %}{# end is_owner: collection mode, source lists, comments config #}
 
 </div>
 
+{% if is_owner %}
 {# Edit Project Modal #}
 <div id="edit-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-50">
     <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
@@ -461,7 +606,7 @@
             </button>
         </div>
 
-        <form id="edit-form" class="px-6 py-5 space-y-4">
+        <form id="edit-form" hx-boost="false" class="px-6 py-5 space-y-4">
             <div>
                 <label for="edit-name" class="block text-sm font-medium text-gray-700 mb-1">
                     Project Name <span class="text-red-500">*</span>
@@ -516,6 +661,72 @@
         </form>
     </div>
 </div>
+{% endif %}{# end is_owner: edit modal #}
+
+<script>
+// collaboratorPanel Alpine component — manage project collaborators
+window.collaboratorPanel = function collaboratorPanel() {
+    return {
+        collaborators: {{ collaborators | tojson }},
+        newEmail: '',
+        adding: false,
+        message: '',
+        messageType: 'success',
+
+        async addCollaborator() {
+            this.adding = true;
+            this.message = '';
+            try {
+                const form = new FormData();
+                form.append('email', this.newEmail);
+                form.append('role', 'viewer');
+                const resp = await fetch(`/projects/{{ project.id }}/collaborators`, {
+                    method: 'POST',
+                    body: form,
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    this.message = data.detail || 'Failed to add collaborator';
+                    this.messageType = 'error';
+                    return;
+                }
+                this.collaborators.push(data);
+                this.newEmail = '';
+                this.message = `Added ${data.email} as viewer`;
+                this.messageType = 'success';
+                setTimeout(() => this.message = '', 3000);
+            } catch (err) {
+                this.message = 'Network error';
+                this.messageType = 'error';
+            } finally {
+                this.adding = false;
+            }
+        },
+
+        async removeCollaborator(userId) {
+            if (!confirm('Remove this collaborator?')) return;
+            try {
+                const resp = await fetch(`/projects/{{ project.id }}/collaborators/${userId}`, {
+                    method: 'DELETE',
+                });
+                if (resp.ok) {
+                    this.collaborators = this.collaborators.filter(c => c.user_id !== userId);
+                    this.message = 'Collaborator removed';
+                    this.messageType = 'success';
+                    setTimeout(() => this.message = '', 3000);
+                } else {
+                    const data = await resp.json().catch(() => ({}));
+                    this.message = data.detail || 'Failed to remove collaborator';
+                    this.messageType = 'error';
+                }
+            } catch (err) {
+                this.message = 'Failed to remove collaborator';
+                this.messageType = 'error';
+            }
+        },
+    };
+};
+</script>
 
 <script>
 // projectArenaToggle Alpine component — project-level arena enable/disable grid
@@ -772,8 +983,9 @@ window.arenaSourcePanel = function arenaSourcePanel(projectId, arenaName, fieldN
     };
 };
 
-// Edit project form submission
-document.getElementById('edit-form').addEventListener('submit', async (e) => {
+// Edit project form submission (owner only — element may not exist for viewers)
+const editForm = document.getElementById('edit-form');
+if (editForm) editForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = e.target;
     const formData = new FormData(form);
@@ -899,6 +1111,14 @@ window.commentsConfig = function commentsConfig(projectId, savedConfig) {
                 this.config[platform] = { enabled: true, mode: 'post_urls', max_comments_per_post: 50 };
             }
             this.config[platform].post_urls = text.split('\n').map(u => u.trim()).filter(Boolean);
+            await this._persist(platform);
+        },
+
+        async updateMinComments(platform, value) {
+            if (!this.config[platform]) {
+                this.config[platform] = { enabled: true, mode: 'search_terms', max_comments_per_post: 50 };
+            }
+            this.config[platform].min_comments = Math.max(0, Math.min(10000, value || 0));
             await this._persist(platform);
         },
 

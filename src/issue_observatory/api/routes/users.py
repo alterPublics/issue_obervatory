@@ -22,7 +22,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -359,6 +359,95 @@ async def update_preferences(
     )
 
 
+# ------------------------------------------------------------------
+# Self-service secure profile update
+# ------------------------------------------------------------------
+
+
+class SecureProfileUpdate(BaseModel):
+    """Request body for updating profile fields that require password verification.
+
+    ``current_password`` is always required.  The remaining fields are
+    optional — only supplied fields are changed.
+    """
+
+    current_password: str
+    new_password: str | None = Field(None, min_length=8)
+    email: EmailStr | None = None
+    display_name: str | None = None
+
+
+class UserProfileResponse(BaseModel):
+    """Public profile response after a successful update."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    email: EmailStr
+    display_name: str | None = None
+    role: str
+
+
+@router.patch(
+    "/me/profile",
+    response_model=UserProfileResponse,
+    summary="Update profile with current-password verification",
+)
+async def update_profile_secure(
+    body: SecureProfileUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> UserProfileResponse:
+    """Update the authenticated user's profile.
+
+    Requires the current password for all changes.  Supports updating
+    the password, email address, and display name in a single request.
+
+    Raises:
+        HTTPException 400: If the current password is incorrect.
+        HTTPException 409: If the requested email is already taken.
+    """
+    from fastapi_users.password import PasswordHelper
+
+    if current_user.hashed_password is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No password set on this account. Contact an administrator.",
+        )
+
+    password_helper = PasswordHelper()
+    verified, updated_hash = password_helper.verify_and_update(
+        body.current_password, current_user.hashed_password
+    )
+    if not verified:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Incorrect current password.",
+        )
+    # Persist rehashed password if the hashing algorithm was upgraded.
+    if updated_hash is not None:
+        current_user.hashed_password = updated_hash
+
+    if body.new_password is not None:
+        current_user.hashed_password = password_helper.hash(body.new_password)
+
+    if body.email is not None and body.email != current_user.email:
+        existing = await db.execute(select(User).where(User.email == body.email))
+        if existing.scalar_one_or_none() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A user with this email already exists.",
+            )
+        current_user.email = body.email
+
+    if body.display_name is not None:
+        current_user.display_name = body.display_name.strip() or None
+
+    await db.commit()
+    await db.refresh(current_user)
+    return UserProfileResponse.model_validate(current_user)
+
+
 # ---------------------------------------------------------------------------
 # HTMX helpers — HTML fragment endpoints for the admin/users.html template
 # ---------------------------------------------------------------------------
@@ -496,25 +585,16 @@ async def admin_create_user(
     display_name: Annotated[str, Form()] = "",
     role: Annotated[str, Form()] = "researcher",
     is_active: Annotated[bool, Form()] = True,
+    template_id: Annotated[str | None, Form()] = None,
     db: AsyncSession = Depends(get_db),
-    _admin: User = Depends(require_admin),
+    admin_user: User = Depends(require_admin),
 ) -> HTMLResponse:
     """Create a new user account (admin only) and return a table row as HTML.
 
-    Args:
-        request: The current HTTP request.
-        email: Email address for the new user.
-        password: Plain-text password (will be hashed).
-        display_name: Optional display name.
-        role: User role (``researcher`` or ``admin``).
-        is_active: Whether the account is immediately active.
-        db: Injected async database session.
-        _admin: Injected admin user (validates the caller is an admin).
-
-    Returns:
-        HTML ``<tr>`` fragment for HTMX swap.
+    When ``template_id`` is provided, the user inherits platform access
+    settings and credential mode from the template, and credits are
+    auto-allocated.
     """
-
     allowed_roles = {"researcher", "admin"}
     if role not in allowed_roles:
         return HTMLResponse(
@@ -531,6 +611,13 @@ async def admin_create_user(
             status_code=400,
         )
 
+    # Load template if specified
+    template = None
+    if template_id and template_id.strip():
+        from issue_observatory.core.models.user_template import UserTemplate
+
+        template = await db.get(UserTemplate, uuid.UUID(template_id))
+
     from fastapi_users.password import PasswordHelper
 
     password_helper = PasswordHelper()
@@ -543,7 +630,33 @@ async def admin_create_user(
         role=role,
         is_active=is_active,
     )
+
+    # Apply template settings if available
+    if template is not None:
+        user.template_id = template.id
+        user.use_central_credentials = template.use_central_credentials
+        user.allowed_platforms = list(template.allowed_platforms or [])
+        user.disallowed_platforms = list(template.disallowed_platforms or [])
+
     db.add(user)
+    await db.flush()
+
+    # Auto-allocate credits from template
+    if template is not None and template.credits_amount > 0 and template.use_central_credentials:
+        from datetime import UTC, datetime
+
+        from issue_observatory.core.models.users import CreditAllocation
+
+        allocation = CreditAllocation(
+            user_id=user.id,
+            credits_amount=template.credits_amount,
+            valid_from=datetime.now(tz=UTC).date(),
+            valid_until=None,
+            allocated_by=admin_user.id,
+            memo=f"Auto-allocated from template: {template.name}",
+        )
+        db.add(allocation)
+
     await db.commit()
     await db.refresh(user)
     return HTMLResponse(_user_row_html(user))

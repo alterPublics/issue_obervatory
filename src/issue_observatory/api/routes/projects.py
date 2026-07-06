@@ -40,10 +40,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from issue_observatory.api.dependencies import get_current_active_user
+from issue_observatory.api.dependencies import get_current_active_user, is_project_collaborator
 from issue_observatory.core.database import get_db
 from issue_observatory.core.models.actors import ActorListMember
 from issue_observatory.core.models.project import Project
+from issue_observatory.core.models.project_collaborator import ProjectCollaborator
 from issue_observatory.core.models.query_design import ActorList, QueryDesign, SearchTerm
 from issue_observatory.core.models.users import User
 
@@ -61,22 +62,28 @@ async def _verify_project_ownership(
     project_id: uuid.UUID,
     current_user: User,
     db: AsyncSession,
+    *,
+    require_owner: bool = False,
 ) -> Project:
-    """Verify that the current user owns the given project.
+    """Verify that the current user can access the given project.
 
-    Admins bypass this check. Non-admin users must own the project.
+    Admins always pass.  When *require_owner* is ``False`` (default),
+    project collaborators (viewers) are also granted access.  When
+    ``True``, only the project owner may proceed — used for mutating
+    operations (edit, delete, launch collections, manage collaborators).
 
     Args:
         project_id: UUID of the project to check.
         current_user: The authenticated user making the request.
         db: Async database session.
+        require_owner: If ``True``, reject collaborators (owner-only).
 
     Returns:
         The Project instance if access is granted.
 
     Raises:
         HTTPException 404: If the project does not exist.
-        HTTPException 403: If the user does not own the project and is not admin.
+        HTTPException 403: If the user lacks the required access level.
     """
     stmt = select(Project).where(Project.id == project_id)
     result = await db.execute(stmt)
@@ -88,14 +95,22 @@ async def _verify_project_ownership(
             detail=f"Project '{project_id}' not found.",
         )
 
-    # Access control: admins can manage all projects, non-admins must own
-    if current_user.role != "admin" and project.owner_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have permission to access this project.",
-        )
+    # Admins bypass all checks
+    if current_user.role == "admin":
+        return project
 
-    return project
+    # Owner always has access
+    if project.owner_id == current_user.id:
+        return project
+
+    # For read-only access, collaborators are allowed
+    if not require_owner and await is_project_collaborator(db, project_id, current_user.id):
+        return project
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You do not have permission to access this project.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -131,9 +146,21 @@ async def list_projects(
         .order_by(Project.updated_at.desc())
     )
 
-    # Non-admins see only their own projects
+    # Non-admins see their own projects + projects shared with them
     if current_user.role != "admin":
-        stmt = stmt.where(Project.owner_id == current_user.id)
+        collaborated_project_ids = (
+            select(ProjectCollaborator.project_id)
+            .where(ProjectCollaborator.user_id == current_user.id)
+            .scalar_subquery()
+        )
+        from sqlalchemy import or_
+
+        stmt = stmt.where(
+            or_(
+                Project.owner_id == current_user.id,
+                Project.id.in_(collaborated_project_ids),
+            )
+        )
 
     result = await db.execute(stmt)
     rows = result.all()
@@ -149,6 +176,7 @@ async def list_projects(
             "created_at": row.Project.created_at,
             "updated_at": row.Project.updated_at,
             "query_design_count": row.query_design_count,
+            "is_shared": row.Project.owner_id != current_user.id,
         }
         projects_with_counts.append(project_dict)
 
@@ -295,6 +323,31 @@ async def get_project_detail(
         query_design_count=len(query_designs),
     )
 
+    is_owner = (
+        current_user.role == "admin" or project.owner_id == current_user.id
+    )
+
+    # Load collaborators for the management panel (owner/admin only)
+    collaborator_list = []
+    if is_owner:
+        collab_stmt = (
+            select(ProjectCollaborator, User)
+            .join(User, ProjectCollaborator.user_id == User.id)
+            .where(ProjectCollaborator.project_id == project_id)
+            .order_by(User.email)
+        )
+        collab_result = await db.execute(collab_stmt)
+        for collab_row in collab_result.all():
+            collaborator_list.append({
+                "user_id": str(collab_row.User.id),
+                "email": collab_row.User.email,
+                "display_name": collab_row.User.display_name,
+                "role": collab_row.ProjectCollaborator.role,
+                "granted_at": collab_row.ProjectCollaborator.granted_at.isoformat()
+                if collab_row.ProjectCollaborator.granted_at
+                else None,
+            })
+
     templates = request.app.state.templates
     return templates.TemplateResponse(
         "projects/detail.html",
@@ -305,6 +358,8 @@ async def get_project_detail(
             "query_designs": designs_with_runs,
             "source_config": project.source_config or {},
             "comments_config": project.comments_config or {},
+            "is_owner": is_owner,
+            "collaborators": collaborator_list,
         },
     )
 
@@ -322,6 +377,7 @@ async def update_project(
     name: str = Form(None),
     description: str = Form(None),
     visibility: str = Form(None),
+    collection_mode: str = Form(None),
 ) -> JSONResponse:
     """Update an existing project.
 
@@ -334,6 +390,7 @@ async def update_project(
         name: New project name (optional).
         description: New project description (optional).
         visibility: New access control level (optional).
+        collection_mode: Collection dispatch mode ('default' or 'actors_only', optional).
 
     Returns:
         JSON response with success status.
@@ -342,7 +399,7 @@ async def update_project(
         HTTPException 403: If the user does not have permission to modify this project.
         HTTPException 404: If the project does not exist.
     """
-    project = await _verify_project_ownership(project_id, current_user, db)
+    project = await _verify_project_ownership(project_id, current_user, db, require_owner=True)
 
     # Apply updates — only overwrite fields that are explicitly present
     if name is not None:
@@ -351,6 +408,8 @@ async def update_project(
         project.description = description
     if visibility is not None:
         project.visibility = visibility
+    if collection_mode is not None and collection_mode in {"default", "actors_only"}:
+        project.collection_mode = collection_mode
 
     await db.commit()
     await db.refresh(project)
@@ -399,7 +458,7 @@ async def delete_project(
         HTTPException 403: If the user does not have permission to delete this project.
         HTTPException 404: If the project does not exist.
     """
-    project = await _verify_project_ownership(project_id, current_user, db)
+    project = await _verify_project_ownership(project_id, current_user, db, require_owner=True)
 
     project_name = project.name
     await db.delete(project)
@@ -448,7 +507,7 @@ async def clone_project(
         HTTPException 403: If the user does not own the project and is not admin.
     """
     # Load the original project with all nested relationships.
-    await _verify_project_ownership(project_id, current_user, db)
+    await _verify_project_ownership(project_id, current_user, db, require_owner=True)
 
     stmt = (
         select(Project)
@@ -593,7 +652,7 @@ async def attach_query_design(
         HTTPException 404: If the project or query design does not exist.
         HTTPException 403: If the user does not own both resources.
     """
-    project = await _verify_project_ownership(project_id, current_user, db)
+    project = await _verify_project_ownership(project_id, current_user, db, require_owner=True)
 
     # Verify the query design exists and user owns it
     stmt = select(QueryDesign).where(QueryDesign.id == design_id)
@@ -659,7 +718,7 @@ async def detach_query_design(
         HTTPException 404: If the project or query design does not exist.
         HTTPException 403: If the user does not own the project.
     """
-    project = await _verify_project_ownership(project_id, current_user, db)
+    project = await _verify_project_ownership(project_id, current_user, db, require_owner=True)
 
     # Verify the query design exists and is attached to this project
     stmt = select(QueryDesign).where(
@@ -759,7 +818,7 @@ async def patch_source_config(
             detail="Request body must be a non-empty JSON object.",
         )
 
-    project = await _verify_project_ownership(project_id, current_user, db)
+    project = await _verify_project_ownership(project_id, current_user, db, require_owner=True)
 
     current_config: dict = dict(project.source_config) if project.source_config else {}
     existing_section: dict = dict(current_config.get(arena_name) or {})
@@ -842,7 +901,7 @@ async def save_arenas_config(
     Returns:
         JSON response with the saved arenas_config.
     """
-    project = await _verify_project_ownership(project_id, current_user, db)
+    project = await _verify_project_ownership(project_id, current_user, db, require_owner=True)
 
     project.arenas_config = {"arenas": payload.arenas}
     await db.commit()
@@ -942,6 +1001,22 @@ async def patch_comments_config(
             detail=f"Invalid mode '{mode}'. Must be one of: {sorted(_VALID_COMMENT_MODES)}",
         )
 
+    # Validate min_comments if provided
+    min_comments = payload.get("min_comments")
+    if min_comments is not None:
+        try:
+            min_comments = int(min_comments)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="min_comments must be a non-negative integer.",
+            )
+        if min_comments < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="min_comments must be a non-negative integer.",
+            )
+
     # Validate post_urls format if provided
     post_urls = payload.get("post_urls")
     if post_urls is not None:
@@ -957,7 +1032,7 @@ async def patch_comments_config(
                     detail=f"Invalid URL in post_urls: {url!r}",
                 )
 
-    project = await _verify_project_ownership(project_id, current_user, db)
+    project = await _verify_project_ownership(project_id, current_user, db, require_owner=True)
 
     current_config: dict = dict(project.comments_config) if project.comments_config else {}
     existing_section: dict = dict(current_config.get(platform_name) or {})
@@ -1002,7 +1077,7 @@ async def delete_comments_config(
     Returns:
         JSON response confirming deletion.
     """
-    project = await _verify_project_ownership(project_id, current_user, db)
+    project = await _verify_project_ownership(project_id, current_user, db, require_owner=True)
 
     current_config: dict = dict(project.comments_config) if project.comments_config else {}
     if platform_name not in current_config:
@@ -1023,4 +1098,242 @@ async def delete_comments_config(
     return JSONResponse(
         {"deleted": True, "platform": platform_name},
         status_code=status.HTTP_200_OK,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Collaborator management
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{project_id:uuid}/collaborators")
+async def list_collaborators(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> JSONResponse:
+    """List all collaborators on a project.
+
+    Only the project owner and admins can see collaborators.
+
+    Args:
+        project_id: UUID of the project.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        JSON list of collaborator objects.
+    """
+    await _verify_project_ownership(project_id, current_user, db, require_owner=True)
+
+    stmt = (
+        select(ProjectCollaborator, User)
+        .join(User, ProjectCollaborator.user_id == User.id)
+        .where(ProjectCollaborator.project_id == project_id)
+        .order_by(User.email)
+    )
+    result = await db.execute(stmt)
+
+    collaborators = []
+    for row in result.all():
+        collaborators.append({
+            "user_id": str(row.User.id),
+            "email": row.User.email,
+            "display_name": row.User.display_name,
+            "role": row.ProjectCollaborator.role,
+            "granted_at": row.ProjectCollaborator.granted_at.isoformat(),
+        })
+
+    return JSONResponse(collaborators)
+
+
+@router.post("/{project_id:uuid}/collaborators", status_code=status.HTTP_201_CREATED)
+async def add_collaborator(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    email: str = Form(...),
+    role: str = Form("viewer"),
+) -> JSONResponse:
+    """Add a collaborator to a project by email address.
+
+    Only the project owner can add collaborators.  The target user must
+    exist and be active.  Duplicate adds are rejected with HTTP 409.
+
+    Args:
+        project_id: UUID of the project.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+        email: Email address of the user to add.
+        role: Access role — currently only ``'viewer'`` is supported.
+
+    Returns:
+        JSON object with the new collaborator details.
+    """
+    await _verify_project_ownership(project_id, current_user, db, require_owner=True)
+
+    if role not in ("viewer",):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unsupported role: {role!r}. Allowed: 'viewer'.",
+        )
+
+    # Look up target user by email
+    target_result = await db.execute(
+        select(User).where(User.email == email)
+    )
+    target_user = target_result.scalar_one_or_none()
+
+    if target_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No user found with email '{email}'.",
+        )
+
+    if not target_user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Cannot add an inactive user as collaborator.",
+        )
+
+    if target_user.id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Cannot add yourself as a collaborator.",
+        )
+
+    # Check for duplicate
+    existing = await db.execute(
+        select(ProjectCollaborator).where(
+            ProjectCollaborator.project_id == project_id,
+            ProjectCollaborator.user_id == target_user.id,
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"User '{email}' is already a collaborator on this project.",
+        )
+
+    collab = ProjectCollaborator(
+        project_id=project_id,
+        user_id=target_user.id,
+        role=role,
+        granted_by=current_user.id,
+    )
+    db.add(collab)
+    await db.commit()
+
+    logger.info(
+        "project.collaborator_added",
+        project_id=str(project_id),
+        user_email=email,
+        role=role,
+        granted_by=str(current_user.id),
+    )
+
+    return JSONResponse(
+        {
+            "user_id": str(target_user.id),
+            "email": target_user.email,
+            "display_name": target_user.display_name,
+            "role": role,
+        },
+        status_code=status.HTTP_201_CREATED,
+    )
+
+
+@router.delete("/{project_id:uuid}/collaborators/{user_id:uuid}")
+async def remove_collaborator(
+    project_id: uuid.UUID,
+    user_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> JSONResponse:
+    """Remove a collaborator from a project.
+
+    Only the project owner can remove collaborators.
+
+    Args:
+        project_id: UUID of the project.
+        user_id: UUID of the collaborator to remove.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        JSON confirmation of removal.
+    """
+    await _verify_project_ownership(project_id, current_user, db, require_owner=True)
+
+    result = await db.execute(
+        select(ProjectCollaborator).where(
+            ProjectCollaborator.project_id == project_id,
+            ProjectCollaborator.user_id == user_id,
+        )
+    )
+    collab = result.scalar_one_or_none()
+
+    if collab is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Collaborator not found.",
+        )
+
+    await db.delete(collab)
+    await db.commit()
+
+    logger.info(
+        "project.collaborator_removed",
+        project_id=str(project_id),
+        user_id=str(user_id),
+    )
+
+    return JSONResponse(
+        {"removed": True, "user_id": str(user_id)},
+        status_code=status.HTTP_200_OK,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Term-matching backfill
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{project_id:uuid}/backfill-terms", status_code=status.HTTP_202_ACCEPTED)
+async def backfill_project_terms(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> JSONResponse:
+    """Re-evaluate term matching for all records in the project using the
+    combined search terms from every query design.
+
+    Dispatches a background Celery task and returns immediately.
+
+    Args:
+        project_id: UUID of the project.
+        db: Injected async database session.
+        current_user: The authenticated, active user.
+
+    Returns:
+        JSON with the Celery ``task_id`` and status ``"accepted"``.
+    """
+    await _verify_project_ownership(project_id, current_user, db, require_owner=True)
+
+    from issue_observatory.workers.celery_app import celery_app
+
+    result = celery_app.send_task(
+        "backfill_project_terms",
+        kwargs={"project_id": str(project_id)},
+    )
+
+    logger.info(
+        "project.backfill_terms_dispatched",
+        project_id=str(project_id),
+        task_id=result.id,
+    )
+
+    return JSONResponse(
+        {"task_id": result.id, "status": "accepted"},
+        status_code=status.HTTP_202_ACCEPTED,
     )

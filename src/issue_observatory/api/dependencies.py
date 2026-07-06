@@ -28,7 +28,11 @@ from typing import Annotated
 import redis.asyncio as aioredis
 from fastapi import Depends, HTTPException, status
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from issue_observatory.config.settings import get_settings
+from issue_observatory.core.models.project_collaborator import ProjectCollaborator
 from issue_observatory.core.models.users import User
 
 # ---------------------------------------------------------------------------
@@ -183,6 +187,28 @@ async def get_redis() -> AsyncGenerator[aioredis.Redis, None]:
 # ---------------------------------------------------------------------------
 # Ownership guard
 # ---------------------------------------------------------------------------
+
+
+async def is_project_collaborator(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> bool:
+    """Check whether *user_id* is a collaborator on *project_id*.
+
+    Returns ``True`` if a ``project_collaborators`` row exists for the pair,
+    regardless of role.  The query is lightweight (PK lookup).
+    """
+    stmt = (
+        select(ProjectCollaborator.user_id)
+        .where(
+            ProjectCollaborator.project_id == project_id,
+            ProjectCollaborator.user_id == user_id,
+        )
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none() is not None
 
 
 def ownership_guard(resource_owner_id: uuid.UUID, current_user: User) -> None:

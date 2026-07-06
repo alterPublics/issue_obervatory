@@ -1,11 +1,16 @@
-"""Unit tests for the shared SQL filter-builder (analysis/_filters.py).
+"""Unit tests for the shared SQL filter-builder (Phase 1b migration).
+
+Phase 1b: tests now cover build_content_where_sql + ContentFilterSpec from
+``core/queries/content_filters.py``. The old ``analysis/_filters.py`` module
+has been deleted; these tests validate that the new shared helper produces
+equivalent SQL predicates for analysis-layer callers.
 
 Tests cover:
-- build_content_filters(): with no args, with query_design_id, with run_id,
-  with both, with arena/platform, with date range.
-- build_content_where(): correct WHERE prefix, duplicate exclusion always present.
-- Duplicate exclusion clause is always present regardless of other arguments.
-- Table alias is correctly prepended when provided.
+- build_content_where_sql() with no args (only dedup exclusion), with
+  query_design_id, with run_id, with both, with arenas/platforms, with date
+  range, with table alias.
+- ContentFilterSpec.include_duplicates=False always emits the duplicate
+  exclusion predicate.
 - Bind parameters are correctly populated in the mutable params dict.
 
 No database or network connection is required.
@@ -26,226 +31,304 @@ os.environ.setdefault("PSEUDONYMIZATION_SALT", "test-pseudonymization-salt-for-u
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "dGVzdC1mZXJuZXQta2V5LTMyLWJ5dGVzLXBhZGRlZA==")
 
-from issue_observatory.analysis._filters import (
-    build_content_filters,
-    build_content_where,
+from issue_observatory.core.queries.content_filters import (
+    ContentFilterSpec,
+    build_content_where_sql,
 )
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-_DUPLICATE_EXCLUSION = "(raw_metadata->>'duplicate_of') IS NULL"
+_DUPLICATE_EXCLUSION = "raw_metadata->>'duplicate_of' IS NULL"
+
+
+def _make_spec(**kwargs: Any) -> ContentFilterSpec:
+    """Build a ContentFilterSpec for analysis-layer use with sensible defaults."""
+    defaults: dict[str, Any] = {
+        "include_duplicates": False,
+        "ownership_mode": "admin",
+        "include_linked": True,
+    }
+    defaults.update(kwargs)
+    return ContentFilterSpec(**defaults)
+
+
+def _build(spec: ContentFilterSpec, table_alias: str = "") -> tuple[str, dict[str, Any]]:
+    """Call build_content_where_sql and return (where_str, params)."""
+    params: dict[str, Any] = {}
+    where = build_content_where_sql(spec, table_alias=table_alias, params=params)
+    return where, params
 
 
 # ---------------------------------------------------------------------------
-# build_content_filters
+# Duplicate exclusion always present when include_duplicates=False
 # ---------------------------------------------------------------------------
 
 
-class TestBuildContentFilters:
-    def test_no_args_returns_list_with_one_element(self) -> None:
-        """build_content_filters() with no optional args returns exactly one clause
-        — the duplicate exclusion predicate — and leaves params empty."""
-        params: dict[str, Any] = {}
-        clauses = build_content_filters(None, None, None, None, None, None, params)
-        assert isinstance(clauses, list)
-        assert len(clauses) == 1
-        assert params == {}
+class TestDuplicateExclusion:
+    def test_no_args_returns_where_with_duplicate_exclusion(self) -> None:
+        """With no filters, the WHERE clause includes the duplicate exclusion predicate.
 
-    def test_no_args_clause_is_duplicate_exclusion(self) -> None:
-        """The single clause returned when no args are given is the duplicate
-        exclusion predicate."""
-        params: dict[str, Any] = {}
-        clauses = build_content_filters(None, None, None, None, None, None, params)
-        assert clauses[0] == _DUPLICATE_EXCLUSION
+        Note: when show_all=False (default), an actor_only_platforms bind param
+        is also emitted as part of the term_matched predicate.
+        """
+        spec = _make_spec()
+        where, params = _build(spec)
+        assert where.startswith("WHERE")
+        assert _DUPLICATE_EXCLUSION in where
 
+    def test_duplicate_exclusion_present_with_query_design_id(self) -> None:
+        spec = _make_spec(query_design_id=uuid.uuid4())
+        where, _ = _build(spec)
+        assert _DUPLICATE_EXCLUSION in where
+
+    def test_duplicate_exclusion_present_with_run_id(self) -> None:
+        spec = _make_spec(run_id=uuid.uuid4())
+        where, _ = _build(spec)
+        assert _DUPLICATE_EXCLUSION in where
+
+    def test_duplicate_exclusion_present_with_all_filters(self) -> None:
+        spec = _make_spec(
+            query_design_id=uuid.uuid4(),
+            run_id=uuid.uuid4(),
+            arenas=["news_media"],
+            platforms=["bluesky"],
+            date_from=datetime(2026, 1, 1, tzinfo=UTC),
+            date_to=datetime(2026, 1, 31, tzinfo=UTC),
+        )
+        where, _ = _build(spec)
+        assert _DUPLICATE_EXCLUSION in where
+
+    def test_no_duplicate_exclusion_when_include_duplicates_true(self) -> None:
+        """When include_duplicates=True (default) the exclusion is NOT emitted."""
+        spec = ContentFilterSpec(
+            ownership_mode="admin",
+            include_duplicates=True,
+        )
+        where, _ = _build(spec)
+        assert _DUPLICATE_EXCLUSION not in where
+
+
+# ---------------------------------------------------------------------------
+# query_design_id (singular)
+# ---------------------------------------------------------------------------
+
+
+class TestQueryDesignId:
     def test_query_design_id_adds_clause_and_param(self) -> None:
-        """query_design_id generates a query_design_id = :query_design_id predicate
-        and inserts the stringified UUID into params."""
-        params: dict[str, Any] = {}
         qd_id = uuid.uuid4()
-        clauses = build_content_filters(qd_id, None, None, None, None, None, params)
-        combined = " ".join(clauses)
-        assert "query_design_id = :query_design_id" in combined
+        spec = _make_spec(query_design_id=qd_id)
+        where, params = _build(spec)
+        assert "query_design_id = :query_design_id" in where
         assert params.get("query_design_id") == str(qd_id)
 
-    def test_run_id_adds_clause_and_param(self) -> None:
-        """run_id generates a collection_run_id = :run_id predicate and inserts
-        the stringified UUID into params."""
-        params: dict[str, Any] = {}
+    def test_query_design_id_suppressed_when_list_provided(self) -> None:
+        """When query_design_ids list is non-empty the singular predicate is skipped."""
+        qd_id = uuid.uuid4()
+        list_id = uuid.uuid4()
+        spec = _make_spec(query_design_id=qd_id, query_design_ids=[list_id])
+        where, params = _build(spec)
+        # Singular predicate not present — the list IN predicate dominates.
+        assert "= :query_design_id" not in where
+        assert any(str(list_id) in v for v in params.values())
+
+
+# ---------------------------------------------------------------------------
+# query_design_ids (list)
+# ---------------------------------------------------------------------------
+
+
+class TestQueryDesignIds:
+    def test_query_design_ids_adds_in_predicate(self) -> None:
+        ids = [uuid.uuid4(), uuid.uuid4()]
+        spec = _make_spec(query_design_ids=ids)
+        where, params = _build(spec)
+        assert "query_design_id IN" in where
+        assert all(str(qd_id) in params.values() for qd_id in ids)
+
+    def test_query_design_ids_with_include_linked_has_exists(self) -> None:
+        ids = [uuid.uuid4()]
+        spec = _make_spec(query_design_ids=ids, include_linked=True)
+        where, params = _build(spec)
+        assert "EXISTS" in where
+        assert "content_record_links" in where
+
+    def test_query_design_ids_without_include_linked_no_exists(self) -> None:
+        ids = [uuid.uuid4()]
+        spec = _make_spec(query_design_ids=ids, include_linked=False)
+        where, params = _build(spec)
+        # No EXISTS subquery when include_linked=False
+        assert "content_record_links" not in where
+
+
+# ---------------------------------------------------------------------------
+# run_id
+# ---------------------------------------------------------------------------
+
+
+class TestRunId:
+    def test_run_id_adds_collection_run_id_clause(self) -> None:
         run_id = uuid.uuid4()
-        clauses = build_content_filters(None, run_id, None, None, None, None, params)
-        combined = " ".join(clauses)
-        assert "collection_run_id = :run_id" in combined
+        spec = _make_spec(run_id=run_id)
+        where, params = _build(spec)
+        assert "collection_run_id = :run_id" in where
         assert params.get("run_id") == str(run_id)
 
-    def test_both_query_design_id_and_run_id_add_two_extra_clauses(self) -> None:
-        """Supplying both query_design_id and run_id produces three clauses total:
-        one per filter plus the always-present duplicate exclusion clause."""
-        params: dict[str, Any] = {}
-        qd_id = uuid.uuid4()
-        run_id = uuid.uuid4()
-        clauses = build_content_filters(qd_id, run_id, None, None, None, None, params)
-        assert len(clauses) == 3  # qd + run_id + duplicate exclusion
 
-    def test_duplicate_exclusion_always_present_with_query_design_id(self) -> None:
-        """Duplicate exclusion clause is present even when query_design_id is provided."""
-        params: dict[str, Any] = {}
-        clauses = build_content_filters(uuid.uuid4(), None, None, None, None, None, params)
-        assert any(_DUPLICATE_EXCLUSION in c for c in clauses)
+# ---------------------------------------------------------------------------
+# arenas and platforms (list predicates)
+# ---------------------------------------------------------------------------
 
-    def test_duplicate_exclusion_always_present_with_run_id(self) -> None:
-        """Duplicate exclusion clause is present even when run_id is provided."""
-        params: dict[str, Any] = {}
-        clauses = build_content_filters(None, uuid.uuid4(), None, None, None, None, params)
-        assert any(_DUPLICATE_EXCLUSION in c for c in clauses)
 
-    def test_duplicate_exclusion_always_present_with_all_filters(self) -> None:
-        """Duplicate exclusion clause is present when all filter args are supplied."""
-        params: dict[str, Any] = {}
-        date_from = datetime(2026, 1, 1, tzinfo=UTC)
-        date_to = datetime(2026, 1, 31, tzinfo=UTC)
-        clauses = build_content_filters(
-            uuid.uuid4(), uuid.uuid4(), "news_media", "bluesky", date_from, date_to, params
+class TestListFilters:
+    def test_arenas_list_generates_in_predicate(self) -> None:
+        spec = _make_spec(arenas=["news_media"])
+        where, params = _build(spec)
+        assert "arena IN" in where
+        assert "news_media" in params.values()
+
+    def test_platforms_list_generates_in_predicate(self) -> None:
+        spec = _make_spec(platforms=["bluesky"])
+        where, params = _build(spec)
+        assert "platform IN" in where
+        assert "bluesky" in params.values()
+
+    def test_languages_list_generates_split_part_in(self) -> None:
+        spec = _make_spec(languages=["da"])
+        where, params = _build(spec)
+        assert "split_part" in where
+        assert "IN" in where
+        assert "da" in params.values()
+
+    def test_search_terms_list_generates_overlap_operator(self) -> None:
+        spec = _make_spec(search_terms=["klima", "energi"])
+        where, params = _build(spec)
+        assert "&&" in where
+        assert "klima" in params.values()
+        assert "energi" in params.values()
+        # Default path must NOT include the ILIKE fallback.
+        assert "ILIKE" not in where.upper()
+
+    def test_search_terms_text_fallback_adds_ilike_branch(self) -> None:
+        """Window-mode fallback widens the predicate with ILIKE ANY on text_content."""
+        spec = _make_spec(
+            search_terms=["klima", "energi"],
+            search_terms_text_fallback=True,
         )
-        assert any(_DUPLICATE_EXCLUSION in c for c in clauses)
+        where, params = _build(spec)
+        # Both branches present, combined by OR.
+        assert "&&" in where
+        assert "ILIKE ANY" in where
+        assert "text_content ILIKE" in where
+        # Array-overlap binds are present as plain strings.
+        assert "klima" in params.values()
+        assert "energi" in params.values()
+        # ILIKE binds are wrapped in % wildcards.
+        ilike_vals = [v for k, v in params.items() if k.startswith("_stl_")]
+        assert set(ilike_vals) == {"%klima%", "%energi%"}
 
-    def test_arena_filter_adds_predicate(self) -> None:
-        """arena filter adds an arena = :arena predicate and populates params."""
-        params: dict[str, Any] = {}
-        clauses = build_content_filters(None, None, "news_media", None, None, None, params)
-        combined = " ".join(clauses)
-        assert "arena = :arena" in combined
-        assert params.get("arena") == "news_media"
+    def test_search_terms_text_fallback_escapes_like_wildcards(self) -> None:
+        """User-supplied % and _ must be escaped so they are treated literally."""
+        spec = _make_spec(
+            search_terms=["50%", "a_b"],
+            search_terms_text_fallback=True,
+        )
+        _, params = _build(spec)
+        ilike_vals = {v for k, v in params.items() if k.startswith("_stl_")}
+        # Both wildcards should be backslash-escaped inside the pattern.
+        assert r"%50\%%" in ilike_vals
+        assert r"%a\_b%" in ilike_vals
 
-    def test_platform_filter_adds_predicate(self) -> None:
-        """platform filter adds a platform = :platform predicate and populates params."""
-        params: dict[str, Any] = {}
-        clauses = build_content_filters(None, None, None, "bluesky", None, None, params)
-        combined = " ".join(clauses)
-        assert "platform = :platform" in combined
-        assert params.get("platform") == "bluesky"
+    def test_multiple_arenas_uses_indexed_params(self) -> None:
+        spec = _make_spec(arenas=["news", "social"])
+        where, params = _build(spec)
+        assert "arena IN" in where
+        arena_vals = [v for k, v in params.items() if k.startswith("_arena_")]
+        assert set(arena_vals) == {"news", "social"}
 
-    def test_date_from_adds_published_at_gte_clause(self) -> None:
-        """date_from adds a published_at >= :date_from clause."""
-        params: dict[str, Any] = {}
+
+# ---------------------------------------------------------------------------
+# date range
+# ---------------------------------------------------------------------------
+
+
+class TestDateRange:
+    def test_date_from_adds_gte_clause(self) -> None:
         date_from = datetime(2026, 1, 1, tzinfo=UTC)
-        clauses = build_content_filters(None, None, None, None, date_from, None, params)
-        combined = " ".join(clauses)
-        assert "published_at >= :date_from" in combined
+        spec = _make_spec(date_from=date_from)
+        where, params = _build(spec)
+        assert "published_at >= :date_from" in where
         assert params.get("date_from") == date_from
 
-    def test_date_to_adds_published_at_lte_clause(self) -> None:
-        """date_to adds a published_at <= :date_to clause."""
-        params: dict[str, Any] = {}
+    def test_date_to_adds_lte_clause(self) -> None:
         date_to = datetime(2026, 1, 31, tzinfo=UTC)
-        clauses = build_content_filters(None, None, None, None, None, date_to, params)
-        combined = " ".join(clauses)
-        assert "published_at <= :date_to" in combined
+        spec = _make_spec(date_to=date_to)
+        where, params = _build(spec)
+        assert "published_at <= :date_to" in where
         assert params.get("date_to") == date_to
 
-    def test_date_range_adds_two_date_clauses_plus_exclusion(self) -> None:
-        """date_from and date_to together yield three clauses: two dates plus
-        the duplicate exclusion."""
-        params: dict[str, Any] = {}
-        date_from = datetime(2026, 1, 1, tzinfo=UTC)
-        date_to = datetime(2026, 1, 31, tzinfo=UTC)
-        clauses = build_content_filters(None, None, None, None, date_from, date_to, params)
-        assert len(clauses) == 3
-
-    def test_table_alias_prepended_to_named_column_clauses(self) -> None:
-        """table_alias is prepended to column names for aliased query contexts."""
-        params: dict[str, Any] = {}
-        qd_id = uuid.uuid4()
-        clauses = build_content_filters(
-            qd_id, None, None, None, None, None, params, table_alias="a."
+    def test_date_range_predicates_present(self) -> None:
+        spec = _make_spec(
+            date_from=datetime(2026, 1, 1, tzinfo=UTC),
+            date_to=datetime(2026, 1, 31, tzinfo=UTC),
         )
-        named = [c for c in clauses if "duplicate_of" not in c]
-        for clause in named:
-            assert clause.startswith("a."), (
-                f"Expected clause to start with 'a.' but got: {clause!r}"
-            )
-
-    def test_table_alias_applied_to_duplicate_exclusion_as_parenthesised_form(self) -> None:
-        """When a table alias is provided, the duplicate exclusion clause uses the
-        parenthesised form (alias.raw_metadata->>'duplicate_of') IS NULL."""
-        params: dict[str, Any] = {}
-        clauses = build_content_filters(
-            None, None, None, None, None, None, params, table_alias="cr."
-        )
-        dup_clause = clauses[-1]
-        assert "cr.raw_metadata" in dup_clause
-
-    def test_return_list_is_never_empty(self) -> None:
-        """build_content_filters() always returns a non-empty list."""
-        params: dict[str, Any] = {}
-        clauses = build_content_filters(None, None, None, None, None, None, params)
-        assert len(clauses) >= 1
+        where, _ = _build(spec)
+        assert "published_at >=" in where
+        assert "published_at <=" in where
 
 
 # ---------------------------------------------------------------------------
-# build_content_where
+# table alias
 # ---------------------------------------------------------------------------
 
 
-class TestBuildContentWhere:
-    def test_no_args_returns_where_string_with_duplicate_exclusion(self) -> None:
-        """build_content_where() with no optional args returns a non-empty WHERE
-        clause containing the duplicate exclusion predicate."""
-        params: dict[str, Any] = {}
-        result = build_content_where(None, None, None, None, None, None, params)
-        assert result.startswith("WHERE")
-        assert _DUPLICATE_EXCLUSION in result
-
-    def test_query_design_id_included_in_where_clause(self) -> None:
-        """query_design_id filter generates a WHERE clause mentioning
-        query_design_id."""
-        params: dict[str, Any] = {}
+class TestTableAlias:
+    def test_no_alias_no_prefix(self) -> None:
         qd_id = uuid.uuid4()
-        result = build_content_where(qd_id, None, None, None, None, None, params)
-        assert "query_design_id" in result
-        assert "WHERE" in result
-        assert params.get("query_design_id") == str(qd_id)
+        spec = _make_spec(query_design_id=qd_id)
+        where, _ = _build(spec, table_alias="")
+        assert "cr.query_design_id" not in where
+        assert "query_design_id = :query_design_id" in where
 
-    def test_run_id_included_in_where_clause(self) -> None:
-        """run_id filter generates a WHERE clause mentioning collection_run_id."""
-        params: dict[str, Any] = {}
-        run_id = uuid.uuid4()
-        result = build_content_where(None, run_id, None, None, None, None, params)
-        assert "collection_run_id" in result
-        assert params.get("run_id") == str(run_id)
-
-    def test_both_query_design_id_and_run_id_joined_with_and(self) -> None:
-        """Multiple predicates are joined with AND in the returned WHERE clause."""
-        params: dict[str, Any] = {}
+    def test_cr_alias_prepended_to_predicates(self) -> None:
         qd_id = uuid.uuid4()
-        run_id = uuid.uuid4()
-        result = build_content_where(qd_id, run_id, None, None, None, None, params)
-        assert "AND" in result
+        spec = _make_spec(query_design_id=qd_id)
+        where, _ = _build(spec, table_alias="cr.")
+        assert "cr.query_design_id = :query_design_id" in where
 
-    def test_always_returns_non_empty_string(self) -> None:
-        """build_content_where() always returns a non-empty string (never '')."""
-        params: dict[str, Any] = {}
-        result = build_content_where(None, None, None, None, None, None, params)
-        assert result != ""
-        assert len(result) > 5  # at minimum 'WHERE ' + something
+    def test_duplicate_exclusion_uses_alias(self) -> None:
+        spec = _make_spec()
+        where, _ = _build(spec, table_alias="cr.")
+        assert "cr.raw_metadata->>'duplicate_of' IS NULL" in where
 
-    def test_date_range_predicates_present_in_where_clause(self) -> None:
-        """date_from and date_to generate appropriate predicates in the WHERE clause."""
-        params: dict[str, Any] = {}
-        date_from = datetime(2026, 1, 1, tzinfo=UTC)
-        date_to = datetime(2026, 1, 31, tzinfo=UTC)
-        result = build_content_where(None, None, None, None, date_from, date_to, params)
-        assert "published_at >=" in result
-        assert "published_at <=" in result
+    def test_a_alias_for_self_join(self) -> None:
+        spec = _make_spec(arenas=["news"])
+        where, _ = _build(spec, table_alias="a.")
+        assert "a.arena IN" in where
 
-    def test_no_table_alias_in_build_content_where(self) -> None:
-        """build_content_where() does not accept or apply a table alias —
-        its output has no table alias prefix on plain column references."""
-        params: dict[str, Any] = {}
-        qd_id = uuid.uuid4()
-        result = build_content_where(qd_id, None, None, None, None, None, params)
-        # Without alias the direct predicate should not have a dot-prefix like 'cr.'
-        assert "cr.query_design_id" not in result
-        assert "query_design_id = :query_design_id" in result
+
+# ---------------------------------------------------------------------------
+# WHERE string invariants
+# ---------------------------------------------------------------------------
+
+
+class TestWhereStringInvariants:
+    def test_always_non_empty_when_include_duplicates_false(self) -> None:
+        spec = _make_spec()
+        where, _ = _build(spec)
+        assert where != ""
+        assert len(where) > 5
+
+    def test_starts_with_where_keyword(self) -> None:
+        spec = _make_spec()
+        where, _ = _build(spec)
+        assert where.startswith("WHERE")
+
+    def test_multiple_predicates_joined_with_and(self) -> None:
+        spec = _make_spec(
+            query_design_id=uuid.uuid4(),
+            arenas=["news"],
+        )
+        where, _ = _build(spec)
+        assert "AND" in where

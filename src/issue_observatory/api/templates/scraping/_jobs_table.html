@@ -6,18 +6,41 @@
 <table class="min-w-full divide-y divide-gray-200 text-sm">
     <thead class="bg-gray-50">
         <tr>
+            <th class="text-left px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs w-8"></th>
             <th class="text-left px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Source</th>
             <th class="text-left px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Status</th>
             <th class="text-right px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Total</th>
             <th class="text-right px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Enriched</th>
             <th class="text-right px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Failed</th>
+            <th class="text-right px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Skipped</th>
             <th class="text-left px-6 py-3 font-medium text-gray-500 uppercase tracking-wider text-xs">Created</th>
             <th class="px-6 py-3"><span class="sr-only">Actions</span></th>
         </tr>
     </thead>
     <tbody class="divide-y divide-gray-100">
         {% for job in jobs %}
+        {% set job_key = job.id | string | replace('-', '') %}
         <tr class="hover:bg-gray-50 transition-colors">
+            {# Expand/collapse toggle #}
+            <td class="pl-6 pr-0 py-4">
+                <button type="button"
+                        onclick="
+                            var row = document.getElementById('records-row-{{ job_key }}');
+                            var isHidden = row.classList.contains('hidden');
+                            row.classList.toggle('hidden');
+                            this.querySelector('svg').classList.toggle('rotate-90');
+                            if (isHidden && !row.dataset.loaded) {
+                                htmx.ajax('GET', '/api/scraping-jobs/{{ job.id }}/records', {target: '#records-{{ job_key }}', swap: 'innerHTML'});
+                                row.dataset.loaded = 'true';
+                            }
+                        "
+                        class="p-1 text-gray-400 hover:text-gray-600 rounded hover:bg-gray-100 transition-all"
+                        title="Show scraped content records">
+                    <svg class="w-3.5 h-3.5 transition-transform duration-150" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
+                    </svg>
+                </button>
+            </td>
             <td class="px-6 py-4">
                 <div class="text-sm">
                     {% if job.source_type == 'collection_run' %}
@@ -63,6 +86,9 @@
             <td class="px-6 py-4 text-right text-red-600 font-mono text-xs">
                 {{ job.urls_failed | default(0) }}
             </td>
+            <td class="px-6 py-4 text-right text-amber-500 font-mono text-xs">
+                {{ job.urls_skipped | default(0) }}
+            </td>
             <td class="px-6 py-4 text-gray-500 text-xs">
                 {{ job.created_at | default('') | string | truncate(16, true, '') }}
             </td>
@@ -88,6 +114,22 @@
                         Delete
                     </button>
                     {% endif %}
+                </div>
+            </td>
+        </tr>
+        {# Expandable records row #}
+        <tr id="records-row-{{ job_key }}" class="hidden">
+            <td colspan="9" class="p-0 bg-gray-50/50">
+                <div id="records-{{ job_key }}">
+                    <div class="px-6 py-4 text-center">
+                        <div class="flex items-center justify-center gap-2">
+                            <svg class="animate-spin w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                            </svg>
+                            <p class="text-sm text-gray-400">Loading records...</p>
+                        </div>
+                    </div>
                 </div>
             </td>
         </tr>

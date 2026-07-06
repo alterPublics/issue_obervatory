@@ -31,19 +31,23 @@ from issue_observatory.core.models.collection_attempts import CollectionAttempt
 from issue_observatory.core.models.content import UniversalContentRecord
 from issue_observatory.core.models.content_links import ContentRecordLink
 from issue_observatory.core.models.credentials import ApiCredential
+from issue_observatory.core.models.extracted_url import ExtractedUrl
 from issue_observatory.core.models.platform_url_errors import PlatformUrlError
 from issue_observatory.core.models.project import Project
+from issue_observatory.core.models.project_collaborator import ProjectCollaborator
 from issue_observatory.core.models.query_design import (
     ActorList,
     QueryDesign,
     SearchTerm,
 )
 from issue_observatory.core.models.scraping import ScrapingJob
+from issue_observatory.core.models.user_template import UserTemplate
 from issue_observatory.core.models.users import (
     CreditAllocation,
     RefreshToken,
     User,
 )
+from issue_observatory.core.models.video_download import VideoDownload
 from issue_observatory.core.models.zeeschuimer_import import ZeeschuimerImport
 
 __all__ = [
@@ -57,6 +61,7 @@ __all__ = [
     "CodebookEntry",
     # Users
     "User",
+    "UserTemplate",
     "CreditAllocation",
     "RefreshToken",
     # Content
@@ -69,6 +74,7 @@ __all__ = [
     "ActorListMember",
     # Projects
     "Project",
+    "ProjectCollaborator",
     # Query design
     "QueryDesign",
     "SearchTerm",
@@ -82,6 +88,10 @@ __all__ = [
     "ApiCredential",
     # Scraping
     "ScrapingJob",
+    # Extracted URLs
+    "ExtractedUrl",
+    # Video downloads
+    "VideoDownload",
     # Platform URL errors
     "PlatformUrlError",
     # Zeeschuimer imports

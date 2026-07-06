@@ -53,6 +53,7 @@ from issue_observatory.api.dependencies import (
     PaginationParams,
     get_current_active_user,
     get_pagination,
+    is_project_collaborator,
     ownership_guard,
 )
 from issue_observatory.arenas.registry import list_arenas
@@ -110,6 +111,25 @@ async def _get_design_or_404(
             detail=f"Query design '{design_id}' not found.",
         )
     return design
+
+
+def _dispatch_term_backfill(design_id: uuid.UUID) -> None:
+    """Fire-and-forget Celery task to re-scan records after term changes."""
+    try:
+        from issue_observatory.workers.celery_app import celery_app
+
+        celery_app.send_task(
+            "issue_observatory.workers.tasks.backfill_search_terms_for_design",
+            args=[str(design_id)],
+            queue="celery",
+        )
+        logger.info("term_backfill_dispatched", design_id=str(design_id))
+    except Exception:
+        logger.warning(
+            "term_backfill_dispatch_failed",
+            design_id=str(design_id),
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +364,15 @@ async def get_query_design(
         HTTPException 403: If the caller is not the owner (and not admin).
     """
     design = await _get_design_or_404(design_id, db, load_terms=True)
-    ownership_guard(design.owner_id, current_user)
+    # Owner/admin pass directly; collaborators pass if design is in a shared project
+    if current_user.role != "admin" and design.owner_id != current_user.id:
+        if design.project_id is None or not await is_project_collaborator(
+            db, design.project_id, current_user.id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to access this resource.",
+            )
     return design
 
 
@@ -886,6 +914,7 @@ async def add_search_term(
         term=term,
         group_label=resolved_group_label,
     )
+    _dispatch_term_backfill(design_id)
     fragment = _render_term_list_item(new_term, design_id)
     return HTMLResponse(content=fragment, status_code=status.HTTP_201_CREATED)
 
@@ -1026,6 +1055,8 @@ async def add_search_terms_bulk(
         count=len(new_terms),
         user_id=str(current_user.id),
     )
+    if new_terms:
+        _dispatch_term_backfill(design_id)
 
     return new_terms
 
@@ -1076,6 +1107,7 @@ async def remove_search_term(
     await db.delete(term)
     await db.commit()
     logger.info("search_term_removed", design_id=str(design_id), term_id=str(term_id))
+    _dispatch_term_backfill(design_id)
     return HTMLResponse(content="", status_code=status.HTTP_200_OK)
 
 
@@ -1119,6 +1151,8 @@ async def remove_all_search_terms(
         design_id=str(design_id),
         count=deleted,
     )
+    if deleted:
+        _dispatch_term_backfill(design_id)
     return HTMLResponse(
         content='<ul class="space-y-1.5" id="terms-list"></ul>',
         status_code=status.HTTP_200_OK,
@@ -1225,7 +1259,15 @@ async def get_arena_config(
         HTTPException 403: If the caller is not the owner or an admin.
     """
     design = await _get_design_or_404(design_id, db)
-    ownership_guard(design.owner_id, current_user)
+    # Owner/admin pass directly; collaborators pass if design is in a shared project
+    if current_user.role != "admin" and design.owner_id != current_user.id:
+        if design.project_id is None or not await is_project_collaborator(
+            db, design.project_id, current_user.id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to access this resource.",
+            )
     return _raw_config_to_response(design.arenas_config)
 
 

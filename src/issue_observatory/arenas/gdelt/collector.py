@@ -78,7 +78,7 @@ class GDELTCollector(ArenaCollector):
             per collection call.
     """
 
-    arena_name: str = "gdelt"
+    arena_name: str = "news"
     platform_name: str = "gdelt"
     supported_tiers: list[Tier] = [Tier.FREE]
     temporal_mode: TemporalMode = TemporalMode.HISTORICAL

@@ -76,7 +76,11 @@ from issue_observatory.analysis.network import (
     get_term_co_occurrence,
 )
 from issue_observatory.analysis.propagation import get_propagation_flows
-from issue_observatory.api.dependencies import get_current_active_user, ownership_guard
+from issue_observatory.api.dependencies import (
+    get_current_active_user,
+    is_project_collaborator,
+    ownership_guard,
+)
 from issue_observatory.core.database import get_db
 from issue_observatory.core.models.collection import CollectionRun
 from issue_observatory.core.models.content import UniversalContentRecord
@@ -123,7 +127,15 @@ async def _get_run_or_raise(
             detail=f"Collection run '{run_id}' not found.",
         )
 
-    ownership_guard(run.initiated_by, current_user)
+    # Owner and admin pass immediately; collaborators on the run's project pass too
+    if current_user.role != "admin" and run.initiated_by != current_user.id:
+        if run.project_id is None or not await is_project_collaborator(
+            db, run.project_id, current_user.id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to access this resource.",
+            )
     return run
 
 
@@ -133,128 +145,9 @@ async def _get_run_or_raise(
 
 
 @router.get("/", include_in_schema=False)
-async def analysis_landing(
-    request: Request,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(get_current_active_user)],
-) -> Response:
-    """Render the analysis landing page grouped by query design.
-
-    Lists all query designs owned by the current user, each with their
-    completed collection runs with enriched metadata (top platforms, date
-    range, formatted dates), so researchers can jump directly to analysis.
-    """
-    from sqlalchemy import func
-    from sqlalchemy.orm import selectinload
-
-    # Fetch completed runs with their query designs
-    stmt = (
-        select(CollectionRun)
-        .options(selectinload(CollectionRun.query_design))
-        .where(
-            CollectionRun.initiated_by == current_user.id,
-            CollectionRun.status.in_(["completed", "cancelled", "failed"]),
-            CollectionRun.records_collected > 0,
-        )
-        .order_by(CollectionRun.started_at.desc().nulls_last())
-    )
-    result = await db.execute(stmt)
-    runs = result.scalars().all()
-
-    run_ids = [r.id for r in runs]
-
-    # R-13: Single aggregate query for per-platform counts across all runs.
-    platform_counts_by_run: dict[uuid.UUID, list[tuple[str, int]]] = {}
-    date_ranges_by_run: dict[uuid.UUID, tuple[str, str]] = {}
-
-    if run_ids:
-        # Per-platform counts (only term-matched, non-duplicate records)
-        pc_result = await db.execute(
-            select(
-                UniversalContentRecord.collection_run_id,
-                UniversalContentRecord.platform,
-                func.count(UniversalContentRecord.id).label("cnt"),
-            )
-            .where(
-                UniversalContentRecord.collection_run_id.in_(run_ids),
-                UniversalContentRecord.term_matched.is_(True),
-            )
-            .group_by(
-                UniversalContentRecord.collection_run_id,
-                UniversalContentRecord.platform,
-            )
-            .order_by(func.count(UniversalContentRecord.id).desc())
-        )
-        for row in pc_result.all():
-            platform_counts_by_run.setdefault(row.collection_run_id, []).append(
-                (row.platform, row.cnt)
-            )
-
-        # Date ranges (min/max published_at, term-matched only)
-        dr_result = await db.execute(
-            select(
-                UniversalContentRecord.collection_run_id,
-                func.min(UniversalContentRecord.published_at).label("min_date"),
-                func.max(UniversalContentRecord.published_at).label("max_date"),
-            )
-            .where(
-                UniversalContentRecord.collection_run_id.in_(run_ids),
-                UniversalContentRecord.term_matched.is_(True),
-            )
-            .group_by(UniversalContentRecord.collection_run_id)
-        )
-        for row in dr_result.all():
-            min_d = row.min_date.strftime("%d %b %Y") if row.min_date else ""
-            max_d = row.max_date.strftime("%d %b %Y") if row.max_date else ""
-            date_ranges_by_run[row.collection_run_id] = (min_d, max_d)
-
-    # Group runs by query design
-    designs_map: dict[str, dict[str, Any]] = {}
-    for r in runs:
-        design_id = str(r.query_design_id) if r.query_design_id else "none"
-        if design_id not in designs_map:
-            designs_map[design_id] = {
-                "id": design_id,
-                "name": r.query_design.name if r.query_design else "(no query design)",
-                "runs": [],
-            }
-
-        # Format date
-        formatted_date = ""
-        if r.started_at:
-            formatted_date = r.started_at.strftime("%d %b %Y, %H:%M")
-
-        # Top 3 platforms for this run
-        top_platforms = [
-            {"name": p, "count": c}
-            for p, c in (platform_counts_by_run.get(r.id, []))[:3]
-        ]
-
-        # Date range
-        date_range = date_ranges_by_run.get(r.id, ("", ""))
-
-        designs_map[design_id]["runs"].append({
-            "id": str(r.id),
-            "started_at": r.started_at.isoformat() if r.started_at else "",
-            "formatted_date": formatted_date,
-            "records": r.records_collected or 0,
-            "mode": r.mode or "batch",
-            "top_platforms": top_platforms,
-            "date_range_start": date_range[0],
-            "date_range_end": date_range[1],
-        })
-
-    design_entries = list(designs_map.values())
-
-    templates = request.app.state.templates
-    return templates.TemplateResponse(
-        "analysis/landing.html",
-        {
-            "request": request,
-            "user": current_user,
-            "design_entries": design_entries,
-        },
-    )
+async def analysis_landing() -> RedirectResponse:
+    """Redirect old analysis landing to dashboard."""
+    return RedirectResponse(url="/dashboard", status_code=302)
 
 
 # ---------------------------------------------------------------------------
@@ -263,74 +156,9 @@ async def analysis_landing(
 
 
 @router.get("/{run_id:uuid}", include_in_schema=False)
-async def analysis_dashboard(
-    run_id: uuid.UUID,
-    request: Request,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(get_current_active_user)],
-) -> Any:
-    """Redirect to the design-level analysis dashboard for a collection run.
-
-    When the run is associated with a query design, redirects to
-    ``/analysis/design/{design_id}?run_id={run_id}`` so the researcher sees
-    the design-scoped dashboard with this run pre-selected.  Falls back to
-    the per-run view (rendered directly) for orphaned runs that have no
-    associated query design.
-
-    Args:
-        run_id: UUID of the collection run to analyse.
-        request: The incoming HTTP request (required by Jinja2 TemplateResponse).
-        db: Injected async database session.
-        current_user: The authenticated, active user making the request.
-
-    Returns:
-        A ``RedirectResponse`` to the design dashboard, or a Jinja2
-        ``TemplateResponse`` rendering ``analysis/index.html`` for orphaned runs.
-
-    Raises:
-        HTTPException 404: If the run does not exist.
-        HTTPException 403: If the current user does not own the run.
-    """
-    run = await _get_run_or_raise(run_id, db, current_user)
-
-    # Redirect to the design-level dashboard when the run has a parent design.
-    if run.query_design_id is not None:
-        return RedirectResponse(
-            url=f"/analysis/design/{run.query_design_id}?run_id={run_id}",
-            status_code=status.HTTP_302_FOUND,
-        )
-
-    # Fallback: orphaned run (no query design) — render the per-run view directly.
-    templates = request.app.state.templates
-    if templates is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Template engine not initialised.",
-        )
-
-    return templates.TemplateResponse(
-        "analysis/index.html",
-        {
-            "request": request,
-            "user": current_user,
-            "mode": "run",
-            "run_id": str(run_id),
-            "run": {
-                "id": str(run.id),
-                "status": run.status,
-                "mode": run.mode,
-                "query_design_id": str(run.query_design_id) if run.query_design_id else None,
-                "started_at": run.started_at.isoformat() if run.started_at else None,
-                "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-                "credits_spent": run.credits_spent,
-                "tier": getattr(run, "tier", None),
-            },
-            "design_id": None,
-            "design": None,
-            "runs": [],
-            "run_count": 1,
-        },
-    )
+async def analysis_dashboard(run_id: uuid.UUID) -> RedirectResponse:
+    """Redirect old per-run analysis page to dashboard."""
+    return RedirectResponse(url="/dashboard", status_code=302)
 
 
 # ---------------------------------------------------------------------------
@@ -1777,7 +1605,15 @@ async def _get_design_or_raise(
             detail=f"Query design '{design_id}' not found.",
         )
 
-    ownership_guard(design.owner_id, current_user)
+    # Owner/admin pass directly; collaborators pass if the design is in a shared project
+    if current_user.role != "admin" and design.owner_id != current_user.id:
+        if design.project_id is None or not await is_project_collaborator(
+            db, design.project_id, current_user.id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to access this resource.",
+            )
     return design
 
 
@@ -1819,96 +1655,9 @@ async def _validate_run_for_design(
 
 
 @router.get("/design/{design_id:uuid}", include_in_schema=False)
-async def analysis_dashboard_design(
-    design_id: uuid.UUID,
-    request: Request,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(get_current_active_user)],
-    run_id: uuid.UUID | None = Query(default=None, description="Optional run to scope the dashboard to."),
-) -> Any:
-    """Render the analysis dashboard HTML page for a query design.
-
-    Renders the unified analysis dashboard scoped to the given query design,
-    aggregating data across all collection runs by default.  When ``run_id``
-    is provided the dashboard is scoped to that single run instead.
-
-    Args:
-        design_id: UUID of the query design to analyse.
-        request: The incoming HTTP request (required by Jinja2 TemplateResponse).
-        db: Injected async database session.
-        current_user: The authenticated, active user making the request.
-        run_id: Optional UUID of a specific run to scope the dashboard to.
-
-    Returns:
-        A Jinja2 ``TemplateResponse`` rendering ``analysis/index.html``.
-
-    Raises:
-        HTTPException 400: If ``run_id`` does not belong to ``design_id``.
-        HTTPException 404: If the query design does not exist.
-        HTTPException 403: If the current user does not own the design.
-    """
-    design = await _get_design_or_raise(design_id, db, current_user)
-    run_id = await _validate_run_for_design(design_id, run_id, db, current_user)
-
-    templates = request.app.state.templates
-    if templates is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Template engine not initialised.",
-        )
-
-    # Fetch all runs with data for this design to populate the run dropdown.
-    runs_stmt = (
-        select(CollectionRun)
-        .where(
-            CollectionRun.query_design_id == design_id,
-            CollectionRun.status.in_(["completed", "cancelled", "failed"]),
-            CollectionRun.records_collected > 0,
-        )
-        .order_by(CollectionRun.started_at.desc())
-    )
-    runs_result = await db.execute(runs_stmt)
-    runs = runs_result.scalars().all()
-
-    # Optionally load the selected run for context display.
-    selected_run: dict[str, Any] | None = None
-    if run_id is not None:
-        for r in runs:
-            if r.id == run_id:
-                selected_run = {
-                    "id": str(r.id),
-                    "started_at": r.started_at.isoformat() if r.started_at else None,
-                    "records_collected": r.records_collected,
-                    "status": r.status,
-                    "mode": r.mode,
-                }
-                break
-
-    return templates.TemplateResponse(
-        "analysis/index.html",
-        {
-            "request": request,
-            "user": current_user,
-            "mode": "design",
-            "design_id": str(design_id),
-            "design": {
-                "id": str(design.id),
-                "name": design.name,
-                "description": design.description,
-            },
-            "run_count": len(runs),
-            "runs": [
-                {
-                    "id": str(r.id),
-                    "started_at": r.started_at.isoformat() if r.started_at else None,
-                    "records_collected": r.records_collected,
-                }
-                for r in runs
-            ],
-            "run_id": str(run_id) if run_id else None,
-            "run": selected_run,
-        },
-    )
+async def analysis_dashboard_design(design_id: uuid.UUID) -> RedirectResponse:
+    """Redirect old design-level analysis page to dashboard."""
+    return RedirectResponse(url="/dashboard", status_code=302)
 
 
 @router.get("/design/{design_id:uuid}/summary")
@@ -3727,7 +3476,13 @@ async def _get_project_design_ids(
             detail=f"Project '{project_id}' not found.",
         )
 
-    ownership_guard(project.owner_id, current_user)
+    # Owner/admin pass directly; collaborators on this project pass too
+    if current_user.role != "admin" and project.owner_id != current_user.id:
+        if not await is_project_collaborator(db, project_id, current_user.id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to access this resource.",
+            )
 
     qd_stmt = select(QueryDesign.id).where(QueryDesign.project_id == project_id)
     qd_result = await db.execute(qd_stmt)
@@ -3757,58 +3512,10 @@ async def _resolve_project_scope(
 
 
 @router.get("/project/{project_id:uuid}", include_in_schema=False)
-async def analysis_dashboard_project(
-    project_id: uuid.UUID,
-    request: Request,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(get_current_active_user)],
-    design_id: uuid.UUID | None = Query(
-        default=None, description="Optional design to scope the dashboard to."
-    ),
-) -> Any:
-    """Render the analysis dashboard for a project (all query designs aggregated)."""
-    project, _ = await _resolve_project_scope(
-        project_id, design_id, db, current_user
-    )
-
-    templates = request.app.state.templates
-    if templates is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Template engine not initialised.",
-        )
-
-    qd_stmt = (
-        select(QueryDesign)
-        .where(QueryDesign.project_id == project_id)
-        .order_by(QueryDesign.name)
-    )
-    qd_result = await db.execute(qd_stmt)
-    query_designs = qd_result.scalars().all()
-
-    return templates.TemplateResponse(
-        "analysis/index.html",
-        {
-            "request": request,
-            "user": current_user,
-            "mode": "project",
-            "project_id": str(project_id),
-            "project": {
-                "id": str(project.id),
-                "name": project.name,
-                "description": project.description,
-            },
-            "query_designs": [
-                {"id": str(qd.id), "name": qd.name}
-                for qd in query_designs
-            ],
-            "design_id": str(design_id) if design_id else None,
-            "design": None,
-            "run_id": None,
-            "run": None,
-            "runs": [],
-            "run_count": 0,
-        },
+async def analysis_dashboard_project(project_id: uuid.UUID) -> RedirectResponse:
+    """Redirect old project-level analysis page to dashboard with project context."""
+    return RedirectResponse(
+        url=f"/dashboard?project_id={project_id}", status_code=302
     )
 
 

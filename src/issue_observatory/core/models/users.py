@@ -26,7 +26,9 @@ if TYPE_CHECKING:
         CreditTransaction,
     )
     from issue_observatory.core.models.project import Project
+    from issue_observatory.core.models.project_collaborator import ProjectCollaborator
     from issue_observatory.core.models.query_design import QueryDesign
+    from issue_observatory.core.models.user_template import UserTemplate
     from issue_observatory.core.models.zeeschuimer_import import ZeeschuimerImport
 
 
@@ -92,8 +94,33 @@ class User(Base):
         nullable=True,
         server_default=sa.text("'{}'"),
     )
+    template_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        sa.ForeignKey("user_templates.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    use_central_credentials: Mapped[bool] = mapped_column(
+        sa.Boolean,
+        nullable=False,
+        server_default=sa.text("true"),
+    )
+    allowed_platforms: Mapped[list | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        server_default=sa.text("'[]'::jsonb"),
+    )
+    disallowed_platforms: Mapped[list | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        server_default=sa.text("'[]'::jsonb"),
+    )
 
     # Relationships
+    template: Mapped[UserTemplate | None] = relationship(
+        "UserTemplate",
+        foreign_keys=[template_id],
+    )
     credit_allocations: Mapped[list[CreditAllocation]] = relationship(
         "CreditAllocation",
         foreign_keys="CreditAllocation.user_id",
@@ -128,6 +155,11 @@ class User(Base):
         "ZeeschuimerImport",
         foreign_keys="ZeeschuimerImport.initiated_by",
         back_populates="initiator",
+    )
+    project_collaborations: Mapped[list[ProjectCollaborator]] = relationship(
+        "ProjectCollaborator",
+        foreign_keys="ProjectCollaborator.user_id",
+        back_populates="user",
     )
 
     def __repr__(self) -> str:

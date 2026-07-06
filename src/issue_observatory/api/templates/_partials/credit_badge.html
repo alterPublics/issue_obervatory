@@ -15,7 +15,12 @@
      hx-target="#credit-badge"
      hx-swap="outerHTML"
      class="rounded-md bg-white/5 border border-white/10 px-3 py-2 text-xs">
-    {% if credits_available is defined %}
+    {% if credits_unlimited is defined and credits_unlimited %}
+        <div class="flex items-center justify-between gap-2">
+            <span class="text-brand-300/60">Credits</span>
+            <span class="font-semibold text-green-400">Unlimited</span>
+        </div>
+    {% elif credits_available is defined %}
         <div class="flex items-center justify-between gap-2">
             <span class="text-brand-300/60">Credits</span>
             <span class="font-semibold text-white">{{ credits_available }}</span>

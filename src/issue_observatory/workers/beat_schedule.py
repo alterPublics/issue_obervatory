@@ -16,7 +16,7 @@ Schedule overview:
 | daily_collection          | 00:00 Copenhagen    | Trigger all active live-     |
 |                           |                     | tracking query designs.      |
 +---------------------------+---------------------+-----------------------------+
-| health_check_all_arenas   | Every 30 minutes    | Poll all arena health-check  |
+| health_check_all_arenas   | Every 6 hours       | Poll all arena health-check  |
 |                           |                     | endpoints, update admin UI.  |
 +---------------------------+---------------------+-----------------------------+
 | credit_settlement         | Every 6 hours       | Settle pending credit        |
@@ -29,6 +29,11 @@ Schedule overview:
 +---------------------------+---------------------+-----------------------------+
 | retention_enforcement     | 04:00 Copenhagen    | Delete records older than    |
 |                           |                     | DATA_RETENTION_DAYS.         |
++---------------------------+---------------------+-----------------------------+
+| nightly_enrichment        | 00:00 Copenhagen    | Enrich all content records   |
+|                           |                     | missing language_detection,  |
+|                           |                     | actor_roles, or              |
+|                           |                     | url_extraction enrichments.  |
 +---------------------------+---------------------+-----------------------------+
 """
 
@@ -44,21 +49,21 @@ beat_schedule: dict[str, dict] = {  # type: ignore[type-arg]
     # ------------------------------------------------------------------
     "daily_collection": {
         "task": "issue_observatory.workers.tasks.trigger_daily_collection",
-        "schedule": crontab(hour=5, minute=10),  # TEMP: testing trigger (was hour=0, minute=0)
+        "schedule": crontab(hour=0, minute=0),
         "options": {
             "queue": "celery",
             "expires": 3_600,  # discard if not started within 1 hour
         },
     },
     # ------------------------------------------------------------------
-    # Arena health checks — every 30 minutes
+    # Arena health checks — 4 times per day (every 6 hours)
     # ------------------------------------------------------------------
     "health_check_all_arenas": {
         "task": "issue_observatory.workers.tasks.health_check_all_arenas",
-        "schedule": crontab(minute="*/30"),
+        "schedule": crontab(minute=15, hour="*/6"),
         "options": {
             "queue": "celery",
-            "expires": 1_500,  # discard if not started within 25 minutes
+            "expires": 21_600,  # discard if not started within 6 hours
         },
     },
     # ------------------------------------------------------------------
@@ -118,6 +123,34 @@ beat_schedule: dict[str, dict] = {  # type: ignore[type-arg]
         "options": {
             "queue": "celery",
             "expires": 7_200,  # discard if not started within 2 hours
+        },
+    },
+    # ------------------------------------------------------------------
+    # Weekly engagement scaler refit — Monday 01:00 Copenhagen time
+    # Fits per-platform Yeo-Johnson + MinMaxScaler transformers to actual
+    # engagement distributions.  Requires scikit-learn + numpy.
+    # ------------------------------------------------------------------
+    "refit_engagement_scalers": {
+        "task": "issue_observatory.workers.tasks.refit_engagement_scalers",
+        "schedule": crontab(hour=1, minute=0, day_of_week="monday"),
+        "options": {
+            "queue": "celery",
+            "expires": 7_200,  # discard if not started within 2 hours
+        },
+    },
+    # ------------------------------------------------------------------
+    # Nightly enrichment — 00:00 Copenhagen time
+    # Processes all content records that are missing language_detection,
+    # actor_roles, or url_extraction enrichments (e.g. records collected
+    # before the enrichment pipeline was active, or records where spaCy
+    # was not installed at collection time).
+    # ------------------------------------------------------------------
+    "nightly_enrichment": {
+        "task": "issue_observatory.workers.tasks.enrich_all_pending",
+        "schedule": crontab(hour=0, minute=0),
+        "options": {
+            "queue": "celery",
+            "expires": 14_400,  # 4 hours — NER can be slow on large backlogs
         },
     },
 }

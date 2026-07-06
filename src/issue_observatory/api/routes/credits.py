@@ -49,6 +49,7 @@ async def get_balance(
             "request": request,
             "credits_available": balance["available"],
             "credits_reserved": balance["reserved"],
+            "credits_unlimited": balance.get("unlimited", False),
         },
     )
 

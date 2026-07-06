@@ -46,7 +46,10 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from issue_observatory.analysis._filters import build_content_filters
+from issue_observatory.core.queries.content_filters import (
+    ContentFilterSpec,
+    build_content_where_sql,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -71,10 +74,11 @@ def _build_run_filter(
     params: dict,
     table_alias: str = "",
     query_design_ids: list[uuid.UUID] | None = None,
-) -> list[str]:
-    """Build a list of SQL WHERE clause predicates for content_records.
+) -> str:
+    """Build a SQL WHERE clause string for content_records.
 
-    Delegates to :func:`~issue_observatory.analysis._filters.build_content_filters`
+    Phase 1b: delegates to
+    :func:`~issue_observatory.core.queries.content_filters.build_content_where_sql`
     which centralises filter logic — including the duplicate exclusion clause
     ``(raw_metadata->>'duplicate_of') IS NULL`` — so that network analysis
     consistently excludes duplicate-flagged records.
@@ -86,28 +90,43 @@ def _build_run_filter(
             designs.  Takes precedence over *query_design_id* if both given.
 
     Returns:
-        List of SQL predicate strings (no leading ``WHERE``).  Never empty
+        SQL WHERE clause string (starting with ``WHERE``).  Always non-empty
         because the duplicate exclusion predicate is always present.
     """
-    return build_content_filters(
-        query_design_id, run_id, arena, platform, date_from, date_to, params,
-        table_alias=table_alias,
-        query_design_ids=query_design_ids,
+    spec = ContentFilterSpec(
+        query_design_id=query_design_id,
+        run_id=run_id,
+        query_design_ids=query_design_ids or [],
+        arenas=[arena] if isinstance(arena, str) and arena else [],
+        platforms=[platform] if isinstance(platform, str) and platform else [],
+        date_from=date_from,
+        date_to=date_to,
+        include_linked=True,
+        include_duplicates=False,
+        ownership_mode="admin",
     )
+    return build_content_where_sql(spec, table_alias=table_alias, params=params)
 
 
-def _where(clauses: list[str]) -> str:
-    """Join clause list into a WHERE fragment (or empty string)."""
-    if not clauses:
+def _where(where_str: str) -> str:
+    """Pass through a WHERE clause string (already includes WHERE keyword)."""
+    return where_str
+
+
+def _and(where_str: str) -> str:
+    """Strip the leading WHERE keyword to get an AND fragment.
+
+    Used when the caller already has a WHERE clause and needs to append
+    additional predicates with AND.
+
+    Returns an empty string when ``where_str`` is empty.
+    """
+    if not where_str:
         return ""
-    return "WHERE " + " AND ".join(clauses)
-
-
-def _and(clauses: list[str]) -> str:
-    """Join clause list into an AND fragment (for appending to existing WHERE)."""
-    if not clauses:
-        return ""
-    return "AND " + " AND ".join(clauses)
+    # Remove the leading "WHERE " to get bare predicates for AND-appending.
+    if where_str.upper().startswith("WHERE "):
+        return "AND " + where_str[6:]
+    return "AND " + where_str
 
 
 # ---------------------------------------------------------------------------
@@ -165,29 +184,28 @@ async def get_actor_co_occurrence(
         "limit": limit,
     }
 
-    # Build filter clauses for both sides of the self-join.
-    a_clauses = _build_run_filter(
+    # Build filter WHERE clauses for both sides of the self-join.
+    a_where = _build_run_filter(
         query_design_id, run_id, arena, platform, date_from, date_to, params, "a.",
         query_design_ids=query_design_ids,
     )
-    # Duplicate filter params for the b side — use _b suffixed names.
+    # Duplicate filter params for the b side — use _b suffixed names to avoid
+    # collisions with a-side params in the shared params dict.
     b_params: dict[str, Any] = {}
-    b_clauses_raw = _build_run_filter(
+    b_where_raw = _build_run_filter(
         query_design_id, run_id, arena, platform, date_from, date_to, b_params, "b.",
         query_design_ids=query_design_ids,
     )
-    # Rename b-side params to avoid collisions with a-side params.
-    b_clauses: list[str] = []
-    for clause in b_clauses_raw:
-        new_clause = clause
-        for key in list(b_params.keys()):
-            new_key = key + "_b"
-            new_clause = new_clause.replace(f":{key}", f":{new_key}")
-            params[new_key] = b_params[key]
-        b_clauses.append(new_clause)
+    # Rename all b-side bind-param references (:key → :key_b) in the WHERE string
+    # and merge renamed params into the shared params dict.
+    b_where_renamed = b_where_raw
+    for key in sorted(b_params.keys(), key=len, reverse=True):
+        new_key = key + "_b"
+        b_where_renamed = b_where_renamed.replace(f":{key}", f":{new_key}")
+        params[new_key] = b_params[key]
 
-    a_filter = _and(a_clauses)
-    b_filter = _and(b_clauses)
+    a_filter = _and(a_where)
+    b_filter = _and(b_where_renamed)
 
     sql = text(
         f"""
@@ -243,26 +261,23 @@ async def get_actor_co_occurrence(
         "min_co": min_co_occurrences,
         "limit": limit,
     }
-    a_clauses2 = _build_run_filter(
+    a_where2 = _build_run_filter(
         query_design_id, run_id, arena, platform, date_from, date_to, edge_params, "a.",
         query_design_ids=query_design_ids,
     )
     b_params2: dict[str, Any] = {}
-    b_clauses_raw2 = _build_run_filter(
+    b_where_raw2 = _build_run_filter(
         query_design_id, run_id, arena, platform, date_from, date_to, b_params2, "b.",
         query_design_ids=query_design_ids,
     )
-    b_clauses2: list[str] = []
-    for clause in b_clauses_raw2:
-        new_clause = clause
-        for key in list(b_params2.keys()):
-            new_key = key + "_b"
-            new_clause = new_clause.replace(f":{key}", f":{new_key}")
-            edge_params[new_key] = b_params2[key]
-        b_clauses2.append(new_clause)
+    b_where_renamed2 = b_where_raw2
+    for key in sorted(b_params2.keys(), key=len, reverse=True):
+        new_key = key + "_b"
+        b_where_renamed2 = b_where_renamed2.replace(f":{key}", f":{new_key}")
+        edge_params[new_key] = b_params2[key]
 
-    a_filter2 = _and(a_clauses2)
-    b_filter2 = _and(b_clauses2)
+    a_filter2 = _and(a_where2)
+    b_filter2 = _and(b_where_renamed2)
 
     edges_sql = text(
         f"""
@@ -354,11 +369,11 @@ async def get_term_co_occurrence(
     # Use the shared filter builder (includes duplicate exclusion).
     # Platform is not relevant for term networks; arena is passed through
     # when the caller wants to restrict to a single arena.
-    scope_clauses = _build_run_filter(
+    scope_where = _build_run_filter(
         query_design_id, run_id, arena, None, None, None, params,
         query_design_ids=query_design_ids,
     )
-    scope_filter = _and(scope_clauses)
+    scope_filter = _and(scope_where)
 
     sql = text(
         f"""
@@ -487,11 +502,11 @@ async def get_cross_platform_actors(
 
     # Use the shared filter builder with the "c." alias for content_records c.
     # The duplicate exclusion clause is included automatically.
-    scope_clauses = _build_run_filter(
+    scope_where = _build_run_filter(
         query_design_id, run_id, None, None, None, None, params, table_alias="c.",
         query_design_ids=query_design_ids,
     )
-    scope_filter = _and(scope_clauses)
+    scope_filter = _and(scope_where)
 
     sql = text(
         f"""
@@ -567,11 +582,11 @@ async def build_bipartite_network(
 
     # Use the shared filter builder with the "cr." alias for content_records cr.
     # The duplicate exclusion clause is included automatically.
-    scope_clauses = _build_run_filter(
+    scope_where = _build_run_filter(
         query_design_id, run_id, arena, None, None, None, params, table_alias="cr.",
         query_design_ids=query_design_ids,
     )
-    scope_filter = _and(scope_clauses)
+    scope_filter = _and(scope_where)
 
     sql = text(
         f"""
@@ -723,22 +738,22 @@ async def get_temporal_network_snapshots(
     params: dict[str, Any] = {}
     # Build scope filter with the "a." alias for the date-range query (which
     # always uses ``content_records a``) and for the actor temporal query.
-    scope_clauses_a = _build_run_filter(
+    scope_where_a = _build_run_filter(
         query_design_id, run_id, None, None, None, None, params,
         table_alias="a.", query_design_ids=query_design_ids,
     )
-    scope_filter_a = _and(scope_clauses_a)
+    scope_filter_a = _and(scope_where_a)
 
     # Build a separate scope filter with the "cr." alias for the term temporal
     # query, which uses ``content_records cr``.  We pass a fresh params dict
     # so the helper can write the same keys; since the values are identical we
     # merge them into the shared params dict afterwards.
     cr_params: dict[str, Any] = {}
-    scope_clauses_cr = _build_run_filter(
+    scope_where_cr = _build_run_filter(
         query_design_id, run_id, None, None, None, None, cr_params,
         table_alias="cr.", query_design_ids=query_design_ids,
     )
-    scope_filter_cr = _and(scope_clauses_cr)
+    scope_filter_cr = _and(scope_where_cr)
     # Merge (values are identical; keys are the same — no collision risk).
     params.update(cr_params)
 
@@ -872,20 +887,17 @@ async def _fetch_actor_temporal_rows(
     # self-join.  Bind params are renamed with a ``_b`` suffix to avoid
     # collisions with the a-side params that are already in ``params``.
     b_params: dict[str, Any] = {}
-    b_clauses_raw = _build_run_filter(
+    b_where_raw = _build_run_filter(
         None, None, None, None, None, None, b_params, table_alias="b."
     )
     # Rename b-side bind params to avoid collisions with a-side params.
-    b_clauses: list[str] = []
-    for clause in b_clauses_raw:
-        new_clause = clause
-        for key in list(b_params.keys()):
-            new_key = key + "_b"
-            new_clause = new_clause.replace(f":{key}", f":{new_key}")
-            params[new_key] = b_params[key]
-        b_clauses.append(new_clause)
+    b_where_renamed = b_where_raw
+    for key in sorted(b_params.keys(), key=len, reverse=True):
+        new_key = key + "_b"
+        b_where_renamed = b_where_renamed.replace(f":{key}", f":{new_key}")
+        params[new_key] = b_params[key]
 
-    b_filter = _and(b_clauses)
+    b_filter = _and(b_where_renamed)
 
     sql = text(
         f"""
@@ -1139,11 +1151,11 @@ async def build_enhanced_bipartite_network(
     }
 
     params: dict[str, Any] = {}
-    scope_clauses = _build_run_filter(
+    scope_where = _build_run_filter(
         query_design_id, run_id, None, None, None, None, params, table_alias="cr.",
         query_design_ids=query_design_ids,
     )
-    scope_filter = _and(scope_clauses)
+    scope_filter = _and(scope_where)
 
     nodes: list[dict] = list(base_graph["nodes"])
     edges: list[dict] = list(base_graph["edges"])

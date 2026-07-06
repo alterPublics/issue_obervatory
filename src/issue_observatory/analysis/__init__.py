@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from issue_observatory.analysis._filters import build_content_filters, build_content_where
 from issue_observatory.analysis.coordination import get_coordination_events
 from issue_observatory.analysis.descriptive import (
     get_emergent_terms,
@@ -26,9 +25,6 @@ from issue_observatory.analysis.network import (
 from issue_observatory.analysis.propagation import get_propagation_flows
 
 __all__ = [
-    # filters (shared between descriptive and network)
-    "build_content_filters",
-    "build_content_where",
     # descriptive
     "get_volume_over_time",
     "get_top_actors",

@@ -225,7 +225,15 @@ class TikTokCollector(ArenaCollector):
                         term_count += window_count
                         self._flush()
                         remaining = effective_max - self._total_emitted
-                except (ArenaCollectionError, ArenaRateLimitError) as exc:
+                except ArenaRateLimitError as exc:
+                    logger.warning(
+                        "tiktok: rate limit hit on term %r — stopping collection: %s",
+                        term,
+                        exc,
+                    )
+                    skipped_terms.append(term)
+                    break
+                except ArenaCollectionError as exc:
                     logger.warning(
                         "tiktok: skipping term %r — %s", term, exc,
                     )
@@ -331,7 +339,15 @@ class TikTokCollector(ArenaCollector):
                         actor_count += window_count
                         self._flush()
                         remaining = effective_max - self._total_emitted
-                except (ArenaCollectionError, ArenaRateLimitError) as exc:
+                except ArenaRateLimitError as exc:
+                    logger.warning(
+                        "tiktok: rate limit hit on actor %r — stopping collection: %s",
+                        username,
+                        exc,
+                    )
+                    skipped_actors.append(username)
+                    break
+                except ArenaCollectionError as exc:
                     logger.warning(
                         "tiktok: skipping actor %r — %s", username, exc,
                     )
@@ -991,8 +1007,9 @@ class TikTokCollector(ArenaCollector):
                 client-side depth filtering is not needed.
 
         Returns:
-            List of normalized comment records conforming to the universal
-            content record schema.
+            List of any remaining unflushed comment records.  When batch
+            persistence is configured, most records are already persisted
+            incrementally after each video.
 
         Raises:
             ArenaRateLimitError: On HTTP 429 from the Research API.
@@ -1000,6 +1017,8 @@ class TikTokCollector(ArenaCollector):
             ArenaCollectionError: On other unrecoverable API errors.
             NoCredentialAvailableError: When no credential is in the pool.
         """
+        self._reset_batch_state()
+
         if tier != Tier.FREE:
             logger.warning(
                 "tiktok: tier=%s requested for collect_comments but only FREE is available. "
@@ -1013,8 +1032,6 @@ class TikTokCollector(ArenaCollector):
 
         cred = await self._get_credential()
         token = await self._get_access_token(cred)
-
-        all_records: list[dict[str, Any]] = []
 
         async with self._build_http_client() as client:
             for post in post_ids:
@@ -1034,8 +1051,19 @@ class TikTokCollector(ArenaCollector):
                         video_id=video_id,
                         max_comments=max_comments_per_post,
                     )
-                    all_records.extend(post_records)
-                except (ArenaCollectionError, ArenaRateLimitError) as exc:
+                    # Use batch persistence: emit records incrementally so they
+                    # are flushed to DB after each video (protects against data
+                    # loss on task interruption or rate-limit bail-out).
+                    self._emit_many(post_records)
+                    self._flush()
+                except ArenaRateLimitError:
+                    # Flush already-collected comments (safe — batch persists
+                    # after each video) and re-raise so the Celery task retries
+                    # with exponential backoff instead of silently dropping the
+                    # remaining videos.
+                    self._flush()
+                    raise
+                except ArenaCollectionError as exc:
                     logger.warning(
                         "tiktok: skipping comments for video_id=%r — %s",
                         video_id,
@@ -1044,12 +1072,13 @@ class TikTokCollector(ArenaCollector):
                     continue
 
         await self._release_credential(cred)
+        self._flush()
         logger.info(
-            "tiktok: collect_comments completed — %d comments from %d videos",
-            len(all_records),
+            "tiktok: collect_comments completed — %d comments emitted from %d videos",
+            self._total_emitted,
             len(post_ids),
         )
-        return all_records
+        return self._batch_buffer
 
     async def _fetch_comments_for_video(
         self,

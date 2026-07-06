@@ -401,6 +401,14 @@ def create_app() -> FastAPI:
         scraper_router, prefix="/api/scraping-jobs", tags=["scraping"]
     )
 
+    # ---- Extracted URLs browser --------------------------------------------
+
+    from issue_observatory.api.routes.extracted_urls import router as extracted_urls_router
+
+    application.include_router(
+        extracted_urls_router, prefix="/api/extracted-urls", tags=["extracted-urls"]
+    )
+
     # ---- Application routers ----------------------------------------------
     # Each stub module is imported lazily.  As routes are fleshed out these
     # imports will populate with real route handlers.
@@ -414,8 +422,10 @@ def create_app() -> FastAPI:
         content,
         credentials,
         credits,
+        dashboard,
         imports,
         live_tracking,
+        networks,
         pages,
         projects,
         query_designs,
@@ -449,6 +459,8 @@ def create_app() -> FastAPI:
     application.include_router(codebooks.router, prefix="/codebooks", tags=["codebooks"])
     application.include_router(actors.router, prefix="/actors", tags=["actors"])
     application.include_router(analysis.router, prefix="/analysis", tags=["analysis"])
+    application.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
+    application.include_router(networks.router, prefix="/networks", tags=["networks"])
     application.include_router(credits.router, prefix="/credits", tags=["credits"])
     application.include_router(imports.router, prefix="/api", tags=["imports"])
     # Admin user management (activation, role changes, API key management)
@@ -457,6 +469,11 @@ def create_app() -> FastAPI:
     application.include_router(credits.router, prefix="/admin/credits", tags=["admin:credits"])
     # Admin credential pool management (CRUD)
     application.include_router(credentials.router, prefix="/admin/credentials", tags=["admin:credentials"])
+    # Admin user template management (CRUD)
+    from issue_observatory.api.routes import user_templates
+    application.include_router(
+        user_templates.router, prefix="/admin/templates", tags=["admin:templates"]
+    )
     # HTML page routes (Jinja2 templates, no API prefix)
     application.include_router(pages.router)
 

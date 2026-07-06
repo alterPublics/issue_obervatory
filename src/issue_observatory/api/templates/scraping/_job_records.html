@@ -1,0 +1,108 @@
+{#
+    HTMX fragment: Content records and non-enriched URLs for a scraping job.
+    Context:
+        enriched_records  — list of dicts (scraped content records)
+        failed_records    — list of dicts (collection_run records with scrape_status='failed')
+        not_enriched_urls — list of URL strings (failed/skipped, manual/extracted_urls jobs)
+        url_errors        — dict mapping URL → reason string
+        job               — ScrapingJob
+#}
+{% set has_enriched = enriched_records | default([]) | length > 0 %}
+{% set has_failed = failed_records | default([]) | length > 0 %}
+{% set has_not_enriched = not_enriched_urls | default([]) | length > 0 %}
+{% set has_any = has_enriched or has_failed or has_not_enriched %}
+
+{% if has_any %}
+<div class="px-6 py-3 space-y-4 text-left">
+
+    {# ---- Enriched records ---- #}
+    {% if has_enriched %}
+    <div>
+        <p class="text-xs font-medium text-green-600 uppercase tracking-wider mb-2">
+            Enriched ({{ enriched_records | length }}{% if enriched_records | length >= 100 %}+{% endif %})
+        </p>
+        <div class="divide-y divide-gray-100 border border-gray-100 rounded-md bg-white">
+            {% for record in enriched_records %}
+            <div class="px-4 py-2.5 hover:bg-gray-50/50 transition-colors">
+                <div class="flex items-start gap-3">
+                    <div class="flex-1 min-w-0">
+                        <p class="text-sm font-medium text-gray-800 truncate">
+                            {{ record.title or 'Untitled' }}
+                        </p>
+                        <a href="{{ record.url }}" target="_blank" rel="noopener"
+                           class="text-xs text-blue-500 hover:underline truncate block mt-0.5">
+                            {{ record.url | truncate(100, true) }}
+                        </a>
+                        {% if record.text_preview %}
+                        <p class="text-xs text-gray-500 mt-1 line-clamp-2">{{ record.text_preview }}{% if record.text_preview | length >= 200 %}...{% endif %}</p>
+                        {% endif %}
+                    </div>
+                    <span class="shrink-0 text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">{{ record.platform | replace('_', ' ') }}</span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    {# ---- Failed records (collection_run mode) ---- #}
+    {% if has_failed %}
+    <div>
+        <p class="text-xs font-medium text-red-600 uppercase tracking-wider mb-2">
+            Failed ({{ failed_records | length }})
+        </p>
+        <div class="divide-y divide-gray-100 border border-red-100 rounded-md bg-red-50/30">
+            {% for record in failed_records %}
+            {% set reason = url_errors.get(record.url, 'unknown') if url_errors else 'unknown' %}
+            <div class="px-4 py-2 hover:bg-red-50/50 transition-colors">
+                <div class="flex items-start gap-3">
+                    <div class="flex-1 min-w-0">
+                        <p class="text-sm text-gray-700 truncate">{{ record.title or 'Untitled' }}</p>
+                        <a href="{{ record.url }}" target="_blank" rel="noopener"
+                           class="text-xs text-blue-500 hover:underline truncate block mt-0.5">
+                            {{ record.url | truncate(100, true) }}
+                        </a>
+                    </div>
+                    <span class="shrink-0 text-xs text-red-600 bg-red-100 rounded px-1.5 py-0.5">{{ reason }}</span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    {# ---- Not enriched URLs (manual/extracted_urls mode) ---- #}
+    {% if has_not_enriched %}
+    <div>
+        <p class="text-xs font-medium text-amber-600 uppercase tracking-wider mb-2">
+            Failed / Skipped ({{ not_enriched_urls | length }})
+        </p>
+        <div class="divide-y divide-gray-100 border border-amber-100 rounded-md bg-amber-50/30">
+            {% for url in not_enriched_urls %}
+            {% set reason = url_errors.get(url, 'unknown') if url_errors else 'unknown' %}
+            <div class="px-4 py-2 hover:bg-amber-50/50 transition-colors">
+                <div class="flex items-start gap-3">
+                    <a href="{{ url }}" target="_blank" rel="noopener"
+                       class="text-xs text-gray-600 hover:text-blue-600 hover:underline font-mono truncate flex-1 min-w-0">
+                        {{ url | truncate(120, true) }}
+                    </a>
+                    <span class="shrink-0 text-xs text-amber-700 bg-amber-100 rounded px-1.5 py-0.5">{{ reason }}</span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+</div>
+{% else %}
+<div class="px-6 py-4 text-left">
+    <p class="text-sm text-gray-400">
+        {% if job.status in ('pending', 'running') %}
+        No records scraped yet — job is {{ job.status }}.
+        {% else %}
+        No content records found for this job.
+        {% endif %}
+    </p>
+</div>
+{% endif %}

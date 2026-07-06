@@ -493,6 +493,13 @@ class Normalizer:
     ) -> float:
         """Compute a cross-platform normalized engagement score (0-100).
 
+        .. deprecated::
+            Superseded by the data-driven ``EngagementScorer`` enrichment
+            pipeline (``analysis.enrichments.engagement_scorer``), which fits
+            per-platform Yeo-Johnson + MinMaxScaler from actual distributions.
+            This method is retained as a cold-start fallback for records
+            collected before the first weekly scaler fit.
+
         Uses platform-specific weights and log-scaling to produce a
         0-100 score where typical content scores 30-50 and viral content
         approaches 100.  The formula is:

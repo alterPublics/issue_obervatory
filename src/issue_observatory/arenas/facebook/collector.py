@@ -44,7 +44,12 @@ from typing import Any
 
 import httpx
 
-from issue_observatory.arenas._brightdata_comments import BrightDataCommentCollector
+from issue_observatory.arenas._brightdata_comments import (
+    BrightDataCommentCollector,
+    filter_already_collected_posts,
+    get_parent_post_date,
+    lookup_parent_post_dates,
+)
 from issue_observatory.arenas.base import ArenaCollector, TemporalMode, Tier
 from issue_observatory.arenas.facebook.config import (
     BRIGHTDATA_MAX_POLL_ATTEMPTS,
@@ -75,9 +80,75 @@ logger = logging.getLogger(__name__)
 _ARENA: str = "social_media"
 _PLATFORM: str = "facebook"
 
-# Number of posts to request per actor per API call.
-_DEFAULT_NUM_POSTS: int = 100
+# Posts to request per actor per day of the date range.  Multiplied by the
+# number of days in the collection window to compute the per-actor limit sent
+# to the Bright Data ``num_of_posts`` parameter.  A generous per-day cap
+# ensures active pages are fully collected while still bounding cost.
+_POSTS_PER_ACTOR_PER_DAY: int = 50
 
+# Number of post URLs per Bright Data comment collection trigger.
+# Keeps individual snapshots small, allows incremental persistence, and limits
+# credit waste if a single batch fails partway through.
+_COMMENT_BATCH_SIZE: int = 5
+
+# Fallback when no date range is provided (single-shot collection).
+_DEFAULT_DAYS_FALLBACK: int = 7
+
+
+def _compute_date_range_days(
+    date_from: datetime | str | None,
+    date_to: datetime | str | None,
+) -> int:
+    """Compute the number of days in the collection date range.
+
+    Returns at least 1 day.  When either bound is missing, falls back to
+    ``_DEFAULT_DAYS_FALLBACK`` so the per-actor post limit is still bounded.
+    """
+    if date_from is None or date_to is None:
+        return _DEFAULT_DAYS_FALLBACK
+
+    from datetime import datetime as _dt
+
+    def _parse(v: datetime | str) -> datetime:
+        if isinstance(v, _dt):
+            return v
+        return _dt.fromisoformat(v[:10])
+
+    try:
+        delta = _parse(date_to) - _parse(date_from)
+        return max(1, delta.days + 1)  # inclusive of both endpoints
+    except (ValueError, TypeError):
+        return _DEFAULT_DAYS_FALLBACK
+
+
+def _is_within_date_range(
+    record: dict[str, Any],
+    date_from: datetime | str | None,
+    date_to: datetime | str | None,
+) -> bool:
+    """Check whether a normalized record's published_at falls within the date range.
+
+    Returns ``True`` (keep the record) when either bound is missing or
+    when the date cannot be parsed — fail-open to avoid dropping valid data.
+    """
+    pub = record.get("published_at")
+    if pub is None or (date_from is None and date_to is None):
+        return True
+    try:
+        from dateutil.parser import parse as _dtparse
+
+        pub_dt = _dtparse(str(pub)) if isinstance(pub, str) else pub
+        if date_from is not None:
+            from_dt = _dtparse(str(date_from)) if isinstance(date_from, str) else date_from
+            if pub_dt.date() < from_dt.date():
+                return False
+        if date_to is not None:
+            to_dt = _dtparse(str(date_to)) if isinstance(date_to, str) else date_to
+            if pub_dt.date() > to_dt.date():
+                return False
+    except (ValueError, TypeError):
+        return True
+    return True
 
 
 def _normalize_facebook_url(actor_id: str) -> str | None:
@@ -430,10 +501,12 @@ class FacebookCollector(ArenaCollector):
         """
         await self._wait_rate_limit(cred_id)
 
-        per_actor_limit = min(_DEFAULT_NUM_POSTS, max_results)
-
         start_date_str = to_brightdata_date(date_from)
         end_date_str = to_brightdata_date(date_to)
+
+        # Compute per-actor post limit from the date range width.
+        date_range_days = _compute_date_range_days(date_from, date_to)
+        per_actor_limit = min(date_range_days * _POSTS_PER_ACTOR_PER_DAY, max_results)
 
         entry: dict[str, Any] = {
             "url": url,
@@ -506,13 +579,29 @@ class FacebookCollector(ArenaCollector):
         records: list[dict[str, Any]] = []
         for item in valid_items[:max_results]:
             try:
-                records.append(self.normalize(item, source="brightdata"))
+                rec = self.normalize(item, source="brightdata")
+                # Client-side date filter: BD may ignore start_date/end_date
+                # and return the latest posts regardless. Drop records outside
+                # the requested range so we don't persist irrelevant data.
+                if not _is_within_date_range(rec, date_from, date_to):
+                    continue
+                records.append(rec)
                 # Attribute this record to its source actor via BD's input echo.
                 input_url = (item.get("input") or {}).get("url", "")
                 if input_url:
                     self._record_input_count(input_url, 1)
             except Exception as exc:
                 logger.warning("facebook: normalization error for item: %s", exc)
+
+        if len(records) < len(valid_items):
+            logger.info(
+                "facebook: client-side date filter kept %d/%d records "
+                "(date_from=%s date_to=%s)",
+                len(records),
+                len(valid_items),
+                date_from,
+                date_to,
+            )
         return records, error_entries
 
     # ------------------------------------------------------------------
@@ -640,6 +729,7 @@ class FacebookCollector(ArenaCollector):
             "group_id": raw.get("group_id"),
             "event_id": raw.get("event_id"),
             "actual_poster_name": actual_poster_name,
+            "parent_post_id": raw.get("parent_post_id"),
         }
         return flat
 
@@ -832,6 +922,10 @@ class FacebookCollector(ArenaCollector):
     ) -> list[dict[str, Any]]:
         """Collect comments for Facebook posts via Bright Data.
 
+        Sends post URLs in batches of :data:`_COMMENT_BATCH_SIZE` to avoid
+        oversized Bright Data payloads. Records are persisted incrementally
+        via the batch sink after each batch completes.
+
         Args:
             post_ids: List of dicts with ``url`` key (Facebook post URL).
             tier: Collection tier (MEDIUM for Bright Data).
@@ -839,7 +933,7 @@ class FacebookCollector(ArenaCollector):
             depth: Unused (Bright Data returns flat comment list).
 
         Returns:
-            List of normalized comment records.
+            List of any remaining un-flushed normalized comment records.
         """
         post_urls: list[str] = [
             entry["url"]
@@ -850,6 +944,14 @@ class FacebookCollector(ArenaCollector):
             logger.warning("facebook: collect_comments called with no valid post URLs")
             return []
 
+        # Filter out posts that already have comments in the DB.
+        # This prevents re-collecting comments on Celery retries or
+        # duplicate task dispatches.
+        post_urls = filter_already_collected_posts(post_urls, _PLATFORM)
+        if not post_urls:
+            logger.info("facebook: all posts already have comments — nothing to collect")
+            return []
+
         cred = await self._acquire_medium_credential()
         if cred is None:
             raise NoCredentialAvailableError(platform="brightdata_facebook", tier="medium")
@@ -857,47 +959,116 @@ class FacebookCollector(ArenaCollector):
         cred_id: str = cred["id"]
         api_token: str = cred.get("api_token") or cred.get("api_key", "")
 
+        self._reset_batch_state()
+        total_chunks = (len(post_urls) + _COMMENT_BATCH_SIZE - 1) // _COMMENT_BATCH_SIZE
+
+        # Look up parent post publication dates so comments inherit the
+        # post date instead of the Bright Data scrape timestamp.
+        parent_dates = lookup_parent_post_dates(post_urls, _PLATFORM)
+
         try:
             bd = BrightDataCommentCollector()
             async with httpx.AsyncClient(timeout=60) as client:
-                raw_comments = await bd.collect_comments_brightdata(
-                    client,
-                    api_token,
-                    post_urls,
-                    FACEBOOK_DATASET_ID_COMMENTS,
-                    "facebook",
-                    max_comments_per_post,
-                )
+                for chunk_start in range(0, len(post_urls), _COMMENT_BATCH_SIZE):
+                    chunk = post_urls[chunk_start : chunk_start + _COMMENT_BATCH_SIZE]
+                    batch_num = chunk_start // _COMMENT_BATCH_SIZE + 1
+
+                    self.check_cancelled()
+
+                    # Per-batch check: skip posts that got comments since we
+                    # started (e.g. from a concurrent batch or previous chunk
+                    # whose Bright Data response included related posts).
+                    chunk = filter_already_collected_posts(chunk, _PLATFORM)
+                    if not chunk:
+                        logger.debug(
+                            "facebook: collect_comments batch %d/%d — "
+                            "all posts already collected, skipping",
+                            batch_num,
+                            total_chunks,
+                        )
+                        continue
+
+                    logger.info(
+                        "facebook: collect_comments batch %d/%d (%d posts)",
+                        batch_num,
+                        total_chunks,
+                        len(chunk),
+                    )
+
+                    raw_comments = await bd.collect_comments_brightdata(
+                        client,
+                        api_token,
+                        chunk,
+                        FACEBOOK_DATASET_ID_COMMENTS,
+                        "facebook",
+                        max_comments_per_post,
+                    )
+
+                    # Normalize each raw comment using the field names that
+                    # _parse_brightdata_facebook expects.
+                    # - "content" is the primary text field.
+                    # - "comment_id" triggers content_type="comment" detection.
+                    records: list[dict[str, Any]] = []
+                    for item in raw_comments:
+                        text: str = (
+                            item.get("text")
+                            or item.get("comment_text")
+                            or item.get("content", "")
+                        )
+                        parent_url: str = item.get("post_url") or item.get("post_id") or ""
+                        # Inherit publication date from parent post; fall back
+                        # to the Bright Data field (which is the scrape date).
+                        inherited_date = get_parent_post_date(parent_url, parent_dates)
+                        raw_dict: dict[str, Any] = {
+                            "comment_id": item.get("id") or item.get("comment_id"),
+                            "id": item.get("id") or item.get("comment_id"),
+                            "content": text,
+                            "page_name": item.get("author_name") or item.get("page_name"),
+                            "user_url": (
+                                item.get("author_id")
+                                or item.get("author_url")
+                                or item.get("user_url")
+                            ),
+                            "date_posted": inherited_date or (
+                                item.get("date_posted")
+                                or item.get("date")
+                                or item.get("timestamp")
+                            ),
+                            "num_likes": (
+                                item.get("num_likes")
+                                or item.get("likes")
+                                or item.get("like_count")
+                                or 0
+                            ),
+                            "url": item.get("comment_url") or item.get("url"),
+                            "parent_post_id": parent_url,
+                        }
+                        records.append(self.normalize(raw_dict))
+
+                    self._emit_many(records)
+                    self._flush()
+
+                    logger.info(
+                        "facebook: collect_comments batch %d/%d — %d comments normalized",
+                        batch_num,
+                        total_chunks,
+                        len(records),
+                    )
         finally:
             if self.credential_pool:
                 await self.credential_pool.release(credential_id=cred_id)
 
-        records: list[dict[str, Any]] = []
-        for item in raw_comments:
-            # Build a flat dict using the field names that _parse_brightdata_facebook
-            # expects so that normalize() can extract values correctly.
-            # - "content" is the primary text field read by _parse_brightdata_facebook.
-            # - "comment_id" triggers content_type="comment" detection in the parser.
-            text: str = item.get("text") or item.get("comment_text") or item.get("content", "")
-            raw_dict: dict[str, Any] = {
-                "comment_id": item.get("id") or item.get("comment_id"),
-                "id": item.get("id") or item.get("comment_id"),
-                "content": text,
-                "page_name": item.get("author_name") or item.get("page_name"),
-                "user_url": item.get("author_id") or item.get("author_url") or item.get("user_url"),
-                "date_posted": item.get("date_posted") or item.get("date") or item.get("timestamp"),
-                "num_likes": item.get("num_likes") or item.get("likes") or item.get("like_count") or 0,
-                "url": item.get("comment_url") or item.get("url"),
-                "parent_post_id": item.get("post_url") or item.get("post_id"),
-            }
-            records.append(self.normalize(raw_dict))
+        self._flush()
 
         logger.info(
-            "facebook: collect_comments — normalized %d comment records from %d post URLs",
-            len(records),
+            "facebook: collect_comments completed — %d post URLs, "
+            "emitted=%d inserted=%d skipped=%d",
             len(post_urls),
+            self._total_emitted,
+            self._total_inserted,
+            self._total_skipped,
         )
-        return records
+        return list(self._batch_buffer)
 
     # ------------------------------------------------------------------
     # Bright Data low-level HTTP helpers

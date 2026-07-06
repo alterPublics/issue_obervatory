@@ -550,17 +550,28 @@ window.initMultiArenaVolumeChart = function initMultiArenaVolumeChart(canvasId, 
 
   const { labels, rows, arenaNames, xLabel, yLabel } = data;
 
+  // Fixed colour per arena category so each always gets a distinct hue.
+  const _CATEGORY_COLORS = {
+    'News':         '#E05A2B',  // warm orange
+    'Search':       '#7C3AED',  // violet
+    'Web':          '#3D9B3A',  // green
+    'Social Media': '#2583C6',  // blue
+  };
+
   const datasets = arenaNames.length > 0
-    ? arenaNames.map((arena, i) => ({
-        label: arena,
-        data: rows.map(r => (r.arenas && r.arenas[arena]) ? r.arenas[arena] : 0),
-        borderColor: _PALETTE[i % _PALETTE.length],
-        backgroundColor: _PALETTE[i % _PALETTE.length] + '26',  // 15% opacity
-        borderWidth: 2,
-        fill: false,
-        tension: 0.3,
-        pointRadius: 3,
-      }))
+    ? arenaNames.map((arena, i) => {
+        const color = _CATEGORY_COLORS[arena] || _PALETTE[i % _PALETTE.length];
+        return {
+          label: arena,
+          data: rows.map(r => (r.arenas && r.arenas[arena]) ? r.arenas[arena] : 0),
+          borderColor: color,
+          backgroundColor: color + '26',  // 15% opacity
+          borderWidth: 2,
+          fill: false,
+          tension: 0.3,
+          pointRadius: 3,
+        };
+      })
     : [{
         label: 'Total records',
         data: rows.map(r => r.count),

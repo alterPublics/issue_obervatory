@@ -199,14 +199,14 @@ INSTAGRAM_REEL_MEDIA_TYPES: frozenset[str] = frozenset({"2"})
 INSTAGRAM_TIERS: dict[Tier, TierConfig] = {
     Tier.MEDIUM: TierConfig(
         tier=Tier.MEDIUM,
-        max_results_per_run=50_000,
+        max_results_per_run=1_000_000,  # effectively unlimited — per-actor limit is the real throttle
         rate_limit_per_minute=BRIGHTDATA_RATE_LIMIT_MAX_CALLS * 60,
         requires_credential=True,
         estimated_credits_per_1k=2,  # ~$0.0015/record = ~$1.50/1K records
     ),
     Tier.PREMIUM: TierConfig(
         tier=Tier.PREMIUM,
-        max_results_per_run=500_000,  # MCL weekly cap
+        max_results_per_run=1_000_000,  # MCL — effectively unlimited
         rate_limit_per_minute=60,
         requires_credential=True,
         estimated_credits_per_1k=5,

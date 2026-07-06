@@ -13,7 +13,7 @@ each invocation requires a fresh event loop with no pre-existing session.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -54,7 +54,7 @@ async def fetch_live_tracking_designs() -> list[dict[str, Any]]:
     Returns:
         List of dicts with keys: ``query_design_id``, ``owner_id``,
         ``arenas_config``, ``default_tier``, ``language``,
-        ``run_id``, ``run_status``.
+        ``run_id``, ``run_status``, ``project_collection_mode``.
         The ``language`` field holds the raw comma-separated language string
         from ``QueryDesign.language`` (e.g. ``"da"`` or ``"da,en"``).
         Use :func:`~issue_observatory.core.schemas.query_design.parse_language_codes`
@@ -71,6 +71,7 @@ async def fetch_live_tracking_designs() -> list[dict[str, Any]]:
                 QueryDesign.language,
                 CollectionRun.id.label("run_id"),
                 CollectionRun.status.label("run_status"),
+                Project.collection_mode.label("project_collection_mode"),
             )
             .join(
                 CollectionRun,
@@ -78,6 +79,7 @@ async def fetch_live_tracking_designs() -> list[dict[str, Any]]:
                 & (CollectionRun.mode == "live")
                 & (CollectionRun.status == "active"),
             )
+            .outerjoin(Project, Project.id == QueryDesign.project_id)
             .where(QueryDesign.is_active.is_(True))
         )
         result = await db.execute(stmt)
@@ -785,6 +787,7 @@ async def fetch_batch_run_details(run_id: Any) -> dict[str, Any] | None:
         stmt = (
             select(
                 CollectionRun.id.label("run_id"),
+                CollectionRun.status,
                 CollectionRun.query_design_id,
                 CollectionRun.project_id,
                 CollectionRun.arenas_config,
@@ -1080,6 +1083,42 @@ def _fetch_terms_for_design(query_design_id: str) -> list[str]:
         return []
 
 
+def _fetch_terms_for_project(query_design_id: str) -> list[str]:
+    """Look up ALL active search terms across every query design in the project.
+
+    Resolves ``query_design_id`` → ``project_id`` → all sibling QDs → all terms.
+    Falls back to single-QD terms when the QD has no ``project_id``.
+
+    Uses a synchronous session (safe for Celery worker context).
+    Returns an empty list on any error to avoid blocking persistence.
+    """
+    try:
+        from sqlalchemy import text as sa_text
+
+        from issue_observatory.core.database import get_sync_session
+
+        with get_sync_session() as session:
+            rows = session.execute(
+                sa_text(
+                    "SELECT DISTINCT st.term "
+                    "FROM search_terms st "
+                    "JOIN query_designs qd ON st.query_design_id = qd.id "
+                    "WHERE qd.project_id = ("
+                    "  SELECT project_id FROM query_designs "
+                    "  WHERE id = CAST(:qd_id AS uuid)"
+                    ") "
+                    "AND st.is_active = true"
+                ),
+                {"qd_id": query_design_id},
+            ).fetchall()
+            if rows:
+                return [row[0] for row in rows]
+            # Fallback: project_id may be NULL — use single-QD terms
+            return _fetch_terms_for_design(query_design_id)
+    except Exception:
+        return _fetch_terms_for_design(query_design_id)
+
+
 def _match_terms_in_text(
     text_content: str | None,
     title: str | None,
@@ -1179,6 +1218,7 @@ def persist_collected_records(
     collection_run_id: str,
     query_design_id: str | None = None,
     terms: list[str] | None = None,
+    actor_sourced: bool = False,
 ) -> tuple[int, int]:
     """Bulk-insert normalized content records into the database.
 
@@ -1196,6 +1236,10 @@ def persist_collected_records(
         terms: Optional list of search terms used for collection. When
             provided, records with empty ``search_terms_matched`` will be
             backfilled via client-side text matching on title + text_content.
+        actor_sourced: When ``True``, all records are marked with
+            ``term_matched = True`` regardless of whether they match
+            search terms.  Use for actor-only arenas (Facebook, Instagram)
+            where the actor selection IS the match criterion.
 
     Returns:
         Tuple of ``(inserted_count, skipped_count)``.
@@ -1215,28 +1259,34 @@ def persist_collected_records(
     # Bail out early if the run was cancelled while we were collecting.
     check_run_cancelled(collection_run_id)
 
-    # Auto-fetch search terms from the query design when not explicitly provided.
-    # This ensures actor-only arenas (Facebook, Instagram) and any task that
-    # forgot to pass terms still get term-matching backfill.
+    # Auto-fetch search terms from the *entire project* when not explicitly
+    # provided.  This ensures that a record collected under QD-A is also
+    # matched against terms from QD-B/C/… in the same project.
     if not terms and query_design_id:
-        terms = _fetch_terms_for_design(query_design_id)
+        terms = _fetch_terms_for_project(query_design_id)
 
-    # Set term_matched based on search_terms_matched presence.
-    # Backfill search_terms_matched via text matching when terms are provided.
+    # Always run text-based term matching and merge with any terms the
+    # collector already set (e.g. the API search term).  This ensures that
+    # a post fetched via "usa" that also contains "ukraine" is linked to both.
     for record in records:
-        matched_terms = record.get("search_terms_matched")
-        if (not matched_terms or len(matched_terms) == 0) and terms:
-            matched_terms = _match_terms_in_text(
+        existing_terms = list(record.get("search_terms_matched") or [])
+        if terms:
+            text_matched = _match_terms_in_text(
                 record.get("text_content"),
                 record.get("title"),
                 terms,
             )
-            if matched_terms:
-                record["search_terms_matched"] = matched_terms
-        if matched_terms and len(matched_terms) > 0:
-            record.setdefault("term_matched", True)
+            # Merge: deduplicate while preserving order (existing first).
+            seen = set(t.lower() for t in existing_terms)
+            for t in text_matched:
+                if t.lower() not in seen:
+                    existing_terms.append(t)
+                    seen.add(t.lower())
+        record["search_terms_matched"] = existing_terms
+        if actor_sourced:
+            record["term_matched"] = True
         else:
-            record.setdefault("term_matched", False)
+            record.setdefault("term_matched", len(existing_terms) > 0)
 
     # Columns that need explicit CAST() for psycopg2 type inference.
     _JSONB_COLS = {"raw_metadata"}
@@ -1352,6 +1402,7 @@ def make_batch_sink(
     collection_run_id: str,
     query_design_id: str | None = None,
     terms: list[str] | None = None,
+    actor_sourced: bool = False,
 ) -> Callable[[list[dict[str, Any]]], tuple[int, int]]:
     """Create a batch sink callback for :meth:`ArenaCollector.configure_batch_persistence`.
 
@@ -1362,15 +1413,162 @@ def make_batch_sink(
         collection_run_id: UUID string of the parent collection run.
         query_design_id: Optional UUID string of the owning query design.
         terms: Optional search terms for term-matching backfill.
+        actor_sourced: When ``True``, marks all records with
+            ``term_matched = True``.  Use for actor-only arenas.
 
     Returns:
         Callable that accepts ``list[dict]`` and returns ``(inserted, skipped)``.
     """
 
     def _sink(records: list[dict[str, Any]]) -> tuple[int, int]:
-        return persist_collected_records(records, collection_run_id, query_design_id, terms)
+        return persist_collected_records(
+            records, collection_run_id, query_design_id, terms,
+            actor_sourced=actor_sourced,
+        )
 
     return _sink
+
+
+def backfill_project_term_matching(
+    project_id: str,
+    batch_size: int = 5000,
+) -> dict[str, int]:
+    """Re-evaluate ``term_matched`` for every record in a project using
+    the full set of search terms across *all* query designs in the project.
+
+    Designed for one-off or periodic correction after new QDs/terms are added.
+    Runs synchronously (safe for Celery worker context).
+
+    Returns:
+        Dict with ``scanned``, ``updated``, and ``terms_count`` keys.
+    """
+    import structlog
+    from sqlalchemy import text as sa_text
+
+    from issue_observatory.core.database import get_sync_session
+
+    log = structlog.get_logger("backfill_project_term_matching")
+
+    with get_sync_session() as session:
+        # 1. Fetch all active terms for the project
+        term_rows = session.execute(
+            sa_text(
+                "SELECT DISTINCT st.term "
+                "FROM search_terms st "
+                "JOIN query_designs qd ON st.query_design_id = qd.id "
+                "WHERE qd.project_id = CAST(:pid AS uuid) "
+                "AND st.is_active = true"
+            ),
+            {"pid": project_id},
+        ).fetchall()
+        all_terms = [r[0] for r in term_rows]
+        if not all_terms:
+            return {"scanned": 0, "updated": 0, "terms_count": 0}
+
+        # 2. Fetch QD ids for the project
+        qd_rows = session.execute(
+            sa_text(
+                "SELECT id FROM query_designs "
+                "WHERE project_id = CAST(:pid AS uuid)"
+            ),
+            {"pid": project_id},
+        ).fetchall()
+        qd_ids = [str(r[0]) for r in qd_rows]
+        if not qd_ids:
+            return {"scanned": 0, "updated": 0, "terms_count": len(all_terms)}
+
+        placeholders = ", ".join(f":qd_{i}" for i in range(len(qd_ids)))
+        qd_params = {f"qd_{i}": qd_ids[i] for i in range(len(qd_ids))}
+
+        log.info(
+            "backfill_start",
+            project_id=project_id,
+            terms_count=len(all_terms),
+            qd_count=len(qd_ids),
+        )
+
+        scanned = 0
+        updated = 0
+        offset = 0
+
+        while True:
+            rows = session.execute(
+                sa_text(
+                    f"SELECT id, published_at, text_content, title, "
+                    f"       search_terms_matched, term_matched "
+                    f"FROM content_records "
+                    f"WHERE query_design_id IN ({placeholders}) "
+                    f"ORDER BY id "
+                    f"LIMIT :lim OFFSET :off"
+                ),
+                {**qd_params, "lim": batch_size, "off": offset},
+            ).fetchall()
+
+            if not rows:
+                break
+
+            for row in rows:
+                scanned += 1
+                rec_id = row[0]
+                pub_at = row[1]
+                text_content = row[2]
+                title = row[3]
+                existing = list(row[4] or [])
+                was_matched = row[5]
+
+                text_matched = _match_terms_in_text(text_content, title, all_terms)
+                # Merge new terms into existing list
+                seen = {t.lower() for t in existing}
+                merged = list(existing)
+                for t in text_matched:
+                    if t.lower() not in seen:
+                        merged.append(t)
+                        seen.add(t.lower())
+
+                should_match = len(merged) > 0
+                if merged != existing or should_match != was_matched:
+                    terms_literal = (
+                        "{"
+                        + ",".join(
+                            '"' + t.replace("\\", "\\\\").replace('"', '\\"') + '"'
+                            for t in merged
+                        )
+                        + "}"
+                    )
+                    session.execute(
+                        sa_text(
+                            "UPDATE content_records "
+                            "SET search_terms_matched = CAST(:terms AS text[]), "
+                            "    term_matched = :matched "
+                            "WHERE id = CAST(:rid AS uuid) "
+                            "  AND published_at = CAST(:pub AS timestamptz)"
+                        ),
+                        {
+                            "terms": terms_literal,
+                            "matched": should_match,
+                            "rid": str(rec_id),
+                            "pub": str(pub_at),
+                        },
+                    )
+                    updated += 1
+
+            session.commit()
+            offset += batch_size
+            log.info(
+                "backfill_batch",
+                scanned=scanned,
+                updated=updated,
+                offset=offset,
+            )
+
+    log.info(
+        "backfill_complete",
+        project_id=project_id,
+        scanned=scanned,
+        updated=updated,
+        terms_count=len(all_terms),
+    )
+    return {"scanned": scanned, "updated": updated, "terms_count": len(all_terms)}
 
 
 def count_run_platform_records(collection_run_id: str, platform: str) -> int:
@@ -1666,21 +1864,42 @@ def reindex_existing_records(
     query_design_id: str | None,
     terms: list[str] | None = None,
     actor_ids: list[str] | None = None,
+    author_names: list[str] | None = None,
+    source_url_prefixes: list[str] | None = None,
+    require_term_match: bool = False,
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> int:
     """Link existing content records from OTHER runs to this collection run.
 
-    Finds records that match the given terms/actors and date range from
-    previous collection runs and creates ``content_record_links`` rows so
+    Finds records that match the given source criteria (actors/URLs) and
+    date range from previous collection runs, optionally filters them by
+    search-term relevance, and creates ``content_record_links`` rows so
     that the current run's analysis includes them without re-fetching.
 
     Args:
         platform: Platform identifier (e.g. ``"bluesky"``).
         collection_run_id: UUID string of the current collection run.
         query_design_id: UUID string of the owning query design (optional).
+            When set and *require_term_match* is ``True``, the query design's
+            active search terms are auto-fetched for term matching.
         terms: Search terms to match against ``search_terms_matched``.
         actor_ids: Actor platform IDs to match against ``author_platform_id``.
+        author_names: Author display names to match against
+            ``author_display_name``.
+        source_url_prefixes: URL prefixes to match against the record's
+            ``url`` column using ``LIKE prefix%``.  Designed for source-list-
+            only platforms (Facebook, Instagram) where the actor identifier
+            is a page/group URL that appears in the post URL but not in
+            ``author_platform_id``.  When provided together with *actor_ids*
+            or *author_names*, records matching **either** condition are
+            linked (OR logic).
+        require_term_match: When ``True``, only link records whose
+            ``text_content`` or ``title`` contains at least one of the query
+            design's search terms (case-insensitive substring match).  This
+            ensures that actor-sourced platforms only surface content
+            relevant to the query design on the dashboard.  Terms are
+            auto-fetched from the query design if *terms* is not provided.
         date_from: ISO 8601 lower date bound (optional).
         date_to: ISO 8601 upper date bound (optional).
 
@@ -1695,54 +1914,161 @@ def reindex_existing_records(
 
     log = logging.getLogger("issue_observatory.workers._task_helpers")
 
-    # All queries include published_at bounds for partition pruning on
-    # content_records (range-partitioned by published_at, monthly).
-    clauses = [
-        "cr.platform = :platform",
-    ]
-    params: dict[str, Any] = {
-        "platform": platform,
-        "run_id": collection_run_id,
-    }
+    has_match_criteria = bool(terms or actor_ids or author_names or source_url_prefixes)
+    if not has_match_criteria:
+        log.warning(
+            "reindex_existing_records: no match criteria provided — skipping",
+        )
+        return 0
 
-    if date_from:
-        clauses.append("cr.published_at >= CAST(:date_from AS timestamptz)")
-        params["date_from"] = date_from
-    if date_to:
-        clauses.append("cr.published_at <= CAST(:date_to AS timestamptz)")
-        params["date_to"] = date_to
-
-    # Match on terms OR actors (whichever is provided).
-    # Uses GIN-compatible @> operator for search_terms_matched,
-    # and B-tree index for author_platform_id.
-    if terms:
-        clauses.append("cr.search_terms_matched && CAST(:terms AS text[])")
-        params["terms"] = "{" + ",".join(
-            '"' + t.replace("\\", "\\\\").replace('"', '\\"') + '"' for t in terms
-        ) + "}"
-    elif actor_ids:
-        clauses.append("cr.author_platform_id = ANY(:actor_ids)")
-        params["actor_ids"] = actor_ids
-
-    where = " AND ".join(clauses)
-
-    qd_value = "CAST(:qd_id AS uuid)" if query_design_id else "NULL"
-    if query_design_id:
-        params["qd_id"] = query_design_id
-
-    insert_sql = text(
-        f"INSERT INTO content_record_links "
-        f"(content_record_id, content_record_published_at, collection_run_id, "
-        f"query_design_id, link_type) "
-        f"SELECT cr.id, cr.published_at, CAST(:run_id AS uuid), "
-        f"{qd_value}, 'reindex' "
-        f"FROM content_records cr WHERE {where} "
-        f"ON CONFLICT (content_record_id, content_record_published_at, collection_run_id) "
-        f"DO NOTHING"
-    )
+    # Auto-fetch search terms from the *entire project* when term matching
+    # is required but no explicit terms were provided.
+    search_terms: list[str] = list(terms or [])
+    if require_term_match and not search_terms and query_design_id:
+        search_terms = _fetch_terms_for_project(query_design_id)
+    if require_term_match and not search_terms:
+        log.warning(
+            "reindex_existing_records: require_term_match=True but no terms "
+            "available — skipping (platform=%s run=%s)",
+            platform,
+            collection_run_id,
+        )
+        return 0
 
     try:
         with get_sync_session() as db:
+            # Use temp tables for large lists to avoid bind-parameter limits.
+            db.execute(text(
+                "CREATE TEMP TABLE IF NOT EXISTS _reindex_actors "
+                "(val TEXT NOT NULL) ON COMMIT DROP"
+            ))
+            db.execute(text("TRUNCATE _reindex_actors"))
+
+            db.execute(text(
+                "CREATE TEMP TABLE IF NOT EXISTS _reindex_url_prefixes "
+                "(prefix TEXT NOT NULL) ON COMMIT DROP"
+            ))
+            db.execute(text("TRUNCATE _reindex_url_prefixes"))
+
+            db.execute(text(
+                "CREATE TEMP TABLE IF NOT EXISTS _reindex_terms "
+                "(term TEXT NOT NULL) ON COMMIT DROP"
+            ))
+            db.execute(text("TRUNCATE _reindex_terms"))
+
+            # Populate actor temp table.
+            _actor_vals: list[str] = []
+            actor_col: str | None = None
+            if not terms:
+                # Only use actor matching when not using direct term overlap.
+                if actor_ids:
+                    _actor_vals = actor_ids
+                    actor_col = "author_platform_id"
+                elif author_names:
+                    _actor_vals = author_names
+                    actor_col = "author_display_name"
+
+            if _actor_vals:
+                for chunk_start in range(0, len(_actor_vals), 500):
+                    chunk = _actor_vals[chunk_start:chunk_start + 500]
+                    values_sql = ", ".join(f"(:v{i})" for i in range(len(chunk)))
+                    chunk_params = {f"v{i}": v for i, v in enumerate(chunk)}
+                    db.execute(
+                        text(f"INSERT INTO _reindex_actors (val) VALUES {values_sql}"),
+                        chunk_params,
+                    )
+
+            # Populate URL prefix temp table.
+            if source_url_prefixes:
+                for chunk_start in range(0, len(source_url_prefixes), 500):
+                    chunk = source_url_prefixes[chunk_start:chunk_start + 500]
+                    values_sql = ", ".join(f"(:p{i})" for i in range(len(chunk)))
+                    chunk_params = {f"p{i}": v for i, v in enumerate(chunk)}
+                    db.execute(
+                        text(
+                            f"INSERT INTO _reindex_url_prefixes (prefix) "
+                            f"VALUES {values_sql}"
+                        ),
+                        chunk_params,
+                    )
+
+            # Populate search terms temp table for term matching.
+            if require_term_match and search_terms:
+                for chunk_start in range(0, len(search_terms), 500):
+                    chunk = search_terms[chunk_start:chunk_start + 500]
+                    values_sql = ", ".join(f"(:t{i})" for i in range(len(chunk)))
+                    chunk_params = {f"t{i}": v for i, v in enumerate(chunk)}
+                    db.execute(
+                        text(f"INSERT INTO _reindex_terms (term) VALUES {values_sql}"),
+                        chunk_params,
+                    )
+
+            # Build WHERE clause.
+            clauses = [
+                "cr.platform = :platform",
+                "cr.collection_run_id != CAST(:run_id AS uuid)",
+            ]
+            params: dict[str, Any] = {
+                "platform": platform,
+                "run_id": collection_run_id,
+            }
+
+            if date_from:
+                clauses.append("cr.published_at >= CAST(:date_from AS timestamptz)")
+                params["date_from"] = date_from
+            if date_to:
+                clauses.append("cr.published_at <= CAST(:date_to AS timestamptz)")
+                params["date_to"] = date_to
+
+            # Build source match condition (OR across all provided criteria).
+            match_parts: list[str] = []
+            if terms:
+                match_parts.append(
+                    "cr.search_terms_matched && CAST(:terms AS text[])"
+                )
+                params["terms"] = "{" + ",".join(
+                    '"' + t.replace("\\", "\\\\").replace('"', '\\"') + '"'
+                    for t in terms
+                ) + "}"
+            if _actor_vals and actor_col:
+                match_parts.append(
+                    f"cr.{actor_col} IN (SELECT val FROM _reindex_actors)"
+                )
+            if source_url_prefixes:
+                match_parts.append(
+                    "EXISTS (SELECT 1 FROM _reindex_url_prefixes p "
+                    "WHERE cr.url LIKE p.prefix || '%')"
+                )
+
+            if match_parts:
+                clauses.append(f"({' OR '.join(match_parts)})")
+
+            # Term relevance filter: only link records whose text_content or
+            # title contains at least one search term (case-insensitive).
+            if require_term_match:
+                clauses.append(
+                    "EXISTS (SELECT 1 FROM _reindex_terms t "
+                    "WHERE LOWER(COALESCE(cr.text_content, '') || ' ' || "
+                    "COALESCE(cr.title, '')) LIKE '%' || LOWER(t.term) || '%')"
+                )
+
+            where = " AND ".join(clauses)
+
+            qd_value = "CAST(:qd_id AS uuid)" if query_design_id else "NULL"
+            if query_design_id:
+                params["qd_id"] = query_design_id
+
+            insert_sql = text(
+                f"INSERT INTO content_record_links "
+                f"(content_record_id, content_record_published_at, collection_run_id, "
+                f"query_design_id, link_type) "
+                f"SELECT cr.id, cr.published_at, CAST(:run_id AS uuid), "
+                f"{qd_value}, 'reindex' "
+                f"FROM content_records cr WHERE {where} "
+                f"ON CONFLICT (content_record_id, content_record_published_at, "
+                f"collection_run_id) DO NOTHING"
+            )
+
             result = db.execute(insert_sql, params)
             linked = result.rowcount
             db.commit()
@@ -1760,6 +2086,7 @@ def reindex_existing_records(
             platform,
             collection_run_id,
             exc,
+            exc_info=True,
         )
         return 0
 
@@ -1934,6 +2261,51 @@ def record_collection_attempts_batch(
 # ---------------------------------------------------------------------------
 # Platform URL error helpers (dead page suppression)
 # ---------------------------------------------------------------------------
+
+
+def get_latest_actor_coverage_date(
+    platform: str,
+    actor_url: str,
+) -> date | None:
+    """Return the latest ``date_to`` (as a date) for a specific actor.
+
+    Queries ``collection_attempts`` for the most recent valid attempt for
+    the given *platform* and *actor_url*.  Returns ``None`` if no prior
+    attempt is recorded.
+
+    Used by the Facebook / Instagram per-actor loops to decide whether to
+    re-collect the last partial day.
+    """
+    from issue_observatory.core.database import get_sync_session
+    from issue_observatory.core.models.collection_attempts import CollectionAttempt
+
+    import logging
+
+    log = logging.getLogger("issue_observatory.workers._task_helpers")
+    try:
+        with get_sync_session() as session:
+            row = session.execute(
+                select(func.max(CollectionAttempt.date_to)).where(
+                    CollectionAttempt.platform == platform,
+                    CollectionAttempt.input_value == actor_url,
+                    CollectionAttempt.input_type == "actor",
+                    CollectionAttempt.is_valid.is_(True),
+                    CollectionAttempt.records_returned.is_not(None),
+                )
+            ).scalar()
+        if row is None:
+            return None
+        # date_to is TIMESTAMP WITH TIMEZONE — return as a date.
+        return row.date() if hasattr(row, "date") else row
+    except Exception:
+        log.warning(
+            "get_latest_actor_coverage_date: DB error for %s/%s"
+            " — treating as no coverage",
+            platform,
+            actor_url,
+            exc_info=True,
+        )
+        return None
 
 
 def get_suppressed_urls(platform: str, urls: list[str]) -> set[str]:
@@ -2481,19 +2853,49 @@ async def fetch_posts_for_comment_collection(
             .scalar_subquery()
         )
 
-        # Subquery: posts that already have comments collected for them.
-        from sqlalchemy import exists
+        # Collect the set of parent post identifiers that already have
+        # comments.  parent_post_id in raw_metadata may be a platform_id
+        # (TikTok), a full URL (Instagram), or a URL with query params
+        # (Facebook ?locale=en_US).  We gather both the raw value and the
+        # query-string-stripped version, then exclude posts matching either
+        # their url or platform_id against this set.
+        from sqlalchemy import func
         from sqlalchemy.orm import aliased
 
         ExistingComment = aliased(UniversalContentRecord)
-        has_comments = (
-            exists()
+        parent_ids_raw = (
+            select(
+                ExistingComment.raw_metadata["parent_post_id"].astext.label("pid")
+            )
             .where(
                 ExistingComment.platform == platform,
                 ExistingComment.content_type == "comment",
-                ExistingComment.raw_metadata["parent_post_id"].astext
-                == UniversalContentRecord.platform_id,
+                ExistingComment.collection_run_id.in_(project_run_ids),
             )
+            .distinct()
+            .subquery()
+        )
+        # Also build the query-param-stripped variants for Facebook-style URLs
+        parent_ids_clean = (
+            select(
+                func.split_part(parent_ids_raw.c.pid, "?", 1).label("pid_clean")
+            )
+            .distinct()
+            .subquery()
+        )
+
+        # Exclude posts already submitted for comment collection (even if
+        # they returned 0 comments) to avoid wasting Bright Data credits.
+        from issue_observatory.core.models.collection_attempts import CollectionAttempt
+
+        already_submitted = (
+            select(CollectionAttempt.input_value)
+            .where(
+                CollectionAttempt.platform == f"{platform}_comments",
+                CollectionAttempt.input_type == "post_url",
+                CollectionAttempt.is_valid == True,  # noqa: E712
+            )
+            .scalar_subquery()
         )
 
         stmt = (
@@ -2506,7 +2908,12 @@ async def fetch_posts_for_comment_collection(
                 UniversalContentRecord.collection_run_id.in_(project_run_ids),
                 UniversalContentRecord.platform == platform,
                 UniversalContentRecord.content_type.notin_(["comment", "reply"]),
-                ~has_comments,
+                # Exclude posts whose url or platform_id appears in collected
+                # comment parent IDs (raw or query-string-stripped).
+                ~UniversalContentRecord.url.in_(select(parent_ids_raw.c.pid)),
+                ~UniversalContentRecord.platform_id.in_(select(parent_ids_raw.c.pid)),
+                ~UniversalContentRecord.url.in_(select(parent_ids_clean.c.pid_clean)),
+                ~UniversalContentRecord.url.in_(already_submitted),
             )
         )
 
@@ -2515,6 +2922,22 @@ async def fetch_posts_for_comment_collection(
             stmt = stmt.where(UniversalContentRecord.published_at >= date_from)
         if date_to is not None:
             stmt = stmt.where(UniversalContentRecord.published_at <= date_to)
+
+        # Only collect comments for posts at least 2 days old so engagement
+        # has time to accumulate.  Applied to all platforms.
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=2)
+        stmt = stmt.where(UniversalContentRecord.published_at <= cutoff)
+
+        # Minimum comments filter — skip posts with few/no comments.
+        # Default to 1 so posts with zero comments don't waste API quota.
+        # comments_count is a top-level column, not in raw_metadata JSONB.
+        min_comments = int(comments_config.get("min_comments", 1))
+        if min_comments > 0:
+            stmt = stmt.where(
+                UniversalContentRecord.comments_count >= min_comments
+            )
 
         if mode == "search_terms":
             configured_terms = comments_config.get("search_terms") or []
@@ -2573,3 +2996,63 @@ async def fetch_project_comments_config(project_id: str) -> dict:
         )
         config = result.scalar_one_or_none()
         return dict(config) if config else {}
+
+
+async def check_comment_ready_platforms(
+    run_id: Any,
+    comment_platforms: list[str],
+) -> list[str]:
+    """Return comment-enabled platforms whose post tasks are terminal.
+
+    For each platform in *comment_platforms*, checks whether the corresponding
+    post collection task (arena name == platform name, NOT ending with
+    ``_comments``) has reached a terminal state **and** no comment task row
+    (arena name ``{platform}_comments``) has been created yet for this run.
+
+    Args:
+        run_id: UUID of the CollectionRun.
+        comment_platforms: Platform names that have comments enabled
+            (e.g. ``["reddit", "bluesky"]``).
+
+    Returns:
+        List of platform names that are ready for comment collection.
+    """
+    if not comment_platforms:
+        return []
+
+    async with AsyncSessionLocal() as db:
+        # Fetch status of all tasks for this run in one query
+        stmt = select(
+            CollectionTask.arena,
+            CollectionTask.platform,
+            CollectionTask.status,
+        ).where(CollectionTask.collection_run_id == run_id)
+
+        result = await db.execute(stmt)
+        rows = result.all()
+
+    # Build lookup: which post tasks are terminal, which comment tasks exist
+    terminal_statuses = {"completed", "failed", "cancelled"}
+    post_task_terminal: dict[str, bool] = {}
+    comment_task_exists: set[str] = set()
+
+    for arena, platform, status in rows:
+        if arena.endswith("_comments"):
+            # This is a comment task row — record that it exists
+            comment_task_exists.add(platform)
+        elif platform in comment_platforms:
+            # This is a post task for a comment-enabled platform
+            # A platform might have multiple tasks (terms + actors); all must
+            # be terminal before we consider it ready.
+            is_terminal = status in terminal_statuses
+            if platform in post_task_terminal:
+                post_task_terminal[platform] = post_task_terminal[platform] and is_terminal
+            else:
+                post_task_terminal[platform] = is_terminal
+
+    # Return platforms whose posts are done and comments haven't been triggered
+    ready = [
+        p for p in comment_platforms
+        if post_task_terminal.get(p, False) and p not in comment_task_exists
+    ]
+    return ready

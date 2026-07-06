@@ -30,14 +30,14 @@
             </p>
         </div>
         <div class="flex gap-3">
-            <a href="/query-designs/new" class="btn-secondary">
+            <a href="/query-designs/new" class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors">
                 <svg class="w-4 h-4 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none"
                      viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
                 </svg>
                 New Query Design
             </a>
-            <a href="/collections/new" class="btn-primary">
+            <a href="/collections/new" class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md text-white bg-brand-600 hover:bg-brand-700 transition-colors">
                 <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none"
                      viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
@@ -51,7 +51,7 @@
     {# Summary cards row #}
     <div class="grid grid-cols-3 gap-4">
         {# Credit balance card #}
-        <div class="card">
+        <div class="bg-white rounded-lg shadow p-6 border border-purple-100/60">
             <div class="flex items-center justify-between mb-3">
                 <h2 class="text-sm font-medium font-heading text-gray-500">Credits</h2>
                 <svg class="w-5 h-5 text-brand-300" xmlns="http://www.w3.org/2000/svg" fill="none"
@@ -65,13 +65,13 @@
                  hx-trigger="load, every 30s"
                  hx-target="#dashboard-credits"
                  hx-swap="outerHTML">
-                <p class="text-2xl font-bold text-gray-900">—</p>
+                <p class="text-2xl font-bold text-gray-900">&mdash;</p>
                 <p class="text-xs text-gray-500 mt-1">Loading...</p>
             </div>
         </div>
 
         {# Active runs card #}
-        <div class="card">
+        <div class="bg-white rounded-lg shadow p-6 border border-purple-100/60">
             <div class="flex items-center justify-between mb-3">
                 <h2 class="text-sm font-medium font-heading text-gray-500">Active Collections</h2>
                 <svg class="w-5 h-5 text-brand-400" xmlns="http://www.w3.org/2000/svg" fill="none"
@@ -85,14 +85,16 @@
                  hx-trigger="load, every 15s"
                  hx-target="#dashboard-active-runs"
                  hx-swap="outerHTML">
-                <p class="text-2xl font-bold text-gray-900">—</p>
+                <p class="text-2xl font-bold text-gray-900">&mdash;</p>
                 <p class="text-xs text-gray-500 mt-1">Loading...</p>
             </div>
         </div>
 
         {# Total records card #}
-        <div class="card"
-             x-data="{ count: null, init() { this.poll(); setInterval(() => this.poll(), 60000); }, async poll() { try { const r = await fetch('/content/count', { credentials: 'include' }); const d = await r.json(); this.count = d.total ?? null; } catch(e) {} } }">
+        <div class="bg-white rounded-lg shadow p-6 border border-purple-100/60"
+             x-data="dashboardRecordCount()"
+             x-init="init()"
+             @dashboard-project-changed.window="onProjectChanged($event.detail)">
             <div class="flex items-center justify-between mb-3">
                 <h2 class="text-sm font-medium font-heading text-gray-500">Records Collected</h2>
                 <svg class="w-5 h-5 text-brand-300" xmlns="http://www.w3.org/2000/svg" fill="none"
@@ -101,50 +103,229 @@
                           d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
                 </svg>
             </div>
-            <p class="text-2xl font-bold text-gray-900" x-text="count !== null ? count.toLocaleString() : '—'"></p>
+            <p class="text-2xl font-bold text-gray-900" x-text="matched !== null ? matched.toLocaleString() : '&mdash;'"></p>
+            <p class="text-xs text-gray-400 mt-0.5" x-show="total !== null && total !== matched" x-text="total !== null ? total.toLocaleString() + ' total collected' : ''"></p>
             <p class="text-xs text-gray-500 mt-1">
                 <a href="/content" class="text-brand-600 hover:text-brand-700 hover:underline">View all content</a>
             </p>
         </div>
     </div>
 
-    {# Volume spike alerts #}
-    <div id="volume-spike-alerts"
-         hx-get="/collections/volume-spikes/recent?days=7&limit=5"
-         hx-trigger="load, every 60s"
-         hx-target="#volume-spike-content"
-         hx-swap="innerHTML"
-         hx-on::after-swap="const c = document.getElementById('volume-spike-content'); const e = document.getElementById('volume-spike-empty'); if(c.innerHTML.trim()) { c.classList.remove('hidden'); e.classList.add('hidden'); } else { c.classList.add('hidden'); e.classList.remove('hidden'); }">
-        <div class="card !py-3">
-            <h2 class="font-heading text-sm font-semibold text-gray-900 mb-2">Volume Spike Alerts</h2>
-            <div id="volume-spike-content" class="hidden"></div>
-            <div id="volume-spike-empty">
-                <p class="text-xs text-gray-400">No volume spikes detected in the past 7 days.</p>
+    {# Project-scoped analytics #}
+    <div x-data="dashboardAnalytics()" x-init="init()">
+
+        {# Filter bar — toolbar style #}
+        <div class="border-b border-purple-100/40 pb-3 mb-4" x-data="{ showSecondary: false }">
+            {# Primary row: project + date presets + secondary toggle #}
+            <div class="flex items-center gap-3">
+                {# Project selector #}
+                <div class="flex items-center gap-2 min-w-0">
+                    <svg class="w-4 h-4 text-brand-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none"
+                         viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                              d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                    </svg>
+                    <select x-model="projectId" @change="onProjectChanged()"
+                            class="rounded-md border-0 bg-gray-50 py-1.5 pl-2 pr-8 text-sm font-medium text-gray-700 ring-1 ring-inset ring-gray-200 focus:ring-2 focus:ring-brand-500 cursor-pointer hover:bg-gray-100 transition-colors">
+                        <option value="">All projects</option>
+                        {% for p in projects %}
+                        <option value="{{ p.id }}" {% if p.id == default_project_id %}selected{% endif %}>
+                            {{ p.name }}{% if p.last_run_at %} ({{ p.last_run_at[:10] }}){% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                {# Separator #}
+                <div class="w-px h-5 bg-gray-200 flex-shrink-0"></div>
+
+                {# Date range pill group #}
+                <div class="inline-flex items-center rounded-lg bg-gray-100/80 p-0.5 gap-0">
+                    <template x-for="preset in datePresets" :key="preset.label">
+                        <button @click="setDatePreset(preset)"
+                                :class="activePreset === preset.label
+                                    ? 'bg-white text-brand-700 shadow-sm ring-1 ring-brand-200'
+                                    : 'text-gray-500 hover:text-gray-700'"
+                                class="px-2.5 py-1 text-xs font-medium rounded-md transition-all duration-150"
+                                x-text="preset.label">
+                        </button>
+                    </template>
+                </div>
+
+                {# Separator #}
+                <div class="w-px h-5 bg-gray-200 flex-shrink-0"></div>
+
+                {# Secondary filter toggles — arena + platform as inline selects or expandable #}
+                <div class="flex items-center gap-2">
+                    {# Arena category — compact inline #}
+                    <select x-model="arenaCategory" @change="loadCharts(); loadPlatformCounts()"
+                            class="rounded-md border-0 bg-transparent py-1.5 pl-2 pr-7 text-xs font-medium text-gray-500 ring-1 ring-inset ring-gray-200 focus:ring-2 focus:ring-brand-500 hover:text-gray-700 hover:ring-gray-300 cursor-pointer transition-colors"
+                            :class="arenaCategory ? 'text-brand-600 ring-brand-200 bg-brand-50/50' : ''">
+                        <option value="">Arena: All</option>
+                        <template x-for="cat in arenaCategories" :key="cat">
+                            <option :value="cat" x-text="(categoryLabels[cat] || cat)"></option>
+                        </template>
+                    </select>
+
+                    {# Platform — compact inline #}
+                    <select x-model="platform" @change="loadCharts(); loadPlatformCounts()"
+                            class="rounded-md border-0 bg-transparent py-1.5 pl-2 pr-7 text-xs font-medium text-gray-500 ring-1 ring-inset ring-gray-200 focus:ring-2 focus:ring-brand-500 hover:text-gray-700 hover:ring-gray-300 cursor-pointer transition-colors"
+                            :class="platform ? 'text-brand-600 ring-brand-200 bg-brand-50/50' : ''">
+                        <option value="">Platform: All</option>
+                        <template x-for="p in platforms" :key="p">
+                            <option :value="p" x-text="p"></option>
+                        </template>
+                    </select>
+
+                    {# Language — compact inline #}
+                    <select x-model="language" @change="loadCharts(); loadPlatformCounts()"
+                            class="rounded-md border-0 bg-transparent py-1.5 pl-2 pr-7 text-xs font-medium text-gray-500 ring-1 ring-inset ring-gray-200 focus:ring-2 focus:ring-brand-500 hover:text-gray-700 hover:ring-gray-300 cursor-pointer transition-colors"
+                            :class="language ? 'text-brand-600 ring-brand-200 bg-brand-50/50' : ''">
+                        <option value="">Language: All</option>
+                        <template x-for="lang in languages" :key="lang">
+                            <option :value="lang" x-text="lang"></option>
+                        </template>
+                    </select>
+                </div>
+
+                {# Clear filters — only visible when secondary filters active #}
+                <button x-show="arenaCategory || platform || language"
+                        x-transition:enter="transition ease-out duration-150"
+                        x-transition:enter-start="opacity-0 scale-95"
+                        x-transition:enter-end="opacity-100 scale-100"
+                        x-transition:leave="transition ease-in duration-100"
+                        x-transition:leave-start="opacity-100 scale-100"
+                        x-transition:leave-end="opacity-0 scale-95"
+                        @click="arenaCategory = ''; platform = ''; language = ''; loadCharts(); loadPlatformCounts()"
+                        class="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-400 hover:text-red-500 rounded transition-colors"
+                        title="Clear arena & platform filters">
+                    <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                         viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                    Clear
+                </button>
             </div>
         </div>
-    </div>
 
-    {# Recent collection runs #}
-    <div class="card !p-0">
-        <div class="flex items-center justify-between px-6 py-4 border-b border-purple-100">
-            <h2 class="font-heading text-sm font-semibold text-gray-900">Recent Collections</h2>
-            <a href="/collections" class="text-sm text-brand-600 hover:text-brand-700 hover:underline">View all</a>
-        </div>
+        {# Charts grid #}
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+            {# Volume over time chart (full width) #}
+            <div class="bg-white rounded-lg shadow p-6 border border-purple-100/60 lg:col-span-2">
+                <h2 class="font-heading text-sm font-semibold text-gray-900 mb-3">Volume Over Time</h2>
+                <div class="relative" style="height: 300px;">
+                    <canvas id="dashboard-volume-chart"></canvas>
+                    <div x-show="loading" class="absolute inset-0 flex items-center justify-center bg-white/60">
+                        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-600"></div>
+                    </div>
+                    <div x-show="!loading && noData" class="absolute inset-0 flex items-center justify-center">
+                        <p class="text-sm text-gray-400">No data available for the selected filters.</p>
+                    </div>
+                </div>
+            </div>
 
-        <div id="recent-runs"
-             hx-get="/collections/?limit=5&format=fragment"
-             hx-trigger="load"
-             hx-target="#recent-runs"
-             hx-swap="innerHTML">
-            <div class="px-6 py-12 text-center">
-                {% include '_partials/loading_spinner.html' %}
+            {# Top actors chart #}
+            <div class="bg-white rounded-lg shadow p-6 border border-purple-100/60">
+                <h2 class="font-heading text-sm font-semibold text-gray-900 mb-3">Top Actors</h2>
+                <div class="relative" style="height: 300px;">
+                    <canvas id="dashboard-actors-chart"></canvas>
+                    <div x-show="loading" class="absolute inset-0 flex items-center justify-center bg-white/60">
+                        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-600"></div>
+                    </div>
+                </div>
+            </div>
+
+            {# Top terms chart #}
+            <div class="bg-white rounded-lg shadow p-6 border border-purple-100/60">
+                <h2 class="font-heading text-sm font-semibold text-gray-900 mb-3">Top Terms</h2>
+                <div class="relative" style="height: 300px;">
+                    <canvas id="dashboard-terms-chart"></canvas>
+                    <div x-show="loading" class="absolute inset-0 flex items-center justify-center bg-white/60">
+                        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-600"></div>
+                    </div>
+                </div>
             </div>
         </div>
+
+        {# Records by Platform table #}
+        <div class="bg-white rounded-lg shadow overflow-hidden border border-purple-100/60 mb-4"
+             x-show="platformCounts.length > 0" x-transition>
+            <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                <h2 class="font-heading text-sm font-semibold text-gray-900">Records by Platform</h2>
+                <div class="inline-flex items-center rounded-lg bg-gray-100/80 p-0.5 gap-0">
+                    <button @click="platformMatchedOnly = true; loadPlatformCounts()"
+                            :class="platformMatchedOnly
+                                ? 'bg-white text-brand-700 shadow-sm ring-1 ring-brand-200'
+                                : 'text-gray-500 hover:text-gray-700'"
+                            class="px-2.5 py-1 text-xs font-medium rounded-md transition-all duration-150">
+                        Matched
+                    </button>
+                    <button @click="platformMatchedOnly = false; loadPlatformCounts()"
+                            :class="!platformMatchedOnly
+                                ? 'bg-white text-brand-700 shadow-sm ring-1 ring-brand-200'
+                                : 'text-gray-500 hover:text-gray-700'"
+                            class="px-2.5 py-1 text-xs font-medium rounded-md transition-all duration-150">
+                        All collected
+                    </button>
+                </div>
+            </div>
+            <table class="min-w-full divide-y divide-gray-200 text-sm">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Platform</th>
+                        <th class="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Posts</th>
+                        <th class="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Comments</th>
+                        <th class="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Other</th>
+                        <th class="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                    <template x-for="row in platformCounts" :key="row.platform">
+                        <tr class="hover:bg-gray-50">
+                            <td class="px-6 py-3 text-gray-700 capitalize" x-text="row.platform.replace(/_/g, ' ')"></td>
+                            <td class="px-6 py-3 text-right font-medium text-gray-900" x-text="row.posts.toLocaleString()"></td>
+                            <td class="px-6 py-3 text-right font-medium text-gray-900" x-text="row.comments.toLocaleString()"></td>
+                            <td class="px-6 py-3 text-right text-gray-500" x-text="row.other > 0 ? row.other.toLocaleString() : '—'"></td>
+                            <td class="px-6 py-3 text-right font-semibold text-gray-900" x-text="row.total.toLocaleString()"></td>
+                        </tr>
+                    </template>
+                </tbody>
+                <tfoot class="bg-gray-50" x-show="platformCounts.length > 1">
+                    <tr>
+                        <td class="px-6 py-3 text-xs font-semibold text-gray-700 uppercase">Total</td>
+                        <td class="px-6 py-3 text-right font-semibold text-gray-900" x-text="platformCounts.reduce((s, r) => s + r.posts, 0).toLocaleString()"></td>
+                        <td class="px-6 py-3 text-right font-semibold text-gray-900" x-text="platformCounts.reduce((s, r) => s + r.comments, 0).toLocaleString()"></td>
+                        <td class="px-6 py-3 text-right font-semibold text-gray-500" x-text="platformCounts.reduce((s, r) => s + r.other, 0) > 0 ? platformCounts.reduce((s, r) => s + r.other, 0).toLocaleString() : '—'"></td>
+                        <td class="px-6 py-3 text-right font-bold text-gray-900" x-text="platformCounts.reduce((s, r) => s + r.total, 0).toLocaleString()"></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+
+        {# Export section #}
+        <div class="bg-white rounded-lg shadow p-6 border border-purple-100/60">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h2 class="font-heading text-sm font-semibold text-gray-900">Export Data</h2>
+                    <p class="text-xs text-gray-500 mt-0.5">Download filtered data from the selected project.</p>
+                </div>
+                <div class="flex gap-2">
+                    <template x-for="fmt in ['csv', 'xlsx', 'json', 'parquet']" :key="fmt">
+                        <button @click="exportData(fmt)"
+                                :disabled="!projectId"
+                                class="px-3 py-1.5 text-xs font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                x-text="fmt.toUpperCase()">
+                        </button>
+                    </template>
+                </div>
+            </div>
+        </div>
+
     </div>
 
     {# Quick links #}
     <div class="grid grid-cols-2 gap-4">
-        <div class="card">
+        <div class="bg-white rounded-lg shadow p-6 border border-purple-100/60">
             <h2 class="font-heading text-sm font-semibold text-gray-900 mb-3">Quick Actions</h2>
             <ul class="space-y-2 text-sm">
                 <li>
@@ -165,7 +346,7 @@
                     <a href="/content" class="text-brand-600 hover:text-brand-700 hover:underline flex items-center gap-1.5">
                         <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
                              stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>
-                        Browse content
+                        Recent Content
                     </a>
                 </li>
                 <li>
@@ -176,16 +357,16 @@
                     </a>
                 </li>
                 <li>
-                    <a href="/analysis" class="text-brand-600 hover:text-brand-700 hover:underline flex items-center gap-1.5">
+                    <a href="/networks" class="text-brand-600 hover:text-brand-700 hover:underline flex items-center gap-1.5">
                         <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
                              stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
-                        Analyse data
+                        Network analysis
                     </a>
                 </li>
             </ul>
         </div>
 
-        <div class="card">
+        <div class="bg-white rounded-lg shadow p-6 border border-purple-100/60">
             <h2 class="font-heading text-sm font-semibold text-gray-900 mb-3">About this platform</h2>
             <p class="text-sm text-gray-600 leading-relaxed">
                 Issue Observatory collects and analyses public discourse across 25 digital media arenas,
@@ -199,4 +380,263 @@
     </div>
 
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function dashboardRecordCount() {
+    return {
+        matched: null,
+        total: null,
+        projectId: '{{ default_project_id or "" }}',
+        _interval: null,
+        init() {
+            this.poll();
+            this._interval = setInterval(() => this.poll(), 60000);
+        },
+        onProjectChanged(newProjectId) {
+            this.projectId = newProjectId || '';
+            this.poll();
+        },
+        async poll() {
+            try {
+                const params = new URLSearchParams();
+                if (this.projectId) params.set('project_id', this.projectId);
+                const r = await fetch(`/content/count?${params}`, { credentials: 'include' });
+                const d = await r.json();
+                this.matched = d.matched ?? null;
+                this.total = d.total ?? null;
+            } catch(e) {}
+        },
+    };
+}
+
+function dashboardAnalytics() {
+    return {
+        projectId: '{{ default_project_id or "" }}',
+        dateFrom: null,
+        dateTo: null,
+        arenaCategory: '',
+        platform: '',
+        activePreset: '1M',
+        loading: false,
+        noData: false,
+        platformCounts: [],
+        platformMatchedOnly: true,
+        language: '',
+        // Latest published_at for the current project scope, fetched from
+        // /dashboard/latest-date.  Used as the anchor for date-range presets
+        // so "Last 1M" means "the month leading up to the newest record",
+        // not "the month leading up to now".  Falls back to new Date() when
+        // the scope has no records (empty account, brand-new project).
+        latestDate: null,
+
+        arenaCategories: [],
+        platforms: [],
+        languages: [],
+        categoryLabels: {
+            'news': 'News',
+            'search': 'Search',
+            'web': 'Web',
+            'social_media': 'Social Media',
+        },
+
+        datePresets: [
+            { label: '1W', days: 7 },
+            { label: '1M', days: 30 },
+            { label: '3M', days: 90 },
+            { label: '6M', days: 180 },
+            { label: '1Y', days: 365 },
+            { label: 'All', days: null },
+        ],
+
+        init() {
+            this.loadFilterOptions();
+            this.loadPlatformCounts();
+            // Fetch the anchor first so the initial chart request uses the
+            // latest-record-based preset, not a now()-based one.
+            this.loadLatestDate().then(() => this.applyActivePreset());
+        },
+
+        async onProjectChanged() {
+            this.loadFilterOptions();
+            this.loadPlatformCounts();
+            this.$dispatch('dashboard-project-changed', this.projectId);
+            await this.loadLatestDate();
+            this.applyActivePreset();
+        },
+
+        async loadLatestDate() {
+            try {
+                const params = new URLSearchParams();
+                if (this.projectId) params.set('project_id', this.projectId);
+                const resp = await fetch(`/dashboard/latest-date?${params}`, { credentials: 'include' });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    this.latestDate = data.latest_date || null;
+                } else {
+                    this.latestDate = null;
+                }
+            } catch (e) {
+                console.warn('Failed to load latest date', e);
+                this.latestDate = null;
+            }
+        },
+
+        applyActivePreset() {
+            const preset = this.datePresets.find(p => p.label === this.activePreset) || this.datePresets[1];
+            this.setDatePreset(preset);
+        },
+
+        setDatePreset(preset) {
+            this.activePreset = preset.label;
+            if (preset.days) {
+                const anchor = this.latestDate ? new Date(this.latestDate) : new Date();
+                this.dateTo = anchor.toISOString();
+                const from = new Date(anchor);
+                from.setDate(from.getDate() - preset.days);
+                this.dateFrom = from.toISOString();
+            } else {
+                this.dateFrom = null;
+                this.dateTo = null;
+            }
+            this.loadCharts();
+        },
+
+        _buildParams() {
+            const params = new URLSearchParams();
+            if (this.projectId) params.set('project_id', this.projectId);
+            if (this.dateFrom) params.set('date_from', this.dateFrom);
+            if (this.dateTo) params.set('date_to', this.dateTo);
+            if (this.arenaCategory) params.set('arena_category', this.arenaCategory);
+            if (this.platform) params.set('platform', this.platform);
+            if (this.language) params.set('language', this.language);
+            return params;
+        },
+
+        async loadFilterOptions() {
+            try {
+                const params = new URLSearchParams();
+                if (this.projectId) params.set('project_id', this.projectId);
+                const resp = await fetch(`/dashboard/filter-options?${params}`, { credentials: 'include' });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    this.arenaCategories = data.arena_categories || [];
+                    this.platforms = data.platforms || [];
+                    this.languages = data.languages || [];
+                }
+            } catch (e) {
+                console.warn('Failed to load filter options', e);
+            }
+        },
+
+        async loadPlatformCounts() {
+            try {
+                const params = new URLSearchParams();
+                if (this.projectId) params.set('project_id', this.projectId);
+                params.set('matched_only', this.platformMatchedOnly);
+                if (this.language) params.set('language', this.language);
+                if (this.arenaCategory) params.set('arena_category', this.arenaCategory);
+                if (this.platform) params.set('platform', this.platform);
+                const resp = await fetch(`/dashboard/platform-counts?${params}`, { credentials: 'include' });
+                if (resp.ok) {
+                    this.platformCounts = await resp.json();
+                }
+            } catch (e) {
+                console.warn('Failed to load platform counts', e);
+            }
+        },
+
+        async loadCharts() {
+            this.loading = true;
+            this.noData = false;
+            const params = this._buildParams();
+            params.set('granularity', 'day');
+
+            try {
+                const [volumeResp, actorsResp, termsResp] = await Promise.all([
+                    fetch(`/dashboard/volume?${params}`, { credentials: 'include' }),
+                    fetch(`/dashboard/actors?${params}`, { credentials: 'include' }),
+                    fetch(`/dashboard/terms?${params}`, { credentials: 'include' }),
+                ]);
+
+                // Volume chart
+                if (volumeResp.ok) {
+                    const volumeData = await volumeResp.json();
+                    if (volumeData.length === 0) {
+                        this.noData = true;
+                        if (window.initMultiArenaVolumeChart) {
+                            window.initMultiArenaVolumeChart('dashboard-volume-chart', {
+                                labels: [], rows: [], arenaNames: [],
+                            });
+                        }
+                    } else {
+                        this.noData = false;
+                        const labels = volumeData.map(d => d.period);
+                        // Aggregate per-arena counts into the four canonical categories
+                        const catLabels = { news: 'News', search: 'Search', web: 'Web', social_media: 'Social Media' };
+                        const catOrder = ['news', 'search', 'web', 'social_media'];
+                        const rows = volumeData.map(d => {
+                            const cats = {};
+                            if (d.arenas) {
+                                for (const [arena, cnt] of Object.entries(d.arenas)) {
+                                    const cat = catLabels[arena] ? arena : 'web';
+                                    cats[catLabels[cat] || cat] = (cats[catLabels[cat] || cat] || 0) + cnt;
+                                }
+                            }
+                            return { ...d, arenas: cats };
+                        });
+                        // Only include categories that appear in the data
+                        const presentCats = new Set();
+                        rows.forEach(r => Object.keys(r.arenas).forEach(c => presentCats.add(c)));
+                        const arenaNames = catOrder
+                            .map(c => catLabels[c])
+                            .filter(label => presentCats.has(label));
+                        if (window.initMultiArenaVolumeChart) {
+                            window.initMultiArenaVolumeChart('dashboard-volume-chart', {
+                                labels,
+                                rows,
+                                arenaNames,
+                            });
+                        }
+                    }
+                }
+
+                // Actors chart
+                if (actorsResp.ok) {
+                    const actorsData = await actorsResp.json();
+                    if (window.initActorsChart && actorsData.length > 0) {
+                        window.initActorsChart('dashboard-actors-chart', {
+                            labels: actorsData.slice(0, 15).map(d => d.resolved_name || d.author_display_name || d.pseudonymized_author_id || 'unknown'),
+                            values: actorsData.slice(0, 15).map(d => d.count || 0),
+                        });
+                    }
+                }
+
+                // Terms chart
+                if (termsResp.ok) {
+                    const termsData = await termsResp.json();
+                    if (window.initTermsChart && termsData.length > 0) {
+                        window.initTermsChart('dashboard-terms-chart', {
+                            labels: termsData.slice(0, 15).map(d => d.term),
+                            values: termsData.slice(0, 15).map(d => d.count || d.match_count || 0),
+                        });
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to load charts', e);
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        exportData(format) {
+            if (!this.projectId) return;
+            const params = this._buildParams();
+            params.set('format', format);
+            window.location.href = `/dashboard/export?${params}`;
+        },
+    };
+}
+</script>
 {% endblock %}

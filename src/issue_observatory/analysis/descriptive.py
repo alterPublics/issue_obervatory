@@ -35,7 +35,10 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from issue_observatory.analysis._filters import build_content_where
+from issue_observatory.core.queries.content_filters import (
+    ContentFilterSpec,
+    build_content_where_sql,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -45,10 +48,12 @@ logger = structlog.get_logger(__name__)
 
 _VALID_GRANULARITIES = frozenset({"hour", "day", "week", "month"})
 
-# Arenas that collect full snapshots on each run — the same URLs/suggestions
+# Platforms that collect full snapshots on each run — the same URLs/suggestions
 # reappear every time, so raw COUNT(*) is misleading for timeline charts.
 # Delta mode computes new-item-only counts between consecutive time periods.
-_SNAPSHOT_ARENAS = frozenset({"google_search", "google_autocomplete", "ai_chat_search"})
+# Filtered by platform (not arena) since multiple platforms in "search" category
+# have different snapshot behaviours (e.g. Wikipedia is not snapshot-based).
+_SNAPSHOT_PLATFORMS = frozenset({"google_search", "google_autocomplete", "openrouter"})
 
 
 def _dt_iso(value: Any) -> Any:
@@ -67,10 +72,14 @@ def _build_content_filters(
     date_to: datetime | None,
     params: dict,
     query_design_ids: list[uuid.UUID] | None = None,
+    language: str | None = None,
+    include_linked: bool = True,
+    search_terms: list[str] | None = None,
 ) -> str:
     """Build a SQL WHERE clause fragment for content_records filters.
 
-    Delegates to :func:`~issue_observatory.analysis._filters.build_content_where`
+    Phase 1b: delegates to
+    :func:`~issue_observatory.core.queries.content_filters.build_content_where_sql`
     which centralises filter logic — including the duplicate exclusion clause
     ``(raw_metadata->>'duplicate_of') IS NULL`` — so that both descriptive and
     network analysis consistently exclude duplicate-flagged records.
@@ -81,10 +90,21 @@ def _build_content_filters(
         A SQL string fragment starting with ``WHERE``.  Always non-empty
         because the duplicate exclusion predicate is always present.
     """
-    return build_content_where(
-        query_design_id, run_id, arena, platform, date_from, date_to, params,
-        query_design_ids=query_design_ids,
+    spec = ContentFilterSpec(
+        query_design_id=query_design_id,
+        run_id=run_id,
+        query_design_ids=query_design_ids or [],
+        arenas=[arena] if isinstance(arena, str) and arena else [],
+        platforms=[platform] if isinstance(platform, str) and platform else [],
+        date_from=date_from,
+        date_to=date_to,
+        languages=[language] if isinstance(language, str) and language else [],
+        search_terms=search_terms or [],
+        include_linked=include_linked,
+        include_duplicates=False,
+        ownership_mode="admin",
     )
+    return build_content_where_sql(spec, table_alias="", params=params)
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +122,9 @@ async def get_volume_over_time(
     date_to: datetime | None = None,
     granularity: str = "day",
     query_design_ids: list[uuid.UUID] | None = None,
-    exclude_arenas: set[str] | None = None,
+    exclude_platforms: set[str] | None = None,
+    language: str | None = None,
+    include_linked: bool = True,
 ) -> list[dict]:
     """Content volume over time, optionally broken down by arena.
 
@@ -110,7 +132,7 @@ async def get_volume_over_time(
         db: Active async database session.
         query_design_id: Restrict to records belonging to this query design.
         run_id: Restrict to records collected in this collection run.
-        arena: Restrict to a single arena (e.g. ``"news"``, ``"social"``).
+        arena: Restrict to a single arena category (e.g. ``"news"``, ``"search"``).
         platform: Restrict to a single platform (e.g. ``"reddit"``).
         date_from: Inclusive lower bound on ``published_at``.
         date_to: Inclusive upper bound on ``published_at``.
@@ -118,6 +140,7 @@ async def get_volume_over_time(
             ``"week"``, ``"month"``.
         query_design_ids: Restrict to records belonging to any of these
             query designs.  Takes precedence over *query_design_id*.
+        exclude_platforms: Set of platform names to exclude from volume counts.
 
     Returns:
         A list of dicts, one per time-period/arena combination, sorted by
@@ -145,6 +168,8 @@ async def get_volume_over_time(
     where = _build_content_filters(
         query_design_id, run_id, arena, platform, date_from, date_to, params,
         query_design_ids=query_design_ids,
+        language=language,
+        include_linked=include_linked,
     )
 
     # The granularity value is interpolated directly into the SQL string, not
@@ -155,11 +180,11 @@ async def get_volume_over_time(
     # duplicate exclusion predicate), so additional conditions always use AND.
     extra = "AND published_at IS NOT NULL"
 
-    if exclude_arenas:
-        placeholders = ", ".join(f":_excl_{i}" for i in range(len(exclude_arenas)))
-        extra += f" AND arena NOT IN ({placeholders})"
-        for i, ea in enumerate(sorted(exclude_arenas)):
-            params[f"_excl_{i}"] = ea
+    if exclude_platforms:
+        placeholders = ", ".join(f":_excl_{i}" for i in range(len(exclude_platforms)))
+        extra += f" AND platform NOT IN ({placeholders})"
+        for i, ep in enumerate(sorted(exclude_platforms)):
+            params[f"_excl_{i}"] = ep
 
     sql = text(
         f"""
@@ -201,6 +226,8 @@ async def get_snapshot_delta_volume(
     date_to: datetime | None = None,
     granularity: str = "day",
     query_design_ids: list[uuid.UUID] | None = None,
+    language: str | None = None,
+    include_linked: bool = True,
 ) -> dict[str, dict[str, int]]:
     """Compute delta volume for snapshot arenas.
 
@@ -238,19 +265,20 @@ async def get_snapshot_delta_volume(
             f"Must be one of: {sorted(_VALID_GRANULARITIES)}"
         )
 
-    # If a specific arena filter was given and it's not a snapshot arena,
-    # there's nothing to compute.
-    if arena and arena not in _SNAPSHOT_ARENAS:
+    # Snapshot detection is now platform-based (not arena-based) since
+    # multiple platforms in the "search" category have different snapshot
+    # behaviours (e.g. Wikipedia is not snapshot-based).
+    if platform and platform not in _SNAPSHOT_PLATFORMS:
         return {}
 
-    # Determine which snapshot arenas to process.
-    target_arenas = {arena} if arena else _SNAPSHOT_ARENAS
+    # Determine which snapshot platforms to process.
+    target_platforms = {platform} if platform else _SNAPSHOT_PLATFORMS
 
-    # Arena-specific config: (identifier_column, extra_where_clause)
-    arena_configs: dict[str, tuple[str, str]] = {
+    # Platform-specific config: (identifier_column, extra_where_clause)
+    platform_configs: dict[str, tuple[str, str]] = {
         "google_search": ("url", "AND url IS NOT NULL"),
         "google_autocomplete": ("text_content", "AND text_content IS NOT NULL"),
-        "ai_chat_search": (
+        "openrouter": (
             "url",
             "AND content_type = 'ai_chat_citation' AND url IS NOT NULL",
         ),
@@ -258,17 +286,19 @@ async def get_snapshot_delta_volume(
 
     result: dict[str, dict[str, int]] = {}
 
-    for arena_name in sorted(target_arenas):
-        if arena_name not in arena_configs:
+    for plat_name in sorted(target_platforms):
+        if plat_name not in platform_configs:
             continue
 
-        id_col, extra_clause = arena_configs[arena_name]
+        id_col, extra_clause = platform_configs[plat_name]
 
         params: dict[str, Any] = {}
         where = _build_content_filters(
-            query_design_id, run_id, arena_name, platform,
+            query_design_id, run_id, arena, plat_name,
             date_from, date_to, params,
             query_design_ids=query_design_ids,
+            language=language,
+            include_linked=include_linked,
         )
 
         sql = text(
@@ -295,6 +325,15 @@ async def get_snapshot_delta_volume(
             period_sets[pk].add(row.ident)
 
         # Compute deltas between consecutive periods.
+        # Use the arena category (from content_records.arena) as the key,
+        # not the platform name, so snapshot platforms are grouped correctly
+        # (e.g. google_search + google_autocomplete both appear as "search").
+        from issue_observatory.arenas.categories import get_arena_category
+        try:
+            arena_key = get_arena_category(plat_name)
+        except KeyError:
+            arena_key = plat_name
+
         prev_set: set[str] = set()
         for i, (pk, current_set) in enumerate(period_sets.items()):
             if i == 0:
@@ -303,7 +342,7 @@ async def get_snapshot_delta_volume(
                 delta = len(current_set - prev_set)
             if pk not in result:
                 result[pk] = {}
-            result[pk][arena_name] = delta
+            result[pk][arena_key] = result[pk].get(arena_key, 0) + delta
             prev_set = current_set
 
     return result
@@ -319,6 +358,8 @@ async def get_volume_with_deltas(
     date_to: datetime | None = None,
     granularity: str = "day",
     query_design_ids: list[uuid.UUID] | None = None,
+    language: str | None = None,
+    include_linked: bool = True,
 ) -> list[dict]:
     """Volume over time with delta computation for snapshot arenas.
 
@@ -337,17 +378,20 @@ async def get_volume_with_deltas(
         date_to: Inclusive upper bound.
         granularity: Time bucket size.
         query_design_ids: Restrict to multiple query designs.
+        include_linked: When False, skip correlated EXISTS subqueries
+            against content_record_links for faster aggregate queries.
 
     Returns:
         Same format as :func:`get_volume_over_time` — list of dicts with
         ``period``, ``count``, and ``arenas`` keys.
     """
-    # If a specific arena filter is given, route to the right path only.
-    if arena and arena in _SNAPSHOT_ARENAS:
-        # Only snapshot delta needed.
+    # If a specific snapshot platform is requested, only compute deltas.
+    if platform and platform in _SNAPSHOT_PLATFORMS:
         deltas = await get_snapshot_delta_volume(
             db, query_design_id, run_id, arena, platform,
             date_from, date_to, granularity, query_design_ids,
+            language=language,
+            include_linked=include_linked,
         )
         result: list[dict] = []
         for period_key in sorted(deltas):
@@ -356,22 +400,28 @@ async def get_volume_with_deltas(
             result.append({"period": period_key, "count": total, "arenas": arena_counts})
         return result
 
-    if arena and arena not in _SNAPSHOT_ARENAS:
-        # Specific non-snapshot arena — no delta processing needed.
+    if platform and platform not in _SNAPSHOT_PLATFORMS:
+        # Specific non-snapshot platform — no delta processing needed.
         return await get_volume_over_time(
             db, query_design_id, run_id, arena, platform,
             date_from, date_to, granularity, query_design_ids,
+            language=language,
+            include_linked=include_linked,
         )
 
-    # Both normal and snapshot arenas in play.
+    # Both normal and snapshot platforms in play.
     normal = await get_volume_over_time(
         db, query_design_id, run_id, arena, platform,
         date_from, date_to, granularity, query_design_ids,
-        exclude_arenas=_SNAPSHOT_ARENAS,
+        exclude_platforms=_SNAPSHOT_PLATFORMS,
+        language=language,
+        include_linked=include_linked,
     )
     deltas = await get_snapshot_delta_volume(
-        db, query_design_id, run_id, None, platform,
+        db, query_design_id, run_id, arena, platform,
         date_from, date_to, granularity, query_design_ids,
+        language=language,
+        include_linked=include_linked,
     )
 
     # Merge delta counts into the normal volume data.
@@ -399,6 +449,8 @@ async def get_top_actors(
     date_to: datetime | None = None,
     limit: int = 20,
     query_design_ids: list[uuid.UUID] | None = None,
+    language: str | None = None,
+    include_linked: bool = True,
 ) -> list[dict]:
     """Top authors by post volume and total engagement.
 
@@ -442,6 +494,8 @@ async def get_top_actors(
     where = _build_content_filters(
         query_design_id, run_id, None, platform, date_from, date_to, params,
         query_design_ids=query_design_ids,
+        language=language,
+        include_linked=include_linked,
     )
     # _build_content_filters always returns a WHERE clause, so additional
     # conditions always use AND.
@@ -502,6 +556,8 @@ async def get_top_terms(
     date_to: datetime | None = None,
     limit: int = 20,
     query_design_ids: list[uuid.UUID] | None = None,
+    language: str | None = None,
+    include_linked: bool = True,
 ) -> list[dict]:
     """Top search terms by match frequency across content records.
 
@@ -528,6 +584,8 @@ async def get_top_terms(
     where = _build_content_filters(
         query_design_id, run_id, None, None, date_from, date_to, params,
         query_design_ids=query_design_ids,
+        language=language,
+        include_linked=include_linked,
     )
 
     sql = text(

@@ -89,7 +89,7 @@ class EventRegistryCollector(ArenaCollector):
             per collection call.
     """
 
-    arena_name: str = "news_media"
+    arena_name: str = "news"
     platform_name: str = "event_registry"
     supported_tiers: list[Tier] = [Tier.MEDIUM, Tier.PREMIUM]
     temporal_mode: TemporalMode = TemporalMode.HISTORICAL

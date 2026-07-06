@@ -172,6 +172,20 @@ class Settings(BaseSettings):
     """
 
     # ------------------------------------------------------------------
+    # Video downloads (yt-dlp)
+    # ------------------------------------------------------------------
+
+    video_storage_path: str = "/data/videos"
+    """Filesystem path where downloaded videos are stored.
+
+    Structure: ``{video_storage_path}/{platform}/{video_id}.{ext}``
+    """
+
+    video_max_file_size_mb: int = 500
+    """Maximum file size in MB for video downloads.  Downloads exceeding
+    this limit are aborted to prevent disk exhaustion."""
+
+    # ------------------------------------------------------------------
     # CORS
     # ------------------------------------------------------------------
 

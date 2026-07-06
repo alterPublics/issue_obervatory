@@ -220,6 +220,87 @@ class TestExportCsv:
         text = result.decode("utf-8-sig")
         assert "klimaforandringer | grøn omstilling" in text
 
+    @pytest.mark.asyncio
+    async def test_csv_export_includes_query_design_column(self) -> None:
+        """The 'Query Design' column is emitted and populated from record data."""
+        rec = _make_record()
+        rec["query_design"] = "valg2026_main"
+        result = await EXPORTER.export_csv([rec])
+        text = result.decode("utf-8-sig")
+        header, body = text.splitlines()[0], "\n".join(text.splitlines()[1:])
+        assert "Query Design" in header
+        assert "valg2026_main" in body
+
+
+# ---------------------------------------------------------------------------
+# CSV streaming export
+# ---------------------------------------------------------------------------
+
+
+async def _async_iter(records: list[dict[str, Any]]):
+    """Tiny async iterator wrapper for feeding plain lists into the streamer."""
+    for rec in records:
+        yield rec
+
+
+class TestExportCsvStream:
+    """Streaming CSV variant used by the dashboard export for large result sets."""
+
+    @pytest.mark.asyncio
+    async def test_csv_stream_first_chunk_is_bom_plus_header(self) -> None:
+        """The first yielded chunk contains the UTF-8 BOM and the header row."""
+        chunks = [c async for c in EXPORTER.export_csv_stream(_async_iter([]))]
+        assert len(chunks) == 1
+        first = chunks[0]
+        assert first[:3] == b"\xef\xbb\xbf"
+        header = first.decode("utf-8-sig").splitlines()[0]
+        for col in _FLAT_COLUMNS:
+            assert _COLUMN_HEADERS.get(col, col) in header
+
+    @pytest.mark.asyncio
+    async def test_csv_stream_emits_one_chunk_per_record(self) -> None:
+        """N input records produce exactly N+1 chunks (header + one per row)."""
+        records = [_make_record(author_id=f"author-{i}") for i in range(7)]
+        chunks = [c async for c in EXPORTER.export_csv_stream(_async_iter(records))]
+        assert len(chunks) == 8  # BOM+header + 7 data rows
+
+    @pytest.mark.asyncio
+    async def test_csv_stream_row_count_and_equivalence_with_buffered(self) -> None:
+        """Stitched stream output is identical to the buffered export_csv() output."""
+        records = [_make_record(author_id=f"a-{i}") for i in range(5)]
+        streamed = b"".join(
+            [c async for c in EXPORTER.export_csv_stream(_async_iter(records))]
+        )
+        buffered = await EXPORTER.export_csv(records)
+        assert streamed == buffered
+
+    @pytest.mark.asyncio
+    async def test_csv_stream_preserves_danish_characters(self) -> None:
+        """Danish characters survive chunked streaming without corruption."""
+        records = [_make_record(text=DANISH_TEXT, display_name=DANISH_AUTHOR)]
+        text = b"".join(
+            [c async for c in EXPORTER.export_csv_stream(_async_iter(records))]
+        ).decode("utf-8-sig")
+        assert "Grøn" in text
+        assert "velfærdsstaten" in text
+        assert "Søren" in text
+        assert "Ærlighed" in text
+
+    @pytest.mark.asyncio
+    async def test_csv_stream_with_metadata_column(self) -> None:
+        """include_metadata=True appends raw_metadata column (stream matches buffered)."""
+        meta = {"source": "bluesky", "raw_id": "abc123"}
+        records = [_make_record(raw_metadata=meta)]
+        text = b"".join(
+            [
+                c async for c in EXPORTER.export_csv_stream(
+                    _async_iter(records), include_metadata=True
+                )
+            ]
+        ).decode("utf-8-sig")
+        assert _COLUMN_HEADERS.get("raw_metadata", "raw_metadata") in text.splitlines()[0]
+        assert "bluesky" in text
+
 
 # ---------------------------------------------------------------------------
 # XLSX export

@@ -99,7 +99,7 @@ class RSSFeedsCollector(ArenaCollector):
             (``DANISH_RSS_FEEDS``).  Useful for testing with mock feeds.
     """
 
-    arena_name: str = "rss_feeds"
+    arena_name: str = "news"
     platform_name: str = "rss_feeds"
     supported_tiers: list[Tier] = [Tier.FREE]
     temporal_mode: TemporalMode = TemporalMode.FORWARD_ONLY

@@ -88,6 +88,14 @@ class ScrapingJob(Base):
         JSONB,
         nullable=True,
     )
+    url_filter_criteria: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+    url_errors: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
 
     # Scraper behaviour
     delay_min: Mapped[float] = mapped_column(

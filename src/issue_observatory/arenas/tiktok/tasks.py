@@ -172,8 +172,16 @@ def tiktok_collect_terms(
         elapsed_seconds=elapsed_since(_task_start),
     )
 
+    from issue_observatory.workers.rate_limiter import RateLimiter, get_redis_client
+
+    try:
+        redis_client = asyncio.run(get_redis_client())
+    except Exception:
+        redis_client = None
+
+    rate_limiter = RateLimiter(redis_client=redis_client) if redis_client else None
     credential_pool = CredentialPool()
-    collector = TikTokCollector(credential_pool=credential_pool)
+    collector = TikTokCollector(credential_pool=credential_pool, rate_limiter=rate_limiter)
 
     from issue_observatory.workers._task_helpers import make_batch_sink
 
@@ -424,8 +432,16 @@ def tiktok_collect_actors(
         elapsed_seconds=elapsed_since(_task_start),
     )
 
+    from issue_observatory.workers.rate_limiter import RateLimiter, get_redis_client
+
+    try:
+        redis_client = asyncio.run(get_redis_client())
+    except Exception:
+        redis_client = None
+
+    rate_limiter = RateLimiter(redis_client=redis_client) if redis_client else None
     credential_pool = CredentialPool()
-    collector = TikTokCollector(credential_pool=credential_pool)
+    collector = TikTokCollector(credential_pool=credential_pool, rate_limiter=rate_limiter)
 
     from issue_observatory.workers._task_helpers import make_batch_sink
 
@@ -466,6 +482,7 @@ def tiktok_collect_actors(
                 collection_run_id=collection_run_id,
                 query_design_id=query_design_id,
                 actor_ids=actor_ids,
+                require_term_match=True,
                 date_from=date_from,
                 date_to=date_to,
             )
@@ -750,11 +767,26 @@ def tiktok_collect_comments(
         elapsed_seconds=elapsed_since(_task_start),
     )
 
-    credential_pool = CredentialPool()
-    collector = TikTokCollector(credential_pool=credential_pool)
+    from issue_observatory.workers.rate_limiter import RateLimiter, get_redis_client
 
     try:
-        records = asyncio.run(
+        redis_client = asyncio.run(get_redis_client())
+    except Exception:
+        redis_client = None
+
+    rate_limiter = RateLimiter(redis_client=redis_client) if redis_client else None
+    credential_pool = CredentialPool()
+    collector = TikTokCollector(credential_pool=credential_pool, rate_limiter=rate_limiter)
+
+    from issue_observatory.workers._task_helpers import make_batch_sink
+
+    sink = make_batch_sink(collection_run_id, query_design_id)
+    collector.configure_batch_persistence(
+        sink=sink, batch_size=50, collection_run_id=collection_run_id
+    )
+
+    try:
+        remaining = asyncio.run(
             collector.collect_comments(
                 post_ids=post_ids,
                 tier=Tier.FREE,
@@ -807,21 +839,23 @@ def tiktok_collect_comments(
         )
         raise
 
-    # Persist collected comment records to the database.
+    # Persist any remaining records not yet flushed by batch persistence.
     from issue_observatory.workers._task_helpers import (
         persist_collected_records,
     )
 
-    inserted, skipped = 0, 0
-    if records:
-        inserted, skipped = persist_collected_records(
-            records, collection_run_id, query_design_id
+    fallback_inserted, fallback_skipped = 0, 0
+    if remaining:
+        fallback_inserted, fallback_skipped = persist_collected_records(
+            remaining, collection_run_id, query_design_id
         )
+    inserted = collector.batch_stats["inserted"] + fallback_inserted
+    skipped = collector.batch_stats["skipped"] + fallback_skipped
 
     logger.info(
-        "tiktok: collect_comments completed — run=%s collected=%d inserted=%d skipped=%d",
+        "tiktok: collect_comments completed — run=%s emitted=%d inserted=%d skipped=%d",
         collection_run_id,
-        len(records),
+        collector.batch_stats["emitted"],
         inserted,
         skipped,
     )

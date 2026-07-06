@@ -64,6 +64,8 @@ logger = logging.getLogger(__name__)
 
 _ARENA: str = "social_media"
 _PLATFORM: str = "x_twitter"
+_MAX_CONSECUTIVE_EMPTY_WINDOWS: int = 5
+"""Stop daily-windowed collection after this many consecutive days with 0 results."""
 
 
 @register
@@ -348,17 +350,16 @@ class XTwitterCollector(ArenaCollector):
     ) -> list[dict[str, Any]]:
         """Paginate TwitterAPI.io results for a single search term.
 
-        When both ``date_from`` and ``date_to`` are provided and span more
-        than one calendar day, the date range is automatically split into
-        daily windows.  Each window is paginated independently, which
-        prevents high-volume queries from exhausting the ``max_results``
-        cap on just the most recent day.  The global ``max_results`` cap
-        still applies across all windows.
+        Uses an adaptive windowing strategy: starts with the full date range
+        as a single query.  Only falls back to daily windows when the initial
+        query hits the pagination cap (indicating dense data that risks
+        biasing toward the most recent day).  Daily-windowed collection
+        bails out early after ``_MAX_CONSECUTIVE_EMPTY_WINDOWS`` consecutive
+        empty windows to avoid wasting API calls on sparse data.
 
         Records are emitted incrementally via ``_emit()`` during pagination
         so that the batch sink flushes to the database every ``batch_size``
-        records.  This prevents data loss when tasks are interrupted and
-        ensures DB writes happen throughout collection, not just at the end.
+        records.
 
         Args:
             client: Shared HTTP client.
@@ -370,24 +371,43 @@ class XTwitterCollector(ArenaCollector):
         Returns:
             Empty list (records are emitted incrementally via ``_emit``).
         """
-        # When both dates are provided and span >1 day, use daily windowing.
-        if date_from and date_to and date_from[:10] != date_to[:10]:
-            windows = _generate_daily_windows(date_from, date_to)
-            logger.info(
-                "x_twitter: windowed collection for term=%r — %d daily windows (%s to %s)",
-                term[:50],
-                len(windows),
-                date_from[:10],
-                date_to[:10],
-            )
-        else:
-            # Single window: use the original date params as-is.
-            windows = [(date_from, date_to)]
+        # First, try the full date range as a single query.
+        collected = await self._paginate_medium(
+            client, term, max_results, date_from, date_to
+        )
 
-        collected = 0
+        # If the single-pass hit the max_results cap AND we have a multi-day
+        # range, the data is dense enough to warrant daily windowing so that
+        # results aren't skewed toward the most recent day.
+        needs_windowing = (
+            collected >= max_results
+            and date_from
+            and date_to
+            and date_from[:10] != date_to[:10]
+        )
+        if not needs_windowing:
+            return []
 
+        # Dense data path: switch to daily windows for even coverage.
+        windows = _generate_daily_windows(date_from, date_to)
+        logger.info(
+            "x_twitter: single-pass hit cap (%d) — switching to %d daily windows for term=%r",
+            collected,
+            len(windows),
+            term[:50],
+        )
+
+        consecutive_empty = 0
         for window_from, window_to in windows:
             if collected >= max_results:
+                break
+            if consecutive_empty >= _MAX_CONSECUTIVE_EMPTY_WINDOWS:
+                logger.info(
+                    "x_twitter: %d consecutive empty windows — stopping early "
+                    "(collected %d so far)",
+                    consecutive_empty,
+                    collected,
+                )
                 break
 
             window_count = await self._paginate_medium(
@@ -396,13 +416,16 @@ class XTwitterCollector(ArenaCollector):
             collected += window_count
 
             if window_count:
+                consecutive_empty = 0
                 logger.debug(
-                    "x_twitter: window %s–%s yielded %d records (total so far: %d)",
+                    "x_twitter: window %s–%s yielded %d records (total: %d)",
                     window_from,
                     window_to,
                     window_count,
                     collected,
                 )
+            else:
+                consecutive_empty += 1
 
         return []
 
@@ -507,15 +530,16 @@ class XTwitterCollector(ArenaCollector):
         """Collect tweets from a single actor using TwitterAPI.io search.
 
         Constructs a ``from:{handle}`` search query and paginates with the
-        advanced_search endpoint.  Uses daily windowing when both dates are
-        provided and span more than one calendar day.
+        advanced_search endpoint.  Actor timelines are sparse by nature, so
+        daily windowing is never used — a single paginated query with date
+        operators is sufficient and far more API-efficient.
 
         Records are emitted incrementally via ``_emit()`` during pagination.
 
         Args:
             client: Shared HTTP client.
             actor_id: Twitter user ID or ``@handle``.
-            max_results: Maximum records to retrieve (across all windows).
+            max_results: Maximum records to retrieve.
             date_from: ISO date lower bound, optional.
             date_to: ISO date upper bound, optional.
 
@@ -524,24 +548,7 @@ class XTwitterCollector(ArenaCollector):
         """
         handle = _normalize_handle(actor_id)
         term = f"from:{handle}"
-
-        # Reuse the same windowed collection logic as term search.
-        if date_from and date_to and date_from[:10] != date_to[:10]:
-            windows = _generate_daily_windows(date_from, date_to)
-        else:
-            windows = [(date_from, date_to)]
-
-        collected = 0
-
-        for window_from, window_to in windows:
-            if collected >= max_results:
-                break
-
-            window_count = await self._paginate_medium(
-                client, term, max_results - collected, window_from, window_to
-            )
-            collected += window_count
-
+        await self._paginate_medium(client, term, max_results, date_from, date_to)
         return []
 
     async def _collect_premium_term(

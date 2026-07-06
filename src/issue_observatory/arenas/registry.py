@@ -155,22 +155,18 @@ ARENA_DESCRIPTIONS: dict[str, str] = {
     "vkontakte": (
         "VKontakte (VK) public posts and community content (deferred — pending legal review)"
     ),
-    # Arena grouping labels kept as fallback keys for ARENA_DESCRIPTIONS.get()
-    # calls that still use arena_name.  These are not registry keys.
-    "ai_chat_search": (
-        "AI chat interface search (OpenRouter) capturing LLM-cited web sources"
+    # Canonical arena category labels (4 categories replacing old ad-hoc groupings)
+    "news": (
+        "News media: wire services, RSS feeds, news aggregators, and domain crawlers"
     ),
-    "news_media": (
-        "General news-media arena (used by ritzau_via and event_registry collectors)"
-    ),
-    "reference": (
-        "Reference and encyclopedic sources (Wikipedia, Wikidata) tracking editorial attention"
+    "search": (
+        "Search: engines, autocomplete, AI chat search, and reference sources"
     ),
     "social_media": (
-        "Social media arena grouping Reddit, YouTube, Bluesky, Telegram, TikTok, etc."
+        "Social media: Reddit, YouTube, Bluesky, Telegram, TikTok, X/Twitter, etc."
     ),
     "web": (
-        "Open web archive arena grouping Common Crawl and Wayback Machine collectors"
+        "Web archives: Common Crawl, Wayback Machine, Majestic, and URL scraping"
     ),
 }
 

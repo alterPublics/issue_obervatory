@@ -51,10 +51,10 @@
 - [x] `query_designs/detail.html` — Read-only detail: metadata card, search terms chip list, actor list chips, run history table with status badges + deep links to collection detail
 
 ### Collections (Task 1.15 — already complete in Phase 0.9b)
-- [x] `collections/detail.html` — SSE-driven live monitor; cancel button; post-run actions; `sse-close="run_complete"` → redirect to content browser
+- [x] `collections/detail.html` — SSE-driven live monitor; cancel button; post-run actions; `sse-close="run_complete"` → redirect to Recent Content page
 
-### Content Browser (Task 1.16)
-- [x] `content/browser.html` — Two-column layout: filter sidebar (arena checkboxes, date range, language, search term, collection run, reset); main area with paginated table (infinite scroll via `hx-trigger="revealed"`, capped at 2000 rows with export banner); slide-in detail panel (Alpine transition); Alpine `contentBrowser()` component manages panel state + row count
+### Recent Content page (Task 1.16, renamed 2026-04-10)
+- [x] `content/browser.html` — Page renamed to "Recent Content"; subtitle added ("Most recent content collected..."); sort disclosure added ("Sorted by publication date, newest first."); 2000-row cap banner updated with honest copy; nav label updated. Two-column layout: filter sidebar (arena checkboxes, date range, language, search term, collection run, reset); main area with paginated table (infinite scroll via `hx-trigger="revealed"`, capped at 2000 rows with export banner); slide-in detail panel (Alpine transition); Alpine `contentBrowser()` component manages panel state + row count
 - [x] `content/record_detail.html` — Dual-mode partial: panel embed (default) + standalone full page (`standalone=true`); platform badge, title/text, metadata grid, matched search terms chips, Alpine-toggled raw JSON viewer (`<pre>` with Fernet-decrypted metadata), external URL link, actions row
 
 ### Actor Directory (Task 1.17)
@@ -241,6 +241,39 @@ Implemented per `docs/research_reports/actor_workflow_redesign.md` — Phase 3 (
 - `POST /actors/sampling/snowball` — snowball from seeds (already exists)
 - `POST /actors/sampling/snowball-from-run` — snowball from collection run (already exists)
 - `POST /actors/sampling/co-occurrence` — corpus co-occurrence (already exists)
+
+## Phase 6 — Content Page Filter Fix: UX Polish (2026-04-10)
+
+Executed all six tasks from `docs/plans/content_page_filter_fix_plan.md` §2 "Phase 6 — UX Polish".
+
+### Task 1 — Close last xfail: `actor_id` on export route
+- [x] `src/issue_observatory/api/routes/content.py` — Added `actor_id: list[str] | None = Query(...)` to `export_content_sync` signature. Parsed into `export_actor_ids` and wired into `ContentFilterSpec.from_export_route(actor_ids=...)`.
+- [x] `src/issue_observatory/core/queries/content_filters.py` — Added `actor_ids: list[uuid.UUID] | None = None` parameter to `from_export_route` and passed it into the `cls(...)` constructor call.
+- [x] `tests/integration/api/content/_matrix.py` — Removed `export_browse_xfail_reason` from the `actor_id_filter` case. The 1 xfail is now a pass.
+
+### Task 2 — Validation feedback
+- [x] `src/issue_observatory/api/routes/content.py` — Added `_VALID_MODES`, `_VALID_SCRAPE_STATUSES`, `_VALID_LANGUAGES` constants. Added `_validate_enum_filter()` and `_validate_date_filter()` helpers that collect warnings rather than raising. Applied in `content_browser_page`, `content_records_fragment`, and `export_content_sync` routes.
+- [x] `src/issue_observatory/api/templates/content/browser.html` — Added `#filter-warning-banner` div above the table (amber/yellow, `aria-live="polite"`). Shows unrecognised filter values with a list of messages. On HTMX fragment requests the banner is updated via OOB swap (only on fresh filter requests, i.e. no cursor and offset=0).
+- [x] `tests/integration/api/content/_matrix.py` — Updated `language_unknown_xx` expected_labels from `set()` to `P2_DEFAULT` (invalid language is now dropped, not applied as a zero-result filter).
+- [x] `tests/integration/api/content/test_filter_diff_harness.py` — Updated `_matrix_params_to_browse_kwargs` to apply the same validation that the route applies, so Path B (helper) matches Path A (route).
+
+### Task 3 — 20-run cap disclosure
+- [x] `src/issue_observatory/api/templates/content/browser.html` — Added `<p class="text-xs text-gray-500 mt-0.5">` caption below the Collection Run `<select>`: "Showing the 20 most recent runs. For older runs, go to the Collections page." with a link to `/collections/`.
+
+### Task 4 — Page-size control
+- [x] `src/issue_observatory/api/routes/content.py` — Added `limit: int = Query(default=50, ge=10, le=500)` to `content_browser_page`. Changed `content_records_fragment` limit constraint from `ge=1, le=_MAX_LIMIT(200)` to `ge=10, le=500`. `limit` exposed in `filter_ctx` for template use.
+- [x] `src/issue_observatory/api/templates/content/browser.html` — Added "Results per page" `<select>` (options: 25, 50, 100, 200, 500) before the Reset filters button. Submits via the filter form's `hx-trigger="change"`.
+
+### Task 5 — Arena-vs-platform label fix
+- [x] `src/issue_observatory/api/templates/content/browser.html` — Changed sidebar filter group heading from "Arena" to "Platform" (added `aria-label="Filter by platform"`). Loading message changed from "Loading arenas..." to "Loading platforms...". Filter pills changed from "Arena: X" to "Platform: X". Param name `arenas` preserved for URL backward-compat. Comment block updated to document the distinction.
+
+### Task 6 — Regression tests
+- [x] `tests/integration/api/content/test_phase6_validation.py` — 7 tests: invalid language, mode, scrape_status, malformed date on full-page endpoint; invalid language/mode on fragment endpoint; valid-filters produce no warning.
+- [x] `tests/integration/api/content/test_phase6_page_size.py` — 6 tests: limit=25 returns <=25, limit=100 returns more than 25, limit=5 rejected (422), limit=5000 rejected (422), boundaries 10 and 500 accepted.
+- [x] `tests/integration/api/content/test_phase6_run_cap_disclosure.py` — 1 test: "20 most recent runs" caption + /collections/ link present.
+- [x] `tests/integration/api/content/test_phase6_platform_label.py` — 2 tests: sidebar aria-label="Filter by platform" present; active platform pill shows "Platform: reddit" not "Arena: reddit".
+
+**Final harness: 262 passed, 1 skipped, 0 xfailed, 0 failures** (baseline was 246 passed + 1 xfail).
 
 ## Remaining / Future Work
 - [ ] Tailwind production build (`make css`) to replace CDN dev script

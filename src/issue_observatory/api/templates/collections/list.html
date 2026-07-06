@@ -196,9 +196,9 @@
                     <td class="px-6 py-4 text-right">
                         <div class="flex items-center justify-end gap-3">
                             {% if run.records_collected | default(0) | int > 0 %}
-                            <a href="/analysis/{{ run.id }}"
+                            <a href="/dashboard"
                                class="text-xs text-purple-600 hover:underline">
-                                Analyse
+                                Dashboard
                             </a>
                             {% endif %}
                             <a href="/collections/{{ run.id }}"

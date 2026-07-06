@@ -38,6 +38,7 @@ from issue_observatory.api.dependencies import (
     get_current_active_user,
     get_pagination,
     get_redis,
+    is_project_collaborator,
     ownership_guard,
 )
 from issue_observatory.core.credit_service import CreditService
@@ -251,6 +252,26 @@ async def _get_run_or_404(
     return run
 
 
+async def _run_read_guard(
+    run: CollectionRun,
+    current_user: User,
+    db: AsyncSession,
+) -> None:
+    """Allow access if user owns the run, is admin, or is a project collaborator."""
+    if current_user.role == "admin":
+        return
+    if run.initiated_by == current_user.id:
+        return
+    if run.project_id and await is_project_collaborator(
+        db, run.project_id, current_user.id
+    ):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You do not have permission to access this resource.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # List
 # ---------------------------------------------------------------------------
@@ -286,9 +307,22 @@ async def list_collection_runs(
         A list of ``CollectionRunRead`` dicts (JSON response) or an HTML
         fragment (when ``format="fragment"``).
     """
+    from issue_observatory.core.models.project_collaborator import ProjectCollaborator
+
+    # Include runs the user initiated OR runs from projects shared with them
+    collaborated_project_ids = (
+        select(ProjectCollaborator.project_id)
+        .where(ProjectCollaborator.user_id == current_user.id)
+        .scalar_subquery()
+    )
     stmt = (
         select(CollectionRun)
-        .where(CollectionRun.initiated_by == current_user.id)
+        .where(
+            or_(
+                CollectionRun.initiated_by == current_user.id,
+                CollectionRun.project_id.in_(collaborated_project_ids),
+            )
+        )
         .order_by(CollectionRun.id.desc())
         .limit(pagination.page_size)
     )
@@ -503,6 +537,13 @@ async def create_collection_run(  # type: ignore[misc]
                     if key not in merged_arenas_config[arena_name]:
                         merged_arenas_config[arena_name][key] = value
 
+    # Snapshot project collection_mode so the dispatch task reads the mode
+    # that was active at launch time (immutable, like _skip_source_lists).
+    if query_design.project_id and project:
+        _cmode = getattr(project, "collection_mode", "default")
+        if _cmode and _cmode != "default":
+            merged_arenas_config["_collection_mode"] = _cmode
+
     # Deduplicate source-list collections for project-level launches.
     # When _skip_source_lists is set, this is a subsequent run in a multi-QD
     # project launch.  Source lists are identical across runs, so we either
@@ -558,6 +599,34 @@ async def create_collection_run(  # type: ignore[misc]
                     a for a in merged_arenas_config["arenas"]
                     if (a.get("id") or a.get("platform_name")) in project_arenas
                 ]
+
+    # -----------------------------------------------------------------------
+    # Platform access enforcement
+    #
+    # Check the user's allowed/disallowed platforms.  Admins bypass this.
+    # disallowed_platforms blocks unconditionally; non-empty allowed_platforms
+    # acts as a whitelist (only listed platforms accessible).
+    # -----------------------------------------------------------------------
+    if current_user.role != "admin":
+        user_disallowed = set(current_user.disallowed_platforms or [])
+        user_allowed = set(current_user.allowed_platforms or [])
+
+        blocked_arenas: list[str] = []
+        for platform_name in list(flat_arenas.keys()):
+            if platform_name in user_disallowed:
+                blocked_arenas.append(platform_name)
+            elif user_allowed and platform_name not in user_allowed:
+                blocked_arenas.append(platform_name)
+
+        if blocked_arenas:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"Your account does not have access to the following platforms: "
+                    f"{', '.join(sorted(blocked_arenas))}. "
+                    f"Contact your administrator to update your permissions."
+                ),
+            )
 
     logger.debug(
         "tier_precedence_resolved",
@@ -617,7 +686,10 @@ async def create_collection_run(  # type: ignore[misc]
     )
     estimated_credits: int = estimate["total_credits"]
 
-    if estimated_credits > 0:
+    # Admins and own-credential users bypass credit checks entirely.
+    bypass_credits = await credit_svc.should_bypass_credits(current_user.id)
+
+    if estimated_credits > 0 and not bypass_credits:
         try:
             available = await credit_svc.get_available_credits(current_user.id)
             if available < estimated_credits:
@@ -1283,7 +1355,7 @@ async def get_collection_run(
         HTTPException 403: If the caller did not initiate the run (and is not admin).
     """
     run = await _get_run_or_404(run_id, db, load_tasks=True)
-    ownership_guard(run.initiated_by, current_user)
+    await _run_read_guard(run, current_user, db)
     return run
 
 
@@ -1625,7 +1697,7 @@ async def get_collection_schedule(
         HTTPException 400: If the run is not a live-tracking run.
     """
     run = await _get_run_or_404(run_id, db)
-    ownership_guard(run.initiated_by, current_user)
+    await _run_read_guard(run, current_user, db)
 
     if run.mode != "live":
         raise HTTPException(
@@ -1950,7 +2022,7 @@ async def stream_collection_run(
             not an admin).
     """
     run = await _get_run_or_404(run_id, db, load_tasks=True)
-    ownership_guard(run.initiated_by, current_user)
+    await _run_read_guard(run, current_user, db)
 
     async def event_generator() -> AsyncGenerator[str, None]:
         """Generate SSE frames for the collection run."""

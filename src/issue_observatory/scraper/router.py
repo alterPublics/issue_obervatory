@@ -10,6 +10,7 @@ Routes:
     POST   /scraping-jobs/                  — create + enqueue job
     GET    /scraping-jobs/                  — list jobs (paginated)
     GET    /scraping-jobs/{job_id}          — detail + progress counters
+    GET    /scraping-jobs/{job_id}/records  — content records for a job (HTMX)
     POST   /scraping-jobs/{job_id}/cancel   — cancel a running job
     DELETE /scraping-jobs/{job_id}          — delete completed/failed/cancelled job
     GET    /scraping-jobs/{job_id}/stream   — SSE progress stream
@@ -26,7 +27,7 @@ from typing import Annotated
 import structlog
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from issue_observatory.api.dependencies import (
@@ -147,6 +148,38 @@ async def create_scraping_job(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="source_urls is required when source_type='manual_urls'.",
         )
+
+    # Filter out URLs already scraped
+    already_scraped_count = 0
+    if payload.source_urls:
+        from sqlalchemy import text as sa_text
+
+        already_scraped_result = await db.execute(
+            sa_text("""
+                SELECT DISTINCT url FROM content_records
+                WHERE platform IN ('url_scraper', 'domain_crawler')
+                  AND url = ANY(CAST(:urls AS text[]))
+            """),
+            {"urls": payload.source_urls},
+        )
+        already_scraped: set[str] = {row[0] for row in already_scraped_result}
+
+        if already_scraped:
+            already_scraped_count = len(already_scraped)
+            payload.source_urls = [
+                u for u in payload.source_urls if u not in already_scraped
+            ]
+            logger.info(
+                "filtered_already_scraped_urls",
+                skipped=already_scraped_count,
+                remaining=len(payload.source_urls),
+            )
+
+        if not payload.source_urls:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"All {already_scraped_count} URL(s) have already been scraped.",
+            )
 
     job = ScrapingJob(
         created_by=current_user.id,
@@ -376,6 +409,104 @@ async def get_scraping_job(
     job = await _get_job_or_404(job_id, db)
     ownership_guard(job.created_by, current_user)
     return job
+
+
+# ---------------------------------------------------------------------------
+# Records (content records produced by a job)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{job_id}/records", response_class=HTMLResponse)
+async def get_scraping_job_records(
+    job_id: uuid.UUID,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+) -> HTMLResponse:
+    """Return content records and non-enriched URLs for a scraping job.
+
+    Enriched records come from ``content_records``.  Non-enriched URLs
+    (failed / skipped) are computed by diffing the job's ``source_urls``
+    against the enriched set.  For ``collection_run`` jobs, failed records
+    are identified by ``scrape_status = 'failed'`` and skipped records by
+    ``text_content IS NULL``.
+
+    Args:
+        job_id: UUID of the scraping job.
+        request: The incoming HTTP request.
+        db: Injected async database session.
+        current_user: The authenticated, active user making the request.
+
+    Returns:
+        HTML fragment listing enriched records and non-enriched URLs.
+    """
+    job = await _get_job_or_404(job_id, db)
+    ownership_guard(job.created_by, current_user)
+
+    enriched_records: list[dict] = []
+    failed_records: list[dict] = []
+    not_enriched_urls: list[str] = []
+
+    if job.source_type == "collection_run" and job.source_collection_run_id:
+        # For collection_run jobs, query all records including failed ones
+        sql = text("""
+            SELECT id::text, title, url, platform,
+                   LEFT(text_content, 200) AS text_preview,
+                   collected_at, scrape_status
+            FROM content_records
+            WHERE collection_run_id = CAST(:run_id AS uuid)
+              AND scrape_status IN ('scraped', 'failed')
+            ORDER BY scrape_status, collected_at DESC
+            LIMIT 100
+        """)
+        result = await db.execute(
+            sql, {"run_id": str(job.source_collection_run_id)}
+        )
+        all_records = [dict(row._mapping) for row in result]
+        enriched_records = [
+            r for r in all_records if r.get("scrape_status") == "scraped"
+        ]
+        failed_records = [
+            r for r in all_records if r.get("scrape_status") == "failed"
+        ]
+    else:
+        # For manual/extracted_urls jobs, get enriched records
+        sql = text("""
+            SELECT id::text, title, url, platform,
+                   LEFT(text_content, 200) AS text_preview,
+                   collected_at, scrape_status
+            FROM content_records
+            WHERE raw_metadata->>'scraping_job_id' = :job_id
+            ORDER BY collected_at DESC
+            LIMIT 100
+        """)
+        result = await db.execute(sql, {"job_id": str(job_id)})
+        enriched_records = [dict(row._mapping) for row in result]
+
+        # Diff source_urls against enriched to find non-enriched URLs
+        source_urls: list = job.source_urls or []
+        if isinstance(source_urls, str):
+            source_urls = json.loads(source_urls)
+        enriched_url_set = {r["url"] for r in enriched_records if r.get("url")}
+        not_enriched_urls = [u for u in source_urls if u not in enriched_url_set]
+
+    # Build url → reason lookup from the job's url_errors JSONB
+    url_errors: dict[str, str] = {}
+    if job.url_errors and isinstance(job.url_errors, dict):
+        url_errors = job.url_errors
+
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        "scraping/_job_records.html",
+        {
+            "request": request,
+            "enriched_records": enriched_records,
+            "failed_records": failed_records,
+            "not_enriched_urls": not_enriched_urls,
+            "url_errors": url_errors,
+            "job": job,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -52,7 +52,11 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from issue_observatory.api.dependencies import get_current_active_user, ownership_guard
+from issue_observatory.api.dependencies import (
+    get_current_active_user,
+    is_project_collaborator,
+    ownership_guard,
+)
 from issue_observatory.core.database import get_db
 from issue_observatory.core.models.annotations import CodebookEntry
 from issue_observatory.core.models.query_design import QueryDesign
@@ -78,22 +82,27 @@ async def _verify_design_ownership(
     design_id: uuid.UUID,
     current_user: User,
     db: AsyncSession,
+    *,
+    require_owner: bool = False,
 ) -> None:
-    """Verify that the current user owns the given query design.
+    """Verify that the current user can access the given query design's codebook.
 
-    Admins bypass this check. Non-admin users must own the design.
+    Admins bypass this check.  When *require_owner* is ``False`` (default),
+    collaborators on the design's project are also allowed (read access).
+    When ``True``, only the owner may proceed (write access).
 
     Args:
         design_id: UUID of the query design to check.
         current_user: The authenticated user making the request.
         db: Async database session.
+        require_owner: If ``True``, reject collaborators (owner-only).
 
     Raises:
         HTTPException 404: If the query design does not exist.
-        HTTPException 403: If the user does not own the design and is not admin.
+        HTTPException 403: If the user lacks the required access level.
     """
     if current_user.role == "admin":
-        return  # Admins can manage all codebooks
+        return
 
     stmt = select(QueryDesign).where(QueryDesign.id == design_id)
     result = await db.execute(stmt)
@@ -105,7 +114,17 @@ async def _verify_design_ownership(
             detail=f"Query design '{design_id}' not found.",
         )
 
-    ownership_guard(design.owner_id, current_user)
+    if design.owner_id == current_user.id:
+        return
+
+    if not require_owner and design.project_id is not None:
+        if await is_project_collaborator(db, design.project_id, current_user.id):
+            return
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You do not have permission to access this resource.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -273,9 +292,11 @@ async def create_codebook_entry(
             detail="Only administrators can create global codebook entries.",
         )
 
-    # Verify ownership if query_design_id is provided
+    # Verify ownership if query_design_id is provided (write operation)
     if body.query_design_id is not None:
-        await _verify_design_ownership(body.query_design_id, current_user, db)
+        await _verify_design_ownership(
+            body.query_design_id, current_user, db, require_owner=True
+        )
 
     entry = CodebookEntry(
         id=uuid.uuid4(),

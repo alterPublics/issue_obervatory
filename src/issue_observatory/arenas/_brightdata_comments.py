@@ -30,6 +30,135 @@ from issue_observatory.core.exceptions import (
 
 logger = structlog.get_logger(__name__)
 
+
+def lookup_parent_post_dates(
+    post_urls: list[str],
+    platform: str,
+) -> dict[str, str]:
+    """Look up published_at dates for parent posts from the database.
+
+    Returns a mapping from post URL (and query-param-stripped variant)
+    to the post's ``published_at`` ISO timestamp.  Used so that comments
+    inherit the parent post's publication date instead of the Bright Data
+    scrape timestamp.
+
+    Args:
+        post_urls: Post URLs to look up.
+        platform: Platform name (``"facebook"`` or ``"instagram"``).
+
+    Returns:
+        Dict mapping post URL → ISO published_at string.
+    """
+    if not post_urls:
+        return {}
+
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session
+
+    with get_sync_session() as db:
+        result = db.execute(
+            text(
+                "SELECT url, published_at "
+                "FROM content_records "
+                "WHERE platform = :platform AND content_type != 'comment' "
+                "AND url IS NOT NULL AND published_at IS NOT NULL"
+            ),
+            {"platform": platform},
+        )
+        url_to_date: dict[str, str] = {}
+        for row in result:
+            url_val = row[0]
+            pub_at = row[1]
+            if url_val and pub_at:
+                iso = pub_at.isoformat() if hasattr(pub_at, "isoformat") else str(pub_at)
+                url_to_date[url_val] = iso
+                url_to_date[url_val.split("?")[0].rstrip("/")] = iso
+
+    found = sum(
+        1 for u in post_urls
+        if u in url_to_date or u.split("?")[0].rstrip("/") in url_to_date
+    )
+    logger.info(
+        "%s_comments: looked up parent post dates — %d/%d found",
+        platform,
+        found,
+        len(post_urls),
+    )
+    return url_to_date
+
+
+def get_parent_post_date(
+    post_url: str,
+    url_to_date: dict[str, str],
+) -> str | None:
+    """Get the parent post's published_at date for a given post URL."""
+    return url_to_date.get(post_url) or url_to_date.get(
+        post_url.split("?")[0].rstrip("/")
+    )
+
+
+def filter_already_collected_posts(
+    post_urls: list[str],
+    platform: str,
+) -> list[str]:
+    """Remove post URLs that already have comments in the database.
+
+    Uses a synchronous session (safe for Celery context).  Checks both the
+    raw ``parent_post_id`` in comment records and the query-param-stripped
+    variant (Facebook appends ``?locale=en_US``).
+
+    Args:
+        post_urls: Post URLs to check.
+        platform: Platform name (``"facebook"`` or ``"instagram"``).
+
+    Returns:
+        Filtered list containing only URLs without existing comments.
+    """
+    if not post_urls:
+        return []
+
+    from sqlalchemy import text
+
+    from issue_observatory.core.database import get_sync_session
+
+    with get_sync_session() as db:
+        # Collect all parent_post_ids from existing comments for this platform.
+        # Check both the raw value and the query-param-stripped version.
+        result = db.execute(
+            text(
+                "SELECT DISTINCT raw_metadata->>'parent_post_id' AS pid "
+                "FROM content_records "
+                "WHERE platform = :platform AND content_type = 'comment' "
+                "AND raw_metadata->>'parent_post_id' IS NOT NULL"
+            ),
+            {"platform": platform},
+        )
+        existing_raw: set[str] = set()
+        existing_clean: set[str] = set()
+        for row in result:
+            pid = row[0]
+            if pid:
+                existing_raw.add(pid)
+                existing_clean.add(pid.split("?")[0].rstrip("/"))
+
+    filtered = []
+    for url in post_urls:
+        url_clean = url.split("?")[0].rstrip("/")
+        if url in existing_raw or url_clean in existing_clean:
+            continue
+        filtered.append(url)
+
+    skipped = len(post_urls) - len(filtered)
+    if skipped:
+        logger.info(
+            "%s_comments: skipped %d/%d posts (already have comments)",
+            platform,
+            skipped,
+            len(post_urls),
+        )
+    return filtered
+
 _BRIGHTDATA_API_BASE: str = "https://api.brightdata.com/datasets/v3"
 _PROGRESS_URL: str = f"{_BRIGHTDATA_API_BASE}/progress/{{snapshot_id}}"
 _SNAPSHOT_URL: str = f"{_BRIGHTDATA_API_BASE}/snapshot/{{snapshot_id}}?format=json"
@@ -86,10 +215,10 @@ class BrightDataCommentCollector:
         if not post_urls:
             return []
 
-        payload = [
-            {"url": url, "num_of_comments": max_comments_per_post}
-            for url in post_urls
-        ]
+        # Bright Data comment scrapers for Facebook and Instagram reject
+        # ``num_of_comments`` — the field is not part of their input schema.
+        # Send URL-only payloads; the scraper returns all available comments.
+        payload = [{"url": url} for url in post_urls]
 
         trigger_url = _build_trigger_url(dataset_id)
         snapshot_id = await self._trigger(client, api_token, trigger_url, payload, platform)

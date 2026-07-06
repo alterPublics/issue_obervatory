@@ -81,7 +81,7 @@ class GoogleAutocompleteCollector(ArenaCollector):
             for testing.  If ``None``, a new client is created per call.
     """
 
-    arena_name: str = "google_autocomplete"
+    arena_name: str = "search"
     platform_name: str = "google_autocomplete"
     supported_tiers: list[Tier] = [Tier.FREE, Tier.MEDIUM, Tier.PREMIUM]
     temporal_mode: TemporalMode = TemporalMode.RECENT

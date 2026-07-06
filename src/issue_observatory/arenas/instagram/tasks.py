@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from typing import Any
 
@@ -37,6 +38,7 @@ from issue_observatory.config.settings import get_settings
 from issue_observatory.core.credential_pool import CredentialPool
 from issue_observatory.core.event_bus import elapsed_since, publish_task_update
 from issue_observatory.core.exceptions import (
+    ArenaAuthError,
     ArenaCollectionError,
     ArenaRateLimitError,
     NoCredentialAvailableError,
@@ -270,91 +272,34 @@ def instagram_collect_actors(
         from issue_observatory.workers._task_helpers import make_batch_sink
 
         credential_pool = CredentialPool()
-        collector = InstagramCollector(credential_pool=credential_pool)
         tier_enum = Tier(tier)
-        sink = make_batch_sink(collection_run_id, query_design_id)
-        collector.configure_batch_persistence(sink=sink, batch_size=100, collection_run_id=collection_run_id)
+        sink = make_batch_sink(
+            collection_run_id, query_design_id, actor_sourced=True,
+        )
 
         # Normalize URLs before coverage check so keys match BD's format.
         from issue_observatory.arenas.instagram.collector import (
             _normalize_profile_url,
         )
         from issue_observatory.workers._task_helpers import (
+            RunCancelledError,
+            check_run_cancelled,
             clear_url_errors,
+            count_run_platform_records,
+            get_latest_actor_coverage_date,
             get_suppressed_urls,
+            record_collection_attempts_batch,
             record_url_errors,
-            run_with_tier_fallback,
         )
 
         normalized_actor_ids = [_normalize_profile_url(aid) for aid in actor_ids]
 
+        # Randomize actor order to avoid always hitting the same actors first
+        # if a run is interrupted partway through.
+        random.shuffle(normalized_actor_ids)
+
         # Check if force_recollect is set (opt-out from coverage check)
         force_recollect = _extra.get("force_recollect", False)
-
-        # Pre-collection coverage check: narrow date range to uncovered gaps
-        effective_date_from = date_from
-        effective_date_to = date_to
-        if not force_recollect and date_from and date_to:
-            from datetime import datetime as _dt
-
-            from issue_observatory.core.coverage_checker import (
-                check_existing_coverage,
-            )
-
-            gaps = check_existing_coverage(
-                platform=_PLATFORM,
-                date_from=_dt.fromisoformat(date_from) if isinstance(date_from, str) else date_from,
-                date_to=_dt.fromisoformat(date_to) if isinstance(date_to, str) else date_to,
-                actor_ids=normalized_actor_ids,
-            )
-            if not gaps:
-                logger.info(
-                    "instagram: full coverage exists for run=%s — skipping API call, "
-                    "will reindex existing records only.",
-                    collection_run_id,
-                )
-                from issue_observatory.workers._task_helpers import (
-                    reindex_existing_records,
-                )
-
-                linked = reindex_existing_records(
-                    platform=_PLATFORM,
-                    collection_run_id=collection_run_id,
-                    query_design_id=query_design_id,
-                    actor_ids=normalized_actor_ids,
-                    date_from=date_from,
-                    date_to=date_to,
-                )
-                _update_task_status(
-                    collection_run_id, _PLATFORM, "completed", records_collected=0
-                )
-                publish_task_update(
-                    redis_url=_redis_url,
-                    run_id=collection_run_id,
-                    arena=_ARENA,
-                    platform=_PLATFORM,
-                    status="completed",
-                    records_collected=0,
-                    error_message=None,
-                    elapsed_seconds=elapsed_since(_task_start),
-                )
-                return {
-                    "records_collected": 0,
-                    "records_linked": linked,
-                    "status": "completed",
-                    "arena": _ARENA,
-                    "platform": _PLATFORM,
-                    "tier": tier,
-                    "coverage_skip": True,
-                }
-            effective_date_from = gaps[0][0].isoformat()
-            effective_date_to = gaps[-1][1].isoformat()
-            logger.info(
-                "instagram: narrowing collection to uncovered range %s — %s (run=%s)",
-                effective_date_from,
-                effective_date_to,
-                collection_run_id,
-            )
 
         # Suppress dead/errored URLs to avoid wasting Bright Data credits.
         suppressed = get_suppressed_urls(_PLATFORM, normalized_actor_ids)
@@ -394,26 +339,220 @@ def instagram_collect_actors(
                     "all_urls_suppressed": True,
                 }
 
+        # ---------------------------------------------------------------
+        # Per-actor parallel collection loop (single event loop, 6-way)
+        # ---------------------------------------------------------------
+        _MAX_CONCURRENT_ACTORS = 6
+
+        async def _run_per_actor_loop() -> tuple[int, list[str]]:
+            """Collect actors with bounded parallelism within one event loop.
+
+            Each actor gets its own collector instance (isolated batch_stats).
+            A semaphore limits concurrency to ``_MAX_CONCURRENT_ACTORS``.
+
+            Returns (total_inserted, actor_errors).
+            """
+            _total = 0
+            _errors: list[str] = []
+            _cancel = asyncio.Event()
+            _sem = asyncio.Semaphore(_MAX_CONCURRENT_ACTORS)
+            _total_actors = len(normalized_actor_ids)
+
+            async def _collect_one(
+                actor_idx: int, actor_url: str
+            ) -> tuple[int, str | None]:
+                """Collect a single actor. Returns (inserted, error_or_None)."""
+                nonlocal _total
+                async with _sem:
+                    actor_label = actor_url.split("/")[-2] or actor_url
+
+                    # 1. Check for cancellation.
+                    if _cancel.is_set():
+                        return 0, None
+                    try:
+                        check_run_cancelled(collection_run_id)
+                    except RunCancelledError:
+                        logger.info(
+                            "instagram: run cancelled — signalling stop "
+                            "(actor %d/%d).",
+                            actor_idx,
+                            _total_actors,
+                        )
+                        _cancel.set()
+                        return 0, None
+
+                    # 2. Per-actor coverage check (sync DB).
+                    #    - latest > user end date  → skip (beyond requested range)
+                    #    - latest <= user end date → re-collect from latest
+                    #      (last day may be partial) through user end date
+                    #    - no prior coverage       → full date range
+                    effective_date_from = date_from
+                    effective_date_to = date_to
+                    if not force_recollect and date_from and date_to:
+                        from datetime import date as _date
+
+                        user_end = (
+                            _date.fromisoformat(str(date_to)[:10])
+                            if isinstance(date_to, str)
+                            else date_to.date()
+                            if hasattr(date_to, "date")
+                            else date_to
+                        )
+                        latest = get_latest_actor_coverage_date(
+                            _PLATFORM, actor_url
+                        )
+                        if latest is not None and latest > user_end:
+                            logger.info(
+                                "instagram: [%d/%d] %s — skipped "
+                                "(covered through %s)",
+                                actor_idx,
+                                _total_actors,
+                                actor_label,
+                                latest,
+                            )
+                            return 0, None
+                        if latest is not None:
+                            # Re-collect from the last covered day (partial)
+                            effective_date_from = latest.isoformat()
+
+                    # 3. Create a dedicated collector for this actor.
+                    actor_collector = InstagramCollector(
+                        credential_pool=credential_pool
+                    )
+                    actor_collector.configure_batch_persistence(
+                        sink=sink, batch_size=100,
+                        collection_run_id=collection_run_id,
+                    )
+
+                    logger.info(
+                        "instagram: [%d/%d] %s — collecting with dates=%s..%s "
+                        "max_results=%s tier=%s",
+                        actor_idx,
+                        _total_actors,
+                        actor_label,
+                        effective_date_from,
+                        effective_date_to,
+                        max_results,
+                        tier,
+                    )
+                    try:
+                        await actor_collector.collect_by_actors(
+                            [actor_url],
+                            tier_enum,
+                            date_from=effective_date_from,
+                            date_to=effective_date_to,
+                            max_results=max_results,
+                        )
+                    except (
+                        NoCredentialAvailableError,
+                        ArenaRateLimitError,
+                        NotImplementedError,
+                        ArenaAuthError,
+                    ):
+                        raise
+                    except Exception as exc:
+                        logger.error(
+                            "instagram: [%d/%d] %s — error: %s",
+                            actor_idx,
+                            _total_actors,
+                            actor_label,
+                            exc,
+                        )
+                        return 0, f"{actor_label}: {exc}"
+
+                    # 4. Read stats from this actor's own collector.
+                    stats = actor_collector.batch_stats
+                    actor_count = stats["inserted"]
+                    logger.info(
+                        "instagram: [%d/%d] %s — batch_stats=%s "
+                        "bd_errors=%d",
+                        actor_idx,
+                        _total_actors,
+                        actor_label,
+                        stats,
+                        len(actor_collector.brightdata_errors),
+                    )
+                    _total += actor_count
+
+                    # 5. Record per-actor coverage (sync DB).
+                    if date_from and date_to:
+                        record_collection_attempts_batch(
+                            platform=_PLATFORM,
+                            collection_run_id=collection_run_id,
+                            query_design_id=query_design_id,
+                            inputs=[actor_url],
+                            input_type="actor",
+                            date_from=effective_date_from,
+                            date_to=effective_date_to,
+                            records_returned=actor_count,
+                            per_input_counts={actor_url: actor_count},
+                        )
+
+                    # 6. Track BD errors / clear recovered URLs.
+                    bd_errors = actor_collector.brightdata_errors
+                    actor_bd_errors = [
+                        e for e in bd_errors if e.get("url") == actor_url
+                    ]
+                    if actor_bd_errors:
+                        record_url_errors(_PLATFORM, actor_bd_errors)
+                    else:
+                        clear_url_errors(_PLATFORM, [actor_url])
+
+                    # 7. SSE progress update.
+                    logger.info(
+                        "instagram: [%d/%d] %s — %d records",
+                        actor_idx,
+                        _total_actors,
+                        actor_label,
+                        actor_count,
+                    )
+                    publish_task_update(
+                        redis_url=_redis_url,
+                        run_id=collection_run_id,
+                        arena=_ARENA,
+                        platform=_PLATFORM,
+                        status="running",
+                        records_collected=_total,
+                        error_message=None,
+                        elapsed_seconds=elapsed_since(_task_start),
+                    )
+                    return actor_count, None
+
+            # Launch all actors; semaphore gates concurrency to 6.
+            tasks = [
+                _collect_one(idx, url)
+                for idx, url in enumerate(normalized_actor_ids, 1)
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Aggregate results — re-raise fatal exceptions.
+            for r in results:
+                if isinstance(
+                    r,
+                    NoCredentialAvailableError
+                    | ArenaRateLimitError
+                    | NotImplementedError
+                    | ArenaAuthError,
+                ):
+                    raise r
+                if isinstance(r, Exception):
+                    _errors.append(str(r))
+                    continue
+                if isinstance(r, tuple):
+                    _count, _err = r
+                    if _err:
+                        _errors.append(_err)
+
+            return _total, _errors
+
         try:
-            remaining, used_tier = run_with_tier_fallback(
-                collector=collector,
-                collect_method="collect_by_actors",
-                kwargs={
-                    "actor_ids": normalized_actor_ids,
-                    "tier": tier_enum,
-                    "date_from": effective_date_from,
-                    "date_to": effective_date_to,
-                    "max_results": max_results,
-                },
-                requested_tier_str=tier,
-                platform=_PLATFORM,
-                task_logger=logger,
-            )
-            tier = used_tier  # update for reporting
+            total_inserted, actor_errors = asyncio.run(_run_per_actor_loop())
         except NoCredentialAvailableError as exc:
             msg = f"instagram: no credential available for tier={tier}: {exc}"
             logger.error(msg)
-            _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
+            _update_task_status(
+                collection_run_id, _PLATFORM, "failed", error_message=msg
+            )
             publish_task_update(
                 redis_url=_redis_url,
                 run_id=collection_run_id,
@@ -424,136 +563,118 @@ def instagram_collect_actors(
                 error_message=msg,
                 elapsed_seconds=elapsed_since(_task_start),
             )
-            raise ArenaCollectionError(msg, arena=_ARENA, platform=_PLATFORM) from exc
+            raise ArenaCollectionError(
+                msg, arena=_ARENA, platform=_PLATFORM
+            ) from exc
         except ArenaRateLimitError:
             logger.warning(
-                "instagram: rate limited on collect_by_actors for run=%s — will retry.",
+                "instagram: rate limited — will retry for run=%s.",
                 collection_run_id,
             )
             raise
-        except ArenaCollectionError as exc:
-            msg = str(exc)
-            logger.error(
-                "instagram: actor collection error for run=%s: %s", collection_run_id, msg
-            )
-            _update_task_status(collection_run_id, _PLATFORM, "failed", error_message=msg)
-            publish_task_update(
-                redis_url=_redis_url,
-                run_id=collection_run_id,
-                arena="social_media",
-                platform="instagram",
-                status="failed",
-                records_collected=0,
-                error_message=msg,
-                elapsed_seconds=elapsed_since(_task_start),
-            )
+        except NotImplementedError:
             raise
-
-        # Track Bright Data error records and clear recovered URLs.
-        bd_errors = collector.brightdata_errors
-        if bd_errors:
-            record_url_errors(_PLATFORM, bd_errors)
-        # URLs that produced valid data are no longer dead — clear suppression.
-        errored_urls = {e["url"] for e in bd_errors}
-        successful_urls = [u for u in normalized_actor_ids if u not in errored_urls]
-        if successful_urls:
-            clear_url_errors(_PLATFORM, successful_urls)
-
-        # Persist collected records to the database.
-        from issue_observatory.workers._task_helpers import (
-            persist_collected_records,
-            record_collection_attempts_batch,
-        )
-
-        fallback_inserted, fallback_skipped = 0, 0
-        if remaining:
-            fallback_inserted, fallback_skipped = persist_collected_records(
-                remaining, collection_run_id, query_design_id
+        except ArenaAuthError as exc:
+            msg = f"instagram: auth error for run={collection_run_id}: {exc}"
+            logger.error(msg)
+            _update_task_status(
+                collection_run_id, _PLATFORM, "failed", error_message=msg
             )
-        inserted = collector.batch_stats["inserted"] + fallback_inserted
-        skipped = collector.batch_stats["skipped"] + fallback_skipped
+            raise ArenaCollectionError(
+                msg, arena=_ARENA, platform=_PLATFORM
+            ) from exc
 
-        # Fallback: if in-memory counters lost track, use the actual DB count.
-        if inserted == 0:
-            from issue_observatory.workers._task_helpers import (
-                count_run_platform_records,
-            )
+        # ---------------------------------------------------------------
+        # Post-loop: finalize
+        # ---------------------------------------------------------------
+
+        # Fallback: if per-actor counters missed records, use DB count.
+        if total_inserted == 0:
             db_count = count_run_platform_records(collection_run_id, "instagram")
             if db_count > 0:
-                logger.info("instagram: in-memory counter=0 but DB has %d records — using DB count", db_count)
-                inserted = db_count
+                logger.info(
+                    "instagram: per-actor counter=0 but DB has %d records — using DB count",
+                    db_count,
+                )
+                total_inserted = db_count
 
-        # Record successful collection attempts for future pre-checks.
-        if date_from and date_to:
-            record_collection_attempts_batch(
-                platform=_PLATFORM,
-                collection_run_id=collection_run_id,
-                query_design_id=query_design_id,
-                inputs=normalized_actor_ids,
-                input_type="actor",
-                date_from=date_from,
-                date_to=date_to,
-                records_returned=inserted,
-                per_input_counts=collector.per_input_counts,
+        # Link existing records from other runs to this run so that
+        # analysis includes previously collected content without
+        # re-fetching from Bright Data.
+        # Instagram stores a numeric owner_id as author_platform_id,
+        # which doesn't match the profile URLs in actor_ids.  Extract
+        # usernames and match via author_display_name instead.
+        # Instagram post URLs (/p/ID, /reel/ID) don't contain the
+        # username, so URL-prefix matching is not applicable here.
+        from issue_observatory.workers._task_helpers import (
+            reindex_existing_records,
+        )
+
+        usernames = [
+            url.rstrip("/").split("/")[-1]
+            for url in normalized_actor_ids
+            if url.rstrip("/").split("/")[-1]
+        ]
+        linked = reindex_existing_records(
+            platform=_PLATFORM,
+            collection_run_id=collection_run_id,
+            query_design_id=query_design_id,
+            author_names=usernames,
+            source_url_prefixes=None,
+            require_term_match=True,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        if linked:
+            logger.info(
+                "instagram: reindexed %d existing records for run=%s",
+                linked,
+                collection_run_id,
             )
 
-        logger.info(
-            "instagram: collect_by_actors completed — run=%s emitted=%d inserted=%d skipped=%d",
-            collection_run_id,
-            collector.batch_stats["emitted"],
-            inserted,
-            skipped,
+        error_summary = (
+            f" ({len(actor_errors)} actor errors)" if actor_errors else ""
         )
-        _update_task_status(collection_run_id, _PLATFORM, "completed", records_collected=inserted)
+        logger.info(
+            "instagram: collect_by_actors completed — run=%s inserted=%d linked=%d%s",
+            collection_run_id,
+            total_inserted,
+            linked,
+            error_summary,
+        )
+        _update_task_status(
+            collection_run_id, _PLATFORM, "completed", records_collected=total_inserted
+        )
         publish_task_update(
             redis_url=_redis_url,
             run_id=collection_run_id,
             arena=_ARENA,
             platform=_PLATFORM,
             status="completed",
-            records_collected=inserted,
+            records_collected=total_inserted,
             error_message=None,
             elapsed_seconds=elapsed_since(_task_start),
         )
         return {
-            "records_collected": inserted,
+            "records_collected": total_inserted,
             "status": "completed",
             "arena": _ARENA,
             "platform": _PLATFORM,
             "tier": tier,
         }
     except Exception as exc:
-        msg = f"instagram: unexpected error for run={collection_run_id}: {type(exc).__name__}: {exc}"
+        msg = (
+            f"instagram: unexpected error for run={collection_run_id}: "
+            f"{type(exc).__name__}: {exc}"
+        )
         logger.error(msg, exc_info=True)
 
-        # Salvage coverage: if batch sink persisted records before the crash,
-        # record the attempt so subsequent runs don't re-trigger Bright Data.
+        # Salvage: per-actor persistence means most records are already saved.
         salvaged_count = 0
         try:
-            from issue_observatory.workers._task_helpers import (
-                count_run_platform_records,
-                record_collection_attempts_batch,
-            )
-
             salvaged_count = count_run_platform_records(collection_run_id, "instagram")
-            if salvaged_count > 0 and date_from and date_to:
-                logger.info(
-                    "instagram: salvaging coverage for %d persisted records on failure",
-                    salvaged_count,
-                )
-                record_collection_attempts_batch(
-                    platform=_PLATFORM,
-                    collection_run_id=collection_run_id,
-                    query_design_id=query_design_id,
-                    inputs=normalized_actor_ids,
-                    input_type="actor",
-                    date_from=date_from,
-                    date_to=date_to,
-                    records_returned=salvaged_count,
-                    per_input_counts=collector.per_input_counts,
-                )
         except Exception:
-            logger.warning("instagram: failed to salvage coverage on failure", exc_info=True)
+            logger.warning("instagram: failed to count salvaged records", exc_info=True)
 
         _update_task_status(
             collection_run_id, _PLATFORM, "failed",
@@ -646,18 +767,21 @@ def instagram_collect_comments(
         from issue_observatory.workers._task_helpers import (
             make_batch_sink,
             persist_collected_records,
+            record_collection_attempts_batch,
         )
 
         credential_pool = CredentialPool()
         collector = InstagramCollector(credential_pool=credential_pool)
         tier_enum = Tier(tier)
 
-        sink = make_batch_sink(collection_run_id, query_design_id)
+        sink = make_batch_sink(
+            collection_run_id, query_design_id, actor_sourced=True,
+        )
         collector.configure_batch_persistence(
             sink=sink, batch_size=100, collection_run_id=collection_run_id
         )
 
-        records = asyncio.run(
+        remaining = asyncio.run(
             collector.collect_comments(
                 post_ids=post_ids,
                 tier=tier_enum,
@@ -666,10 +790,32 @@ def instagram_collect_comments(
             )
         )
 
-        inserted, skipped = 0, 0
-        if records:
-            inserted, skipped = persist_collected_records(
-                records, collection_run_id, query_design_id
+        # Most records already persisted incrementally via the batch sink.
+        # Persist any remaining un-flushed records as a fallback.
+        fallback_inserted, fallback_skipped = 0, 0
+        if remaining:
+            fallback_inserted, fallback_skipped = persist_collected_records(
+                remaining, collection_run_id, query_design_id
+            )
+        inserted = collector.batch_stats["inserted"] + fallback_inserted
+        skipped = collector.batch_stats["skipped"] + fallback_skipped
+
+        # Record comment collection attempts so posts aren't re-submitted
+        # on the next run (even if they returned 0 comments).
+        from datetime import UTC, datetime
+
+        _now_iso = datetime.now(UTC).isoformat()
+        submitted_urls = [entry["url"] for entry in post_ids if entry.get("url")]
+        if submitted_urls:
+            record_collection_attempts_batch(
+                platform=f"{_PLATFORM}_comments",
+                collection_run_id=collection_run_id,
+                query_design_id=query_design_id,
+                inputs=submitted_urls,
+                input_type="post_url",
+                date_from=_now_iso,
+                date_to=_now_iso,
+                records_returned=inserted,
             )
 
         logger.info(

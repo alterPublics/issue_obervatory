@@ -1,10 +1,13 @@
 {% extends "base.html" %}
-{% block title %}Content Browser{% endblock %}
+{% block title %}Recent Content{% endblock %}
 
 {% block content %}
 {#
-    Content browser — Task 1.16.
-    Left sidebar: filter form (arena, platform, date range, search terms, language, run).
+    Content browser — Phase 3.
+    Left sidebar: filter form (arena, platform, date range, search terms, language, run,
+                               query design, actor, scrape status, content type, show_all,
+                               show_duplicates).
+    Filter pills: active-filter pill bar above results (decision B — defaults never silent).
     Main area: paginated content table with HTMX infinite scroll (capped at 2000 rows).
     Detail panel: HTMX-loaded record detail on row click.
 
@@ -16,6 +19,7 @@
         - total_count (int): total matching records for the current filter
         - recent_runs (list): [{id, status, query_design_name, created_at}] for run selector
         - user_projects (list): [{id, name}] for project filter
+        - user_query_designs (list): [{id, name}] for query design filter dropdown
         - filter (dict): currently active filter values (from query params)
         - cursor (str|None): pagination cursor for next page
         - active_query_design_id (str|None): query design in scope, used by GR-17 actor-list fetch.
@@ -24,6 +28,7 @@
 {% set records = records | default([]) %}
 {% set recent_runs = recent_runs | default([]) %}
 {% set user_projects = user_projects | default([]) %}
+{% set user_query_designs = user_query_designs | default([]) %}
 {% set total_count = total_count | default(0) %}
 {% set cursor = cursor | default('') %}
 {% set active_query_design_id = active_query_design_id | default('') %}
@@ -47,7 +52,8 @@
               hx-swap="innerHTML"
               hx-trigger="change, keyup changed delay:400ms"
               hx-push-url="/content"
-              hx-indicator="#table-spinner">
+              hx-indicator="#table-spinner"
+              hx-sync="this:drop">
 
             {# Sort state (hidden — set by clickable column headers) #}
             <input type="hidden" name="sort_by" id="sort_by" value="{{ filter.sort_by | default('published_at') }}">
@@ -65,16 +71,21 @@
                        class="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
             </div>
 
-            {# Arena checkboxes — dynamically populated from /api/arenas/ #}
-            <div x-data="arenaFilter({{ filter.arenas | default([]) | tojson }})">
-                <p class="text-xs font-medium text-gray-700 mb-2 uppercase tracking-wider">Arena</p>
+            {# Platform checkboxes — dynamically populated from /api/arenas/
+               Note: the form field name is "arenas" (preserved for URL/bookmark compat)
+               but the visible label is "Platform" — the filter narrows on platform_name,
+               not on the arena grouping column (Task 5 / Phase 6 label fix).
+            #}
+            <div x-data="arenaFilter({{ filter.arenas | default([]) | tojson | forceescape }})">
+                <p class="text-xs font-medium text-gray-700 mb-2 uppercase tracking-wider"
+                   aria-label="Filter by platform">Platform</p>
                 <div x-show="loading" class="flex items-center gap-2 text-xs text-gray-400 py-1.5">
                     <svg class="animate-spin w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg"
                          fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
                         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
                     </svg>
-                    Loading arenas...
+                    Loading platforms...
                 </div>
                 <div x-show="!loading" class="space-y-3">
                     <template x-for="group in arenaGroups" :key="group.name">
@@ -168,7 +179,27 @@
                 </select>
             </div>
 
-            {# Collection run — changing this also reloads the search term dropdown via HTMX #}
+            {# Query design filter (Task 2, Phase 3 — UX Major #7) #}
+            <div>
+                <label for="query_design_id_filter" class="block text-xs font-medium text-gray-700 mb-1 uppercase tracking-wider">Query Design</label>
+                <select id="query_design_id_filter"
+                        name="query_design_id"
+                        class="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                    <option value="">All query designs</option>
+                    {% for qd in user_query_designs | default([]) %}
+                    <option value="{{ qd.id }}" {% if filter.query_design_id | default('') == qd.id %}selected{% endif %}>
+                        {{ qd.name }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            {# Collection run — changing this also reloads the search term dropdown via HTMX.
+               Task 6 (Phase 3): race condition fix.
+               - hx-sync="this:drop" is set on the parent form so parallel requests are dropped.
+               - The search-terms fetch fires on "change" from this select ONLY (not from the form).
+               - hx-include removed (search-terms handler does not read search_term).
+            #}
             <div>
                 <label for="run_id" class="block text-xs font-medium text-gray-700 mb-1 uppercase tracking-wider">Collection Run</label>
                 <select id="run_id"
@@ -177,7 +208,6 @@
                         hx-trigger="change"
                         hx-target="#search-term-filter"
                         hx-swap="innerHTML"
-                        hx-include="[name='search_term']"
                         class="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
                     <option value="">All runs</option>
                     {% set runs_by_design = {} %}
@@ -199,6 +229,10 @@
                         </optgroup>
                     {% endfor %}
                 </select>
+                <p class="text-xs text-gray-500 mt-0.5">
+                    Showing the 20 most recent runs. For older runs, go to the
+                    <a href="/collections/" class="underline hover:text-gray-700">Collections page</a>.
+                </p>
             </div>
 
             {# Search terms matched — populated from the selected run's query design via HTMX #}
@@ -216,6 +250,33 @@
                 </div>
                 <p class="text-xs text-gray-400 mt-0.5">
                     Select a collection run above to filter by search term.
+                </p>
+            </div>
+
+            {# Actor filter (Task 1, Phase 3 — UX Blocker #4).
+               Options are lazy-loaded from /content/actors scoped to the selected run or project.
+               Supports multi-select: hold Ctrl/Cmd to select multiple actors.
+            #}
+            <div x-data="{
+                    hint: '{{ filter.actor_ids | default([]) | length == 0 and not filter.run_id | default('') and not filter.project_id | default('') }}'
+                }">
+                <label for="actor_id_select" class="block text-xs font-medium text-gray-700 mb-1 uppercase tracking-wider">Actor</label>
+                <select id="actor_id_select"
+                        name="actor_id"
+                        multiple
+                        size="4"
+                        hx-get="/content/actors"
+                        hx-trigger="load, change from:#run_id, change from:#project_id"
+                        hx-include="#run_id, #project_id"
+                        hx-target="this"
+                        hx-swap="innerHTML"
+                        class="w-full border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                    {% for actor_uuid in filter.actor_ids | default([]) %}
+                    <option value="{{ actor_uuid }}" selected>{{ actor_uuid }}</option>
+                    {% endfor %}
+                </select>
+                <p class="text-xs text-gray-400 mt-0.5">
+                    Hold Ctrl/Cmd to select multiple actors. Select a run or project to populate.
                 </p>
             </div>
 
@@ -249,37 +310,176 @@
                 <p class="text-xs text-gray-400 mt-0.5">
                     Include records collected by actor tracking that did not match any search term.
                 </p>
-            </div>
-
-            {# Content type filter (posts vs comments) #}
-            <div>
-                <p class="text-xs font-medium text-gray-700 mb-1.5 uppercase tracking-wider">Content Type</p>
-                <div class="space-y-1">
-                    <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-                        <input type="checkbox"
-                               name="content_types"
-                               value="post"
-                               {% if "post" in (filter.content_types | default(["post"])) %}checked{% endif %}
-                               class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
-                        Posts
-                    </label>
-                    <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-                        <input type="checkbox"
-                               name="content_types"
-                               value="comment"
-                               {% if "comment" in (filter.content_types | default([])) %}checked{% endif %}
-                               class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
-                        Comments
-                    </label>
-                </div>
+                {# Show duplicates checkbox (Task 8, Phase 3 — decision F) #}
+                <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer mt-1.5">
+                    <input type="checkbox"
+                           name="show_duplicates"
+                           value="true"
+                           {% if filter.show_duplicates | default(false) %}checked{% endif %}
+                           class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                    Show duplicates
+                </label>
                 <p class="text-xs text-gray-400 mt-0.5">
-                    Comments are unchecked by default. Check to include comment records.
+                    By default, records flagged as duplicates are hidden (parity with analysis).
                 </p>
             </div>
 
-            {# Reset filters button #}
+            {# Content type filter — all 14 types, grouped (Task 3, Phase 3 — decision B).
+               Default: only "post" checked. The posts-only default is surfaced as a filter
+               pill above the table so researchers can see and clear it.
+               "All types" toggle uses Alpine to check/uncheck all.
+               Sending content_types= (empty) sets was_explicit=True → clears the default.
+            #}
+            <div x-data="{
+                allTypes: ['post','comment','reply','reel','tweet',
+                           'search_result','autocomplete_suggestion',
+                           'wiki_pageview','article',
+                           'press_release',
+                           'ai_chat_response','ai_chat_citation',
+                           'video','scraped_web_page'],
+                activeTypes: {{ filter.content_types | default([]) | tojson | forceescape }},
+                get allChecked() { return this.allTypes.every(t => this.activeTypes.includes(t)); },
+                toggleAll() {
+                    if (this.allChecked) { this.activeTypes = []; }
+                    else { this.activeTypes = [...this.allTypes]; }
+                },
+                clearAll() { this.activeTypes = []; }
+            }">
+                <div class="flex items-center justify-between mb-1.5">
+                    <p class="text-xs font-medium text-gray-700 uppercase tracking-wider">Content Type</p>
+                    <div class="flex gap-2">
+                        <button type="button" @click="toggleAll()"
+                                class="text-xs text-blue-600 hover:text-blue-800"
+                                x-text="allChecked ? 'None' : 'All'"></button>
+                        <button type="button" @click="clearAll()"
+                                class="text-xs text-gray-400 hover:text-gray-600">Clear</button>
+                    </div>
+                </div>
+
+                {# Social group #}
+                <p class="text-xs font-medium text-gray-400 mb-1 mt-1">Social</p>
+                <div class="space-y-1 pl-1">
+                    {% for ct, label in [('post','Posts'),('comment','Comments'),('reply','Replies'),('reel','Reels'),('tweet','Tweets')] %}
+                    <label class="flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+                        <input type="checkbox"
+                               name="content_types"
+                               value="{{ ct }}"
+                               x-model="activeTypes"
+                               {% if ct in (filter.content_types | default(['post'])) %}checked{% endif %}
+                               class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                        {{ label }}
+                    </label>
+                    {% endfor %}
+                </div>
+
+                {# Search group #}
+                <p class="text-xs font-medium text-gray-400 mb-1 mt-2">Search</p>
+                <div class="space-y-1 pl-1">
+                    {% for ct, label in [('search_result','Search Results'),('autocomplete_suggestion','Autocomplete')] %}
+                    <label class="flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+                        <input type="checkbox"
+                               name="content_types"
+                               value="{{ ct }}"
+                               x-model="activeTypes"
+                               {% if ct in (filter.content_types | default([])) %}checked{% endif %}
+                               class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                        {{ label }}
+                    </label>
+                    {% endfor %}
+                </div>
+
+                {# Reference group #}
+                <p class="text-xs font-medium text-gray-400 mb-1 mt-2">Reference</p>
+                <div class="space-y-1 pl-1">
+                    {% for ct, label in [('wiki_pageview','Wiki Pageview'),('article','Article')] %}
+                    <label class="flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+                        <input type="checkbox"
+                               name="content_types"
+                               value="{{ ct }}"
+                               x-model="activeTypes"
+                               {% if ct in (filter.content_types | default([])) %}checked{% endif %}
+                               class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                        {{ label }}
+                    </label>
+                    {% endfor %}
+                </div>
+
+                {# News group #}
+                <p class="text-xs font-medium text-gray-400 mb-1 mt-2">News</p>
+                <div class="space-y-1 pl-1">
+                    <label class="flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+                        <input type="checkbox"
+                               name="content_types"
+                               value="press_release"
+                               x-model="activeTypes"
+                               {% if 'press_release' in (filter.content_types | default([])) %}checked{% endif %}
+                               class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                        Press Release
+                    </label>
+                </div>
+
+                {# AI group #}
+                <p class="text-xs font-medium text-gray-400 mb-1 mt-2">AI</p>
+                <div class="space-y-1 pl-1">
+                    {% for ct, label in [('ai_chat_response','AI Chat Response'),('ai_chat_citation','AI Chat Citation')] %}
+                    <label class="flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+                        <input type="checkbox"
+                               name="content_types"
+                               value="{{ ct }}"
+                               x-model="activeTypes"
+                               {% if ct in (filter.content_types | default([])) %}checked{% endif %}
+                               class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                        {{ label }}
+                    </label>
+                    {% endfor %}
+                </div>
+
+                {# Other group #}
+                <p class="text-xs font-medium text-gray-400 mb-1 mt-2">Other</p>
+                <div class="space-y-1 pl-1">
+                    {% for ct, label in [('video','Video'),('scraped_web_page','Scraped Web Page')] %}
+                    <label class="flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+                        <input type="checkbox"
+                               name="content_types"
+                               value="{{ ct }}"
+                               x-model="activeTypes"
+                               {% if ct in (filter.content_types | default([])) %}checked{% endif %}
+                               class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                        {{ label }}
+                    </label>
+                    {% endfor %}
+                </div>
+
+                <p class="text-xs text-gray-400 mt-1.5">
+                    Default: Posts only. Check more types or use "All" to broaden.
+                </p>
+            </div>
+
+            {# Page-size control (Phase 6 — Task 4).
+               Options: 25, 50, 100, 200, 500. Default 50. Submits via the filter form
+               (hx-trigger="change" on the parent form catches this). For full data sets
+               use Export CSV — the 2,000-row browser cap still applies.
+            #}
+            <div>
+                <label for="limit" class="block text-xs font-medium text-gray-700 mb-1 uppercase tracking-wider">Results per page</label>
+                <select id="limit"
+                        name="limit"
+                        class="w-full border border-gray-300 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white">
+                    {% for page_size in [25, 50, 100, 200, 500] %}
+                    <option value="{{ page_size }}"
+                            {% if (filter.limit | default(50) | int) == page_size %}selected{% endif %}>
+                        {{ page_size }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            {# Reset filters button (Task 5, Phase 3).
+               Uses ?reset=true to bypass auto-project + auto-language defaults.
+               The posts-only content_type default still applies after reset (decision B).
+            #}
             <div class="pt-2">
-                <a href="/content"
+                <a href="/content?reset=true"
                    class="block w-full text-center text-xs text-gray-500 hover:text-gray-700 py-1.5 border border-gray-200 rounded hover:bg-gray-50 transition-colors">
                     Reset filters
                 </a>
@@ -321,10 +521,196 @@
     {# ------------------------------------------------------------------ #}
     <div class="flex-1 flex flex-col min-w-0">
 
+        {# Filter pills bar — Phase 3 Task 4 / decision B.
+           Shows every active filter as a removable chip. Auto-applied defaults
+           (posts-only content_types, auto-selected project, auto-language) appear
+           as pills so they are never invisible to the researcher.
+           Each pill's (x) links to the page with that filter cleared.
+        #}
+        {% set _pill_base_params = [] %}
+        {# Build a list of active pills from filter context #}
+        <div class="px-6 py-2 bg-gray-50 border-b border-gray-100 flex flex-wrap gap-1.5 min-h-[2.25rem] items-center">
+            <span class="text-xs text-gray-400 mr-1">Active:</span>
+
+            {# Content types pill — always shown because default is posts-only (decision B) #}
+            {% set ct_list = filter.content_types | default([]) %}
+            {% if ct_list %}
+            {% set ct_label = ct_list | join(', ') %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 text-xs">
+                Type: {{ ct_label }}
+                <a href="/content?{% for k, v in request.query_params.multi_items() if k != 'content_types' %}{{ k }}={{ v }}&{% endfor %}content_types="
+                   class="ml-0.5 text-indigo-600 hover:text-indigo-900 font-bold" title="Clear content type filter">x</a>
+            </span>
+            {% else %}
+            {# No content_types in URL but was_explicit=False means posts-only default is active #}
+            {% if not filter.content_types_was_explicit | default(false) %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 text-xs"
+                  title="Default: posts only. Click x to show all content types.">
+                Type: Posts (default)
+                <a href="/content?{% for k, v in request.query_params.multi_items() if k not in ['content_types', 'reset'] %}{{ k }}={{ v }}&{% endfor %}content_types="
+                   class="ml-0.5 text-indigo-600 hover:text-indigo-900 font-bold" title="Clear posts-only default">x</a>
+            </span>
+            {% endif %}
+            {% endif %}
+
+            {# Project pill #}
+            {% if filter.project_id | default('') %}
+            {% set proj_name = '' %}
+            {% for p in user_projects %}{% if p.id == filter.project_id %}{% set proj_name = p.name %}{% endif %}{% endfor %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 text-xs">
+                Project: {{ proj_name or filter.project_id }}
+                <a href="/content?{% for k, v in request.query_params.multi_items() if k != 'project_id' %}{{ k }}={{ v }}&{% endfor %}project_id="
+                   class="ml-0.5 text-blue-600 hover:text-blue-900 font-bold" title="Clear project filter">x</a>
+            </span>
+            {% endif %}
+
+            {# Query design pill #}
+            {% if filter.query_design_id | default('') %}
+            {% set qd_name = '' %}
+            {% for qd in user_query_designs %}{% if qd.id == filter.query_design_id %}{% set qd_name = qd.name %}{% endif %}{% endfor %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-teal-100 text-teal-800 text-xs">
+                Query design: {{ qd_name or filter.query_design_id }}
+                <a href="/content?{% for k, v in request.query_params.multi_items() if k != 'query_design_id' %}{{ k }}={{ v }}&{% endfor %}query_design_id="
+                   class="ml-0.5 text-teal-600 hover:text-teal-900 font-bold" title="Clear query design filter">x</a>
+            </span>
+            {% endif %}
+
+            {# Language pill #}
+            {% if filter.language | default('') %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 text-green-800 text-xs">
+                Language: {{ filter.language }}
+                <a href="/content?{% for k, v in request.query_params.multi_items() if k != 'language' %}{{ k }}={{ v }}&{% endfor %}language="
+                   class="ml-0.5 text-green-600 hover:text-green-900 font-bold" title="Clear language filter">x</a>
+            </span>
+            {% endif %}
+
+            {# Platform pills (param name "arenas" preserved for URL compat; label is "Platform") #}
+            {% for a in filter.arenas | default([]) %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-100 text-orange-800 text-xs">
+                Platform: {{ a }}
+                <a href="/content?{% for k, v in request.query_params.multi_items() if not (k == 'arenas' and v == a) %}{{ k }}={{ v }}&{% endfor %}"
+                   class="ml-0.5 text-orange-600 hover:text-orange-900 font-bold" title="Remove platform filter">x</a>
+            </span>
+            {% endfor %}
+
+            {# Date pills #}
+            {% if filter.date_from | default('') %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-800 text-xs">
+                From: {{ filter.date_from }}
+                <a href="/content?{% for k, v in request.query_params.multi_items() if k != 'date_from' %}{{ k }}={{ v }}&{% endfor %}"
+                   class="ml-0.5 text-yellow-600 hover:text-yellow-900 font-bold" title="Clear date from">x</a>
+            </span>
+            {% endif %}
+            {% if filter.date_to | default('') %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-800 text-xs">
+                To: {{ filter.date_to }}
+                <a href="/content?{% for k, v in request.query_params.multi_items() if k != 'date_to' %}{{ k }}={{ v }}&{% endfor %}"
+                   class="ml-0.5 text-yellow-600 hover:text-yellow-900 font-bold" title="Clear date to">x</a>
+            </span>
+            {% endif %}
+
+            {# Search term pill #}
+            {% if filter.search_term | default('') %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 text-xs">
+                Term: {{ filter.search_term }}
+                <a href="/content?{% for k, v in request.query_params.multi_items() if k != 'search_term' %}{{ k }}={{ v }}&{% endfor %}"
+                   class="ml-0.5 text-purple-600 hover:text-purple-900 font-bold" title="Clear search term">x</a>
+            </span>
+            {% endif %}
+
+            {# Run pill #}
+            {% if filter.run_id | default('') %}
+            {% set run_name = '' %}
+            {% for r in recent_runs %}{% if r.id == filter.run_id %}{% set run_name = r.formatted_date + ' (' + r.query_design_name + ')' %}{% endif %}{% endfor %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 text-gray-800 text-xs">
+                Run: {{ run_name or filter.run_id[:8] }}
+                <a href="/content?{% for k, v in request.query_params.multi_items() if k != 'run_id' %}{{ k }}={{ v }}&{% endfor %}"
+                   class="ml-0.5 text-gray-600 hover:text-gray-900 font-bold" title="Clear run filter">x</a>
+            </span>
+            {% endif %}
+
+            {# Actor pills #}
+            {% for actor_uuid in filter.actor_ids | default([]) %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 text-xs">
+                Actor: {{ actor_uuid[:8] }}...
+                <a href="/content?{% for k, v in request.query_params.multi_items() if not (k == 'actor_id' and v == actor_uuid) %}{{ k }}={{ v }}&{% endfor %}"
+                   class="ml-0.5 text-rose-600 hover:text-rose-900 font-bold" title="Remove actor filter">x</a>
+            </span>
+            {% endfor %}
+
+            {# Show all pill #}
+            {% if filter.show_all | default(false) %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-200 text-gray-700 text-xs">
+                Show all (incl. non-matching)
+                <a href="/content?{% for k, v in request.query_params.multi_items() if k != 'show_all' %}{{ k }}={{ v }}&{% endfor %}"
+                   class="ml-0.5 text-gray-600 hover:text-gray-900 font-bold" title="Turn off show_all">x</a>
+            </span>
+            {% endif %}
+
+            {# Show duplicates pill #}
+            {% if filter.show_duplicates | default(false) %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-200 text-gray-700 text-xs">
+                Including duplicates
+                <a href="/content?{% for k, v in request.query_params.multi_items() if k != 'show_duplicates' %}{{ k }}={{ v }}&{% endfor %}"
+                   class="ml-0.5 text-gray-600 hover:text-gray-900 font-bold" title="Turn off show_duplicates">x</a>
+            </span>
+            {% endif %}
+
+            {# Scrape status pill #}
+            {% if filter.scrape_status | default('') %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs">
+                Scrape: {{ filter.scrape_status }}
+                <a href="/content?{% for k, v in request.query_params.multi_items() if k != 'scrape_status' %}{{ k }}={{ v }}&{% endfor %}"
+                   class="ml-0.5 text-amber-600 hover:text-amber-900 font-bold" title="Clear scrape status filter">x</a>
+            </span>
+            {% endif %}
+
+            {# Q search pill #}
+            {% if filter.q | default('') %}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 text-xs">
+                Search: "{{ filter.q }}"
+                <a href="/content?{% for k, v in request.query_params.multi_items() if k != 'q' %}{{ k }}={{ v }}&{% endfor %}"
+                   class="ml-0.5 text-gray-500 hover:text-gray-900 font-bold" title="Clear full-text search">x</a>
+            </span>
+            {% endif %}
+
+        </div>
+
+        {# Filter validation warning banner (Phase 6 — Task 2).
+           Shown when one or more filter values could not be parsed / are not in the allowed set.
+           The OOB swap target ID is "filter-warning-banner" so the records fragment can update it.
+           Amber/yellow tone: the query still ran with valid filters — this is informational, not an error.
+        #}
+        {% set filter_warnings = filter_warnings | default([]) %}
+        <div id="filter-warning-banner"
+             aria-live="polite"
+             class="{% if filter_warnings %}mx-6 mt-2 flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-md px-4 py-2.5{% endif %}">
+            {% if filter_warnings %}
+            <svg class="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg"
+                 fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <div class="text-xs text-amber-800">
+                <p class="font-medium mb-0.5">Some filter values were not recognised and have been ignored:</p>
+                <ul class="list-disc list-inside space-y-0.5">
+                    {% for w in filter_warnings %}
+                    <li>{{ w }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+        </div>
+
+        {# Page subtitle — describes the page semantics so researchers know what they are looking at #}
+        <div class="px-6 pt-3 pb-1">
+            <p class="text-xs text-gray-500">Most recent content collected across all configured arenas, ordered by publication time.</p>
+        </div>
+
         {# Table header bar #}
         <div class="flex items-center justify-between px-6 py-3 bg-white border-b border-gray-200 flex-shrink-0">
             <div class="flex items-center gap-3">
-                <h1 class="text-sm font-semibold text-gray-900">Content</h1>
+                <h1 class="text-sm font-semibold text-gray-900">Recent Content</h1>
                 <span class="text-xs text-gray-400" id="record-count">
                     {% if total_count > 2000 %}
                         2,000+ records
@@ -361,11 +747,10 @@
                       d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
             </svg>
             <p class="text-xs text-yellow-800">
-                Display capped at 2,000 rows.
+                Showing the 2,000 most recently published records that match your filters. For the full matching set,
                 <a href="#"
                    @click.prevent="triggerExport()"
-                   class="font-medium underline hover:no-underline">Export CSV</a>
-                to download all matching records.
+                   class="font-medium underline hover:no-underline">export CSV</a>.
             </p>
         </div>
 
@@ -374,6 +759,10 @@
 
             {# Content table #}
             <div class="flex-1 overflow-auto min-w-0">
+                {# Sort disclosure — makes the default ordering visible to researchers #}
+                <p class="px-4 pt-2 pb-1 text-xs text-gray-400 italic">
+                    Sorted by publication date, newest first. Click any column to re-sort.
+                </p>
                 <table class="min-w-full divide-y divide-gray-200 text-sm">
                     <thead class="bg-gray-50 sticky top-0 z-10">
                         <tr>
@@ -827,7 +1216,7 @@ function arenaFilter(initialActiveArenas) {
 }
 
 /**
- * Alpine component for the content browser.
+ * Alpine component for the Recent Content page.
  * Manages detail panel show/hide state, row count for the 2000-row cap,
  * and dispatches the quick-add author event for GR-17.
  */

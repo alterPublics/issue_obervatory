@@ -87,6 +87,26 @@ class CreditService:
         self.session = session
 
     # ------------------------------------------------------------------
+    # Bypass checks
+    # ------------------------------------------------------------------
+
+    async def should_bypass_credits(self, user_id: uuid.UUID) -> bool:
+        """Check if a user should bypass credit checks.
+
+        Returns ``True`` if the user is an admin (unlimited credits) or has
+        ``use_central_credentials=False`` (brings own API keys → unlimited).
+        """
+        from issue_observatory.core.models.users import User
+
+        stmt = select(User.role, User.use_central_credentials).where(User.id == user_id)
+        result = await self.session.execute(stmt)
+        row = result.one_or_none()
+        if row is None:
+            return False
+        role, use_central = row
+        return role == "admin" or not use_central
+
+    # ------------------------------------------------------------------
     # Balance queries
     # ------------------------------------------------------------------
 
@@ -95,10 +115,22 @@ class CreditService:
 
         Returns:
             Dict with keys: total_allocated, reserved, settled, refunded,
-            available.
+            available, unlimited.
 
             available = total_allocated - reserved - settled + refunded
+            available = -1 when the user has unlimited credits (admin or own creds).
         """
+        # Unlimited credits for admin or own-credential users
+        if await self.should_bypass_credits(user_id):
+            return {
+                "total_allocated": 0,
+                "reserved": 0,
+                "settled": 0,
+                "refunded": 0,
+                "available": -1,
+                "unlimited": True,
+            }
+
         today = _today()
 
         # Total allocated: sum of valid non-expired allocations
@@ -161,6 +193,7 @@ class CreditService:
             "settled": settled,
             "refunded": refunded,
             "available": available,
+            "unlimited": False,
         }
 
     async def get_available_credits(self, user_id: uuid.UUID) -> int:
@@ -352,25 +385,30 @@ class CreditService:
             CreditReservationError: If the transaction row cannot be
                 persisted (wraps unexpected database errors).
         """
-        available = await self.get_available_credits(user_id)
+        # Admins and own-credential users bypass balance checks but still
+        # get reservation rows for the audit trail.
+        bypass = await self.should_bypass_credits(user_id)
 
-        if available < credits_amount:
-            logger.warning(
-                "Insufficient credits for reservation",
-                extra={
-                    "user_id": str(user_id),
-                    "collection_run_id": str(collection_run_id),
-                    "arena": arena,
-                    "platform": platform,
-                    "required": credits_amount,
-                    "available": available,
-                },
-            )
-            raise InsufficientCreditError(
-                required=credits_amount,
-                available=available,
-                user_id=str(user_id),
-            )
+        if not bypass:
+            available = await self.get_available_credits(user_id)
+
+            if available < credits_amount:
+                logger.warning(
+                    "Insufficient credits for reservation",
+                    extra={
+                        "user_id": str(user_id),
+                        "collection_run_id": str(collection_run_id),
+                        "arena": arena,
+                        "platform": platform,
+                        "required": credits_amount,
+                        "available": available,
+                    },
+                )
+                raise InsufficientCreditError(
+                    required=credits_amount,
+                    available=available,
+                    user_id=str(user_id),
+                )
 
         try:
             txn = CreditTransaction(

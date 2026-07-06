@@ -113,7 +113,7 @@ class AiChatSearchCollector(ArenaCollector):
             created per collection call with tier-appropriate timeouts.
     """
 
-    arena_name: str = "ai_chat_search"
+    arena_name: str = "search"
     platform_name: str = "openrouter"
     supported_tiers: list[Tier] = [Tier.MEDIUM, Tier.PREMIUM]
     temporal_mode: TemporalMode = TemporalMode.RECENT

@@ -1,18 +1,164 @@
 {% extends "base.html" %}
-{% block title %}Scraping Jobs{% endblock %}
+{% block title %}Scraping & URL Browser{% endblock %}
 
 {% block content %}
-<div class="max-w-6xl mx-auto space-y-6">
+<div class="max-w-7xl mx-auto space-y-6"
+     x-data="{
+         activeTab: 'urls',
+         respectRobots: true,
+         selectedUrls: {},
+         selectAllPage: false,
+         selectAllMatching: false,
+         urlCount: 0,
+         selectedCount() { return Object.keys(this.selectedUrls).length; },
+         filters: {
+             project_id: '',
+             query_design_id: '',
+             search_term: '',
+             platform: '',
+             category: '',
+             exclude_social: true,
+             video_only: '',
+             sort_by: 'count',
+             page: 1,
+             page_size: 50,
+         },
+         stats: { total_unique_urls: 0, total_appearances: 0, unique_domains: 0 },
+
+         toggleUrl(url) {
+             if (this.selectedUrls[url]) {
+                 delete this.selectedUrls[url];
+             } else {
+                 this.selectedUrls[url] = true;
+             }
+             this.selectAllPage = false;
+             this.selectAllMatching = false;
+         },
+
+         toggleSelectAllPage() {
+             if (this.selectAllPage) {
+                 document.querySelectorAll('#url-table-body input[type=checkbox][data-url]').forEach(cb => {
+                     const url = cb.getAttribute('data-url');
+                     if (url) this.selectedUrls[url] = true;
+                 });
+             } else {
+                 this.selectedUrls = {};
+             }
+             this.selectAllMatching = false;
+         },
+
+         selectAllMatchingUrls() {
+             this.selectAllMatching = true;
+             this.selectAllPage = true;
+         },
+
+         clearSelection() {
+             this.selectedUrls = {};
+             this.selectAllPage = false;
+             this.selectAllMatching = false;
+         },
+
+         refreshUrls() {
+             this.filters.page = 1;
+             this.filters.page_size = 50;
+             this.clearSelection();
+             this.$nextTick(() => {
+                 htmx.trigger('#url-table-body', 'filterChanged');
+             });
+             this.refreshStats();
+         },
+
+         refreshStats() {
+             const params = new URLSearchParams();
+             Object.entries(this.filters).forEach(([k, v]) => {
+                 if (v !== '' && v !== null && k !== 'page' && k !== 'page_size' && k !== 'sort_by') {
+                     params.set(k, v);
+                 }
+             });
+             fetch('/api/extracted-urls/stats?' + params.toString())
+                 .then(r => r.json())
+                 .then(data => { this.stats = data; })
+                 .catch(() => {});
+         },
+
+         getFilterQueryString() {
+             const params = new URLSearchParams();
+             Object.entries(this.filters).forEach(([k, v]) => {
+                 if (v !== '' && v !== null) params.set(k, v);
+             });
+             return params.toString();
+         },
+
+         async scrapeSelected() {
+             const urls = this.selectAllMatching ? null : Object.keys(this.selectedUrls);
+             const body = {
+                 delay_min: 2.0,
+                 delay_max: 5.0,
+                 timeout_seconds: 30,
+                 respect_robots_txt: this.respectRobots,
+                 use_playwright_fallback: true,
+             };
+             if (this.selectAllMatching) {
+                 // Strip empty values — the backend's Pydantic model rejects
+                 // empty strings for UUID fields (project_id, query_design_id).
+                 const criteria = {};
+                 Object.entries(this.filters).forEach(([k, v]) => {
+                     if (v !== '' && v !== null && v !== undefined) {
+                         criteria[k] = v;
+                     }
+                 });
+                 body.url_filter_criteria = criteria;
+             } else {
+                 body.selected_urls = urls;
+             }
+
+             try {
+                 const resp = await fetch('/api/extracted-urls/scrape', {
+                     method: 'POST',
+                     headers: { 'Content-Type': 'application/json' },
+                     body: JSON.stringify(body),
+                 });
+                 if (resp.ok) {
+                     this.activeTab = 'jobs';
+                     this.clearSelection();
+                     htmx.trigger('#jobs-container', 'jobCreated');
+                 } else {
+                     const data = await resp.json().catch(() => ({}));
+                     // FastAPI validation errors arrive as an array of objects;
+                     // plain errors as a string. Handle both so the UI does
+                     // not display the literal text [object Object].
+                     let detail = data.detail;
+                     if (Array.isArray(detail)) {
+                         detail = detail
+                             .map(e => {
+                                 const loc = Array.isArray(e.loc) ? e.loc.join('.') : '';
+                                 return loc ? `${loc}: ${e.msg}` : e.msg;
+                             })
+                             .join('; ');
+                     } else if (detail && typeof detail === 'object') {
+                         detail = JSON.stringify(detail);
+                     }
+                     alert(detail || 'Failed to create scraping job');
+                 }
+             } catch (e) {
+                 alert('Failed to create scraping job: ' + e.message);
+             }
+         },
+
+         init() {
+             this.refreshStats();
+         }
+     }">
 
     {# Page header #}
     <div class="flex items-center justify-between">
         <div>
-            <h1 class="text-xl font-bold text-gray-900">Scraping Jobs</h1>
-            <p class="text-sm text-gray-500 mt-0.5">Enrich collected content with full-text extraction</p>
+            <h1 class="text-xl font-bold text-gray-900 font-heading">Scraping & URL Browser</h1>
+            <p class="text-sm text-gray-500 mt-0.5">Browse extracted URLs, scrape web pages, and download videos</p>
         </div>
         <button type="button"
                 onclick="document.getElementById('create-scraping-dialog').showModal()"
-                class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+                class="inline-flex items-center gap-2 px-4 py-2 bg-brand-500 text-white text-sm font-medium rounded-md hover:bg-brand-600 transition-colors">
             <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
                  stroke="currentColor" stroke-width="2" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
@@ -21,148 +167,425 @@
         </button>
     </div>
 
-    {# Jobs table #}
-    <div class="bg-white rounded-lg shadow overflow-hidden">
-        <div id="jobs-container"
-             hx-get="/api/scraping-jobs/"
-             hx-trigger="load, jobCreated from:body, every 15s"
-             hx-target="#jobs-container"
-             hx-swap="innerHTML">
-            {# Loading state #}
-            <div class="px-6 py-12 text-center">
-                <div class="flex flex-col items-center gap-3">
-                    {% include '_partials/loading_spinner.html' %}
-                    <p class="text-sm text-gray-400">Loading scraping jobs...</p>
-                </div>
-            </div>
-        </div>
+    {# Tab navigation #}
+    <div class="border-b border-gray-200">
+        <nav class="flex gap-6" aria-label="Tabs">
+            <button type="button"
+                    @click="activeTab = 'urls'"
+                    :class="activeTab === 'urls'
+                        ? 'border-brand-500 text-brand-600'
+                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+                    class="whitespace-nowrap border-b-2 py-3 px-1 text-sm font-medium transition-colors">
+                URL Browser
+            </button>
+            <button type="button"
+                    @click="activeTab = 'jobs'"
+                    :class="activeTab === 'jobs'
+                        ? 'border-brand-500 text-brand-600'
+                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+                    class="whitespace-nowrap border-b-2 py-3 px-1 text-sm font-medium transition-colors">
+                Scraping Jobs
+            </button>
+        </nav>
     </div>
 
-{# Create job dialog #}
-<dialog id="create-scraping-dialog"
-        class="bg-white rounded-lg shadow-xl max-w-lg w-full p-0 backdrop:bg-black/50"
-        onclick="if(event.target===this)this.close()">
-    <div class="px-6 py-5 border-b border-gray-200">
-        <h2 class="text-lg font-semibold text-gray-900">Create Scraping Job</h2>
-        <p class="text-sm text-gray-500 mt-1">Extract full-text content from URLs</p>
-    </div>
+    {# ================================================================== #}
+    {# Tab 1: URL Browser                                                  #}
+    {# ================================================================== #}
+    <div x-show="activeTab === 'urls'" x-cloak>
 
-    <form hx-post="/api/scraping-jobs/form"
-          hx-target="#jobs-container"
-          hx-swap="innerHTML"
-          @htmx:after-request="if(event.detail.successful) { document.getElementById('create-scraping-dialog').close(); }"
-          class="px-6 py-5 space-y-4">
-
-        {# Source type selection #}
-        <div x-data="{ sourceType: 'collection_run' }">
-            <label class="block text-sm font-medium text-gray-700 mb-2">Source</label>
-            <div class="space-y-2">
-                <label class="flex items-center gap-2 cursor-pointer">
-                    <input type="radio"
-                           name="source_type"
-                           value="collection_run"
-                           x-model="sourceType"
-                           class="text-blue-600 focus:ring-blue-500">
-                    <span class="text-sm text-gray-700">Collection run</span>
-                </label>
-                <label class="flex items-center gap-2 cursor-pointer">
-                    <input type="radio"
-                           name="source_type"
-                           value="manual_urls"
-                           x-model="sourceType"
-                           class="text-blue-600 focus:ring-blue-500">
-                    <span class="text-sm text-gray-700">Manual URL list</span>
-                </label>
-            </div>
-
-            {# Collection run selector #}
-            <div x-show="sourceType === 'collection_run'" x-cloak class="mt-3">
-                <label class="block text-sm font-medium text-gray-700 mb-1">Collection Run</label>
-                <input type="text"
-                       name="source_collection_run_id"
-                       placeholder="Run UUID"
-                       class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-            </div>
-
-            {# Manual URL input #}
-            <div x-show="sourceType === 'manual_urls'" x-cloak class="mt-3">
-                <label class="block text-sm font-medium text-gray-700 mb-1">URLs (one per line)</label>
-                <textarea name="source_urls"
-                          rows="6"
-                          placeholder="https://example.com/page1&#10;https://example.com/page2"
-                          class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono resize-y"></textarea>
-            </div>
-        </div>
-
-        {# Advanced options #}
-        <details class="border border-gray-200 rounded-md">
-            <summary class="px-3 py-2 text-sm font-medium text-gray-700 cursor-pointer hover:bg-gray-50">
-                Advanced options
-            </summary>
-            <div class="px-3 py-3 border-t border-gray-200 space-y-3">
-                <div class="grid grid-cols-2 gap-3">
-                    <div>
-                        <label class="block text-xs font-medium text-gray-600 mb-1">Delay min (sec)</label>
-                        <input type="number"
-                               name="delay_min"
-                               value="1"
-                               min="0"
-                               step="0.5"
-                               class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-medium text-gray-600 mb-1">Delay max (sec)</label>
-                        <input type="number"
-                               name="delay_max"
-                               value="3"
-                               min="0"
-                               step="0.5"
-                               class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
-                    </div>
-                </div>
+        {# Filter bar #}
+        <div class="bg-white rounded-lg shadow p-4 space-y-3">
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+                {# Project filter #}
                 <div>
-                    <label class="block text-xs font-medium text-gray-600 mb-1">Timeout (sec)</label>
-                    <input type="number"
-                           name="timeout_seconds"
-                           value="30"
-                           min="5"
-                           max="120"
-                           class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
+                    <label class="block text-xs font-medium text-gray-600 mb-1 uppercase tracking-wider">Project</label>
+                    <select x-model="filters.project_id"
+                            @change="refreshUrls()"
+                            class="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
+                        <option value="">All projects</option>
+                        {% for project in projects | default([]) %}
+                        <option value="{{ project.id }}">{{ project.name }}</option>
+                        {% endfor %}
+                    </select>
                 </div>
+
+                {# Query Design filter #}
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1 uppercase tracking-wider">Query Design</label>
+                    <select x-model="filters.query_design_id"
+                            @change="refreshUrls()"
+                            class="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
+                        <option value="">All designs</option>
+                        {% for qd in query_designs | default([]) %}
+                        <option value="{{ qd.id }}">{{ qd.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                {# Platform filter #}
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1 uppercase tracking-wider">Platform</label>
+                    <select x-model="filters.platform"
+                            @change="refreshUrls()"
+                            class="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
+                        <option value="">All platforms</option>
+                        {% for p in platforms | default([]) %}
+                        <option value="{{ p }}">{{ p | replace('_', ' ') | title }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                {# Arena category filter #}
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1 uppercase tracking-wider">Arena Category</label>
+                    <select x-model="filters.category"
+                            @change="refreshUrls()"
+                            class="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
+                        <option value="">All categories</option>
+                        {% for key, label in categories.items() | default([]) %}
+                        <option value="{{ key }}">{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                {# Search term filter with autocomplete #}
+                <div x-data="{
+                         termInput: '',
+                         suggestions: [],
+                         showSuggestions: false,
+                         fetchSuggestions() {
+                             const params = new URLSearchParams({ q: this.termInput });
+                             if (filters.project_id) params.set('project_id', filters.project_id);
+                             fetch('/api/extracted-urls/search-terms?' + params.toString())
+                                 .then(r => r.json())
+                                 .then(data => {
+                                     this.suggestions = data;
+                                     this.showSuggestions = data.length > 0;
+                                 })
+                                 .catch(() => { this.suggestions = []; });
+                         },
+                         selectTerm(term) {
+                             this.termInput = term;
+                             filters.search_term = term;
+                             this.showSuggestions = false;
+                             refreshUrls();
+                         },
+                         clearTerm() {
+                             this.termInput = '';
+                             filters.search_term = '';
+                             this.showSuggestions = false;
+                             refreshUrls();
+                         }
+                     }"
+                     @click.outside="showSuggestions = false"
+                     class="relative">
+                    <label class="block text-xs font-medium text-gray-600 mb-1 uppercase tracking-wider">Search Term</label>
+                    <div class="relative">
+                        <input type="text"
+                               x-model="termInput"
+                               @input.debounce.250ms="fetchSuggestions()"
+                               @focus="fetchSuggestions()"
+                               @keydown.escape="showSuggestions = false"
+                               placeholder="Filter by term..."
+                               class="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400 pr-7">
+                        <button x-show="termInput.length > 0"
+                                x-cloak
+                                @click="clearTerm()"
+                                type="button"
+                                class="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </div>
+                    {# Suggestions dropdown #}
+                    <div x-show="showSuggestions"
+                         x-cloak
+                         class="absolute z-50 mt-1 w-full bg-white border border-gray-200 rounded-md shadow-lg max-h-48 overflow-y-auto">
+                        <template x-for="term in suggestions" :key="term">
+                            <button type="button"
+                                    @click="selectTerm(term)"
+                                    class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-brand-50 hover:text-brand-700 cursor-pointer"
+                                    x-text="term">
+                            </button>
+                        </template>
+                    </div>
+                </div>
+            </div>
+
+            {# Toggle row #}
+            <div class="flex items-center gap-4 pt-1">
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox"
+                           x-model="filters.exclude_social"
+                           @change="filters.video_only = ''; refreshUrls()"
+                           class="rounded text-brand-500 focus:ring-brand-400">
+                    <span class="text-xs text-gray-700">Hide social media URLs</span>
+                </label>
+                <span class="text-gray-300">|</span>
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" name="video_filter" value=""
+                           x-model="filters.video_only"
+                           @change="filters.exclude_social = true; refreshUrls()"
+                           class="text-brand-500 focus:ring-brand-400">
+                    <span class="text-xs text-gray-700">All types</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" name="video_filter" value="youtube"
+                           x-model="filters.video_only"
+                           @change="filters.exclude_social = false; refreshUrls()"
+                           class="text-red-500 focus:ring-red-400">
+                    <span class="text-xs text-gray-700">YouTube only</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" name="video_filter" value="tiktok"
+                           x-model="filters.video_only"
+                           @change="filters.exclude_social = false; refreshUrls()"
+                           class="text-pink-500 focus:ring-pink-400">
+                    <span class="text-xs text-gray-700">TikTok only</span>
+                </label>
+            </div>
+        </div>
+
+        {# Stats bar #}
+        <div class="grid grid-cols-3 gap-4">
+            <div class="bg-white rounded-lg shadow px-4 py-3 text-center">
+                <p class="text-2xl font-bold text-gray-900 font-mono" x-text="stats.total_unique_urls.toLocaleString()">0</p>
+                <p class="text-xs text-gray-500 mt-0.5">Unique URLs</p>
+            </div>
+            <div class="bg-white rounded-lg shadow px-4 py-3 text-center">
+                <p class="text-2xl font-bold text-gray-900 font-mono" x-text="stats.total_appearances.toLocaleString()">0</p>
+                <p class="text-xs text-gray-500 mt-0.5">Total Appearances</p>
+            </div>
+            <div class="bg-white rounded-lg shadow px-4 py-3 text-center">
+                <p class="text-2xl font-bold text-gray-900 font-mono" x-text="stats.unique_domains.toLocaleString()">0</p>
+                <p class="text-xs text-gray-500 mt-0.5">Unique Domains</p>
+            </div>
+        </div>
+
+        {# Quick action: select every unique URL matching the current filter #}
+        <div x-show="stats.total_unique_urls > 0 && !selectAllMatching && selectedCount() === 0"
+             x-cloak
+             class="flex items-center justify-end">
+            <button type="button"
+                    @click="selectAllMatchingUrls()"
+                    class="inline-flex items-center gap-1.5 text-xs font-medium text-brand-600 hover:text-brand-800 underline">
+                <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                     stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                Select all
+                <span x-text="stats.total_unique_urls.toLocaleString()"></span>
+                unique URLs matching filter
+            </button>
+        </div>
+
+        {# Selection bar #}
+        <div x-show="selectedCount() > 0 || selectAllMatching"
+             x-cloak
+             class="bg-brand-50 border border-brand-200 rounded-lg px-4 py-3 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <span class="text-sm text-brand-700 font-medium">
+                    <span x-text="selectAllMatching ? stats.total_unique_urls + ' (all matching)' : selectedCount()"></span>
+                    URL(s) selected
+                </span>
+                <template x-if="!selectAllMatching && selectedCount() > 0">
+                    <button type="button"
+                            @click="selectAllMatchingUrls()"
+                            class="text-xs text-brand-600 hover:text-brand-800 underline">
+                        Select all matching filter
+                    </button>
+                </template>
+                <button type="button"
+                        @click="clearSelection()"
+                        class="text-xs text-gray-500 hover:text-gray-700">
+                    Clear selection
+                </button>
+            </div>
+            <div class="flex items-center gap-4">
+                <label class="flex items-center gap-2 cursor-pointer select-none">
+                    <input type="checkbox" x-model="respectRobots"
+                           class="rounded border-gray-300 text-brand-500 focus:ring-brand-400 w-4 h-4">
+                    <span class="text-xs text-gray-600">Respect robots.txt</span>
+                </label>
+                <button type="button"
+                        @click="scrapeSelected()"
+                        class="inline-flex items-center gap-2 px-4 py-2 bg-brand-500 text-white text-sm font-medium rounded-md hover:bg-brand-600 transition-colors">
+                    <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                    </svg>
+                    <span x-text="selectAllMatching ? 'Scrape All Matching' : 'Scrape Selected'"></span>
+                </button>
+            </div>
+        </div>
+
+        {# URL table #}
+        <div class="bg-white rounded-lg shadow overflow-hidden"
+             @click="
+                 const el = $event.target;
+                 const cb = el.closest('input[data-url]');
+                 if (cb) { toggleUrl(cb.getAttribute('data-url')); return; }
+                 const selAll = el.closest('input[data-select-all]');
+                 if (selAll) { selectAllPage = selAll.checked; toggleSelectAllPage(); return; }
+                 const sortTh = el.closest('th[data-sort]');
+                 if (sortTh) { filters.sort_by = sortTh.getAttribute('data-sort'); refreshUrls(); return; }
+                 const loadBtn = el.closest('button[data-load-page]');
+                 if (loadBtn) {
+                     filters.page_size += 50;
+                     $nextTick(() => { htmx.trigger('#url-table-body', 'loadMore'); });
+                     return;
+                 }
+             ">
+            <div id="url-table-body"
+                 hx-get="/api/extracted-urls/"
+                 :hx-vals="JSON.stringify(filters)"
+                 hx-trigger="load, filterChanged from:body, loadMore from:body"
+                 hx-target="#url-table-body"
+                 hx-swap="innerHTML"
+                 hx-indicator="#url-spinner">
+                {# Loading state #}
+                <div class="px-6 py-12 text-center" id="url-spinner">
+                    <div class="flex flex-col items-center gap-3">
+                        {% include '_partials/loading_spinner.html' %}
+                        <p class="text-sm text-gray-400">Loading extracted URLs...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {# ================================================================== #}
+    {# Tab 2: Scraping Jobs                                                #}
+    {# ================================================================== #}
+    <div x-show="activeTab === 'jobs'" x-cloak>
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+            <div id="jobs-container"
+                 hx-get="/api/scraping-jobs/"
+                 hx-trigger="load, jobCreated from:body"
+                 hx-target="#jobs-container"
+                 hx-swap="innerHTML"
+                {# Loading state #}
+                <div class="px-6 py-12 text-center">
+                    <div class="flex flex-col items-center gap-3">
+                        {% include '_partials/loading_spinner.html' %}
+                        <p class="text-sm text-gray-400">Loading scraping jobs...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {# ================================================================== #}
+    {# Create job dialog                                                   #}
+    {# ================================================================== #}
+    <dialog id="create-scraping-dialog"
+            class="bg-white rounded-lg shadow-xl max-w-lg w-full p-0 backdrop:bg-black/50"
+            onclick="if(event.target===this)this.close()">
+        <div class="px-6 py-5 border-b border-gray-200">
+            <h2 class="text-lg font-semibold text-gray-900">Create Scraping Job</h2>
+            <p class="text-sm text-gray-500 mt-1">Extract full-text content from URLs</p>
+        </div>
+
+        <form hx-post="/api/scraping-jobs/form"
+              hx-target="#jobs-container"
+              hx-swap="innerHTML"
+              @htmx:after-request="if(event.detail.successful) { document.getElementById('create-scraping-dialog').close(); }"
+              class="px-6 py-5 space-y-4">
+
+            {# Source type selection #}
+            <div x-data="{ sourceType: 'collection_run' }">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Source</label>
                 <div class="space-y-2">
                     <label class="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox"
-                               name="respect_robots_txt"
-                               checked
-                               class="text-blue-600 focus:ring-blue-500 rounded">
-                        <span class="text-xs text-gray-700">Respect robots.txt</span>
+                        <input type="radio"
+                               name="source_type"
+                               value="collection_run"
+                               x-model="sourceType"
+                               class="text-brand-500 focus:ring-brand-400">
+                        <span class="text-sm text-gray-700">Collection run</span>
                     </label>
                     <label class="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox"
-                               name="use_playwright_fallback"
-                               class="text-blue-600 focus:ring-blue-500 rounded">
-                        <span class="text-xs text-gray-700">Use Playwright for JS-rendered pages (slower)</span>
+                        <input type="radio"
+                               name="source_type"
+                               value="manual_urls"
+                               x-model="sourceType"
+                               class="text-brand-500 focus:ring-brand-400">
+                        <span class="text-sm text-gray-700">Manual URL list</span>
                     </label>
                 </div>
+
+                {# Collection run selector #}
+                <div x-show="sourceType === 'collection_run'" x-cloak class="mt-3">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Collection Run</label>
+                    <input type="text"
+                           name="source_collection_run_id"
+                           placeholder="Run UUID"
+                           class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
+                </div>
+
+                {# Manual URL input #}
+                <div x-show="sourceType === 'manual_urls'" x-cloak class="mt-3">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">URLs (one per line)</label>
+                    <textarea name="source_urls"
+                              rows="6"
+                              placeholder="https://example.com/page1&#10;https://example.com/page2"
+                              class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400 font-mono resize-y"></textarea>
+                </div>
             </div>
-        </details>
 
-        {# Submit buttons #}
-        <div class="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
-            <button type="button"
-                    onclick="document.getElementById('create-scraping-dialog').close()"
-                    class="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
-                Cancel
-            </button>
-            <button type="submit"
-                    class="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
-                Create Job
-            </button>
-        </div>
+            {# Advanced options #}
+            <details class="border border-gray-200 rounded-md">
+                <summary class="px-3 py-2 text-sm font-medium text-gray-700 cursor-pointer hover:bg-gray-50">
+                    Advanced options
+                </summary>
+                <div class="px-3 py-3 border-t border-gray-200 space-y-3">
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-600 mb-1">Delay min (sec)</label>
+                            <input type="number" name="delay_min" value="1" min="0" step="0.5"
+                                   class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-600 mb-1">Delay max (sec)</label>
+                            <input type="number" name="delay_max" value="3" min="0" step="0.5"
+                                   class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-600 mb-1">Timeout (sec)</label>
+                        <input type="number" name="timeout_seconds" value="30" min="5" max="120"
+                               class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
+                    </div>
+                    <div class="space-y-2">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" name="respect_robots_txt" checked
+                                   class="text-brand-500 focus:ring-brand-400 rounded">
+                            <span class="text-xs text-gray-700">Respect robots.txt</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" name="use_playwright_fallback"
+                                   class="text-brand-500 focus:ring-brand-400 rounded">
+                            <span class="text-xs text-gray-700">Use Playwright for JS-rendered pages (slower)</span>
+                        </label>
+                    </div>
+                </div>
+            </details>
 
-    </form>
-</dialog>
+            {# Submit buttons #}
+            <div class="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
+                <button type="button"
+                        onclick="document.getElementById('create-scraping-dialog').close()"
+                        class="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
+                    Cancel
+                </button>
+                <button type="submit"
+                        class="px-4 py-2 bg-brand-500 text-white text-sm font-medium rounded-md hover:bg-brand-600 transition-colors">
+                    Create Job
+                </button>
+            </div>
+        </form>
+    </dialog>
 
 </div>
-
 {% endblock %}

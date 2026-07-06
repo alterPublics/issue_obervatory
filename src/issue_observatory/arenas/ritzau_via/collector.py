@@ -72,7 +72,7 @@ class RitzauViaCollector(ArenaCollector):
         http_client: Optional injected ``httpx.AsyncClient`` for testing.
     """
 
-    arena_name: str = "news_media"
+    arena_name: str = "news"
     platform_name: str = "ritzau_via"
     supported_tiers: list[Tier] = [Tier.FREE]
     temporal_mode: TemporalMode = TemporalMode.FORWARD_ONLY

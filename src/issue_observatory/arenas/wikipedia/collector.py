@@ -102,7 +102,7 @@ class WikipediaCollector(ArenaCollector):
             If ``None``, a new client is created per collection call.
     """
 
-    arena_name: str = "reference"
+    arena_name: str = "search"
     platform_name: str = "wikipedia"
     supported_tiers: list[Tier] = [Tier.FREE]
     temporal_mode: TemporalMode = TemporalMode.FORWARD_ONLY

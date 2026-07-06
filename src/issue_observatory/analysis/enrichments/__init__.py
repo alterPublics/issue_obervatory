@@ -23,23 +23,31 @@ Available enrichers:
   time window.
 - :class:`SentimentAnalyzer` — IP2-034: computes Danish sentiment scores
   using the AFINN lexicon (requires the ``nlp`` extra).
+- :class:`UrlExtractor` — extracts, cleans, and catalogs URLs from content
+  records; writes to both JSONB and the ``extracted_urls`` relational table.
+- :class:`EngagementScorer` — data-driven per-platform engagement
+  normalization using fitted Yeo-Johnson + MinMaxScaler transformers.
 """
 
 from __future__ import annotations
 
 from issue_observatory.analysis.enrichments.base import ContentEnricher, EnrichmentError
 from issue_observatory.analysis.enrichments.coordination_detector import CoordinationDetector
+from issue_observatory.analysis.enrichments.engagement_scorer import EngagementScorer
 from issue_observatory.analysis.enrichments.language_detector import LanguageDetector
 from issue_observatory.analysis.enrichments.named_entity_extractor import NamedEntityExtractor
 from issue_observatory.analysis.enrichments.propagation_detector import PropagationEnricher
 from issue_observatory.analysis.enrichments.sentiment_analyzer import SentimentAnalyzer
+from issue_observatory.analysis.enrichments.url_extractor import UrlExtractor
 
 __all__ = [
     "ContentEnricher",
     "CoordinationDetector",
+    "EngagementScorer",
     "EnrichmentError",
     "LanguageDetector",
     "NamedEntityExtractor",
     "PropagationEnricher",
     "SentimentAnalyzer",
+    "UrlExtractor",
 ]

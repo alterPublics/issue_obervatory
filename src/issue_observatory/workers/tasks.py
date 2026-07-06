@@ -50,10 +50,15 @@ from issue_observatory.core.email_service import get_email_service
 from issue_observatory.core.schemas.query_design import parse_language_codes
 from issue_observatory.workers._enrichment_helpers import (
     fetch_content_records_for_run,
+    fetch_unenriched_content_records,
+    fetch_unenriched_for_engagement,
+    fetch_unenriched_for_url_extraction,
     write_enrichment,
+    write_enrichment_batch,
 )
 from issue_observatory.workers._task_helpers import (
     check_all_tasks_terminal,
+    check_comment_ready_platforms,
     create_collection_tasks,
     enforce_retention,
     fetch_actor_ids_for_design_and_platform,
@@ -208,23 +213,29 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                 "trigger_daily_collection: insufficient credits; suspending run",
                 balance=balance,
             )
-            user_email = design.get("user_email")
-            if user_email:
-                try:
-                    asyncio.run(
-                        email_service.send_low_credit_warning(
-                            user_email=user_email,
-                            remaining_credits=balance,
+            async def _suspend_with_email(
+                _run_id: Any = run_id,
+                _design: dict = design,
+                _balance: int = balance,
+                _task_log: Any = task_log,
+            ) -> None:
+                _user_email = _design.get("user_email")
+                if _user_email:
+                    try:
+                        await email_service.send_low_credit_warning(
+                            user_email=_user_email,
+                            remaining_credits=_balance,
                             threshold=settings.low_credit_warning_threshold,
                         )
-                    )
-                except Exception as email_exc:
-                    task_log.warning(
-                        "trigger_daily_collection: low-credit email failed",
-                        error=str(email_exc),
-                    )
+                    except Exception as email_exc:
+                        _task_log.warning(
+                            "trigger_daily_collection: low-credit email failed",
+                            error=str(email_exc),
+                        )
+                await suspend_run(_run_id)
+
             try:
-                asyncio.run(suspend_run(run_id))
+                asyncio.run(_suspend_with_email())
             except Exception as suspend_exc:
                 task_log.error(
                     "trigger_daily_collection: failed to suspend run",
@@ -314,14 +325,88 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
                     continue
 
             else:
+                _actors_only = (
+                    design.get("project_collection_mode") == "actors_only"
+                )
                 arena_terms = design.get("arena_terms", {}).get(arena_name, [])
-                if not arena_terms:
-                    task_log.info(
-                        "trigger_daily_collection: no search terms scoped to arena; skipping",
+
+                # Resolve source-list config for this arena (used by both
+                # actors-only fallback and dual-mode dispatch).
+                try:
+                    _config_key = getattr(_collector_cls, "source_list_config_key", None)
+                except (KeyError, AttributeError):
+                    _config_key = None
+                _supports_actors = getattr(
+                    _collector_cls, "supports_actor_collection", False
+                )
+
+                if _actors_only or not arena_terms:
+                    # Actors-only mode (project toggle) or empty QD (no terms).
+                    # Attempt actor-based dispatch via source list instead of
+                    # skipping the arena entirely.
+                    if _supports_actors and _config_key:
+                        _source_list = read_source_list_from_arenas_config(
+                            raw_arenas_config, arena_name, _config_key
+                        )
+                        if _source_list:
+                            _chunk_size = getattr(
+                                _collector_cls,
+                                "source_list_daily_chunk_size",
+                                None,
+                            )
+                            if _chunk_size and len(_source_list) > _chunk_size:
+                                _source_list = _apply_daily_chunking(
+                                    _source_list, _chunk_size, task_log, arena_name
+                                )
+
+                            last_collected_map = design.get(
+                                "last_collected_by_platform", {}
+                            )
+                            date_from, date_to = _compute_live_date_bounds(
+                                last_collected_map, arena_name
+                            )
+                            _actors_task = f"{_task_module}.collect_by_actors"
+                            try:
+                                celery_app.send_task(
+                                    _actors_task,
+                                    kwargs={
+                                        "query_design_id": str(design_id),
+                                        "collection_run_id": str(run_id),
+                                        "actor_ids": _source_list,
+                                        "tier": tier,
+                                        "public_figure_ids": public_figure_ids,
+                                        "date_from": date_from,
+                                        "date_to": date_to,
+                                    },
+                                    queue="celery",
+                                )
+                                task_log.info(
+                                    "trigger_daily_collection: dispatched actors-only fallback",
+                                    arena=arena_name,
+                                    tier=tier,
+                                    task_name=_actors_task,
+                                    actors_count=len(_source_list),
+                                    date_from=date_from,
+                                    date_to=date_to,
+                                )
+                            except Exception as dispatch_exc:
+                                task_log.error(
+                                    "trigger_daily_collection: actors-only dispatch failed",
+                                    arena=arena_name,
+                                    error=str(dispatch_exc),
+                                )
+                                skipped += 1
+                            continue
+
+                    # No actor support or no source list — silently skip.
+                    task_log.debug(
+                        "trigger_daily_collection: no terms and no actor-based fallback; skipping",
                         arena=arena_name,
+                        actors_only=_actors_only,
                     )
                     continue
 
+                # --- Normal term-based dispatch (unchanged) ---
                 _task_name = f"{_task_module}.collect_by_terms"
                 last_collected_map = design.get("last_collected_by_platform", {})
                 date_from, date_to = _compute_live_date_bounds(last_collected_map, arena_name)
@@ -358,12 +443,7 @@ def trigger_daily_collection(self: Any) -> dict[str, Any]:
 
                 # Also dispatch collect_by_actors for dual-mode arenas with a
                 # source list (e.g. Telegram custom_channels).
-                try:
-                    _config_key = getattr(_collector_cls, "source_list_config_key", None)
-                except (KeyError, AttributeError):
-                    _config_key = None
-
-                if _config_key and getattr(_collector_cls, "supports_actor_collection", False):
+                if _config_key and _supports_actors:
                     _source_list = read_source_list_from_arenas_config(
                         raw_arenas_config, arena_name, _config_key
                     )
@@ -586,8 +666,59 @@ def settle_pending_credits() -> dict[str, Any]:
     log = logger.bind(task="settle_pending_credits")
     log.info("settle_pending_credits: starting")
 
+    # Use a single asyncio.run() for all async DB work to avoid
+    # asyncpg connection pool / event loop mismatch errors.
+    async def _settle_all() -> tuple[list[dict], int, int]:
+        """Fetch and settle all pending reservations in one event loop."""
+        _pending = await fetch_unsettled_reservations()
+        _settled = 0
+        _errors = 0
+        _emailed_runs: set[str] = set()
+
+        for _row in _pending:
+            _run_id = str(_row["collection_run_id"])
+            try:
+                await settle_single_reservation(_row)
+                log.info(
+                    "settle_pending_credits: settled",
+                    txn_id=str(_row["txn_id"]),
+                    run_id=_run_id,
+                    arena=_row["arena"],
+                    platform=_row["platform"],
+                    credits=_row["reserved_credits"],
+                )
+                _settled += 1
+
+                if _run_id not in _emailed_runs:
+                    _email: str | None = _row.get("user_email")
+                    if _email:
+                        try:
+                            await email_service.send_collection_complete(
+                                user_email=_email,
+                                run_id=_row["collection_run_id"],
+                                records_collected=_row.get("records_collected") or 0,
+                            )
+                            _emailed_runs.add(_run_id)
+                        except Exception as email_exc:
+                            log.warning(
+                                "settle_pending_credits: completion email failed",
+                                run_id=_run_id,
+                                error=str(email_exc),
+                            )
+            except Exception as exc:
+                log.error(
+                    "settle_pending_credits: settlement failed",
+                    txn_id=str(_row.get("txn_id")),
+                    run_id=_run_id,
+                    error=str(exc),
+                    exc_info=True,
+                )
+                _errors += 1
+
+        return _pending, _settled, _errors
+
     try:
-        pending = asyncio.run(fetch_unsettled_reservations())
+        pending, settled_count, error_count = asyncio.run(_settle_all())
     except Exception as exc:
         log.error(
             "settle_pending_credits: DB error",
@@ -598,82 +729,34 @@ def settle_pending_credits() -> dict[str, Any]:
 
     log.info("settle_pending_credits: found pending", count=len(pending))
 
-    settled_count = 0
-    error_count = 0
-    emailed_runs: set[str] = set()  # avoid duplicate completion emails per run
-    spike_checked_runs: set[str] = set()  # avoid duplicate spike checks per run
-
+    # GR-09: dispatch spike checks (sync Celery calls, no async needed).
+    spike_checked_runs: set[str] = set()
     for row in pending:
         run_id_str = str(row["collection_run_id"])
-        try:
-            asyncio.run(settle_single_reservation(row))
-            log.info(
-                "settle_pending_credits: settled",
-                txn_id=str(row["txn_id"]),
-                run_id=run_id_str,
-                arena=row["arena"],
-                platform=row["platform"],
-                credits=row["reserved_credits"],
-            )
-            settled_count += 1
-
-            if run_id_str not in emailed_runs:
-                user_email: str | None = row.get("user_email")
-                if user_email:
-                    try:
-                        asyncio.run(
-                            email_service.send_collection_complete(
-                                user_email=user_email,
-                                run_id=row["collection_run_id"],
-                                records_collected=row.get("records_collected") or 0,
-                            )
-                        )
-                        emailed_runs.add(run_id_str)
-                    except Exception as email_exc:
-                        log.warning(
-                            "settle_pending_credits: completion email failed",
-                            run_id=run_id_str,
-                            error=str(email_exc),
-                        )
-
-            # GR-09: dispatch spike check once per completed run, but only
-            # when the run is associated with a query design (batch/live runs
-            # spawned by trigger_daily_collection always have one; ad-hoc runs
-            # created via the API may not).
-            if run_id_str not in spike_checked_runs:
-                query_design_id = row.get("query_design_id")
-                if query_design_id is not None:
-                    try:
-                        celery_app.send_task(
-                            "issue_observatory.workers.tasks.check_volume_spikes",
-                            kwargs={
-                                "collection_run_id": run_id_str,
-                                "query_design_id": str(query_design_id),
-                            },
-                            queue="celery",
-                        )
-                        spike_checked_runs.add(run_id_str)
-                        log.info(
-                            "settle_pending_credits: dispatched spike check",
-                            run_id=run_id_str,
-                            query_design_id=str(query_design_id),
-                        )
-                    except Exception as spike_exc:
-                        log.warning(
-                            "settle_pending_credits: spike check dispatch failed",
-                            run_id=run_id_str,
-                            error=str(spike_exc),
-                        )
-
-        except Exception as exc:
-            log.error(
-                "settle_pending_credits: settlement failed",
-                txn_id=str(row.get("txn_id")),
-                run_id=run_id_str,
-                error=str(exc),
-                exc_info=True,
-            )
-            error_count += 1
+        if run_id_str not in spike_checked_runs:
+            query_design_id = row.get("query_design_id")
+            if query_design_id is not None:
+                try:
+                    celery_app.send_task(
+                        "issue_observatory.workers.tasks.check_volume_spikes",
+                        kwargs={
+                            "collection_run_id": run_id_str,
+                            "query_design_id": str(query_design_id),
+                        },
+                        queue="celery",
+                    )
+                    spike_checked_runs.add(run_id_str)
+                    log.info(
+                        "settle_pending_credits: dispatched spike check",
+                        run_id=run_id_str,
+                        query_design_id=str(query_design_id),
+                    )
+                except Exception as spike_exc:
+                    log.warning(
+                        "settle_pending_credits: spike check dispatch failed",
+                        run_id=run_id_str,
+                        error=str(spike_exc),
+                    )
 
     summary = {"settled_count": settled_count, "error_count": error_count}
     log.info("settle_pending_credits: complete", **summary)
@@ -716,11 +799,21 @@ def cleanup_stale_runs() -> dict[str, Any]:
     log = logger.bind(task="cleanup_stale_runs")
     log.info("cleanup_stale_runs: starting")
 
+    # Single asyncio.run() for all async DB work to avoid asyncpg
+    # connection pool / event loop mismatch errors.
+    async def _cleanup_stale() -> tuple[list[dict], int]:
+        _stale = await fetch_stale_runs()
+        if not _stale:
+            return _stale, 0
+        _run_ids = [row["id"] for row in _stale]
+        _failed = await mark_runs_failed(_run_ids)
+        return _stale, _failed
+
     try:
-        stale = asyncio.run(fetch_stale_runs())
+        stale, runs_failed = asyncio.run(_cleanup_stale())
     except Exception as exc:
         log.error(
-            "cleanup_stale_runs: DB error fetching stale runs",
+            "cleanup_stale_runs: DB error",
             error=str(exc),
             exc_info=True,
         )
@@ -730,18 +823,7 @@ def cleanup_stale_runs() -> dict[str, Any]:
         log.info("cleanup_stale_runs: no stale runs found")
         return {"runs_failed": 0}
 
-    run_ids = [row["id"] for row in stale]
-    log.info("cleanup_stale_runs: marking runs failed", count=len(run_ids))
-
-    try:
-        runs_failed = asyncio.run(mark_runs_failed(run_ids))
-    except Exception as exc:
-        log.error(
-            "cleanup_stale_runs: DB error marking runs failed",
-            error=str(exc),
-            exc_info=True,
-        )
-        return {"error": str(exc), "runs_failed": 0}
+    log.info("cleanup_stale_runs: marking runs failed", count=len(stale))
 
     summary = {"runs_failed": runs_failed}
     log.info("cleanup_stale_runs: complete", **summary)
@@ -930,11 +1012,17 @@ def enrich_collection_run(
 
     # --- Build enricher registry ---
     from issue_observatory.analysis.enrichments import (
+        EngagementScorer,
         LanguageDetector,
+        NamedEntityExtractor,
+        UrlExtractor,
     )
 
     _all_enrichers: list[Any] = [
         LanguageDetector(expected_languages=language_codes),
+        NamedEntityExtractor(),
+        UrlExtractor(),
+        EngagementScorer(),
     ]
 
     if enricher_names is not None:
@@ -991,6 +1079,12 @@ def enrich_collection_run(
             batch_size=len(batch),
         )
 
+        # Collect results per enricher for batch write
+        enricher_batches: dict[str, list[tuple[str, dict[str, Any]]]] = {
+            e.enricher_name: [] for e in enrichers
+        }
+        relational_queue: list[tuple[Any, dict, dict]] = []
+
         for record in batch:
             record_id = record.get("id")
             for enricher in enrichers:
@@ -998,13 +1092,12 @@ def enrich_collection_run(
                     continue
                 try:
                     result = asyncio.run(enricher.enrich(record))
-                    write_enrichment(record_id, enricher.enricher_name, result)
-                    enrichments_applied += 1
-                    log.debug(
-                        "enrich_collection_run: enrichment written",
-                        record_id=str(record_id),
-                        enricher=enricher.enricher_name,
+                    enricher_batches[enricher.enricher_name].append(
+                        (record_id, result)
                     )
+                    enrichments_applied += 1
+                    if hasattr(enricher, "write_relational"):
+                        relational_queue.append((enricher, record, result))
                 except Exception as exc:
                     log.error(
                         "enrich_collection_run: enrichment failed",
@@ -1017,8 +1110,35 @@ def enrich_collection_run(
 
             records_processed += 1
 
+        # Batch write all enrichment results per enricher
+        for ename, items in enricher_batches.items():
+            if items:
+                try:
+                    write_enrichment_batch(ename, items)
+                except Exception as exc:
+                    log.error(
+                        "enrich_collection_run: batch write failed",
+                        enricher=ename,
+                        batch_size=len(items),
+                        error=str(exc),
+                        exc_info=True,
+                    )
+                    error_count += len(items)
+                    enrichments_applied -= len(items)
+
+        for enricher, record, result in relational_queue:
+            try:
+                enricher.write_relational(record, result)
+            except Exception as rel_exc:
+                log.warning(
+                    "enrich_collection_run: write_relational failed",
+                    record_id=str(record.get("id")),
+                    enricher=enricher.enricher_name,
+                    error=str(rel_exc),
+                )
+
         offset += len(batch)
-        if len(batch) < 100:
+        if len(batch) < 500:
             break  # last partial batch; no more rows
 
     # -----------------------------------------------------------------------
@@ -1342,6 +1462,13 @@ async def _dispatch_batch_async(
     if only_collect_new:
         log.info("dispatch_batch_collection: only_collect_new mode enabled")
 
+    # "Actors only" collection mode — skip term-based collection entirely,
+    # dispatch only collect_by_actors using source lists.
+    _collection_mode = raw_arenas_config.get("_collection_mode", "default")
+    _actors_only = _collection_mode == "actors_only"
+    if _actors_only:
+        log.info("dispatch_batch_collection: actors_only collection mode active")
+
     # Extract language config from the original raw config (not the normalized one)
     config_languages = raw_arenas_config.get("languages") if isinstance(raw_arenas_config, dict) else None
     if isinstance(config_languages, list) and config_languages:
@@ -1389,6 +1516,16 @@ async def _dispatch_batch_async(
         except KeyError:
             log.warning(
                 "dispatch_batch_collection: arena not registered; skipping",
+                arena=platform_name,
+            )
+            skipped += 1
+            continue
+
+        # In actors-only mode, silently skip arenas that cannot collect by
+        # actors (term-only arenas like Google Search, GDELT, etc.).
+        if _actors_only and not getattr(collector_cls, "supports_actor_collection", False):
+            log.debug(
+                "dispatch_batch_collection: skipping term-only arena in actors_only mode",
                 arena=platform_name,
             )
             skipped += 1
@@ -1531,29 +1668,33 @@ async def _dispatch_batch_async(
                     )
 
         else:
-            # Dual-mode arena: always fetch search terms for collect_by_terms.
+            # Dual-mode arena: fetch search terms unless actors_only mode is active.
             terms_fetch_error: Exception | None = None
-            try:
-                arena_terms = await fetch_resolved_terms_for_arena(design_id, platform_name)
-                # Filter out terms that already have records (only_collect_new).
-                if only_collect_new and arena_terms:
-                    arena_terms = await filter_new_terms(
-                        str(design_id), platform_name, arena_terms
-                    )
-                    log.info(
-                        "only_collect_new: filtered terms",
-                        arena=platform_name,
-                        remaining=len(arena_terms),
-                    )
-                arena_terms_map[platform_name] = arena_terms
-            except Exception as terms_exc:
-                log.error(
-                    "dispatch_batch_collection: failed to fetch search terms",
-                    arena=platform_name,
-                    error=str(terms_exc),
-                )
+            if _actors_only:
+                # In actors-only mode, skip term fetching entirely.
                 arena_terms_map[platform_name] = []
-                terms_fetch_error = terms_exc
+            else:
+                try:
+                    arena_terms = await fetch_resolved_terms_for_arena(design_id, platform_name)
+                    # Filter out terms that already have records (only_collect_new).
+                    if only_collect_new and arena_terms:
+                        arena_terms = await filter_new_terms(
+                            str(design_id), platform_name, arena_terms
+                        )
+                        log.info(
+                            "only_collect_new: filtered terms",
+                            arena=platform_name,
+                            remaining=len(arena_terms),
+                        )
+                    arena_terms_map[platform_name] = arena_terms
+                except Exception as terms_exc:
+                    log.error(
+                        "dispatch_batch_collection: failed to fetch search terms",
+                        arena=platform_name,
+                        error=str(terms_exc),
+                    )
+                    arena_terms_map[platform_name] = []
+                    terms_fetch_error = terms_exc
 
             # Also check for a researcher-curated source list.  When present,
             # the sync dispatch loop will fire collect_by_actors alongside
@@ -1794,15 +1935,24 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
                     error=str(dispatch_exc),
                 )
                 try:
-                    async def _mark_failed_actors(
-                        _run_uuid: Any = run_uuid,
-                        _pn: str = platform_name,
-                        _exc: Exception = dispatch_exc,
-                    ) -> None:
-                        await mark_task_failed(
-                            _run_uuid, _pn, f"Celery dispatch failed: {_exc}"
+                    from issue_observatory.core.database import get_sync_session
+                    from sqlalchemy import text as _text
+
+                    with get_sync_session() as _sess:
+                        _sess.execute(
+                            _text(
+                                "UPDATE collection_tasks SET status = 'failed', "
+                                "error_message = :msg, completed_at = NOW() "
+                                "WHERE collection_run_id = :rid AND platform = :pn "
+                                "AND status NOT IN ('completed', 'failed', 'cancelled')"
+                            ),
+                            {
+                                "msg": f"Celery dispatch failed: {dispatch_exc}",
+                                "rid": str(run_uuid),
+                                "pn": platform_name,
+                            },
                         )
-                    asyncio.run(_mark_failed_actors())
+                        _sess.commit()
                 except Exception as mark_exc:
                     log.warning(
                         "dispatch_batch_collection: failed to mark actor-only task as failed",
@@ -1871,18 +2021,25 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
                         arena=platform_name,
                         error=str(dispatch_exc),
                     )
-                    # Mark the task as failed in the DB - use a separate async run
-                    # because we're in sync context after the main async block
                     try:
-                        async def _mark_failed(
-                            _run_uuid: Any = run_uuid,
-                            _pn: str = platform_name,
-                            _exc: Exception = dispatch_exc,
-                        ) -> None:
-                            await mark_task_failed(
-                                _run_uuid, _pn, f"Celery dispatch failed: {_exc}"
+                        from issue_observatory.core.database import get_sync_session
+                        from sqlalchemy import text as _text
+
+                        with get_sync_session() as _sess:
+                            _sess.execute(
+                                _text(
+                                    "UPDATE collection_tasks SET status = 'failed', "
+                                    "error_message = :msg, completed_at = NOW() "
+                                    "WHERE collection_run_id = :rid AND platform = :pn "
+                                    "AND status NOT IN ('completed', 'failed', 'cancelled')"
+                                ),
+                                {
+                                    "msg": f"Celery dispatch failed: {dispatch_exc}",
+                                    "rid": str(run_uuid),
+                                    "pn": platform_name,
+                                },
                             )
-                        asyncio.run(_mark_failed())
+                            _sess.commit()
                     except Exception as mark_exc:
                         log.warning(
                             "dispatch_batch_collection: failed to mark task as failed",
@@ -1945,18 +2102,28 @@ def dispatch_batch_collection(self: Any, run_id: str) -> dict[str, Any]:
                     )
 
     # --- Update CollectionTask rows with celery_task_ids ---
+    # Uses sync DB session to avoid event-loop issues from repeated asyncio.run().
     if task_id_updates:
         try:
-            from issue_observatory.workers._task_helpers import (
-                update_task_celery_id,
-            )
-            # Batch all updates into a single async context.
-            # Each entry is (platform_name, celery_task_id) — one entry per arena,
-            # always holding the FIRST (terms) task ID when both modes are dispatched.
-            async def _update_all_ids() -> None:
-                for platform_name_key, celery_task_id in task_id_updates:
-                    await update_task_celery_id(run_uuid, platform_name_key, celery_task_id)
-            asyncio.run(_update_all_ids())
+            from sqlalchemy import text as _text
+
+            from issue_observatory.core.database import get_sync_session
+
+            with get_sync_session() as session:
+                for platform_name_key, celery_task_id_val in task_id_updates:
+                    session.execute(
+                        _text(
+                            "UPDATE collection_tasks "
+                            "SET celery_task_id = :tid "
+                            "WHERE collection_run_id = :run_id AND platform = :platform"
+                        ),
+                        {
+                            "tid": celery_task_id_val,
+                            "run_id": str(run_uuid),
+                            "platform": platform_name_key,
+                        },
+                    )
+                session.commit()
             log.info(
                 "dispatch_batch_collection: updated celery_task_ids",
                 count=len(task_id_updates),
@@ -2018,9 +2185,50 @@ async def _check_batch_async(run_uuid: Any) -> dict[str, Any] | None:
 
     Consolidates all async DB calls into one event loop to avoid asyncpg
     connection pool corruption from multiple asyncio.run() calls.
+
+    Also performs early comment triggering: checks which comment-enabled
+    platforms have their post tasks completed and returns the list of
+    platforms ready for comment collection.
     """
     result = await check_all_tasks_terminal(run_uuid)
-    if result is None or not result["all_done"]:
+    if result is None:
+        return result
+
+    # --- Early comment triggering ---
+    # Check which comment-enabled platforms are ready, regardless of whether
+    # all tasks are done.  This allows comment collection to start as soon as
+    # a platform's posts are collected, without waiting for other arenas.
+    comment_ready: list[str] = []
+    comment_check_ok = False
+    try:
+        run_details = await fetch_batch_run_details(str(run_uuid))
+        run_status = run_details.get("status") if run_details else None
+        project_id = run_details.get("project_id") if run_details else None
+        # Skip comment triggering for cancelled/failed runs
+        if project_id and run_status not in ("cancelled", "failed"):
+            comments_config = await fetch_project_comments_config(str(project_id))
+            # Get list of platforms that have comments enabled
+            comment_platforms = [
+                p for p, cfg in comments_config.items()
+                if isinstance(cfg, dict) and cfg.get("enabled", False)
+                and p in _COMMENT_TASK_MAP
+            ]
+            if comment_platforms:
+                comment_ready = await check_comment_ready_platforms(
+                    run_uuid, comment_platforms,
+                )
+        comment_check_ok = True
+    except Exception as _comment_exc:
+        import structlog as _sl
+        _sl.get_logger().warning(
+            "_check_batch_async: early comment check failed, will retry next poll",
+            run_id=str(run_uuid),
+            error=str(_comment_exc),
+        )
+    result["comment_ready_platforms"] = comment_ready
+    result["comment_check_ok"] = comment_check_ok
+
+    if not result["all_done"]:
         return result
 
     # All tasks terminal: determine final status and update DB
@@ -2115,6 +2323,26 @@ def check_batch_completion(run_id: str, attempt: int = 1) -> dict[str, Any]:
             run_id=run_id,
         )
 
+    # --- Early per-platform comment triggering ---
+    # Trigger comment collection for platforms whose post tasks are done,
+    # without waiting for all other arenas to finish.
+    comment_ready = result.get("comment_ready_platforms", [])
+    if comment_ready:
+        log.info(
+            "check_batch_completion: triggering early comment collection",
+            platforms=comment_ready,
+        )
+        try:
+            trigger_comment_collection.delay(
+                run_id, only_platforms=comment_ready,
+            )
+        except Exception as exc:
+            log.warning(
+                "check_batch_completion: early comment trigger failed",
+                platforms=comment_ready,
+                error=str(exc),
+            )
+
     if not result["all_done"]:
         if attempt >= _CHECK_BATCH_MAX_ATTEMPTS:
             log.error(
@@ -2195,14 +2423,16 @@ def check_batch_completion(run_id: str, attempt: int = 1) -> dict[str, Any]:
                 error=str(exc),
             )
 
-    # Dispatch Phase 2 comment collection if any platforms are enabled
-    if final_status == "completed":
+    # Safety-net: if the early comment check failed (exception in
+    # _check_batch_async), fire the blanket trigger so no platforms are missed.
+    comment_check_ok = result.get("comment_check_ok", False)
+    if final_status == "completed" and not comment_check_ok:
         try:
             trigger_comment_collection.delay(run_id)
-            log.info("check_batch_completion: comment collection triggered")
+            log.info("check_batch_completion: safety-net comment trigger dispatched")
         except Exception as exc:
             log.warning(
-                "check_batch_completion: comment collection dispatch failed",
+                "check_batch_completion: safety-net comment trigger failed",
                 error=str(exc),
             )
 
@@ -2243,16 +2473,21 @@ _COMMENT_DEFAULT_TIER: dict[str, str] = {
 async def _trigger_comments_async(
     collection_run_id: str,
     log: Any,
+    only_platforms: list[str] | None = None,
 ) -> dict[str, Any]:
     """Single async context for all comment-collection DB operations.
 
     Consolidates every async call into one event loop to avoid the asyncpg
     ``attached to a different loop`` error that occurs when ``asyncio.run()``
     is called multiple times within one Celery task.
+
+    Args:
+        collection_run_id: UUID string of the collection run.
+        log: Structured logger instance.
+        only_platforms: If provided, only trigger comments for these specific
+            platforms (used for early per-platform triggering).
     """
     import uuid as _uuid
-
-    from issue_observatory.workers._task_helpers import create_collection_tasks
 
     # --- 1. Fetch run details ---
     run_details = await fetch_batch_run_details(collection_run_id)
@@ -2282,6 +2517,8 @@ async def _trigger_comments_async(
         if not isinstance(platform_config, dict):
             continue
         if not platform_config.get("enabled", False):
+            continue
+        if only_platforms is not None and platform not in only_platforms:
             continue
         if platform not in _COMMENT_TASK_MAP:
             log.warning(
@@ -2317,16 +2554,53 @@ async def _trigger_comments_async(
         depth = platform_config.get("depth", 1)
         arena_label = f"{platform}_comments"
 
-        # Create CollectionTask row for tracking
+        # Create CollectionTask row for tracking.  Only skip if a comment
+        # task is currently pending or running for this platform (prevents
+        # concurrent duplicate dispatch).  Completed tasks do NOT block
+        # re-dispatch — the post list from fetch_posts_for_comment_collection
+        # already excludes posts that have comments, so a non-empty list
+        # means there is genuinely new work to do.
         try:
-            await create_collection_tasks(
-                collection_run_id=_uuid.UUID(collection_run_id),
-                arena_tasks=[{
-                    "arena": arena_label,
-                    "platform": platform,
-                    "tier": tier,
-                }],
+            from sqlalchemy import select as sa_select
+
+            from issue_observatory.core.database import AsyncSessionLocal
+            from issue_observatory.core.models.collection import (
+                CollectionRun as CRModel,
             )
+            from issue_observatory.core.models.collection import (
+                CollectionTask as CTModel,
+            )
+
+            run_uuid_parsed = _uuid.UUID(collection_run_id)
+            async with AsyncSessionLocal() as db:
+                # Check across all runs in this project, not just the current run.
+                project_run_ids = (
+                    sa_select(CRModel.id)
+                    .where(CRModel.project_id == project_id)
+                    .scalar_subquery()
+                )
+                in_flight = await db.execute(
+                    sa_select(CTModel.id).where(
+                        CTModel.collection_run_id.in_(project_run_ids),
+                        CTModel.arena == arena_label,
+                        CTModel.status.in_(["pending", "running"]),
+                    ).limit(1)
+                )
+                if in_flight.scalar_one_or_none() is not None:
+                    log.debug(
+                        "trigger_comment_collection: %s task already in-flight "
+                        "in project — skipping duplicate dispatch",
+                        arena_label,
+                    )
+                    continue
+
+                db.add(CTModel(
+                    collection_run_id=run_uuid_parsed,
+                    arena=arena_label,
+                    platform=platform,
+                    status="pending",
+                ))
+                await db.commit()
         except Exception as exc:
             log.warning(
                 "trigger_comment_collection: failed to create task row for %s: %s",
@@ -2356,22 +2630,32 @@ async def _trigger_comments_async(
 def trigger_comment_collection(
     self: Any,
     collection_run_id: str,
+    only_platforms: list[str] | None = None,
 ) -> dict[str, Any]:
     """Dispatch comment collection tasks for enabled platforms (Phase 2).
 
-    Called after all Phase 1 (post collection) arena tasks complete.
+    Called after post collection arena tasks complete.  When *only_platforms*
+    is provided, only triggers comments for those specific platforms (used for
+    early per-platform triggering as each platform's posts finish).
+
     Loads the project's ``comments_config``, queries for qualifying posts,
     creates ``CollectionTask`` rows, and dispatches per-platform Celery tasks.
 
     All async DB operations are consolidated into a single ``asyncio.run()``
     call to avoid asyncpg event-loop contamination.
     """
-    log = logger.bind(task="trigger_comment_collection", run_id=collection_run_id)
+    log = logger.bind(
+        task="trigger_comment_collection",
+        run_id=collection_run_id,
+        only_platforms=only_platforms,
+    )
     log.info("trigger_comment_collection: starting")
 
     # --- Single asyncio.run() for all DB operations ---
     try:
-        result = asyncio.run(_trigger_comments_async(collection_run_id, log))
+        result = asyncio.run(
+            _trigger_comments_async(collection_run_id, log, only_platforms=only_platforms)
+        )
     except Exception as exc:
         log.error("trigger_comment_collection: async operations failed", error=str(exc))
         return {"error": str(exc), "platforms_dispatched": 0}
@@ -2421,3 +2705,505 @@ def trigger_comment_collection(
         "platforms_dispatched": platforms_dispatched,
         "total_posts": total_posts,
     }
+
+
+# ---------------------------------------------------------------------------
+# Task: enrich_all_pending
+# ---------------------------------------------------------------------------
+
+
+#: Default enrichers run by :func:`enrich_all_pending` when no explicit list
+#: is provided.
+_DEFAULT_PENDING_ENRICHERS: list[str] = [
+    "language_detection", "actor_roles", "url_extraction", "engagement_score",
+]
+
+
+@celery_app.task(
+    name="issue_observatory.workers.tasks.enrich_all_pending",
+    bind=True,
+    max_retries=2,
+)
+def enrich_all_pending(
+    self: Any,
+    enricher_names: list[str] | None = None,
+) -> dict[str, Any]:
+    """Enrich all content records that are missing one or more enrichments.
+
+    Designed to be triggered nightly by Celery Beat (00:00 Copenhagen time).
+    For each enricher in ``enricher_names`` the task pages through every
+    content record whose ``raw_metadata.enrichments.<name>`` key is absent,
+    applies the enricher, and writes the result back via ``jsonb_set``.
+
+    Each enricher is processed independently so that a failure in one (e.g.
+    spaCy model not available) does not prevent other enrichers from running.
+
+    Args:
+        enricher_names: List of :attr:`ContentEnricher.enricher_name` values
+            to run.  Defaults to ``["language_detection", "actor_roles"]``.
+
+    Returns:
+        Dict with per-enricher stats: ``records_processed``,
+        ``enrichments_applied``, ``error_count``, and an ``enrichers``
+        sub-dict keyed by enricher name.
+    """
+    _task_start = time.perf_counter()
+    names_to_run: list[str] = (
+        enricher_names if enricher_names is not None else _DEFAULT_PENDING_ENRICHERS
+    )
+    log = logger.bind(task="enrich_all_pending", enricher_names=names_to_run)
+    log.info("enrich_all_pending: starting")
+
+    # --- Build enricher instances ---
+    from issue_observatory.analysis.enrichments import (
+        EngagementScorer,
+        LanguageDetector,
+        NamedEntityExtractor,
+        UrlExtractor,
+    )
+
+    _registry: dict[str, Any] = {
+        "language_detection": LanguageDetector(),
+        "actor_roles": NamedEntityExtractor(),
+        "url_extraction": UrlExtractor(),
+        "engagement_score": EngagementScorer(),
+    }
+
+    enrichers: list[Any] = []
+    for name in names_to_run:
+        enricher = _registry.get(name)
+        if enricher is None:
+            log.warning(
+                "enrich_all_pending: unknown enricher name — skipping",
+                enricher=name,
+            )
+        else:
+            enrichers.append(enricher)
+
+    if not enrichers:
+        log.warning("enrich_all_pending: no valid enrichers; exiting")
+        return {
+            "records_processed": 0,
+            "enrichments_applied": 0,
+            "error_count": 0,
+            "enrichers": {},
+        }
+
+    # --- Per-enricher totals ---
+    total_records_processed = 0
+    total_enrichments_applied = 0
+    total_error_count = 0
+    per_enricher: dict[str, dict[str, int]] = {}
+
+    for enricher in enrichers:
+        ename: str = enricher.enricher_name
+        e_records = 0
+        e_applied = 0
+        e_errors = 0
+        offset = 0
+
+        log.info("enrich_all_pending: processing enricher", enricher=ename)
+
+        while True:
+            try:
+                if ename == "engagement_score":
+                    batch = fetch_unenriched_for_engagement(offset=offset)
+                else:
+                    batch = fetch_unenriched_content_records(ename, offset=offset)
+            except Exception as exc:
+                log.error(
+                    "enrich_all_pending: DB error fetching batch",
+                    enricher=ename,
+                    offset=offset,
+                    error=str(exc),
+                    exc_info=True,
+                )
+                e_errors += 1
+                break  # move on to next enricher rather than retrying forever
+
+            if not batch:
+                break  # all unenriched records for this enricher consumed
+
+            log.debug(
+                "enrich_all_pending: processing batch",
+                enricher=ename,
+                offset=offset,
+                batch_size=len(batch),
+            )
+
+            # Collect enrichment results for batch write
+            batch_items: list[tuple[str, dict[str, Any]]] = []
+            relational_queue: list[tuple[dict, dict]] = []
+
+            for record in batch:
+                record_id = record.get("id")
+                if not enricher.is_applicable(record):
+                    e_records += 1
+                    continue
+                try:
+                    result = asyncio.run(enricher.enrich(record))
+                    batch_items.append((record_id, result))
+                    e_applied += 1
+                    # Queue relational writes for after the batch commit
+                    if hasattr(enricher, "write_relational"):
+                        relational_queue.append((record, result))
+                except Exception as exc:
+                    log.error(
+                        "enrich_all_pending: enrichment failed",
+                        record_id=str(record_id),
+                        enricher=ename,
+                        error=str(exc),
+                        exc_info=True,
+                    )
+                    e_errors += 1
+                e_records += 1
+
+            # Batch write all enrichment results in one transaction
+            if batch_items:
+                try:
+                    write_enrichment_batch(ename, batch_items)
+                except Exception as exc:
+                    log.error(
+                        "enrich_all_pending: batch write failed",
+                        enricher=ename,
+                        batch_size=len(batch_items),
+                        error=str(exc),
+                        exc_info=True,
+                    )
+                    e_errors += len(batch_items)
+                    e_applied -= len(batch_items)
+
+            # Write relational data (e.g. extracted_urls rows)
+            for record, result in relational_queue:
+                try:
+                    enricher.write_relational(record, result)
+                except Exception as rel_exc:
+                    log.warning(
+                        "enrich_all_pending: write_relational failed",
+                        record_id=str(record.get("id")),
+                        enricher=ename,
+                        error=str(rel_exc),
+                    )
+
+            offset += len(batch)
+            if len(batch) < 500:
+                break  # last partial batch; no more rows
+
+        log.info(
+            "enrich_all_pending: enricher complete",
+            enricher=ename,
+            records_processed=e_records,
+            enrichments_applied=e_applied,
+            error_count=e_errors,
+        )
+        per_enricher[ename] = {
+            "records_processed": e_records,
+            "enrichments_applied": e_applied,
+            "error_count": e_errors,
+        }
+        total_records_processed += e_records
+        total_enrichments_applied += e_applied
+        total_error_count += e_errors
+
+    summary: dict[str, Any] = {
+        "records_processed": total_records_processed,
+        "enrichments_applied": total_enrichments_applied,
+        "error_count": total_error_count,
+        "enrichers": per_enricher,
+    }
+    log.info(
+        "enrich_all_pending: complete",
+        duration_seconds=round(time.perf_counter() - _task_start, 1),
+        **{k: v for k, v in summary.items() if k != "enrichers"},
+    )
+    try:
+        from issue_observatory.api.metrics import (
+            celery_task_duration_seconds,
+            celery_tasks_total,
+        )
+
+        celery_tasks_total.labels(task_name="enrich_all_pending", status="success").inc()
+        celery_task_duration_seconds.labels(task_name="enrich_all_pending").observe(
+            time.perf_counter() - _task_start
+        )
+    except Exception as _metrics_exc:
+        _stdlib_logger.debug(
+            "enrich_all_pending: metrics recording failed: %s", _metrics_exc
+        )
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Task: refit_engagement_scalers
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(
+    name="issue_observatory.workers.tasks.refit_engagement_scalers",
+    bind=True,
+    max_retries=1,
+    soft_time_limit=3_600,  # 1 hour
+    time_limit=5_400,  # 1.5 hours
+)
+def refit_engagement_scalers(
+    self: Any,
+) -> dict[str, Any]:
+    """Weekly task: fit per-platform engagement scalers from actual data.
+
+    Samples engagement data per platform, fits Yeo-Johnson + MinMaxScaler
+    transformers, and persists parameters to the ``engagement_scalers`` table.
+    Requires ``scikit-learn`` and ``numpy``.
+
+    Returns:
+        Dict with per-platform fitting results.
+    """
+    _task_start = time.perf_counter()
+    log = logger.bind(task="refit_engagement_scalers")
+    log.info("refit_engagement_scalers: starting")
+
+    try:
+        from issue_observatory.analysis.enrichments.engagement_scorer import (
+            fit_engagement_scalers,
+        )
+
+        results = fit_engagement_scalers()
+        fitted_count = sum(1 for v in results.values() if v.get("status") == "fitted")
+        skipped_count = sum(1 for v in results.values() if v.get("status") == "skipped")
+        log.info(
+            "refit_engagement_scalers: complete",
+            fitted=fitted_count,
+            skipped=skipped_count,
+            duration_seconds=round(time.perf_counter() - _task_start, 1),
+        )
+        return {"fitted": fitted_count, "skipped": skipped_count, "details": results}
+    except Exception as exc:
+        log.error(
+            "refit_engagement_scalers: failed",
+            error=str(exc),
+            exc_info=True,
+        )
+        return {"error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# Task: backfill_url_extraction
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(
+    name="issue_observatory.workers.tasks.backfill_url_extraction",
+    bind=True,
+    max_retries=0,
+    soft_time_limit=14_400,  # 4 hours
+    time_limit=18_000,  # 5 hours
+)
+def backfill_url_extraction(
+    self: Any,
+    batch_size: int = 500,
+) -> dict[str, Any]:
+    """One-shot backfill of URL extraction for all existing content records.
+
+    Uses larger batch sizes than the nightly enrichment for faster processing.
+    Idempotent: the UNIQUE constraint on ``extracted_urls`` and the JSONB key
+    check in :func:`fetch_unenriched_for_url_extraction` make it safe to
+    re-run.
+
+    Args:
+        batch_size: Number of records to process per DB round-trip.  Defaults
+            to 500.
+
+    Returns:
+        Dict with ``records_processed``, ``enrichments_applied``, and
+        ``error_count``.
+    """
+    from issue_observatory.analysis.enrichments import UrlExtractor
+
+    log = logger.bind(task="backfill_url_extraction")
+    log.info("backfill_url_extraction: starting", batch_size=batch_size)
+
+    enricher = UrlExtractor()
+    records_processed = 0
+    enrichments_applied = 0
+    error_count = 0
+    offset = 0
+
+    while True:
+        try:
+            batch = fetch_unenriched_for_url_extraction(offset=offset, limit=batch_size)
+        except Exception as exc:
+            log.error(
+                "backfill_url_extraction: DB error fetching batch",
+                offset=offset,
+                error=str(exc),
+                exc_info=True,
+            )
+            break
+
+        if not batch:
+            break
+
+        log.info(
+            "backfill_url_extraction: processing batch",
+            offset=offset,
+            batch_size=len(batch),
+        )
+
+        for record in batch:
+            record_id = record["id"]
+            records_processed += 1
+            if not enricher.is_applicable(record):
+                continue
+            try:
+                result = asyncio.run(enricher.enrich(record))
+                write_enrichment(record_id, enricher.enricher_name, result)
+                if hasattr(enricher, "write_relational"):
+                    enricher.write_relational(record, result)
+                enrichments_applied += 1
+            except Exception as exc:
+                log.error(
+                    "backfill_url_extraction: enrichment failed",
+                    record_id=str(record_id),
+                    error=str(exc),
+                    exc_info=True,
+                )
+                error_count += 1
+
+        offset += len(batch)
+        if len(batch) < batch_size:
+            break
+
+    summary = {
+        "records_processed": records_processed,
+        "enrichments_applied": enrichments_applied,
+        "error_count": error_count,
+    }
+    log.info("backfill_url_extraction: complete", **summary)
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Task: backfill_search_terms_for_design
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(
+    name="issue_observatory.workers.tasks.backfill_search_terms_for_design",
+    bind=False,
+)
+def backfill_search_terms_for_design(query_design_id: str) -> dict[str, Any]:
+    """Re-scan all content records for a query design and update search_terms_matched.
+
+    Triggered automatically when search terms are added to or removed from a
+    query design.  Loads the current set of active terms, then for each record
+    belonging to the design, performs case-insensitive substring matching on
+    ``title`` + ``text_content`` and rebuilds ``search_terms_matched`` from
+    scratch.
+
+    This ensures that records collected before a term was added (or after a
+    term was removed) have an accurate ``search_terms_matched`` array and
+    ``term_matched`` flag.
+
+    Processes records in batches of 5000 to limit memory usage.
+
+    Args:
+        query_design_id: UUID string of the query design whose terms changed.
+
+    Returns:
+        Dict with ``records_scanned`` and ``records_updated`` counts.
+    """
+    log = logger.bind(
+        task="backfill_search_terms_for_design",
+        query_design_id=query_design_id,
+    )
+    log.info("backfill_search_terms_for_design: starting")
+
+    from sqlalchemy import text as sa_text
+
+    from issue_observatory.core.database import get_sync_session
+    from issue_observatory.workers._task_helpers import _match_terms_in_text
+
+    batch_size = 5000
+    records_scanned = 0
+    records_updated = 0
+
+    with get_sync_session() as session:
+        # Fetch current active terms for this design.
+        term_rows = session.execute(
+            sa_text(
+                "SELECT term FROM search_terms "
+                "WHERE query_design_id = CAST(:qd_id AS uuid) AND is_active = true"
+            ),
+            {"qd_id": query_design_id},
+        ).fetchall()
+        terms = [row[0] for row in term_rows] if term_rows else []
+
+        log.info(
+            "backfill_search_terms_for_design: loaded terms",
+            term_count=len(terms),
+        )
+
+        offset = 0
+        while True:
+            rows = session.execute(
+                sa_text("""
+                    SELECT id, text_content, title, search_terms_matched
+                    FROM content_records
+                    WHERE query_design_id = CAST(:qd_id AS uuid)
+                    ORDER BY id
+                    LIMIT :limit OFFSET :offset
+                """),
+                {"qd_id": query_design_id, "limit": batch_size, "offset": offset},
+            ).fetchall()
+
+            if not rows:
+                break
+
+            records_scanned += len(rows)
+
+            for row in rows:
+                matched = _match_terms_in_text(row.text_content, row.title, terms)
+                old = sorted(row.search_terms_matched or [])
+                new = sorted(matched)
+
+                if old == new:
+                    continue
+
+                # Build PostgreSQL array literal.
+                arr_literal = (
+                    "{"
+                    + ",".join(
+                        '"'
+                        + t.replace("\\", "\\\\").replace('"', '\\"')
+                        + '"'
+                        for t in matched
+                    )
+                    + "}"
+                )
+                session.execute(
+                    sa_text("""
+                        UPDATE content_records
+                        SET search_terms_matched = CAST(:terms AS text[]),
+                            term_matched = :has_terms
+                        WHERE id = CAST(:id AS uuid)
+                    """),
+                    {
+                        "id": str(row.id),
+                        "terms": arr_literal,
+                        "has_terms": len(matched) > 0,
+                    },
+                )
+                records_updated += 1
+
+            session.commit()
+            offset += len(rows)
+
+            if len(rows) < batch_size:
+                break
+
+    summary = {
+        "records_scanned": records_scanned,
+        "records_updated": records_updated,
+        "terms_count": len(terms),
+    }
+    log.info("backfill_search_terms_for_design: complete", **summary)
+    return summary

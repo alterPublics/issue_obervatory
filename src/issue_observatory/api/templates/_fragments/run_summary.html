@@ -102,6 +102,11 @@
             <p class="text-lg font-bold text-gray-900 mt-0.5">
                 {{ run.records_collected | default(0) | int }}
             </p>
+            {% if run.records_linked | default(0) | int > 0 %}
+            <p class="text-xs text-gray-500 mt-0.5">
+                + {{ run.records_linked | int }} linked from prior runs
+            </p>
+            {% endif %}
         </div>
         <div>
             <p class="text-xs text-gray-500">Credits used</p>

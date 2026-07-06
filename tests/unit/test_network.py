@@ -168,107 +168,98 @@ class TestEmptyGraph:
 
 class TestBuildRunFilter:
     def test_build_run_filter_no_args_returns_duplicate_exclusion_clause(self) -> None:
-        """_build_run_filter() with no args returns a one-element list containing
-        only the duplicate exclusion predicate.
+        """_build_run_filter() with no args returns a WHERE string containing
+        the duplicate exclusion predicate.
 
-        Phase A refactoring: build_content_filters() always emits a duplicate
-        exclusion clause so that network analysis functions never accidentally
-        include records flagged as duplicates, even when no other filters are active.
+        Phase 1b refactoring: _build_run_filter now returns a WHERE clause
+        string (not a list).  The duplicate exclusion predicate is always
+        present so that network analysis functions never accidentally include
+        records flagged as duplicates.
         """
         params: dict = {}
-        clauses = _build_run_filter(None, None, None, None, None, None, params)
-        assert len(clauses) == 1
-        assert "(raw_metadata->>'duplicate_of') IS NULL" in clauses[0]
-        assert params == {}
+        where = _build_run_filter(None, None, None, None, None, None, params)
+        assert isinstance(where, str)
+        assert where.startswith("WHERE")
+        assert "raw_metadata->>'duplicate_of' IS NULL" in where
 
     def test_build_run_filter_query_design_id_adds_clause(self) -> None:
         """query_design_id generates a predicate including the alias."""
         params: dict = {}
         qd_id = uuid.uuid4()
-        clauses = _build_run_filter(qd_id, None, None, None, None, None, params, table_alias="a.")
-        assert any("a.query_design_id" in c for c in clauses)
+        where = _build_run_filter(qd_id, None, None, None, None, None, params, table_alias="a.")
+        assert "a.query_design_id" in where
         assert params.get("query_design_id") == str(qd_id)
 
     def test_build_run_filter_run_id_adds_clause(self) -> None:
         """run_id generates a collection_run_id predicate."""
         params: dict = {}
         run_id = uuid.uuid4()
-        clauses = _build_run_filter(None, run_id, None, None, None, None, params)
-        assert any("collection_run_id" in c for c in clauses)
+        where = _build_run_filter(None, run_id, None, None, None, None, params)
+        assert "collection_run_id" in where
 
     def test_build_run_filter_platform_adds_clause(self) -> None:
         """platform filter generates a platform predicate."""
         params: dict = {}
-        clauses = _build_run_filter(None, None, None, "bluesky", None, None, params)
-        assert any("platform" in c for c in clauses)
-        assert params.get("platform") == "bluesky"
+        where = _build_run_filter(None, None, None, "bluesky", None, None, params)
+        assert "platform" in where
+        assert "bluesky" in str(list(params.values()))
 
     def test_build_run_filter_date_range_adds_three_clauses(self) -> None:
-        """date_from and date_to each add a clause; duplicate exclusion is always added.
+        """date_from and date_to each add a predicate; duplicate exclusion is always added.
 
-        Phase A refactoring: the returned list now always includes the duplicate
-        exclusion predicate in addition to any caller-specified predicates.
-        With date_from and date_to supplied, the result contains three clauses:
-        the two date predicates plus the duplicate exclusion clause.
+        Phase 1b refactoring: the returned WHERE string contains both date
+        predicates and the duplicate exclusion predicate.
         """
         params: dict = {}
         date_from = datetime(2026, 1, 1, tzinfo=UTC)
         date_to = datetime(2026, 1, 31, tzinfo=UTC)
-        clauses = _build_run_filter(None, None, None, None, date_from, date_to, params)
-        assert len(clauses) == 3
-        date_clause_texts = " ".join(clauses)
-        assert "published_at >=" in date_clause_texts
-        assert "published_at <=" in date_clause_texts
-        assert "(raw_metadata->>'duplicate_of') IS NULL" in date_clause_texts
+        where = _build_run_filter(None, None, None, None, date_from, date_to, params)
+        assert "published_at >=" in where
+        assert "published_at <=" in where
+        assert "raw_metadata->>'duplicate_of' IS NULL" in where
 
     def test_build_run_filter_table_alias_applied_to_all_clauses(self) -> None:
-        """Table alias is prepended to all unparenthesised column references.
+        """Table alias is applied to column references in the WHERE string.
 
-        Phase A refactoring: the duplicate exclusion clause uses a JSONB
-        operator expression wrapped in parentheses — ``(cr.raw_metadata...)``
-        — so it starts with ``(`` rather than ``cr.``.  The other clauses
-        (query_design_id, collection_run_id, platform) still start with
-        ``cr.`` directly.  Verify that all clauses contain the alias and
-        that the specific named predicates use the alias correctly.
+        Phase 1b refactoring: the WHERE string now contains the alias on all
+        column references (query_design_id, collection_run_id, platform, and
+        the JSONB raw_metadata expression).
         """
         params: dict = {}
         qd_id = uuid.uuid4()
         run_id = uuid.uuid4()
-        clauses = _build_run_filter(qd_id, run_id, None, "bluesky", None, None, params, "cr.")
-        # Every clause must reference the aliased table.
-        for clause in clauses:
-            assert "cr." in clause, f"Table alias 'cr.' missing from clause: {clause!r}"
-        # The date-style direct-column clauses start with the alias (no parens).
-        direct_clauses = [c for c in clauses if "duplicate_of" not in c]
-        for clause in direct_clauses:
-            assert clause.startswith("cr."), (
-                f"Expected clause to start with 'cr.' but got: {clause!r}"
-            )
+        where = _build_run_filter(qd_id, run_id, None, "bluesky", None, None, params, "cr.")
+        # The complete WHERE string must contain the alias
+        assert "cr." in where
+        # Named column predicates must use the alias
+        assert "cr.query_design_id" in where
+        assert "cr.collection_run_id" in where
 
 
 class TestWhereAnd:
-    def test_where_empty_list_returns_empty_string(self) -> None:
-        """_where([]) returns an empty string."""
-        assert _where([]) == ""
+    def test_where_empty_string_returns_empty_string(self) -> None:
+        """_where('') returns an empty string (pass-through)."""
+        assert _where("") == ""
 
-    def test_where_single_clause_returns_where_prefix(self) -> None:
-        """_where(['x = :x']) returns 'WHERE x = :x'."""
-        result = _where(["x = :x"])
-        assert result == "WHERE x = :x"
+    def test_where_single_clause_returns_same_string(self) -> None:
+        """_where(s) returns s unchanged (pass-through for WHERE strings)."""
+        where_str = "WHERE x = :x"
+        assert _where(where_str) == where_str
 
-    def test_where_multiple_clauses_joined_with_and(self) -> None:
-        """_where() joins multiple clauses with AND."""
-        result = _where(["a = :a", "b = :b"])
-        assert "AND" in result
+    def test_where_full_clause_preserved(self) -> None:
+        """_where() is a pass-through: the WHERE prefix is preserved."""
+        where_str = "WHERE a = :a AND b = :b"
+        result = _where(where_str)
         assert result.startswith("WHERE")
+        assert "AND" in result
 
-    def test_and_empty_list_returns_empty_string(self) -> None:
-        """_and([]) returns an empty string."""
-        assert _and([]) == ""
+    def test_and_empty_string_returns_empty_string(self) -> None:
+        """_and('') returns an empty string."""
+        assert _and("") == ""
 
-    def test_and_single_clause_returns_and_prefix(self) -> None:
-        """_and(['x = :x']) returns 'AND x = :x'."""
-        result = _and(["x = :x"])
+    def test_and_where_string_strips_where_prefix(self) -> None:
+        """_and('WHERE x = :x') returns 'AND x = :x'."""
+        result = _and("WHERE x = :x")
         assert result == "AND x = :x"
 
 

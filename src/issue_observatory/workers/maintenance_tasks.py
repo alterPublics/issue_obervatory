@@ -248,6 +248,38 @@ def refresh_engagement_metrics(
         raise
 
 
+@celery_app.task(name="backfill_project_terms", bind=True)  # type: ignore[misc]
+def backfill_project_terms(
+    self: Any,
+    project_id: str,
+    batch_size: int = 5000,
+) -> dict[str, Any]:
+    """Re-evaluate ``term_matched`` for every record in a project using
+    all search terms across all query designs in the project.
+
+    Dispatched via ``POST /projects/{id}/backfill-terms``.
+
+    Args:
+        project_id: UUID string of the project.
+        batch_size: Number of records per batch (default 5000).
+
+    Returns:
+        Dict with ``scanned``, ``updated``, ``terms_count``.
+    """
+    log = logger.bind(task="backfill_project_terms", project_id=project_id)
+    log.info("backfill_project_terms.start")
+
+    from issue_observatory.workers._task_helpers import backfill_project_term_matching
+
+    try:
+        result = backfill_project_term_matching(project_id, batch_size=batch_size)
+        log.info("backfill_project_terms.complete", **result)
+        return result
+    except Exception as exc:
+        log.error("backfill_project_terms.failed", error=str(exc))
+        raise
+
+
 def _refresh_engagement_sync(sync_dsn: str, run_id: str, settings: Any) -> dict[str, Any]:
     """Execute engagement refresh inside a synchronous psycopg2 connection.
 

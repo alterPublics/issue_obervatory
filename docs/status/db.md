@@ -2,6 +2,7 @@
 
 ## Migrations Ready
 
+- [x] `042_add_content_filter_performance_indexes` — Phase 5 content filter performance: `idx_content_effective_lang` (functional expression on language fallback), `idx_content_not_duplicate` (partial btree for dedup exclusion predicate), `idx_content_type_post` (partial composite for posts-only default). Verified: `collection_run_id` already indexed via `idx_content_collection_run` (migration 001/004). Details at `docs/db/content_filter_indexes.md`.
 - [x] `001_initial_schema` — all core tables, indexes, and initial content_records partitions
 - [x] `002_add_arenas_config_to_query_designs` — adds `arenas_config JSONB NOT NULL DEFAULT '{}'` to `query_designs`; arena-config API endpoints now read/write this column directly instead of the `collection_runs` workaround
 - [x] `003_add_suspended_at_to_collection_runs` — adds `suspended_at TIMESTAMPTZ` column to `collection_runs`
@@ -224,6 +225,7 @@ job (`0 2 * * * docker compose --profile backup run --rm backup`) — see
 - [x] Entity resolution: fuzzy actor matching + merge/split (`core/entity_resolver.py`) — Task 3.9 COMPLETE
 - [x] B-02 FIXED: GEXF export extended to support three network types — Task 3.3 Phase-3 fix COMPLETE
 - [x] IP2-004 / IP2-024: Shared filter builder `_filters.py` created; duplicate exclusion added to all analysis queries — Phase A COMPLETE
+- [x] Phase 1b — Filter Centralisation: `analysis/_filters.py` deleted; all 18 analysis call sites across 6 files migrated to `ContentFilterSpec` + `build_content_where_sql` from `core/queries/content_filters.py`; `analysis/__init__.py` re-exports removed; `test_filters.py` rewritten for new API (26 tests); `test_network.py` updated for string-based `_build_run_filter`/`_and` — COMPLETE (2026-04-10)
 - [x] IP2-005: `_FLAT_COLUMNS` extended with `pseudonymized_author_id`, `content_hash`, `collection_run_id`, `query_design_id` — Phase A COMPLETE
 - [x] IP2-006: `_COLUMN_HEADERS` dict added; CSV/XLSX header rows now use human-readable labels; JSON format relabelled to "NDJSON (one record per line)" in analysis template — Phase A COMPLETE
 - [x] IP2-025: GEXF builders refactored to consume graph dicts from `network.py` rather than reconstructing networks from flat records — Phase A COMPLETE
@@ -599,7 +601,7 @@ The `normalize()` method signature should also be extended to accept and forward
 
 - **JSONB path queries**: All functions query `raw_metadata.enrichments.{enricher_name}` paths directly using PostgreSQL JSONB operators (`->`, `->>`).
 - **Graceful degradation**: All functions return empty lists when no enrichment data exists for the specified enricher. No exceptions are raised.
-- **Duplicate exclusion**: All queries use the `_build_content_filters()` helper from `_filters.py`, which automatically excludes records flagged as duplicates (`(raw_metadata->>'duplicate_of') IS NULL`).
+- **Duplicate exclusion**: All queries use `build_content_where_sql()` from `core/queries/content_filters.py` (via `ContentFilterSpec(include_duplicates=False)`), which automatically excludes records flagged as duplicates (`(raw_metadata->>'duplicate_of') IS NULL`). The legacy `analysis/_filters.py` module has been deleted (Phase 1b, 2026-04-10).
 - **Entity type aggregation**: `get_top_named_entities()` uses `array_agg(DISTINCT entity->>'label')` to collect all unique entity types (e.g., `["GPE", "LOC"]`) for entities mentioned in multiple contexts.
 - **Propagation filtering**: Only stories with `COUNT(DISTINCT arena) >= 2` are returned, so single-arena stories are excluded automatically.
 - **Coordination threshold**: Coordination signals require `COUNT(DISTINCT pseudonymized_author_id) >= 3` and a non-null `content_hash` to ensure meaningful clusters.

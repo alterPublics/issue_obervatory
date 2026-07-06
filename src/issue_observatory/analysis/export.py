@@ -38,6 +38,7 @@ import json
 import uuid as uuid_mod
 import xml.etree.ElementTree as ET
 from collections import defaultdict
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -51,12 +52,15 @@ logger = structlog.get_logger(__name__)
 
 #: Ordered list of flat columns written by CSV and XLSX exporters.
 _FLAT_COLUMNS: list[str] = [
+    "query_design",
     "platform",
     "arena",
+    "arena_category",
     "content_type",
     "title",
     "text_content",
     "url",
+    "links",
     "author_display_name",
     "pseudonymized_author_id",
     "published_at",
@@ -66,11 +70,9 @@ _FLAT_COLUMNS: list[str] = [
     "comments_count",
     "engagement_score",
     "language",
-    "collection_tier",
     "search_terms_matched",
+    "search_rank",
     "content_hash",
-    "collection_run_id",
-    "query_design_id",
 ]
 
 #: Human-readable column header labels for CSV and XLSX output.
@@ -79,12 +81,15 @@ _FLAT_COLUMNS: list[str] = [
 #: the labels written to the header row so that exported files are immediately
 #: legible to non-technical research users.
 _COLUMN_HEADERS: dict[str, str] = {
+    "query_design": "Query Design",
     "platform": "Platform",
     "arena": "Arena",
+    "arena_category": "Arena Category",
     "content_type": "Content Type",
     "title": "Title",
     "text_content": "Text Content",
     "url": "URL",
+    "links": "Links",
     "author_display_name": "Author",
     "pseudonymized_author_id": "Author ID (Pseudonymized)",
     "published_at": "Published At",
@@ -94,11 +99,9 @@ _COLUMN_HEADERS: dict[str, str] = {
     "comments_count": "Comments",
     "engagement_score": "Engagement Score",
     "language": "Language",
-    "collection_tier": "Collection Tier",
     "search_terms_matched": "Matched Search Terms",
+    "search_rank": "Search Rank",
     "content_hash": "Content Hash",
-    "collection_run_id": "Collection Run ID",
-    "query_design_id": "Query Design ID",
     # raw_metadata is an optional trailing column in CSV only (include_metadata=True).
     "raw_metadata": "Raw Metadata (JSON)",
 }
@@ -191,6 +194,63 @@ class ContentExporter:
 
         # UTF-8 BOM so Excel auto-detects encoding for Danish characters (æøå).
         return "\ufeff".encode() + buf.getvalue().encode("utf-8")
+
+    # ------------------------------------------------------------------
+    # CSV — streaming variant for unbounded exports
+    # ------------------------------------------------------------------
+
+    async def export_csv_stream(
+        self,
+        records_iter: AsyncIterator[dict[str, Any]],
+        include_metadata: bool = False,
+    ) -> AsyncIterator[bytes]:
+        """Stream CSV output row-by-row as UTF-8 chunks.
+
+        Unlike :meth:`export_csv`, this method never buffers the full result
+        set.  It is intended for large dashboard exports where the caller
+        paginates through a SQLAlchemy async result (``stream_scalars``,
+        ``yield_per``) and converts rows to dicts on the fly.  Memory stays
+        flat regardless of row count.
+
+        Emission order:
+
+        1. UTF-8 BOM + header row (one chunk).
+        2. One chunk per input record.
+
+        Args:
+            records_iter: An async iterator yielding content record dicts
+                (same shape as :meth:`export_csv`).
+            include_metadata: When True, append a trailing ``raw_metadata``
+                column serialized as a JSON string.
+
+        Yields:
+            ``bytes`` chunks suitable for a FastAPI ``StreamingResponse``.
+        """
+        import csv  # stdlib — always available
+
+        columns = list(_FLAT_COLUMNS)
+        if include_metadata:
+            columns.append("raw_metadata")
+
+        headers = [_COLUMN_HEADERS.get(col, col) for col in columns]
+
+        buf = io.StringIO()
+        writer = csv.writer(buf, lineterminator="\r\n")
+        writer.writerow(headers)
+        # BOM lets Excel auto-detect encoding for Danish characters (æøå).
+        yield "\ufeff".encode() + buf.getvalue().encode("utf-8")
+        buf.seek(0)
+        buf.truncate(0)
+
+        async for rec in records_iter:
+            row: list[str] = [_safe_str(rec.get(col)) for col in columns]
+            if include_metadata:
+                meta = rec.get("raw_metadata")
+                row[-1] = json.dumps(meta, ensure_ascii=False) if meta else ""
+            writer.writerow(row)
+            yield buf.getvalue().encode("utf-8")
+            buf.seek(0)
+            buf.truncate(0)
 
     # ------------------------------------------------------------------
     # XLSX
@@ -342,12 +402,12 @@ class ContentExporter:
         import uuid
 
         string_cols = [
-            "platform", "arena", "content_type", "title", "text_content",
-            "url", "author_display_name", "pseudonymized_author_id",
-            "language", "collection_tier",
-            "content_hash", "collection_run_id", "query_design_id",
+            "platform", "arena", "arena_category", "content_type",
+            "title", "text_content",
+            "url", "links", "author_display_name", "pseudonymized_author_id",
+            "language", "content_hash",
         ]
-        int_cols = ["views_count", "likes_count", "shares_count", "comments_count"]
+        int_cols = ["views_count", "likes_count", "shares_count", "comments_count", "search_rank"]
         float_cols = ["engagement_score"]
         ts_cols = ["published_at"]
 
@@ -754,33 +814,29 @@ class ContentExporter:
     # ------------------------------------------------------------------
 
     def _build_bipartite_gexf(self, graph: dict[str, Any]) -> bytes:
-        """Serialize a bipartite actor-term graph dict to GEXF.
+        """Serialize a bipartite graph dict to GEXF.
 
-        Consumes the graph dict format returned by
-        :func:`~issue_observatory.analysis.network.build_bipartite_network`:
+        Supports both the legacy graph format (from ``network.py``) and the new
+        format produced by ``network_builder.py``:
 
-        - **Actor nodes**: ``id`` (pseudonymized author id), ``label``
-          (display name), ``type`` = ``"actor"``
-        - **Term nodes**: ``id`` (prefixed with ``"term:"``), ``label``
-          (raw term string), ``type`` = ``"term"``
-        - **Edges**: ``source`` (actor id), ``target`` (``"term:"``-prefixed
-          term id), ``weight``
-
-        The graph dict is produced by the database query in ``network.py``
-        and therefore already excludes duplicate-flagged records.
+        Legacy format:
+        - Nodes have ``type`` (``"actor"`` / ``"term"``), ``platform``
+        New format (network_builder):
+        - Nodes have ``node_type`` (``"sender"`` / ``"keyword"`` / ``"entity"``),
+          ``doc_count``, optionally ``entity_type``
 
         Args:
-            graph: Graph dict ``{"nodes": [...], "edges": [...]}`` as returned
-                by :func:`~issue_observatory.analysis.network.build_bipartite_network`.
+            graph: Graph dict ``{"nodes": [...], "edges": [...]}``
 
         Returns:
             UTF-8 encoded GEXF XML bytes.
         """
-        gexf, graph_el = self._make_gexf_root("Bipartite actor-term network")
+        gexf, graph_el = self._make_gexf_root("Bipartite network")
 
         node_attrs = ET.SubElement(graph_el, "attributes", {"class": "node"})
         ET.SubElement(node_attrs, "attribute", {"id": "0", "title": "type", "type": "string"})
-        ET.SubElement(node_attrs, "attribute", {"id": "1", "title": "platform", "type": "string"})
+        ET.SubElement(node_attrs, "attribute", {"id": "1", "title": "doc_count", "type": "integer"})
+        ET.SubElement(node_attrs, "attribute", {"id": "2", "title": "entity_type", "type": "string"})
 
         edge_attrs = ET.SubElement(graph_el, "attributes", {"class": "edge"})
         ET.SubElement(edge_attrs, "attribute", {"id": "0", "title": "weight", "type": "float"})
@@ -791,12 +847,18 @@ class ContentExporter:
             label = str(node.get("label") or node_id)
             n = ET.SubElement(nodes_el, "node", {"id": node_id, "label": label})
             attvals = ET.SubElement(n, "attvalues")
+            # Support both old "type" and new "node_type" field names
+            node_type = str(node.get("node_type") or node.get("type") or "unknown")
             ET.SubElement(attvals, "attvalue", {
-                "for": "0", "value": str(node.get("type") or "actor"),
+                "for": "0", "value": node_type,
             })
-            # Actor nodes carry a platform value; term nodes get an empty string.
+            # Support both old "post_count"/"frequency" and new "doc_count"
+            doc_count = node.get("doc_count") or node.get("post_count") or node.get("frequency") or 0
             ET.SubElement(attvals, "attvalue", {
-                "for": "1", "value": str(node.get("platform") or ""),
+                "for": "1", "value": str(doc_count),
+            })
+            ET.SubElement(attvals, "attvalue", {
+                "for": "2", "value": str(node.get("entity_type") or ""),
             })
 
         edges_el = ET.SubElement(graph_el, "edges")

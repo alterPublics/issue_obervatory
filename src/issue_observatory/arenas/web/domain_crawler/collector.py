@@ -186,7 +186,7 @@ class DomainCrawlerCollector(ArenaCollector):
         supported_tiers: ``[Tier.FREE]``
     """
 
-    arena_name: str = "web"
+    arena_name: str = "news"
     platform_name: str = "domain_crawler"
     supported_tiers: list[Tier] = [Tier.FREE]
     temporal_mode: TemporalMode = TemporalMode.RECENT

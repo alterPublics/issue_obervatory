@@ -86,7 +86,7 @@ class GoogleSearchCollector(ArenaCollector):
             call.
     """
 
-    arena_name: str = "google_search"
+    arena_name: str = "search"
     platform_name: str = "google_search"
     supported_tiers: list[Tier] = [Tier.MEDIUM, Tier.PREMIUM]
     temporal_mode: TemporalMode = TemporalMode.RECENT

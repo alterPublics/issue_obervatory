@@ -487,6 +487,8 @@ class RedditCollector(ArenaCollector):
         seen_post_ids: set[str],
         credential_id: str,
         subreddit_string: str | None = None,
+        *,
+        _is_fallback: bool = False,
     ) -> tuple[int, set[str]]:
         """Search Reddit for a single term across Danish subreddits.
 
@@ -503,6 +505,9 @@ class RedditCollector(ArenaCollector):
                 When ``None``, falls back to :data:`DANISH_SUBREDDIT_SEARCH_STRING`.
                 Overridden by the GR-03 extra-subreddits merge in
                 :meth:`collect_by_terms`.
+            _is_fallback: Internal flag to prevent infinite recursion when
+                retrying individual subreddits after a Forbidden on the
+                multireddit string.
 
         Returns:
             Tuple of (number of records emitted, set of new post IDs seen).
@@ -565,12 +570,49 @@ class RedditCollector(ArenaCollector):
                 platform=self.platform_name,
             ) from exc
         except asyncprawcore.exceptions.Forbidden as exc:
-            logger.warning(
-                "reddit: forbidden access to subreddits %r for term=%r — skipping. error=%s",
-                DANISH_SUBREDDIT_SEARCH_STRING,
-                term,
-                exc,
-            )
+            if _is_fallback or "+" not in effective_subreddit_string:
+                # Already a single-subreddit fallback or no multireddit to
+                # split — just skip this subreddit.
+                logger.warning(
+                    "reddit: forbidden on subreddit %r for term=%r — skipping. error=%s",
+                    effective_subreddit_string,
+                    term,
+                    exc,
+                )
+            else:
+                # A single private/quarantined subreddit in the multireddit
+                # string causes the entire search to 403.  Fall back to
+                # searching each subreddit individually so the rest still
+                # produce results.
+                logger.warning(
+                    "reddit: forbidden on multireddit %r for term=%r — "
+                    "retrying subreddits individually. error=%s",
+                    effective_subreddit_string,
+                    term,
+                    exc,
+                )
+                for sub_name in effective_subreddit_string.split("+"):
+                    if collected >= max_results:
+                        break
+                    try:
+                        sub_collected, sub_seen = await self._search_term(
+                            reddit=reddit,
+                            term=term,
+                            max_results=max_results - collected,
+                            seen_post_ids=seen_post_ids | new_seen,
+                            credential_id=credential_id,
+                            subreddit_string=sub_name,
+                            _is_fallback=True,
+                        )
+                        collected += sub_collected
+                        new_seen.update(sub_seen)
+                    except Exception as sub_exc:
+                        logger.warning(
+                            "reddit: skipping subreddit %r for term=%r: %s",
+                            sub_name,
+                            term,
+                            sub_exc,
+                        )
         except asyncprawcore.exceptions.ResponseException as exc:
             if hasattr(exc, "response") and exc.response is not None:
                 status = exc.response.status
@@ -653,9 +695,11 @@ class RedditCollector(ArenaCollector):
         """Collect comments for a list of Reddit posts.
 
         Fetches comments for each post identified by ``platform_id`` in the
-        input dicts.  Uses ``replace_more(limit=0)`` to skip "load more" stubs,
-        minimising API calls.  Filters by comment depth and caps the number of
-        comments per post at ``max_comments_per_post``.
+        input dicts.  Expands collapsed comment chains via
+        ``replace_more(limit=10)`` to retrieve comments hidden behind "load
+        more" stubs (each expansion costs one API call).  Filters by comment
+        depth and caps the number of comments per post at
+        ``max_comments_per_post``.
 
         Args:
             post_ids: List of dicts each containing a ``platform_id`` key
@@ -698,10 +742,18 @@ class RedditCollector(ArenaCollector):
                     if not raw_post_id:
                         logger.warning("reddit: collect_comments — skipping entry with no platform_id")
                         continue
+                    # platform_id may be a full URL; extract the base-36 post
+                    # ID that asyncpraw expects (the segment after /comments/).
+                    if "/comments/" in raw_post_id:
+                        raw_post_id = raw_post_id.split("/comments/")[1].split("/")[0]
                     try:
                         await self._wait_for_rate_limit(credential_id)
                         submission = await reddit.submission(id=raw_post_id)
-                        await submission.comments.replace_more(limit=0)
+                        # Expand up to 10 "MoreComments" stubs (1 API call
+                        # each) so we don't silently discard nested comment
+                        # chains.  The inline _collect_post_comments() during
+                        # term search still uses limit=0 to save quota.
+                        await submission.comments.replace_more(limit=10)
                         comments = submission.comments.list()
                         count = 0
                         for comment in comments:
@@ -798,8 +850,9 @@ class RedditCollector(ArenaCollector):
             await self._wait_for_rate_limit(credential_id)
             redditor = await reddit.redditor(username)
 
-            # Collect posts
-            async for post in redditor.submissions.new(limit=min(max_results, 100)):
+            # Collect posts — let asyncpraw paginate automatically up to
+            # max_results (previously hard-capped at 100 per stream).
+            async for post in redditor.submissions.new(limit=max_results):
                 raw_post = self._post_to_raw(post)
                 self._emit(self.normalize(raw_post))
                 collected += 1
@@ -810,7 +863,7 @@ class RedditCollector(ArenaCollector):
             if collected < max_results:
                 await self._wait_for_rate_limit(credential_id)
                 async for comment in redditor.comments.new(
-                    limit=min(max_results - collected, 100)
+                    limit=max_results - collected
                 ):
                     raw_comment = self._comment_to_raw(comment)
                     self._emit(self.normalize(raw_comment))

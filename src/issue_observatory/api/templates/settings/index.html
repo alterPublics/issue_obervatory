@@ -1,0 +1,564 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto space-y-6" x-data="settingsPage()">
+
+    {# Page header #}
+    <div>
+        <h1 class="font-heading text-xl font-semibold text-gray-900 tracking-tight">Account Settings</h1>
+        <p class="text-sm text-gray-500 mt-0.5">Manage your profile, security, and preferences</p>
+    </div>
+
+    {# ------------------------------------------------------------------ #}
+    {# Section 1: Account Information (read-only)                         #}
+    {# ------------------------------------------------------------------ #}
+    <div class="bg-white rounded-lg shadow p-6 border border-purple-100/60">
+        <h2 class="font-heading text-sm font-semibold text-gray-900 mb-4">Account Information</h2>
+        <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
+            <div>
+                <dt class="text-gray-500">Email</dt>
+                <dd class="text-gray-900 font-medium" x-text="currentEmail">{{ user.email }}</dd>
+            </div>
+            <div>
+                <dt class="text-gray-500">Role</dt>
+                <dd>
+                    {% if user.role == 'admin' %}
+                    <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">Admin</span>
+                    {% else %}
+                    <span class="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">Researcher</span>
+                    {% endif %}
+                </dd>
+            </div>
+            <div>
+                <dt class="text-gray-500">Member since</dt>
+                <dd class="text-gray-900">{{ user.created_at.strftime('%B %d, %Y') if user.created_at else 'Unknown' }}</dd>
+            </div>
+            <div>
+                <dt class="text-gray-500">Last login</dt>
+                <dd class="text-gray-900">{{ user.last_login_at.strftime('%B %d, %Y at %H:%M') if user.last_login_at else 'Never' }}</dd>
+            </div>
+            <div>
+                <dt class="text-gray-500">Credits</dt>
+                <dd class="text-gray-900">
+                    {% if credits_unlimited %}
+                        <span class="text-green-600 font-medium">Unlimited</span>
+                    {% else %}
+                        <span class="font-medium">{{ '{:,}'.format(credits_available) }}</span> available
+                        {% if credits_reserved %}
+                            <span class="text-gray-400 ml-1">({{ '{:,}'.format(credits_reserved) }} reserved)</span>
+                        {% endif %}
+                    {% endif %}
+                </dd>
+            </div>
+        </dl>
+    </div>
+
+    {# ------------------------------------------------------------------ #}
+    {# Section 2: Display Name                                            #}
+    {# ------------------------------------------------------------------ #}
+    <div class="bg-white rounded-lg shadow p-6 border border-purple-100/60">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="font-heading text-sm font-semibold text-gray-900">Display Name</h2>
+            <button x-show="!editingName"
+                    @click="editingName = true"
+                    class="text-sm text-brand-600 hover:text-brand-700 font-medium">Edit</button>
+        </div>
+
+        {# Success banner #}
+        <div x-show="nameSuccess" x-cloak x-transition
+             class="mb-3 bg-green-50 border border-green-200 text-green-800 rounded-md px-4 py-2 text-sm">
+            Display name updated.
+        </div>
+
+        {# Read-only state #}
+        <p x-show="!editingName" class="text-sm text-gray-900" x-text="currentDisplayName || 'Not set'">
+            {{ user.display_name or 'Not set' }}
+        </p>
+
+        {# Edit state #}
+        <div x-show="editingName" x-cloak class="space-y-3">
+            <div x-show="nameError" x-cloak
+                 class="bg-red-50 border border-red-200 text-red-800 rounded-md px-4 py-2 text-sm"
+                 x-text="nameError"></div>
+            <input type="text"
+                   x-model="newDisplayName"
+                   placeholder="Your display name"
+                   class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+            <div class="flex gap-2">
+                <button @click="saveName()"
+                        :disabled="nameSaving"
+                        class="px-4 py-2 text-sm font-medium rounded-md text-white bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-700 hover:to-brand-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+                    <span x-show="!nameSaving">Save</span>
+                    <span x-show="nameSaving" x-cloak>Saving...</span>
+                </button>
+                <button @click="editingName = false; newDisplayName = currentDisplayName; nameError = ''"
+                        class="px-4 py-2 text-sm font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    {# ------------------------------------------------------------------ #}
+    {# Section 3: Email Address                                           #}
+    {# ------------------------------------------------------------------ #}
+    <div class="bg-white rounded-lg shadow p-6 border border-purple-100/60">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="font-heading text-sm font-semibold text-gray-900">Email Address</h2>
+            <button x-show="!editingEmail"
+                    @click="editingEmail = true"
+                    class="text-sm text-brand-600 hover:text-brand-700 font-medium">Change</button>
+        </div>
+
+        {# Success banner #}
+        <div x-show="emailSuccess" x-cloak x-transition
+             class="mb-3 bg-green-50 border border-green-200 text-green-800 rounded-md px-4 py-2 text-sm">
+            Email address updated.
+        </div>
+
+        {# Read-only state #}
+        <p x-show="!editingEmail" class="text-sm text-gray-900" x-text="currentEmail">{{ user.email }}</p>
+
+        {# Edit state #}
+        <div x-show="editingEmail" x-cloak class="space-y-3">
+            <div x-show="emailError" x-cloak
+                 class="bg-red-50 border border-red-200 text-red-800 rounded-md px-4 py-2 text-sm"
+                 x-text="emailError"></div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">New email address</label>
+                <input type="email"
+                       x-model="newEmail"
+                       placeholder="you@example.com"
+                       class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Current password</label>
+                <input type="password"
+                       x-model="emailPassword"
+                       autocomplete="current-password"
+                       placeholder="Required to change email"
+                       class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+            </div>
+            <div class="flex gap-2">
+                <button @click="saveEmail()"
+                        :disabled="emailSaving || !newEmail || !emailPassword"
+                        class="px-4 py-2 text-sm font-medium rounded-md text-white bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-700 hover:to-brand-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+                    <span x-show="!emailSaving">Save</span>
+                    <span x-show="emailSaving" x-cloak>Saving...</span>
+                </button>
+                <button @click="editingEmail = false; newEmail = currentEmail; emailPassword = ''; emailError = ''"
+                        class="px-4 py-2 text-sm font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    {# ------------------------------------------------------------------ #}
+    {# Section 4: Change Password                                         #}
+    {# ------------------------------------------------------------------ #}
+    <div class="bg-white rounded-lg shadow p-6 border border-purple-100/60">
+        <h2 class="font-heading text-sm font-semibold text-gray-900 mb-4">Change Password</h2>
+
+        {# Success banner #}
+        <div x-show="passwordSuccess" x-cloak x-transition
+             class="mb-3 bg-green-50 border border-green-200 text-green-800 rounded-md px-4 py-2 text-sm">
+            Password updated successfully.
+        </div>
+
+        <div x-show="passwordError" x-cloak
+             class="mb-3 bg-red-50 border border-red-200 text-red-800 rounded-md px-4 py-2 text-sm"
+             x-text="passwordError"></div>
+
+        <div class="space-y-4">
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Current password</label>
+                <input type="password"
+                       x-model="currentPassword"
+                       autocomplete="current-password"
+                       placeholder="Enter your current password"
+                       class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+            </div>
+
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">New password</label>
+                <input type="password"
+                       x-model="newPassword"
+                       @input="checkPasswordStrength()"
+                       autocomplete="new-password"
+                       placeholder="At least 8 characters"
+                       class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500">
+
+                {# Strength meter #}
+                <div class="mt-1.5 flex gap-1">
+                    <template x-for="i in 4" :key="i">
+                        <div class="h-1 flex-1 rounded-full transition-colors"
+                             :class="{
+                                 'bg-red-400':    passwordStrength >= i && passwordStrength <= 1,
+                                 'bg-yellow-400': passwordStrength >= i && passwordStrength === 2,
+                                 'bg-brand-400':  passwordStrength >= i && passwordStrength === 3,
+                                 'bg-green-500':  passwordStrength >= i && passwordStrength === 4,
+                                 'bg-gray-200':   passwordStrength < i
+                             }">
+                        </div>
+                    </template>
+                </div>
+                <p class="text-xs text-gray-400 mt-1"
+                   x-text="passwordStrengthLabel || 'Enter a password'">Enter a password</p>
+            </div>
+
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Confirm new password</label>
+                <input type="password"
+                       x-model="confirmPassword"
+                       autocomplete="new-password"
+                       placeholder="Repeat new password"
+                       class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+                       :class="confirmPassword && newPassword !== confirmPassword ? 'border-red-400 focus:ring-red-500' : ''">
+                <p class="text-xs text-red-500 mt-1"
+                   x-show="confirmPassword && newPassword !== confirmPassword">
+                    Passwords do not match.
+                </p>
+            </div>
+
+            <button @click="savePassword()"
+                    :disabled="passwordSaving || !currentPassword || !newPassword || newPassword !== confirmPassword || passwordStrength < 2"
+                    class="px-4 py-2 text-sm font-medium rounded-md text-white bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-700 hover:to-brand-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+                <span x-show="!passwordSaving">Update Password</span>
+                <span x-show="passwordSaving" x-cloak>Updating...</span>
+            </button>
+        </div>
+    </div>
+
+    {# ------------------------------------------------------------------ #}
+    {# Section 5: API Key Management                                      #}
+    {# ------------------------------------------------------------------ #}
+    <div class="bg-white rounded-lg shadow p-6 border border-purple-100/60">
+        <h2 class="font-heading text-sm font-semibold text-gray-900 mb-4">API Key</h2>
+        <p class="text-sm text-gray-500 mb-4">
+            Use an API key for programmatic access via <code class="text-xs bg-gray-100 px-1.5 py-0.5 rounded font-mono">Authorization: ApiKey &lt;key&gt;</code> headers.
+        </p>
+
+        <div x-show="apiKeyError" x-cloak
+             class="mb-3 bg-red-50 border border-red-200 text-red-800 rounded-md px-4 py-2 text-sm"
+             x-text="apiKeyError"></div>
+
+        {# Newly generated key (shown once) #}
+        <div x-show="newApiKey" x-cloak class="mb-4 space-y-2">
+            <div class="bg-green-50 border border-green-200 rounded-md px-4 py-2 text-sm text-green-800">
+                API key generated. Copy it now — it will not be shown again.
+            </div>
+            <div class="flex items-center gap-2">
+                <code class="flex-1 bg-gray-50 border border-gray-200 rounded-md px-3 py-2 text-xs font-mono text-gray-900 break-all select-all"
+                      x-text="newApiKey"></code>
+                <button @click="copyApiKey()"
+                        class="flex-shrink-0 px-3 py-2 text-sm font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors">
+                    <span x-text="apiKeyCopied ? 'Copied!' : 'Copy'">Copy</span>
+                </button>
+            </div>
+        </div>
+
+        {# Has existing key (masked) #}
+        <div x-show="hasApiKey && !newApiKey" class="space-y-3">
+            <div class="flex items-center gap-3">
+                <code class="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 text-xs font-mono text-gray-500"
+                      x-text="apiKeyMasked"></code>
+            </div>
+            <div class="flex gap-2">
+                <button @click="generateApiKey()"
+                        :disabled="apiKeyLoading"
+                        class="px-4 py-2 text-sm font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors disabled:opacity-50">
+                    <span x-show="!apiKeyLoading">Regenerate</span>
+                    <span x-show="apiKeyLoading" x-cloak>Generating...</span>
+                </button>
+                <button @click="if (confirm('Revoke your API key? Programmatic access will stop working immediately.')) revokeApiKey()"
+                        :disabled="apiKeyLoading"
+                        class="px-4 py-2 text-sm font-medium rounded-md text-red-600 border border-red-300 hover:bg-red-50 transition-colors disabled:opacity-50">
+                    Revoke
+                </button>
+            </div>
+        </div>
+
+        {# No key yet #}
+        <div x-show="!hasApiKey && !newApiKey">
+            <p class="text-sm text-gray-500 mb-3">You do not have an API key.</p>
+            <button @click="generateApiKey()"
+                    :disabled="apiKeyLoading"
+                    class="px-4 py-2 text-sm font-medium rounded-md text-white bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-700 hover:to-brand-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+                <span x-show="!apiKeyLoading">Generate API Key</span>
+                <span x-show="apiKeyLoading" x-cloak>Generating...</span>
+            </button>
+        </div>
+    </div>
+
+    {# ------------------------------------------------------------------ #}
+    {# Section 6: Preferences                                             #}
+    {# ------------------------------------------------------------------ #}
+    <div class="bg-white rounded-lg shadow p-6 border border-purple-100/60">
+        <h2 class="font-heading text-sm font-semibold text-gray-900 mb-4">Preferences</h2>
+
+        <div class="flex items-center justify-between">
+            <div class="flex-1 mr-4">
+                <p class="text-sm font-medium text-gray-900">Skip pseudonymization</p>
+                <p class="text-xs text-gray-500 mt-0.5">
+                    When enabled, collected content will not have personal identifiers pseudonymized.
+                    Only enable this if your research protocol allows processing non-anonymized data.
+                </p>
+            </div>
+            <button @click="togglePseudonymization()"
+                    :disabled="prefsSaving"
+                    type="button"
+                    role="switch"
+                    :aria-checked="skipPseudonymization.toString()"
+                    class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-50"
+                    :class="skipPseudonymization ? 'bg-brand-600' : 'bg-gray-200'">
+                <span class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+                      :class="skipPseudonymization ? 'translate-x-5' : 'translate-x-0'"></span>
+            </button>
+        </div>
+    </div>
+
+</div>
+
+<script>
+function settingsPage() {
+    return {
+        // Display name
+        editingName: false,
+        currentDisplayName: {{ (user.display_name or '') | tojson }},
+        newDisplayName: {{ (user.display_name or '') | tojson }},
+        nameSaving: false,
+        nameError: '',
+        nameSuccess: false,
+
+        // Email
+        editingEmail: false,
+        currentEmail: {{ user.email | tojson }},
+        newEmail: {{ user.email | tojson }},
+        emailPassword: '',
+        emailSaving: false,
+        emailError: '',
+        emailSuccess: false,
+
+        // Password
+        currentPassword: '',
+        newPassword: '',
+        confirmPassword: '',
+        passwordStrength: 0,
+        passwordStrengthLabel: '',
+        passwordSaving: false,
+        passwordError: '',
+        passwordSuccess: false,
+
+        // API key
+        hasApiKey: {{ 'true' if user.api_key else 'false' }},
+        apiKeyMasked: {{ (('*' * 56 + user.api_key[-8:]) if user.api_key else '') | tojson }},
+        newApiKey: '',
+        apiKeyLoading: false,
+        apiKeyError: '',
+        apiKeyCopied: false,
+
+        // Preferences
+        skipPseudonymization: {{ 'true' if preferences.get('skip_pseudonymization', False) else 'false' }},
+        prefsSaving: false,
+
+        // -----------------------------------------------------------
+        // Methods
+        // -----------------------------------------------------------
+
+        checkPasswordStrength() {
+            const p = this.newPassword;
+            let score = 0;
+            if (p.length >= 8)  score++;
+            if (p.length >= 12) score++;
+            if (/[A-Z]/.test(p) && /[a-z]/.test(p)) score++;
+            if (/[0-9]/.test(p) || /[^A-Za-z0-9]/.test(p)) score++;
+            this.passwordStrength = score;
+            const labels = ['', 'Weak', 'Fair', 'Good', 'Strong'];
+            this.passwordStrengthLabel = labels[score] || '';
+        },
+
+        async saveName() {
+            this.nameSaving = true;
+            this.nameError = '';
+            this.nameSuccess = false;
+            try {
+                const res = await fetch('/users/me', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ display_name: this.newDisplayName }),
+                    credentials: 'include',
+                });
+                if (res.ok) {
+                    this.currentDisplayName = this.newDisplayName;
+                    this.editingName = false;
+                    this.nameSuccess = true;
+                    setTimeout(() => this.nameSuccess = false, 3000);
+                } else {
+                    const data = await res.json().catch(() => null);
+                    const detail = data && data.detail;
+                    this.nameError = typeof detail === 'string' ? detail : 'Failed to update display name.';
+                }
+            } catch {
+                this.nameError = 'Network error. Please try again.';
+            } finally {
+                this.nameSaving = false;
+            }
+        },
+
+        async saveEmail() {
+            this.emailSaving = true;
+            this.emailError = '';
+            this.emailSuccess = false;
+            try {
+                const res = await fetch('/admin/users/me/profile', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        current_password: this.emailPassword,
+                        email: this.newEmail,
+                    }),
+                    credentials: 'include',
+                });
+                if (res.ok) {
+                    this.currentEmail = this.newEmail;
+                    this.editingEmail = false;
+                    this.emailPassword = '';
+                    this.emailSuccess = true;
+                    setTimeout(() => this.emailSuccess = false, 3000);
+                } else {
+                    const data = await res.json().catch(() => null);
+                    const detail = data && data.detail;
+                    this.emailError = typeof detail === 'string' ? detail : 'Failed to update email.';
+                }
+            } catch {
+                this.emailError = 'Network error. Please try again.';
+            } finally {
+                this.emailSaving = false;
+            }
+        },
+
+        async savePassword() {
+            this.passwordSaving = true;
+            this.passwordError = '';
+            this.passwordSuccess = false;
+            try {
+                const res = await fetch('/admin/users/me/profile', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        current_password: this.currentPassword,
+                        new_password: this.newPassword,
+                    }),
+                    credentials: 'include',
+                });
+                if (res.ok) {
+                    this.currentPassword = '';
+                    this.newPassword = '';
+                    this.confirmPassword = '';
+                    this.passwordStrength = 0;
+                    this.passwordStrengthLabel = '';
+                    this.passwordSuccess = true;
+                    setTimeout(() => this.passwordSuccess = false, 5000);
+                } else {
+                    const data = await res.json().catch(() => null);
+                    const detail = data && data.detail;
+                    this.passwordError = typeof detail === 'string' ? detail : 'Failed to update password.';
+                }
+            } catch {
+                this.passwordError = 'Network error. Please try again.';
+            } finally {
+                this.passwordSaving = false;
+            }
+        },
+
+        async generateApiKey() {
+            this.apiKeyLoading = true;
+            this.apiKeyError = '';
+            this.newApiKey = '';
+            this.apiKeyCopied = false;
+            try {
+                const res = await fetch('/admin/users/me/api-key', {
+                    method: 'POST',
+                    credentials: 'include',
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    this.newApiKey = data.api_key;
+                    this.hasApiKey = true;
+                    this.apiKeyMasked = '*'.repeat(56) + data.api_key.slice(-8);
+                } else {
+                    const data = await res.json().catch(() => null);
+                    this.apiKeyError = (data && data.detail) || 'Failed to generate API key.';
+                }
+            } catch {
+                this.apiKeyError = 'Network error. Please try again.';
+            } finally {
+                this.apiKeyLoading = false;
+            }
+        },
+
+        async revokeApiKey() {
+            this.apiKeyLoading = true;
+            this.apiKeyError = '';
+            try {
+                const res = await fetch('/admin/users/me/api-key', {
+                    method: 'DELETE',
+                    credentials: 'include',
+                });
+                if (res.ok || res.status === 204) {
+                    this.hasApiKey = false;
+                    this.newApiKey = '';
+                    this.apiKeyMasked = '';
+                } else {
+                    const data = await res.json().catch(() => null);
+                    this.apiKeyError = (data && data.detail) || 'Failed to revoke API key.';
+                }
+            } catch {
+                this.apiKeyError = 'Network error. Please try again.';
+            } finally {
+                this.apiKeyLoading = false;
+            }
+        },
+
+        async copyApiKey() {
+            try {
+                await navigator.clipboard.writeText(this.newApiKey);
+                this.apiKeyCopied = true;
+                setTimeout(() => this.apiKeyCopied = false, 2000);
+            } catch {
+                // Fallback: select the text
+                const el = document.querySelector('code[x-text="newApiKey"]');
+                if (el) {
+                    const range = document.createRange();
+                    range.selectNodeContents(el);
+                    window.getSelection().removeAllRanges();
+                    window.getSelection().addRange(range);
+                }
+            }
+        },
+
+        async togglePseudonymization() {
+            this.prefsSaving = true;
+            const newVal = !this.skipPseudonymization;
+            try {
+                const res = await fetch('/admin/users/me/preferences', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ skip_pseudonymization: newVal }),
+                    credentials: 'include',
+                });
+                if (res.ok) {
+                    this.skipPseudonymization = newVal;
+                }
+            } catch {
+                // Silently fail — toggle stays in previous state
+            } finally {
+                this.prefsSaving = false;
+            }
+        },
+    };
+}
+</script>
+{% endblock %}

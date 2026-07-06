@@ -1,0 +1,899 @@
+{% extends "base.html" %}
+{% block title %}Networks{% endblock %}
+
+{% block extra_head %}
+{#
+    Sigma.js + graphology — required for network visualization.
+    1. graphology core UMD (exports window.graphology — the Graph constructor)
+    2. sigma UMD (exports window.Sigma)
+    3. graphology-library UMD (exports window.graphologyLibrary — bundles layout, FA2, etc.)
+    4. Bridge script to map globals to names expected by network_preview.js
+    5. network_preview.js (local helper — exposes window.initNetworkPreview)
+#}
+<script src="https://cdn.jsdelivr.net/npm/graphology@0.25.4/dist/graphology.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sigma@3.0.2/dist/sigma.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/graphology-library@0.8.0/dist/graphology-library.min.js"></script>
+<script>
+  // Bridge: map CDN globals to the names used by network_preview.js and inline Alpine code.
+  if (typeof window.graphology !== 'undefined') window.Graph = window.graphology;
+  if (typeof window.graphologyLibrary !== 'undefined') {
+    window.graphologyLayout = window.graphologyLibrary.layout;
+    window.graphologyLayoutForceAtlas2 = window.graphologyLibrary.layoutForceAtlas2;
+  }
+</script>
+<script src="{{ url_for('static', path='js/network_preview.js') }}?v=7"></script>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto" x-data="networksDashboard()" x-init="init()">
+
+    {# Page header #}
+    <div class="flex items-center justify-between mb-5">
+        <div>
+            <h1 class="font-heading text-xl font-semibold text-gray-900 tracking-tight">Networks</h1>
+            <p class="text-sm text-gray-500 mt-0.5">Keyword, entity, and domain co-occurrence network analysis by sender or platform</p>
+        </div>
+    </div>
+
+    {# ── Filter toolbar ── #}
+    <div x-data="{ showAdvanced: false }">
+
+        {# Primary filter bar — grouped sections with distinct visual identity #}
+        <div class="bg-white rounded-xl shadow-brand border border-purple-100/60 p-3 mb-4">
+            <div class="flex items-stretch gap-2 flex-wrap">
+
+                {# ── SCOPE section: Project + Dates ── #}
+                <div class="flex items-center gap-2.5 bg-brand-50/40 rounded-lg px-3 py-2 border border-brand-100/50">
+                    <span class="text-[10px] font-semibold text-brand-400 uppercase tracking-widest mr-0.5">Scope</span>
+                    <div class="w-px h-5 bg-brand-200/40 flex-shrink-0"></div>
+
+                    {# Project selector #}
+                    <div class="flex items-center gap-1.5 min-w-0">
+                        <svg class="w-3.5 h-3.5 text-brand-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none"
+                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                  d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                        </svg>
+                        <select x-model="projectId" @change="loadFilterOptions()"
+                                class="rounded-md border-0 bg-white/80 py-1 pl-2 pr-7 text-xs font-medium text-gray-700 ring-1 ring-inset ring-brand-200/60 focus:ring-2 focus:ring-brand-500 cursor-pointer hover:bg-white hover:ring-brand-300 transition-colors">
+                            <option value="">All projects</option>
+                            <template x-for="p in projects" :key="p.id">
+                                <option :value="p.id" x-text="p.name"></option>
+                            </template>
+                        </select>
+                    </div>
+
+                    {# Date range #}
+                    <div class="flex items-center gap-1">
+                        <input type="date" x-model="dateFrom"
+                               class="rounded-md border-0 bg-white/80 py-1 px-1.5 text-xs font-medium text-gray-500 ring-1 ring-inset ring-brand-200/60 focus:ring-2 focus:ring-brand-500 cursor-pointer hover:ring-brand-300 transition-colors"
+                               :class="dateFrom ? 'text-brand-600 ring-brand-300 bg-white' : ''">
+                        <span class="text-brand-300 text-xs">&ndash;</span>
+                        <input type="date" x-model="dateTo"
+                               class="rounded-md border-0 bg-white/80 py-1 px-1.5 text-xs font-medium text-gray-500 ring-1 ring-inset ring-brand-200/60 focus:ring-2 focus:ring-brand-500 cursor-pointer hover:ring-brand-300 transition-colors"
+                               :class="dateTo ? 'text-brand-600 ring-brand-300 bg-white' : ''">
+                    </div>
+                </div>
+
+                {# ── SOURCE section: Designs, Terms, Arenas, Platforms ── #}
+                <div class="flex items-center gap-2 bg-brand-green-50/40 rounded-lg px-3 py-2 border border-brand-green-200/40">
+                    <span class="text-[10px] font-semibold text-brand-green-500 uppercase tracking-widest mr-0.5">Source</span>
+                    <div class="w-px h-5 bg-brand-green-200/40 flex-shrink-0"></div>
+
+                    {# Query Design — dropdown checkbox popover #}
+                    <div class="relative" x-data="{ open: false }" @click.outside="open = false">
+                        <button @click="open = !open" type="button"
+                                class="inline-flex items-center gap-1.5 rounded-md border-0 py-1 pl-2.5 pr-2 text-xs font-medium ring-1 ring-inset cursor-pointer transition-all duration-150"
+                                :class="selectedQueryDesigns.length
+                                    ? 'text-brand-green-600 ring-brand-green-300 bg-brand-green-50 hover:bg-brand-green-100/60 shadow-sm'
+                                    : 'text-gray-500 ring-gray-200/80 bg-white/80 hover:text-gray-700 hover:ring-brand-green-300 hover:bg-white'">
+                            <span>Designs</span>
+                            <span x-show="selectedQueryDesigns.length"
+                                  class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-brand-green-500 text-[10px] text-white font-bold leading-none"
+                                  x-text="selectedQueryDesigns.length"></span>
+                            <svg class="w-3 h-3 opacity-40" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                        </button>
+                        <div x-show="open" x-transition:enter="transition ease-out duration-100" x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
+                             x-transition:leave="transition ease-in duration-75" x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95"
+                             class="absolute z-30 mt-1.5 left-0 w-56 max-h-48 overflow-y-auto rounded-lg bg-white shadow-lg ring-1 ring-black/10 py-1">
+                            <template x-if="queryDesigns.length === 0">
+                                <div class="px-3 py-2 text-xs text-gray-400">No query designs</div>
+                            </template>
+                            <template x-for="qd in queryDesigns" :key="qd.id">
+                                <label class="flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 hover:bg-brand-green-50 cursor-pointer transition-colors">
+                                    <input type="checkbox" :value="qd.id" x-model="selectedQueryDesigns"
+                                           class="rounded border-gray-300 text-brand-green-500 focus:ring-brand-green-400 h-3.5 w-3.5">
+                                    <span x-text="qd.name" class="truncate"></span>
+                                </label>
+                            </template>
+                        </div>
+                    </div>
+
+                    {# Search Terms — dropdown checkbox popover #}
+                    <div class="relative" x-data="{ open: false }" @click.outside="open = false">
+                        <button @click="open = !open" type="button"
+                                class="inline-flex items-center gap-1.5 rounded-md border-0 py-1 pl-2.5 pr-2 text-xs font-medium ring-1 ring-inset cursor-pointer transition-all duration-150"
+                                :class="selectedSearchTerms.length
+                                    ? 'text-brand-green-600 ring-brand-green-300 bg-brand-green-50 hover:bg-brand-green-100/60 shadow-sm'
+                                    : 'text-gray-500 ring-gray-200/80 bg-white/80 hover:text-gray-700 hover:ring-brand-green-300 hover:bg-white'">
+                            <span>Terms</span>
+                            <span x-show="selectedSearchTerms.length"
+                                  class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-brand-green-500 text-[10px] text-white font-bold leading-none"
+                                  x-text="selectedSearchTerms.length"></span>
+                            <svg class="w-3 h-3 opacity-40" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                        </button>
+                        <div x-show="open" x-transition:enter="transition ease-out duration-100" x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
+                             x-transition:leave="transition ease-in duration-75" x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95"
+                             class="absolute z-30 mt-1.5 left-0 w-48 max-h-48 overflow-y-auto rounded-lg bg-white shadow-lg ring-1 ring-black/10 py-1">
+                            <template x-if="searchTerms.length === 0">
+                                <div class="px-3 py-2 text-xs text-gray-400">No search terms</div>
+                            </template>
+                            <template x-for="t in searchTerms" :key="t">
+                                <label class="flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 hover:bg-brand-green-50 cursor-pointer transition-colors">
+                                    <input type="checkbox" :value="t" x-model="selectedSearchTerms"
+                                           class="rounded border-gray-300 text-brand-green-500 focus:ring-brand-green-400 h-3.5 w-3.5">
+                                    <span x-text="t" class="truncate"></span>
+                                </label>
+                            </template>
+                        </div>
+                    </div>
+
+                    <div class="w-px h-4 bg-brand-green-200/50 flex-shrink-0"></div>
+
+                    {# Arena category — dropdown checkbox popover #}
+                    <div class="relative" x-data="{ open: false }" @click.outside="open = false">
+                        <button @click="open = !open" type="button"
+                                class="inline-flex items-center gap-1.5 rounded-md border-0 py-1 pl-2.5 pr-2 text-xs font-medium ring-1 ring-inset cursor-pointer transition-all duration-150"
+                                :class="selectedCategories.length
+                                    ? 'text-brand-green-600 ring-brand-green-300 bg-brand-green-50 hover:bg-brand-green-100/60 shadow-sm'
+                                    : 'text-gray-500 ring-gray-200/80 bg-white/80 hover:text-gray-700 hover:ring-brand-green-300 hover:bg-white'">
+                            <span>Arenas</span>
+                            <span x-show="selectedCategories.length"
+                                  class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-brand-green-500 text-[10px] text-white font-bold leading-none"
+                                  x-text="selectedCategories.length"></span>
+                            <svg class="w-3 h-3 opacity-40" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                        </button>
+                        <div x-show="open" x-transition:enter="transition ease-out duration-100" x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
+                             x-transition:leave="transition ease-in duration-75" x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95"
+                             class="absolute z-30 mt-1.5 left-0 w-44 rounded-lg bg-white shadow-lg ring-1 ring-black/10 py-1">
+                            <template x-for="cat in allCategories" :key="cat.value">
+                                <label class="flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 hover:bg-brand-green-50 cursor-pointer transition-colors">
+                                    <input type="checkbox" :value="cat.value" x-model="selectedCategories"
+                                           class="rounded border-gray-300 text-brand-green-500 focus:ring-brand-green-400 h-3.5 w-3.5">
+                                    <span x-text="cat.label"></span>
+                                </label>
+                            </template>
+                        </div>
+                    </div>
+
+                    {# Platform — dropdown checkbox popover #}
+                    <div class="relative" x-data="{ open: false }" @click.outside="open = false">
+                        <button @click="open = !open" type="button"
+                                class="inline-flex items-center gap-1.5 rounded-md border-0 py-1 pl-2.5 pr-2 text-xs font-medium ring-1 ring-inset cursor-pointer transition-all duration-150"
+                                :class="selectedPlatforms.length
+                                    ? 'text-brand-green-600 ring-brand-green-300 bg-brand-green-50 hover:bg-brand-green-100/60 shadow-sm'
+                                    : 'text-gray-500 ring-gray-200/80 bg-white/80 hover:text-gray-700 hover:ring-brand-green-300 hover:bg-white'">
+                            <span>Platforms</span>
+                            <span x-show="selectedPlatforms.length"
+                                  class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-brand-green-500 text-[10px] text-white font-bold leading-none"
+                                  x-text="selectedPlatforms.length"></span>
+                            <svg class="w-3 h-3 opacity-40" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                        </button>
+                        <div x-show="open" x-transition:enter="transition ease-out duration-100" x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
+                             x-transition:leave="transition ease-in duration-75" x-transition:leave-start="opacity-100 scale-100" x-transition:leave-end="opacity-0 scale-95"
+                             class="absolute z-30 mt-1.5 left-0 w-48 max-h-48 overflow-y-auto rounded-lg bg-white shadow-lg ring-1 ring-black/10 py-1">
+                            <template x-if="availablePlatforms.length === 0">
+                                <div class="px-3 py-2 text-xs text-gray-400">No platforms</div>
+                            </template>
+                            <template x-for="p in availablePlatforms" :key="p">
+                                <label class="flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 hover:bg-brand-green-50 cursor-pointer transition-colors">
+                                    <input type="checkbox" :value="p" x-model="selectedPlatforms"
+                                           class="rounded border-gray-300 text-brand-green-500 focus:ring-brand-green-400 h-3.5 w-3.5">
+                                    <span x-text="p" class="truncate"></span>
+                                </label>
+                            </template>
+                        </div>
+                    </div>
+
+                    {# Language — compact inline select #}
+                    <select x-model="selectedLanguage"
+                            class="rounded-md border-0 bg-white/80 py-1 pl-2.5 pr-7 text-xs font-medium ring-1 ring-inset cursor-pointer transition-all duration-150"
+                            :class="selectedLanguage
+                                ? 'text-brand-green-600 ring-brand-green-300 bg-brand-green-50 shadow-sm'
+                                : 'text-gray-500 ring-gray-200/80 hover:text-gray-700 hover:ring-brand-green-300'">
+                        <option value="">Language: All</option>
+                        <template x-for="lang in availableLanguages" :key="lang">
+                            <option :value="lang" x-text="lang"></option>
+                        </template>
+                    </select>
+                </div>
+
+                {# ── TYPE section: Network type pill + Group by ── #}
+                <div class="flex items-center gap-2.5 bg-brand-gold-50/40 rounded-lg px-3 py-2 border border-brand-gold-200/40">
+                    <span class="text-[10px] font-semibold text-brand-gold-500 uppercase tracking-widest mr-0.5">Type</span>
+                    <div class="w-px h-5 bg-brand-gold-200/40 flex-shrink-0"></div>
+
+                    {# Network type — segmented pill #}
+                    <div class="inline-flex items-center rounded-lg bg-brand-gold-100/50 p-0.5 gap-0">
+                        <button @click="networkType = 'keyword'"
+                                :class="networkType === 'keyword'
+                                    ? 'bg-white text-brand-gold-700 shadow-sm ring-1 ring-brand-gold-300'
+                                    : 'text-brand-gold-600/60 hover:text-brand-gold-700'"
+                                class="px-2.5 py-1 text-xs font-medium rounded-md transition-all duration-150">
+                            Keyword
+                        </button>
+                        <button @click="networkType = 'entity'"
+                                :class="networkType === 'entity'
+                                    ? 'bg-white text-brand-gold-700 shadow-sm ring-1 ring-brand-gold-300'
+                                    : 'text-brand-gold-600/60 hover:text-brand-gold-700'"
+                                class="px-2.5 py-1 text-xs font-medium rounded-md transition-all duration-150">
+                            Entity
+                        </button>
+                        <button @click="networkType = 'domain'"
+                                :class="networkType === 'domain'
+                                    ? 'bg-white text-brand-gold-700 shadow-sm ring-1 ring-brand-gold-300'
+                                    : 'text-brand-gold-600/60 hover:text-brand-gold-700'"
+                                class="px-2.5 py-1 text-xs font-medium rounded-md transition-all duration-150">
+                            Domain
+                        </button>
+                    </div>
+
+                    <div class="w-px h-5 bg-brand-gold-200/40 flex-shrink-0"></div>
+
+                    {# Group by — segmented pill #}
+                    <span class="text-[10px] font-semibold text-brand-gold-500 uppercase tracking-widest">Group</span>
+                    <div class="inline-flex items-center rounded-lg bg-brand-gold-100/50 p-0.5 gap-0">
+                        <button @click="groupBy = 'sender'"
+                                :class="groupBy === 'sender'
+                                    ? 'bg-white text-brand-gold-700 shadow-sm ring-1 ring-brand-gold-300'
+                                    : 'text-brand-gold-600/60 hover:text-brand-gold-700'"
+                                class="px-2.5 py-1 text-xs font-medium rounded-md transition-all duration-150">
+                            Sender
+                        </button>
+                        <button @click="groupBy = 'platform'"
+                                :class="groupBy === 'platform'
+                                    ? 'bg-white text-brand-gold-700 shadow-sm ring-1 ring-brand-gold-300'
+                                    : 'text-brand-gold-600/60 hover:text-brand-gold-700'"
+                                class="px-2.5 py-1 text-xs font-medium rounded-md transition-all duration-150">
+                            Platform
+                        </button>
+                    </div>
+                </div>
+
+                {# ── Toolbar actions: Advanced, Clear ── #}
+                <div class="flex items-center gap-1.5 py-2">
+                    {# Advanced toggle #}
+                    <button @click="showAdvanced = !showAdvanced"
+                            :class="showAdvanced ? 'text-brand-600 bg-brand-50' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'"
+                            class="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-all duration-150"
+                            title="Advanced network settings">
+                        <svg class="w-3.5 h-3.5 transition-transform duration-200" :class="showAdvanced ? 'rotate-180' : ''"
+                             xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                        Advanced
+                    </button>
+
+                    {# Clear filters #}
+                    <button x-show="dateFrom || dateTo || selectedQueryDesigns.length || selectedSearchTerms.length || selectedCategories.length || selectedPlatforms.length || selectedLanguage"
+                            x-transition:enter="transition ease-out duration-150"
+                            x-transition:enter-start="opacity-0 scale-95"
+                            x-transition:enter-end="opacity-100 scale-100"
+                            x-transition:leave="transition ease-in duration-100"
+                            x-transition:leave-start="opacity-100 scale-100"
+                            x-transition:leave-end="opacity-0 scale-95"
+                            @click="dateFrom = ''; dateTo = ''; selectedQueryDesigns = []; selectedSearchTerms = []; selectedCategories = []; selectedPlatforms = []; selectedLanguage = ''"
+                            class="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-all duration-150"
+                            title="Clear all filters">
+                        <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none"
+                             viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                        Clear
+                    </button>
+                </div>
+
+                {# Spacer #}
+                <div class="flex-1"></div>
+
+                {# Build button — prominent with gradient accent #}
+                <div class="flex items-center py-2">
+                    <button @click="buildNetwork()"
+                            :disabled="building"
+                            class="inline-flex items-center gap-2 px-5 py-2 text-sm font-semibold text-white rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed shadow-md hover:shadow-lg"
+                            :class="building ? 'bg-brand-500' : 'bg-gradient-to-r from-brand-600 via-brand-500 to-brand-green-600 hover:from-brand-700 hover:via-brand-600 hover:to-brand-green-700'">
+                        <template x-if="building">
+                            <div class="animate-spin rounded-full h-4 w-4 border-2 border-white/30 border-t-white"></div>
+                        </template>
+                        <template x-if="!building">
+                            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+                            </svg>
+                        </template>
+                        <span x-text="building ? 'Building...' : 'Build Network'"></span>
+                    </button>
+                </div>
+            </div>
+
+            {# Advanced options row — collapsible, tinted background #}
+            <div x-show="showAdvanced"
+                 x-transition:enter="transition ease-out duration-200"
+                 x-transition:enter-start="opacity-0 -translate-y-1"
+                 x-transition:enter-end="opacity-100 translate-y-0"
+                 x-transition:leave="transition ease-in duration-150"
+                 x-transition:leave-start="opacity-100 translate-y-0"
+                 x-transition:leave-end="opacity-0 -translate-y-1"
+                 class="pt-3 mt-3 border-t border-brand-100/40">
+                <div class="flex items-center gap-3 flex-wrap bg-brand-50/30 rounded-lg px-3 py-2.5">
+
+                    {# Graph mode #}
+                    <div class="flex items-center gap-1.5">
+                        <span class="text-[10px] font-semibold text-brand-400 uppercase tracking-widest">Mode</span>
+                        <select x-model="graphMode"
+                                class="rounded-md border-0 bg-white/80 py-1 pl-2 pr-7 text-xs font-medium text-gray-600 ring-1 ring-inset ring-brand-200/60 focus:ring-2 focus:ring-brand-500 hover:ring-brand-300 cursor-pointer transition-colors">
+                            <option value="bipartite">Bipartite</option>
+                            <option :value="groupBy === 'platform' ? 'unipartite_platform' : 'unipartite_sender'">
+                                Unipartite group
+                            </option>
+                            <option :value="networkType === 'keyword' ? 'unipartite_keyword' : (networkType === 'domain' ? 'unipartite_domain' : 'unipartite_entity')">
+                                Unipartite type
+                            </option>
+                        </select>
+                    </div>
+
+                    {# Separator #}
+                    <div class="w-px h-5 bg-brand-200/30 flex-shrink-0"></div>
+
+                    {# Content mode (keyword only) #}
+                    <div x-show="networkType === 'keyword'" class="flex items-center gap-1.5">
+                        <span class="text-[10px] font-semibold text-brand-400 uppercase tracking-widest">Content</span>
+                        <div class="inline-flex items-center rounded-md bg-white/60 p-0.5 gap-0 ring-1 ring-brand-200/30">
+                            <button @click="contentMode = 'full'"
+                                    :class="contentMode === 'full'
+                                        ? 'bg-white text-brand-700 shadow-sm ring-1 ring-brand-200'
+                                        : 'text-gray-500 hover:text-brand-600'"
+                                    class="px-2 py-0.5 text-[11px] font-medium rounded transition-all duration-150">
+                                Full
+                            </button>
+                            <button @click="contentMode = 'window'"
+                                    :class="contentMode === 'window'
+                                        ? 'bg-white text-brand-700 shadow-sm ring-1 ring-brand-200'
+                                        : 'text-gray-500 hover:text-brand-600'"
+                                    class="px-2 py-0.5 text-[11px] font-medium rounded transition-all duration-150">
+                                Window
+                            </button>
+                        </div>
+                    </div>
+
+                    {# Window size slider (keyword + window mode only) #}
+                    <div x-show="networkType === 'keyword' && contentMode === 'window'" class="flex items-center gap-2">
+                        <span class="text-[11px] text-gray-500">
+                            Window: <strong class="text-brand-600" x-text="windowSize"></strong>
+                        </span>
+                        <input type="range" x-model.number="windowSize" min="5" max="50" step="5"
+                               class="w-20 h-1 bg-brand-200/40 rounded-lg cursor-pointer accent-brand-600">
+                    </div>
+
+                    {# Entity types (entity mode only) #}
+                    <div x-show="networkType === 'entity'" class="flex items-center gap-2.5">
+                        <span class="text-[10px] font-semibold text-brand-400 uppercase tracking-widest">Types</span>
+                        <template x-for="et in ['PERSON', 'ORG', 'GPE', 'LOC']" :key="et">
+                            <label class="flex items-center gap-1 text-xs text-gray-600 cursor-pointer hover:text-brand-700 transition-colors">
+                                <input type="checkbox" :value="et" x-model="entityTypes"
+                                       class="rounded border-brand-200 text-brand-600 focus:ring-brand-500 h-3 w-3">
+                                <span x-text="et"></span>
+                            </label>
+                        </template>
+                    </div>
+
+                    {# Separator #}
+                    <div class="w-px h-5 bg-brand-200/30 flex-shrink-0"></div>
+
+                    {# Min edge weight #}
+                    <div class="flex items-center gap-2">
+                        <span class="text-[11px] text-gray-500">
+                            Min weight: <strong class="text-brand-600" x-text="minWeight"></strong>
+                        </span>
+                        <input type="range" x-model.number="minWeight" min="1" max="20" step="1"
+                               class="w-20 h-1 bg-brand-200/40 rounded-lg cursor-pointer accent-brand-600">
+                    </div>
+
+                    {# Separator #}
+                    <div class="w-px h-5 bg-brand-200/30 flex-shrink-0"></div>
+
+                    {# Min items per group #}
+                    <div class="flex items-center gap-2">
+                        <span class="text-[11px] text-gray-500">
+                            Min <span x-text="itemNoun()"></span>/<span x-text="groupBy === 'platform' ? 'platform' : 'sender'"></span>:
+                            <strong class="text-brand-600" x-text="minItems || 'off'"></strong>
+                        </span>
+                        <input type="range" x-model.number="minItems" min="0" max="50" step="1"
+                               class="w-20 h-1 bg-brand-200/40 rounded-lg cursor-pointer accent-brand-600">
+                    </div>
+
+                    {# Max items per group #}
+                    <div class="flex items-center gap-2">
+                        <span class="text-[11px] text-gray-500">
+                            Max <span x-text="itemNoun()"></span>/<span x-text="groupBy === 'platform' ? 'platform' : 'sender'"></span>:
+                            <strong class="text-brand-600" x-text="maxItems || 'off'"></strong>
+                        </span>
+                        <input type="range" x-model.number="maxItems" min="0" max="100" step="1"
+                               class="w-20 h-1 bg-brand-200/40 rounded-lg cursor-pointer accent-brand-600">
+                    </div>
+
+                    {# Exclude self-references (domain network only) #}
+                    <div x-show="networkType === 'domain'" class="flex items-center gap-1.5">
+                        <label class="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer hover:text-brand-700 transition-colors">
+                            <input type="checkbox" x-model="excludeSelfReferences"
+                                   class="rounded border-brand-200 text-brand-600 focus:ring-brand-500 h-3 w-3">
+                            Exclude self-references
+                        </label>
+                    </div>
+
+                    {# Separator #}
+                    <div class="w-px h-5 bg-brand-200/30 flex-shrink-0"></div>
+
+                    {# Giant component toggle #}
+                    <label class="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer hover:text-brand-700 transition-colors">
+                        <input type="checkbox" x-model="giantComponentOnly"
+                               class="rounded border-brand-200 text-brand-600 focus:ring-brand-500 h-3 w-3">
+                        Giant component only
+                    </label>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {# ── Full-width visualization area ── #}
+    <div class="space-y-3">
+
+        {# Network stats bar #}
+        <div class="flex items-center gap-6 text-xs text-gray-600 bg-white/80 rounded-lg px-4 py-2.5 border border-purple-100/40" x-show="graphData" x-transition>
+            <span>Nodes: <strong x-text="graphData ? graphData.nodes.length : 0" class="text-brand-700 font-mono"></strong></span>
+            <span>Edges: <strong x-text="graphData ? graphData.edges.length : 0" class="text-brand-700 font-mono"></strong></span>
+            <span x-show="graphData && graphData.nodes.length > 0">
+                Density: <strong x-text="computeDensity()" class="text-brand-700 font-mono"></strong>
+            </span>
+            {# Legend — inline with stats #}
+            <div class="flex items-center gap-4 ml-2 pl-4 border-l border-purple-100/40">
+                <template x-if="groupBy === 'sender'">
+                    <span class="flex items-center gap-1.5">
+                        <span class="w-2.5 h-2.5 rounded-full bg-[#7C3AED] inline-block"></span>
+                        <span class="text-gray-400">Sender</span>
+                    </span>
+                </template>
+                <template x-if="groupBy === 'platform'">
+                    <span class="flex items-center gap-1.5">
+                        <span class="w-2.5 h-2.5 rounded-full bg-[#2563EB] inline-block"></span>
+                        <span class="text-gray-400">Platform</span>
+                    </span>
+                </template>
+                <template x-if="networkType === 'keyword'">
+                    <span class="flex items-center gap-1.5">
+                        <span class="w-2.5 h-2.5 rounded-full bg-[#D4C020] inline-block"></span>
+                        <span class="text-gray-400">Keyword</span>
+                    </span>
+                </template>
+                <template x-if="networkType === 'entity'">
+                    <span class="flex items-center gap-3">
+                        <span class="flex items-center gap-1.5">
+                            <span class="w-2.5 h-2.5 rounded-full bg-[#EA580C] inline-block"></span>
+                            <span class="text-gray-400">PERSON</span>
+                        </span>
+                        <span class="flex items-center gap-1.5">
+                            <span class="w-2.5 h-2.5 rounded-full bg-[#DC2626] inline-block"></span>
+                            <span class="text-gray-400">ORG</span>
+                        </span>
+                        <span class="flex items-center gap-1.5">
+                            <span class="w-2.5 h-2.5 rounded-full bg-[#16A34A] inline-block"></span>
+                            <span class="text-gray-400">GPE/LOC</span>
+                        </span>
+                    </span>
+                </template>
+                <template x-if="networkType === 'domain'">
+                    <span class="flex items-center gap-1.5">
+                        <span class="w-2.5 h-2.5 rounded-full bg-[#0EA5E9] inline-block"></span>
+                        <span class="text-gray-400">Domain</span>
+                    </span>
+                </template>
+            </div>
+            <div class="ml-auto flex items-center gap-2">
+                <button @click="toggleLayout()"
+                        :disabled="!graphData || graphData.nodes.length === 0"
+                        class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-150 disabled:opacity-40"
+                        :class="fa2Running
+                            ? 'bg-brand-gold-100 text-brand-gold-700 hover:bg-brand-gold-200 ring-1 ring-brand-gold-300 shadow-sm'
+                            : 'bg-brand-50/60 text-brand-600 hover:bg-brand-100 ring-1 ring-brand-200/50'">
+                    <svg x-show="!fa2Running" class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M5 3l14 9-14 9V3z"/>
+                    </svg>
+                    <svg x-show="fa2Running" class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M10 9v6m4-6v6"/>
+                    </svg>
+                    <span x-text="fa2Running ? 'Stop Layout' : 'ForceAtlas2'"></span>
+                </button>
+                {# FA2 gravity slider — re-runs layout from scratch #}
+                <div class="flex items-center gap-1.5">
+                    <span class="text-[10px] text-gray-400 uppercase tracking-wide">Gravity</span>
+                    <input type="range" x-model.number="fa2Gravity" min="0.1" max="10" step="0.1"
+                           @change="rerunLayout()"
+                           class="w-16 h-1 bg-brand-200/40 rounded-lg cursor-pointer accent-brand-600">
+                    <span class="text-[11px] font-mono text-brand-600 w-6 text-right" x-text="fa2Gravity"></span>
+                </div>
+                {# Spread slider — scales node positions live #}
+                <div class="flex items-center gap-1.5">
+                    <span class="text-[10px] text-gray-400 uppercase tracking-wide">Spread</span>
+                    <input type="range" x-model.number="fa2Scale" min="0.2" max="5" step="0.1"
+                           @input="applySpread()"
+                           class="w-16 h-1 bg-brand-200/40 rounded-lg cursor-pointer accent-brand-600">
+                    <span class="text-[11px] font-mono text-brand-600 w-7 text-right" x-text="fa2Scale.toFixed(1)"></span>
+                </div>
+                <template x-if="graphData && graphData.reduced">
+                    <div class="inline-flex items-center rounded-md ring-1 ring-brand-200/50 overflow-hidden">
+                        <button @click="exportGexf(true)"
+                                class="px-3 py-1.5 text-xs font-medium bg-brand-50/60 text-brand-600 hover:bg-brand-100 transition-all duration-150 border-r border-brand-200/50">
+                            GEXF (backboned)
+                        </button>
+                        <button @click="exportGexf(false)"
+                                class="px-3 py-1.5 text-xs font-medium bg-brand-50/60 text-brand-600 hover:bg-brand-100 transition-all duration-150">
+                            GEXF (full)
+                        </button>
+                    </div>
+                </template>
+                <template x-if="!graphData || !graphData.reduced">
+                    <button @click="exportGexf(true)" :disabled="!graphData || graphData.nodes.length === 0"
+                            class="px-3 py-1.5 text-xs font-medium rounded-md bg-brand-50/60 text-brand-600 hover:bg-brand-100 ring-1 ring-brand-200/50 disabled:opacity-40 transition-all duration-150">
+                        Download GEXF
+                    </button>
+                </template>
+            </div>
+        </div>
+
+        {# Projection / processing warnings #}
+        <template x-if="graphData && graphData.warnings && graphData.warnings.length">
+            <div class="space-y-1.5">
+                <template x-for="warning in graphData.warnings" :key="warning">
+                    <div x-transition
+                         class="flex items-start gap-2.5 text-xs bg-blue-50 border border-blue-200/60 rounded-lg px-4 py-2.5">
+                        <svg class="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z"/>
+                        </svg>
+                        <span class="text-blue-800" x-text="warning"></span>
+                    </div>
+                </template>
+            </div>
+        </template>
+
+        {# Reduction notice #}
+        <div x-show="graphData && graphData.reduced" x-transition
+             class="flex items-start gap-2.5 text-xs bg-amber-50 border border-amber-200/60 rounded-lg px-4 py-2.5">
+            <svg class="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>
+            </svg>
+            <div>
+                <span class="font-medium text-amber-800">Network reduced to fit display limits (max 500 nodes / 5,000 edges).</span>
+                <span class="text-amber-700">
+                    Original: <strong x-text="graphData?.reduced?.original_nodes"></strong> nodes,
+                    <strong x-text="graphData?.reduced?.original_edges"></strong> edges.
+                    Use <em>GEXF (full)</em> to export the unreduced network.
+                </span>
+            </div>
+        </div>
+
+        {# Sigma.js canvas — full width. Explicit inline height so sigma's
+           canvas elements receive valid dimensions when instantiated. Using
+           `h-full` on a grandchild of a flex-1 <main> is unreliable here. #}
+        <div id="network-canvas"
+             class="bg-white rounded-xl shadow-brand border border-purple-100/60 overflow-hidden relative w-full"
+             style="height: 640px;">
+            {# Empty state #}
+            <div x-show="!graphData && !building && !errorMsg" class="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-brand-50/20 via-transparent to-brand-green-50/20 pointer-events-none">
+                <div class="text-center">
+                    <svg class="w-16 h-16 mx-auto text-brand-200 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+                    </svg>
+                    <p class="text-sm text-gray-500">Configure filters and click <strong class="text-brand-600">Build Network</strong> to visualize</p>
+                </div>
+            </div>
+            {# Error state #}
+            <div x-show="errorMsg && !building" class="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div class="text-center max-w-md px-6">
+                    <svg class="w-12 h-12 mx-auto text-amber-300 mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>
+                    </svg>
+                    <p class="text-sm text-gray-500" x-text="errorMsg"></p>
+                </div>
+            </div>
+            {# Loading state #}
+            <div x-show="building" class="absolute inset-0 flex items-center justify-center bg-white/90 backdrop-blur-sm z-10 pointer-events-none">
+                <div class="text-center">
+                    <div class="animate-spin rounded-full h-10 w-10 border-2 border-brand-200 border-t-brand-600 mx-auto mb-3"></div>
+                    <p class="text-sm text-brand-600 font-medium">Building network...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function networksDashboard() {
+    return {
+        // Filter state
+        projectId: '',
+        dateFrom: '',
+        dateTo: '',
+        selectedQueryDesigns: [],
+        selectedSearchTerms: [],
+        selectedCategories: [],
+        selectedPlatforms: [],
+        selectedLanguage: '',
+
+        // Network config
+        networkType: 'keyword',
+        contentMode: 'full',
+        windowSize: 20,
+        entityTypes: ['PERSON', 'ORG', 'GPE', 'LOC'],
+        excludeSelfReferences: true,
+        graphMode: 'bipartite',
+        groupBy: 'sender',
+        minWeight: 1,
+        minItems: 0,
+        maxItems: 0,
+        giantComponentOnly: false,
+
+        // Filter options (loaded from API)
+        projects: [],
+        queryDesigns: [],
+        searchTerms: [],
+        availablePlatforms: [],
+        availableLanguages: [],
+        allCategories: [
+            { value: 'news', label: 'News' },
+            { value: 'search', label: 'Search' },
+            { value: 'web', label: 'Web' },
+            { value: 'social_media', label: 'Social Media' },
+        ],
+
+        // Layout settings
+        fa2Gravity: 1,
+        fa2Scale: 1.0,
+
+        // State
+        building: false,
+        graphData: null,
+        errorMsg: '',
+        fa2Running: false,
+
+        async init() {
+            await this.loadFilterOptions();
+        },
+
+        async loadFilterOptions() {
+            try {
+                const params = new URLSearchParams();
+                if (this.projectId) params.set('project_id', this.projectId);
+                const resp = await fetch(`/networks/filter-options?${params}`, { credentials: 'include' });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    this.projects = data.projects || [];
+                    this.queryDesigns = data.query_designs || [];
+                    this.searchTerms = data.search_terms || [];
+                    this.availablePlatforms = data.platforms || [];
+                    this.availableLanguages = data.languages || [];
+                }
+            } catch (e) {
+                console.warn('Failed to load filter options', e);
+            }
+        },
+
+        _buildParams() {
+            const params = new URLSearchParams();
+            if (this.projectId) params.set('project_id', this.projectId);
+            if (this.selectedQueryDesigns.length) params.set('query_design_ids', this.selectedQueryDesigns.join(','));
+            if (this.selectedSearchTerms.length) params.set('search_terms', this.selectedSearchTerms.join(','));
+            if (this.selectedCategories.length) params.set('arena_categories', this.selectedCategories.join(','));
+            if (this.selectedPlatforms.length) params.set('platforms', this.selectedPlatforms.join(','));
+            if (this.selectedLanguage) params.set('languages', this.selectedLanguage);
+            if (this.dateFrom) params.set('date_from', this.dateFrom);
+            if (this.dateTo) params.set('date_to', this.dateTo);
+            params.set('mode', this.graphMode);
+            params.set('min_weight', this.minWeight);
+            params.set('group_by', this.groupBy);
+            if (this.minItems > 0) params.set('min_items', this.minItems);
+            if (this.maxItems > 0) params.set('max_items', this.maxItems);
+            if (this.giantComponentOnly) params.set('giant_component_only', 'true');
+            return params;
+        },
+
+        async buildNetwork() {
+            this.building = true;
+            this.graphData = null;
+            this.errorMsg = '';
+            this.fa2Running = false;
+            this.fa2Scale = 1.0;
+
+            // Destroy existing visualization
+            if (window.destroyNetworkPreview) {
+                window.destroyNetworkPreview('network-canvas');
+            }
+
+            try {
+                const params = this._buildParams();
+                let endpoint;
+
+                if (this.networkType === 'keyword') {
+                    endpoint = '/networks/keyword-network';
+                    params.set('content_mode', this.contentMode);
+                    if (this.contentMode === 'window' && this.windowSize) {
+                        params.set('window_size', this.windowSize);
+                    }
+                } else if (this.networkType === 'entity') {
+                    endpoint = '/networks/entity-network';
+                    if (this.entityTypes.length) {
+                        params.set('entity_types', this.entityTypes.join(','));
+                    }
+                } else {
+                    endpoint = '/networks/domain-network';
+                    params.set('exclude_self_references', this.excludeSelfReferences ? 'true' : 'false');
+                }
+
+                const resp = await fetch(`${endpoint}?${params}`, { credentials: 'include' });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    if (!data.nodes || data.nodes.length === 0) {
+                        this.errorMsg = 'No network data found. Try broadening your filters or selecting a different project.';
+                        return;
+                    }
+                    this.graphData = data;
+                    this.$nextTick(() => this.renderNetwork());
+                } else {
+                    const body = await resp.text();
+                    this.errorMsg = `Network build failed (${resp.status}). ${body}`;
+                }
+            } catch (e) {
+                this.errorMsg = `Network build error: ${e.message}`;
+            } finally {
+                this.building = false;
+            }
+        },
+
+        renderNetwork() {
+            if (!this.graphData || this.graphData.nodes.length === 0) {
+                console.warn('[networks] renderNetwork aborted — no graph data');
+                return;
+            }
+
+            // Map node types to colors for the network preview. Normalise the
+            // backend's node_type labels ("sender", "keyword", "entity", ...)
+            // to the labels network_preview.js understands.
+            const coloredData = {
+                nodes: this.graphData.nodes.map(n => ({
+                    ...n,
+                    node_type: this._resolveNodeType(n),
+                    weight: n.doc_count || 1,
+                })),
+                edges: this.graphData.edges,
+            };
+
+            console.log('[networks] rendering', {
+                nodes: coloredData.nodes.length,
+                edges: coloredData.edges.length,
+                reduced: !!this.graphData.reduced,
+            });
+
+            if (!window.initNetworkPreview) {
+                console.error('[networks] initNetworkPreview missing — network_preview.js did not load');
+                this.errorMsg = 'Network renderer failed to load. Check the browser console.';
+                return;
+            }
+
+            // Pass scalingRatio: 2 (a sane FA2 default) rather than fa2Scale,
+            // which is also used as the sigma camera spread and starts at 1.0.
+            // Mixing the two made the layout collapse when the user had not
+            // yet interacted with the spread slider.
+            const sigma = window.initNetworkPreview('network-canvas', coloredData, {
+                trim: false,
+                runLayout: true,
+                layoutIterations: 200,
+                gravity: this.fa2Gravity,
+                scalingRatio: 2,
+            });
+
+            if (!sigma) {
+                console.error('[networks] initNetworkPreview returned null — rendering failed');
+                this.errorMsg = 'Unable to render network. Check the browser console for details.';
+                return;
+            }
+
+            // Force sigma to re-measure the container and frame the graph.
+            // Without this, sigma sometimes caches a zero-size viewport when
+            // the container flipped visible during the same tick as the call.
+            requestAnimationFrame(() => {
+                try {
+                    sigma.refresh();
+                    sigma.getCamera().animatedReset({ duration: 0 });
+                } catch (err) {
+                    console.warn('[networks] post-render refresh failed:', err);
+                }
+            });
+        },
+
+        _resolveNodeType(node) {
+            if (node.node_type === 'sender') return 'actor';
+            if (node.node_type === 'platform') return 'platform';
+            if (node.node_type === 'keyword') return 'term';
+            if (node.node_type === 'entity') return 'entity';
+            if (node.node_type === 'domain') return 'domain';
+            return node.node_type;
+        },
+
+        itemNoun() {
+            if (this.networkType === 'keyword') return 'keywords';
+            if (this.networkType === 'entity') return 'entities';
+            return 'domains';
+        },
+
+        computeDensity() {
+            if (!this.graphData || this.graphData.nodes.length < 2) return '0.000';
+            const nodes = this.graphData.nodes;
+            const e = this.graphData.edges.length;
+            // For bipartite graphs, max edges = |set_A| * |set_B|
+            // For unipartite graphs, max edges = n*(n-1)/2
+            const isBipartite = this.mode === 'bipartite';
+            let maxEdges;
+            if (isBipartite) {
+                const setA = nodes.filter(n => n.node_type === 'sender' || n.node_type === 'platform').length;
+                const setB = nodes.length - setA;
+                maxEdges = setA * setB || 1;
+            } else {
+                const n = nodes.length;
+                maxEdges = n * (n - 1) / 2;
+            }
+            return (e / maxEdges).toFixed(4);
+        },
+
+        exportGexf(backbone = true) {
+            if (!this.graphData) return;
+            const params = this._buildParams();
+            params.set('network_type', this.networkType);
+            params.set('backbone', backbone ? 'true' : 'false');
+            if (this.networkType === 'keyword') {
+                params.set('content_mode', this.contentMode);
+                if (this.contentMode === 'window') params.set('window_size', this.windowSize);
+            } else if (this.networkType === 'entity') {
+                if (this.entityTypes.length) {
+                    params.set('entity_types', this.entityTypes.join(','));
+                }
+            } else if (this.networkType === 'domain') {
+                params.set('exclude_self_references', this.excludeSelfReferences ? 'true' : 'false');
+            }
+            window.location.href = `/networks/export-gexf?${params}`;
+        },
+
+        toggleLayout() {
+            if (!this.graphData) return;
+            this.fa2Running = window.toggleFA2Layout('network-canvas', {
+                gravity: this.fa2Gravity,
+                scalingRatio: this.fa2Scale,
+            });
+        },
+
+        rerunLayout() {
+            if (!this.graphData || this.graphData.nodes.length === 0) return;
+            this.fa2Running = false;
+            this.fa2Scale = 1.0;
+            window.rerunFA2Layout('network-canvas', {
+                gravity: this.fa2Gravity,
+            });
+        },
+
+        applySpread() {
+            if (!this.graphData || this.graphData.nodes.length === 0) return;
+            window.setNetworkSpread('network-canvas', this.fa2Scale);
+        },
+    };
+}
+</script>
+{% endblock %}
